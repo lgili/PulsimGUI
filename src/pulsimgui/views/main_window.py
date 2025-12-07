@@ -24,6 +24,7 @@ from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog,
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
+from pulsimgui.views.waveform import WaveformViewer
 
 
 class MainWindow(QMainWindow):
@@ -370,9 +371,8 @@ class MainWindow(QMainWindow):
         self.waveform_dock.setAllowedAreas(
             Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
-        waveform_placeholder = QLabel("Waveform Viewer\n(Coming Soon)")
-        waveform_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.waveform_dock.setWidget(waveform_placeholder)
+        self._waveform_viewer = WaveformViewer()
+        self.waveform_dock.setWidget(self._waveform_viewer)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.waveform_dock)
 
         # Add toggle actions to panels menu
@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
         # Simulation service signals
         self._simulation_service.state_changed.connect(self._on_simulation_state_changed)
         self._simulation_service.progress.connect(self._on_simulation_progress)
+        self._simulation_service.data_point.connect(self._on_simulation_data_point)
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
@@ -928,11 +929,24 @@ class MainWindow(QMainWindow):
         self._sim_progress.setValue(int(value))
         self._sim_status_label.setText(message)
 
+    def _on_simulation_data_point(self, time: float, signals: dict) -> None:
+        """Handle streaming data point during simulation."""
+        # Make waveform dock visible if not already
+        if not self.waveform_dock.isVisible():
+            self.waveform_dock.setVisible(True)
+
+        # Add data point to waveform viewer for real-time display
+        self._waveform_viewer.add_data_point(time, signals)
+
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
-            # Show results in waveform viewer
-            # TODO: Update waveform viewer with results
+            # Finalize streaming and show complete results in waveform viewer
+            self._waveform_viewer.finalize_streaming(result)
+
+            # Make waveform dock visible
+            self.waveform_dock.setVisible(True)
+
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "
                 f"{len(result.signals)} signals",

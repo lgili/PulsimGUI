@@ -442,10 +442,21 @@ class SimulationService(QObject):
 
             # Convert wires
             for wire in circuit.wires.values():
+                connections = []
+                if wire.start_connection:
+                    connections.append({
+                        "component_id": str(wire.start_connection.component_id),
+                        "pin_index": wire.start_connection.pin_index,
+                    })
+                if wire.end_connection:
+                    connections.append({
+                        "component_id": str(wire.end_connection.component_id),
+                        "pin_index": wire.end_connection.pin_index,
+                    })
                 wire_data = {
                     "id": str(wire.id),
                     "segments": [(s.x1, s.y1, s.x2, s.y2) for s in wire.segments],
-                    "connections": wire.connections,
+                    "connections": connections,
                 }
                 circuit_data["wires"].append(wire_data)
 

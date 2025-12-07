@@ -160,44 +160,44 @@
 ### 4.4 AC Analysis
 - [x] 4.4.1 Implement AC analysis settings
 - [x] 4.4.2 Run AC sweep
-- [ ] 4.4.3 Display Bode plots
+- [x] 4.4.3 Display Bode plots
 
 ## Phase 5: Waveform Viewer
 
 ### 5.1 Basic Plotting
-- [ ] 5.1.1 Create WaveformViewer widget
-- [ ] 5.1.2 Integrate PyQtGraph PlotWidget
-- [ ] 5.1.3 Display simulation time on X axis
-- [ ] 5.1.4 Display signal value on Y axis
-- [ ] 5.1.5 Add signal to plot from result
-- [ ] 5.1.6 Support multiple traces with colors
-- [ ] 5.1.7 Implement legend
+- [x] 5.1.1 Create WaveformViewer widget
+- [x] 5.1.2 Integrate PyQtGraph PlotWidget
+- [x] 5.1.3 Display simulation time on X axis
+- [x] 5.1.4 Display signal value on Y axis
+- [x] 5.1.5 Add signal to plot from result
+- [x] 5.1.6 Support multiple traces with colors
+- [x] 5.1.7 Implement legend
 
 ### 5.2 Navigation
-- [ ] 5.2.1 Implement zoom with scroll wheel
-- [ ] 5.2.2 Implement pan with drag
-- [ ] 5.2.3 Implement zoom rectangle
-- [ ] 5.2.4 Implement zoom to fit
-- [ ] 5.2.5 Implement zoom history (back/forward)
+- [x] 5.2.1 Implement zoom with scroll wheel
+- [x] 5.2.2 Implement pan with drag
+- [x] 5.2.3 Implement zoom rectangle
+- [x] 5.2.4 Implement zoom to fit
+- [x] 5.2.5 Implement zoom history (back/forward)
 
 ### 5.3 Cursors and Measurements
-- [ ] 5.3.1 Implement cursor placement
-- [ ] 5.3.2 Implement two-cursor measurement
-- [ ] 5.3.3 Display delta time and values
-- [ ] 5.3.4 Implement cursor drag
-- [ ] 5.3.5 Create measurements panel
-- [ ] 5.3.6 Implement min/max/mean/RMS measurements
+- [x] 5.3.1 Implement cursor placement
+- [x] 5.3.2 Implement two-cursor measurement
+- [x] 5.3.3 Display delta time and values
+- [x] 5.3.4 Implement cursor drag
+- [x] 5.3.5 Create measurements panel
+- [x] 5.3.6 Implement min/max/mean/RMS measurements
 
 ### 5.4 Real-time Streaming
-- [ ] 5.4.1 Update plot during simulation
-- [ ] 5.4.2 Implement auto-scroll mode
-- [ ] 5.4.3 Implement data decimation for display
+- [x] 5.4.1 Update plot during simulation
+- [x] 5.4.2 Implement auto-scroll mode
+- [x] 5.4.3 Implement data decimation for display
 
 ### 5.5 Signal List
-- [ ] 5.5.1 Create signal list panel
-- [ ] 5.5.2 Show all available signals
-- [ ] 5.5.3 Drag signal to add to plot
-- [ ] 5.5.4 Toggle signal visibility
+- [x] 5.5.1 Create signal list panel
+- [x] 5.5.2 Show all available signals
+- [x] 5.5.3 Drag signal to add to plot
+- [x] 5.5.4 Toggle signal visibility
 
 ## Phase 6: Project Management
 
