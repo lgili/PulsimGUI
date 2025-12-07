@@ -1,0 +1,575 @@
+"""Main application window."""
+
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtWidgets import (
+    QMainWindow,
+    QDockWidget,
+    QToolBar,
+    QStatusBar,
+    QLabel,
+    QWidget,
+    QVBoxLayout,
+    QMessageBox,
+    QFileDialog,
+    QApplication,
+)
+
+from pulsimgui.commands.base import CommandStack
+from pulsimgui.models.project import Project
+from pulsimgui.services.settings_service import SettingsService
+
+
+class MainWindow(QMainWindow):
+    """Main application window with docking panels."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+
+        self._settings = SettingsService()
+        self._command_stack = CommandStack(parent=self)
+        self._project = Project()
+
+        self._setup_window()
+        self._create_actions()
+        self._create_menus()
+        self._create_toolbar()
+        self._create_status_bar()
+        self._create_dock_widgets()
+        self._connect_signals()
+        self._restore_state()
+        self._apply_theme()
+
+    def _setup_window(self) -> None:
+        """Configure main window properties."""
+        self.setWindowTitle("PulsimGui - Untitled Project")
+        self.setMinimumSize(800, 600)
+        self.resize(1200, 800)
+
+        # Central widget (schematic editor placeholder)
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        placeholder = QLabel("Schematic Editor (Coming Soon)")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setStyleSheet("font-size: 24px; color: #888;")
+        layout.addWidget(placeholder)
+        self.setCentralWidget(central)
+
+    def _create_actions(self) -> None:
+        """Create all menu and toolbar actions."""
+        # File actions
+        self.action_new = QAction("&New Project", self)
+        self.action_new.setShortcut(QKeySequence.StandardKey.New)
+        self.action_new.triggered.connect(self._on_new_project)
+
+        self.action_open = QAction("&Open Project...", self)
+        self.action_open.setShortcut(QKeySequence.StandardKey.Open)
+        self.action_open.triggered.connect(self._on_open_project)
+
+        self.action_save = QAction("&Save", self)
+        self.action_save.setShortcut(QKeySequence.StandardKey.Save)
+        self.action_save.triggered.connect(self._on_save)
+
+        self.action_save_as = QAction("Save &As...", self)
+        self.action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.action_save_as.triggered.connect(self._on_save_as)
+
+        self.action_export_netlist = QAction("Export &Netlist...", self)
+        self.action_export_netlist.setShortcut(QKeySequence("Ctrl+E"))
+
+        self.action_exit = QAction("E&xit", self)
+        self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
+        self.action_exit.triggered.connect(self.close)
+
+        # Edit actions
+        self.action_undo = QAction("&Undo", self)
+        self.action_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        self.action_undo.setEnabled(False)
+        self.action_undo.triggered.connect(self._on_undo)
+
+        self.action_redo = QAction("&Redo", self)
+        self.action_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        self.action_redo.setEnabled(False)
+        self.action_redo.triggered.connect(self._on_redo)
+
+        self.action_cut = QAction("Cu&t", self)
+        self.action_cut.setShortcut(QKeySequence.StandardKey.Cut)
+
+        self.action_copy = QAction("&Copy", self)
+        self.action_copy.setShortcut(QKeySequence.StandardKey.Copy)
+
+        self.action_paste = QAction("&Paste", self)
+        self.action_paste.setShortcut(QKeySequence.StandardKey.Paste)
+
+        self.action_delete = QAction("&Delete", self)
+        self.action_delete.setShortcut(QKeySequence.StandardKey.Delete)
+
+        self.action_select_all = QAction("Select &All", self)
+        self.action_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+
+        self.action_preferences = QAction("&Preferences...", self)
+        self.action_preferences.setShortcut(QKeySequence("Ctrl+,"))
+
+        # View actions
+        self.action_zoom_in = QAction("Zoom &In", self)
+        self.action_zoom_in.setShortcut(QKeySequence.StandardKey.ZoomIn)
+
+        self.action_zoom_out = QAction("Zoom &Out", self)
+        self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
+
+        self.action_zoom_fit = QAction("Zoom to &Fit", self)
+        self.action_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
+
+        self.action_toggle_grid = QAction("Show &Grid", self)
+        self.action_toggle_grid.setCheckable(True)
+        self.action_toggle_grid.setChecked(self._settings.get_show_grid())
+        self.action_toggle_grid.setShortcut(QKeySequence("G"))
+
+        self.action_theme_light = QAction("&Light Theme", self)
+        self.action_theme_light.setCheckable(True)
+
+        self.action_theme_dark = QAction("&Dark Theme", self)
+        self.action_theme_dark.setCheckable(True)
+
+        self.action_theme_system = QAction("&System Theme", self)
+        self.action_theme_system.setCheckable(True)
+
+        # Simulation actions
+        self.action_run = QAction("&Run Simulation", self)
+        self.action_run.setShortcut(QKeySequence("F5"))
+
+        self.action_stop = QAction("&Stop Simulation", self)
+        self.action_stop.setShortcut(QKeySequence("Shift+F5"))
+        self.action_stop.setEnabled(False)
+
+        self.action_dc_op = QAction("&DC Operating Point", self)
+        self.action_dc_op.setShortcut(QKeySequence("F6"))
+
+        self.action_ac = QAction("&AC Analysis", self)
+        self.action_ac.setShortcut(QKeySequence("F7"))
+
+        self.action_sim_settings = QAction("Simulation &Settings...", self)
+        self.action_sim_settings.setShortcut(QKeySequence("Ctrl+Shift+S"))
+
+        # Help actions
+        self.action_about = QAction("&About PulsimGui", self)
+        self.action_about.triggered.connect(self._on_about)
+
+    def _create_menus(self) -> None:
+        """Create the menu bar."""
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("&File")
+        file_menu.addAction(self.action_new)
+        file_menu.addAction(self.action_open)
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        self._update_recent_menu()
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_save)
+        file_menu.addAction(self.action_save_as)
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_export_netlist)
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_exit)
+
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+        edit_menu.addAction(self.action_undo)
+        edit_menu.addAction(self.action_redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_cut)
+        edit_menu.addAction(self.action_copy)
+        edit_menu.addAction(self.action_paste)
+        edit_menu.addAction(self.action_delete)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_select_all)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_preferences)
+
+        # View menu
+        view_menu = menubar.addMenu("&View")
+        view_menu.addAction(self.action_zoom_in)
+        view_menu.addAction(self.action_zoom_out)
+        view_menu.addAction(self.action_zoom_fit)
+        view_menu.addSeparator()
+        view_menu.addAction(self.action_toggle_grid)
+        view_menu.addSeparator()
+        self.panels_menu = view_menu.addMenu("&Panels")
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu("&Theme")
+        theme_menu.addAction(self.action_theme_light)
+        theme_menu.addAction(self.action_theme_dark)
+        theme_menu.addAction(self.action_theme_system)
+
+        # Simulation menu
+        sim_menu = menubar.addMenu("&Simulation")
+        sim_menu.addAction(self.action_run)
+        sim_menu.addAction(self.action_stop)
+        sim_menu.addSeparator()
+        sim_menu.addAction(self.action_dc_op)
+        sim_menu.addAction(self.action_ac)
+        sim_menu.addSeparator()
+        sim_menu.addAction(self.action_sim_settings)
+
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+        help_menu.addAction(self.action_about)
+
+    def _create_toolbar(self) -> None:
+        """Create the main toolbar."""
+        toolbar = QToolBar("Main Toolbar")
+        toolbar.setObjectName("MainToolbar")
+        toolbar.setIconSize(QSize(24, 24))
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        toolbar.addAction(self.action_new)
+        toolbar.addAction(self.action_open)
+        toolbar.addAction(self.action_save)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_undo)
+        toolbar.addAction(self.action_redo)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_cut)
+        toolbar.addAction(self.action_copy)
+        toolbar.addAction(self.action_paste)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_zoom_in)
+        toolbar.addAction(self.action_zoom_out)
+        toolbar.addAction(self.action_zoom_fit)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_run)
+        toolbar.addAction(self.action_stop)
+
+    def _create_status_bar(self) -> None:
+        """Create the status bar."""
+        status_bar = QStatusBar()
+        self.setStatusBar(status_bar)
+
+        # Coordinate display
+        self._coord_label = QLabel("X: 0, Y: 0")
+        self._coord_label.setMinimumWidth(100)
+        status_bar.addWidget(self._coord_label)
+
+        # Zoom level
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setMinimumWidth(60)
+        status_bar.addWidget(self._zoom_label)
+
+        # Selection count
+        self._selection_label = QLabel("")
+        status_bar.addWidget(self._selection_label)
+
+        # Spacer
+        spacer = QWidget()
+        spacer.setMinimumWidth(1)
+        status_bar.addWidget(spacer, 1)
+
+        # Modified indicator
+        self._modified_label = QLabel("")
+        status_bar.addPermanentWidget(self._modified_label)
+
+    def _create_dock_widgets(self) -> None:
+        """Create dockable panels."""
+        # Component Library (left)
+        self.library_dock = QDockWidget("Component Library", self)
+        self.library_dock.setObjectName("LibraryDock")
+        self.library_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        library_placeholder = QLabel("Component Library\n(Coming Soon)")
+        library_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.library_dock.setWidget(library_placeholder)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.library_dock)
+
+        # Properties Panel (right)
+        self.properties_dock = QDockWidget("Properties", self)
+        self.properties_dock.setObjectName("PropertiesDock")
+        self.properties_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        props_placeholder = QLabel("Properties Panel\n(Coming Soon)")
+        props_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.properties_dock.setWidget(props_placeholder)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+
+        # Waveform Viewer (bottom)
+        self.waveform_dock = QDockWidget("Waveform Viewer", self)
+        self.waveform_dock.setObjectName("WaveformDock")
+        self.waveform_dock.setAllowedAreas(
+            Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        waveform_placeholder = QLabel("Waveform Viewer\n(Coming Soon)")
+        waveform_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.waveform_dock.setWidget(waveform_placeholder)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.waveform_dock)
+
+        # Add toggle actions to panels menu
+        self.panels_menu.addAction(self.library_dock.toggleViewAction())
+        self.panels_menu.addAction(self.properties_dock.toggleViewAction())
+        self.panels_menu.addAction(self.waveform_dock.toggleViewAction())
+
+    def _connect_signals(self) -> None:
+        """Connect signals and slots."""
+        # Command stack signals
+        self._command_stack.can_undo_changed.connect(self.action_undo.setEnabled)
+        self._command_stack.can_redo_changed.connect(self.action_redo.setEnabled)
+        self._command_stack.stack_changed.connect(self._update_undo_redo_text)
+
+        # Theme actions
+        self.action_theme_light.triggered.connect(lambda: self._set_theme("light"))
+        self.action_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
+        self.action_theme_system.triggered.connect(lambda: self._set_theme("system"))
+
+    def _restore_state(self) -> None:
+        """Restore window geometry and state."""
+        geometry = self._settings.get_window_geometry()
+        if geometry:
+            self.restoreGeometry(geometry)
+
+        state = self._settings.get_window_state()
+        if state:
+            self.restoreState(state)
+
+    def _apply_theme(self) -> None:
+        """Apply the current theme."""
+        theme = self._settings.get_theme()
+        self.action_theme_light.setChecked(theme == "light")
+        self.action_theme_dark.setChecked(theme == "dark")
+        self.action_theme_system.setChecked(theme == "system")
+
+        if theme == "dark":
+            self._apply_dark_theme()
+        elif theme == "light":
+            self._apply_light_theme()
+        # system theme is handled by Qt automatically
+
+    def _apply_dark_theme(self) -> None:
+        """Apply dark theme stylesheet."""
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+            }
+            QMenuBar {
+                background-color: #2d2d2d;
+                color: #d4d4d4;
+            }
+            QMenuBar::item:selected {
+                background-color: #3d3d3d;
+            }
+            QMenu {
+                background-color: #2d2d2d;
+                color: #d4d4d4;
+                border: 1px solid #3d3d3d;
+            }
+            QMenu::item:selected {
+                background-color: #094771;
+            }
+            QToolBar {
+                background-color: #2d2d2d;
+                border: none;
+                spacing: 3px;
+            }
+            QStatusBar {
+                background-color: #007acc;
+                color: white;
+            }
+            QDockWidget {
+                titlebar-close-icon: url(close.png);
+                titlebar-normal-icon: url(undock.png);
+            }
+            QDockWidget::title {
+                background-color: #2d2d2d;
+                padding: 5px;
+            }
+        """)
+
+    def _apply_light_theme(self) -> None:
+        """Apply light theme (reset to default)."""
+        self.setStyleSheet("")
+
+    def _set_theme(self, theme: str) -> None:
+        """Set and apply a theme."""
+        self._settings.set_theme(theme)
+        self._apply_theme()
+
+    def _update_undo_redo_text(self) -> None:
+        """Update undo/redo action text."""
+        self.action_undo.setText(self._command_stack.undo_text)
+        self.action_redo.setText(self._command_stack.redo_text)
+
+    def _update_recent_menu(self) -> None:
+        """Update the recent projects menu."""
+        self.recent_menu.clear()
+        recent = self._settings.get_recent_projects()
+
+        if not recent:
+            action = QAction("(No recent projects)", self)
+            action.setEnabled(False)
+            self.recent_menu.addAction(action)
+            return
+
+        for path in recent:
+            action = QAction(path, self)
+            action.setData(path)
+            action.triggered.connect(lambda checked, p=path: self._open_project_file(p))
+            self.recent_menu.addAction(action)
+
+        self.recent_menu.addSeparator()
+        clear_action = QAction("Clear Recent", self)
+        clear_action.triggered.connect(self._clear_recent)
+        self.recent_menu.addAction(clear_action)
+
+    def _clear_recent(self) -> None:
+        """Clear recent projects list."""
+        self._settings.clear_recent_projects()
+        self._update_recent_menu()
+
+    def _update_title(self) -> None:
+        """Update window title based on project state."""
+        title = f"PulsimGui - {self._project.name}"
+        if self._project.is_dirty:
+            title += " *"
+        self.setWindowTitle(title)
+
+    def update_coordinates(self, x: float, y: float) -> None:
+        """Update coordinate display in status bar."""
+        self._coord_label.setText(f"X: {x:.1f}, Y: {y:.1f}")
+
+    def update_zoom(self, zoom_percent: float) -> None:
+        """Update zoom level display in status bar."""
+        self._zoom_label.setText(f"{zoom_percent:.0f}%")
+
+    def update_selection(self, count: int) -> None:
+        """Update selection count in status bar."""
+        if count > 0:
+            self._selection_label.setText(f"{count} selected")
+        else:
+            self._selection_label.setText("")
+
+    # Slots
+    def _on_new_project(self) -> None:
+        """Create a new project."""
+        if not self._check_save():
+            return
+        self._project = Project()
+        self._command_stack.clear()
+        self._update_title()
+
+    def _on_open_project(self) -> None:
+        """Open a project file."""
+        if not self._check_save():
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Project",
+            self._settings.get_default_project_location(),
+            "Pulsim Projects (*.pulsim);;All Files (*)",
+        )
+        if path:
+            self._open_project_file(path)
+
+    def _open_project_file(self, path: str) -> None:
+        """Open a project from the given path."""
+        try:
+            self._project = Project.load(path)
+            self._command_stack.clear()
+            self._settings.add_recent_project(path)
+            self._update_recent_menu()
+            self._update_title()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
+
+    def _on_save(self) -> None:
+        """Save the current project."""
+        if self._project.path is None:
+            self._on_save_as()
+        else:
+            try:
+                self._project.save()
+                self._command_stack.set_clean()
+                self._update_title()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
+
+    def _on_save_as(self) -> None:
+        """Save the project with a new name."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project As",
+            self._settings.get_default_project_location(),
+            "Pulsim Projects (*.pulsim);;All Files (*)",
+        )
+        if path:
+            if not path.endswith(".pulsim"):
+                path += ".pulsim"
+            try:
+                self._project.save(path)
+                self._command_stack.set_clean()
+                self._settings.add_recent_project(path)
+                self._update_recent_menu()
+                self._update_title()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
+
+    def _on_undo(self) -> None:
+        """Undo the last command."""
+        self._command_stack.undo()
+        self._project.mark_dirty()
+        self._update_title()
+
+    def _on_redo(self) -> None:
+        """Redo the last undone command."""
+        self._command_stack.redo()
+        self._project.mark_dirty()
+        self._update_title()
+
+    def _on_about(self) -> None:
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About PulsimGui",
+            "<h3>PulsimGui</h3>"
+            "<p>Cross-platform GUI for Pulsim power electronics simulator.</p>"
+            "<p>Version 0.1.0</p>"
+            "<p>Copyright (c) 2024 Luiz Gili</p>"
+            "<p>Licensed under MIT License</p>",
+        )
+
+    def _check_save(self) -> bool:
+        """Check if user wants to save unsaved changes. Returns True if safe to proceed."""
+        if not self._project.is_dirty:
+            return True
+
+        result = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "Do you want to save changes to the current project?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+        )
+
+        if result == QMessageBox.StandardButton.Save:
+            self._on_save()
+            return not self._project.is_dirty
+        elif result == QMessageBox.StandardButton.Discard:
+            return True
+        else:
+            return False
+
+    def closeEvent(self, event) -> None:
+        """Handle window close event."""
+        if not self._check_save():
+            event.ignore()
+            return
+
+        # Save window state
+        self._settings.set_window_geometry(self.saveGeometry())
+        self._settings.set_window_state(self.saveState())
+
+        event.accept()

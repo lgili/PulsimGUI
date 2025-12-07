@@ -3,41 +3,41 @@
 ## Phase 1: Foundation (MVP)
 
 ### 1.1 Project Setup
-- [ ] 1.1.1 Initialize Python project structure (pyproject.toml, src layout)
-- [ ] 1.1.2 Configure development environment (venv, requirements)
-- [ ] 1.1.3 Set up PySide6 and PyQtGraph dependencies
-- [ ] 1.1.4 Create basic application entry point (main.py)
-- [ ] 1.1.5 Set up pytest with pytest-qt for testing
-- [ ] 1.1.6 Configure black, ruff for code formatting/linting
+- [x] 1.1.1 Initialize Python project structure (pyproject.toml, src layout)
+- [x] 1.1.2 Configure development environment (venv, requirements)
+- [x] 1.1.3 Set up PySide6 and PyQtGraph dependencies
+- [x] 1.1.4 Create basic application entry point (main.py)
+- [x] 1.1.5 Set up pytest with pytest-qt for testing
+- [x] 1.1.6 Configure black, ruff for code formatting/linting
 - [ ] 1.1.7 Set up GitHub Actions CI pipeline
 
 ### 1.2 Application Shell
-- [ ] 1.2.1 Create QMainWindow subclass with basic layout
-- [ ] 1.2.2 Implement docking panel infrastructure
-- [ ] 1.2.3 Create menu bar with File, Edit, View, Simulation menus
-- [ ] 1.2.4 Create main toolbar with placeholder buttons
-- [ ] 1.2.5 Implement status bar with coordinate display
-- [ ] 1.2.6 Add basic keyboard shortcut framework
-- [ ] 1.2.7 Implement light/dark theme switching
+- [x] 1.2.1 Create QMainWindow subclass with basic layout
+- [x] 1.2.2 Implement docking panel infrastructure
+- [x] 1.2.3 Create menu bar with File, Edit, View, Simulation menus
+- [x] 1.2.4 Create main toolbar with placeholder buttons
+- [x] 1.2.5 Implement status bar with coordinate display
+- [x] 1.2.6 Add basic keyboard shortcut framework
+- [x] 1.2.7 Implement light/dark theme switching
 - [ ] 1.2.8 Create preferences dialog skeleton
 
 ### 1.3 Core Data Models
-- [ ] 1.3.1 Define Component model class
-- [ ] 1.3.2 Define Wire model class
-- [ ] 1.3.3 Define Circuit model (collection of components/wires)
-- [ ] 1.3.4 Define Project model (multiple schematics)
-- [ ] 1.3.5 Implement JSON serialization for models
-- [ ] 1.3.6 Unit tests for all models
+- [x] 1.3.1 Define Component model class
+- [x] 1.3.2 Define Wire model class
+- [x] 1.3.3 Define Circuit model (collection of components/wires)
+- [x] 1.3.4 Define Project model (multiple schematics)
+- [x] 1.3.5 Implement JSON serialization for models
+- [x] 1.3.6 Unit tests for all models
 
 ### 1.4 Command Infrastructure
-- [ ] 1.4.1 Implement Command base class
-- [ ] 1.4.2 Implement CommandStack (undo/redo)
-- [ ] 1.4.3 Create AddComponentCommand
-- [ ] 1.4.4 Create DeleteComponentCommand
-- [ ] 1.4.5 Create MoveComponentCommand
-- [ ] 1.4.6 Create AddWireCommand
-- [ ] 1.4.7 Connect to Edit menu undo/redo actions
-- [ ] 1.4.8 Unit tests for command system
+- [x] 1.4.1 Implement Command base class
+- [x] 1.4.2 Implement CommandStack (undo/redo)
+- [x] 1.4.3 Create AddComponentCommand
+- [x] 1.4.4 Create DeleteComponentCommand
+- [x] 1.4.5 Create MoveComponentCommand
+- [x] 1.4.6 Create AddWireCommand
+- [x] 1.4.7 Connect to Edit menu undo/redo actions
+- [x] 1.4.8 Unit tests for command system
 
 ## Phase 2: Schematic Editor
 

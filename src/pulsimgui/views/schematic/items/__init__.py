@@ -1,0 +1,1 @@
+"""Schematic item graphics."""
