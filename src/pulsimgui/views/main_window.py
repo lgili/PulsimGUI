@@ -19,6 +19,7 @@ from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import SimulationService, SimulationState
+from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog, DCResultsDialog
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
 
         self._settings = SettingsService()
+        self._theme_service = ThemeService(parent=self)
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
         self._simulation_service = SimulationService(parent=self)
@@ -139,14 +141,17 @@ class MainWindow(QMainWindow):
         self.action_toggle_grid.setShortcut(QKeySequence("G"))
         self.action_toggle_grid.triggered.connect(self._on_toggle_grid)
 
-        self.action_theme_light = QAction("&Light Theme", self)
+        self.action_theme_light = QAction("&Light", self)
         self.action_theme_light.setCheckable(True)
+        self.action_theme_light.setData("light")
 
-        self.action_theme_dark = QAction("&Dark Theme", self)
+        self.action_theme_dark = QAction("&Dark", self)
         self.action_theme_dark.setCheckable(True)
+        self.action_theme_dark.setData("dark")
 
-        self.action_theme_system = QAction("&System Theme", self)
-        self.action_theme_system.setCheckable(True)
+        self.action_theme_modern_dark = QAction("&Modern Dark", self)
+        self.action_theme_modern_dark.setCheckable(True)
+        self.action_theme_modern_dark.setData("modern_dark")
 
         # Simulation actions
         self.action_run = QAction("&Run Simulation", self)
@@ -224,7 +229,7 @@ class MainWindow(QMainWindow):
         theme_menu = view_menu.addMenu("&Theme")
         theme_menu.addAction(self.action_theme_light)
         theme_menu.addAction(self.action_theme_dark)
-        theme_menu.addAction(self.action_theme_system)
+        theme_menu.addAction(self.action_theme_modern_dark)
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
@@ -359,7 +364,10 @@ class MainWindow(QMainWindow):
         # Theme actions
         self.action_theme_light.triggered.connect(lambda: self._set_theme("light"))
         self.action_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
-        self.action_theme_system.triggered.connect(lambda: self._set_theme("system"))
+        self.action_theme_modern_dark.triggered.connect(lambda: self._set_theme("modern_dark"))
+
+        # Theme service signal
+        self._theme_service.theme_changed.connect(self._on_theme_changed)
 
         # Simulation service signals
         self._simulation_service.state_changed.connect(self._on_simulation_state_changed)
@@ -379,67 +387,46 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
 
     def _apply_theme(self) -> None:
-        """Apply the current theme."""
-        theme = self._settings.get_theme()
-        self.action_theme_light.setChecked(theme == "light")
-        self.action_theme_dark.setChecked(theme == "dark")
-        self.action_theme_system.setChecked(theme == "system")
+        """Apply the current theme from settings."""
+        theme_name = self._settings.get_theme()
+        self._theme_service.set_theme(theme_name)
+        self._update_theme_menu_state(theme_name)
+        self._apply_current_theme()
 
-        if theme == "dark":
-            self._apply_dark_theme()
-        elif theme == "light":
-            self._apply_light_theme()
-        # system theme is handled by Qt automatically
+    def _update_theme_menu_state(self, theme_name: str) -> None:
+        """Update theme menu checkmarks."""
+        self.action_theme_light.setChecked(theme_name == "light")
+        self.action_theme_dark.setChecked(theme_name == "dark")
+        self.action_theme_modern_dark.setChecked(theme_name == "modern_dark")
 
-    def _apply_dark_theme(self) -> None:
-        """Apply dark theme stylesheet."""
-        self.setStyleSheet("""
-            QMainWindow, QWidget {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-            }
-            QMenuBar {
-                background-color: #2d2d2d;
-                color: #d4d4d4;
-            }
-            QMenuBar::item:selected {
-                background-color: #3d3d3d;
-            }
-            QMenu {
-                background-color: #2d2d2d;
-                color: #d4d4d4;
-                border: 1px solid #3d3d3d;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-            QToolBar {
-                background-color: #2d2d2d;
-                border: none;
-                spacing: 3px;
-            }
-            QStatusBar {
-                background-color: #007acc;
-                color: white;
-            }
-            QDockWidget {
-                titlebar-close-icon: url(close.png);
-                titlebar-normal-icon: url(undock.png);
-            }
-            QDockWidget::title {
-                background-color: #2d2d2d;
-                padding: 5px;
-            }
-        """)
+    def _apply_current_theme(self) -> None:
+        """Apply the current theme stylesheet and update components."""
+        theme = self._theme_service.current_theme
 
-    def _apply_light_theme(self) -> None:
-        """Apply light theme (reset to default)."""
-        self.setStyleSheet("")
+        # Apply stylesheet
+        self.setStyleSheet(self._theme_service.generate_stylesheet())
 
-    def _set_theme(self, theme: str) -> None:
+        # Update schematic view
+        self._schematic_view.set_dark_mode(theme.is_dark)
+        self._schematic_scene.set_dark_mode(theme.is_dark)
+
+        # Update schematic colors from theme
+        from PySide6.QtGui import QColor, QBrush
+        bg_color = QColor(theme.colors.schematic_background)
+        grid_color = QColor(theme.colors.schematic_grid)
+        self._schematic_view.setBackgroundBrush(QBrush(bg_color))
+        self._schematic_scene.set_grid_color(grid_color)
+
+    def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
-        self._settings.set_theme(theme)
-        self._apply_theme()
+        self._settings.set_theme(theme_name)
+        self._theme_service.set_theme(theme_name)
+        self._update_theme_menu_state(theme_name)
+        self._apply_current_theme()
+
+    def _on_theme_changed(self, theme: Theme) -> None:
+        """Handle theme change from service."""
+        self._apply_current_theme()
 
     def _update_undo_redo_text(self) -> None:
         """Update undo/redo action text."""
@@ -689,7 +676,7 @@ class MainWindow(QMainWindow):
 
         # Add to scene
         wire_item = WireItem(wire)
-        wire_item.set_dark_mode(self._settings.get_theme() == "dark")
+        wire_item.set_dark_mode(self._theme_service.is_dark)
         self._schematic_scene.addItem(wire_item)
 
         # Mark project dirty

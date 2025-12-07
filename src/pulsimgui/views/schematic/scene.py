@@ -23,10 +23,9 @@ class SchematicScene(QGraphicsScene):
     wire_added = Signal(object)
     selection_changed_custom = Signal(int)
 
-    # Grid settings
-    GRID_SIZE = 10.0  # pixels
-    GRID_COLOR = QColor(200, 200, 200)
-    GRID_COLOR_DARK = QColor(60, 60, 60)
+    # Grid settings - 20px is good for schematics
+    GRID_SIZE = 20.0  # pixels
+    GRID_DOT_SIZE = 2.0  # dot diameter in pixels
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,6 +34,7 @@ class SchematicScene(QGraphicsScene):
         self._show_grid = True
         self._grid_size = self.GRID_SIZE
         self._dark_mode = False
+        self._grid_color = QColor(200, 200, 200)
 
         # Set scene rect (large canvas)
         self.setSceneRect(-5000, -5000, 10000, 10000)
@@ -80,6 +80,11 @@ class SchematicScene(QGraphicsScene):
         self._dark_mode = dark
         self.update()
 
+    def set_grid_color(self, color: QColor) -> None:
+        """Set the grid dot color from theme."""
+        self._grid_color = color
+        self.update()
+
     def snap_to_grid(self, point: QPointF) -> QPointF:
         """Snap a point to the nearest grid intersection."""
         x = round(point.x() / self._grid_size) * self._grid_size
@@ -93,26 +98,24 @@ class SchematicScene(QGraphicsScene):
         if not self._show_grid:
             return
 
-        # Get grid color based on theme
-        grid_color = self.GRID_COLOR_DARK if self._dark_mode else self.GRID_COLOR
+        # Calculate grid bounds - align to grid
+        left = int(rect.left() / self._grid_size) * self._grid_size
+        top = int(rect.top() / self._grid_size) * self._grid_size
 
-        # Calculate grid bounds
-        left = int(rect.left()) - (int(rect.left()) % int(self._grid_size))
-        top = int(rect.top()) - (int(rect.top()) % int(self._grid_size))
+        # Set up painter for dots
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(self._grid_color))
 
         # Draw grid dots
-        painter.setPen(QPen(grid_color, 1))
-
-        points = []
+        dot_radius = self.GRID_DOT_SIZE / 2.0
         x = left
-        while x < rect.right():
+        while x <= rect.right():
             y = top
-            while y < rect.bottom():
-                points.append(QPointF(x, y))
+            while y <= rect.bottom():
+                painter.drawEllipse(QPointF(x, y), dot_radius, dot_radius)
                 y += self._grid_size
             x += self._grid_size
-
-        painter.drawPoints(points)
 
     def _rebuild_scene(self) -> None:
         """Rebuild scene from circuit model."""

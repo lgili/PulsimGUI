@@ -9,6 +9,15 @@ from pulsimgui.services.simulation_service import (
     DCResult,
     ACResult,
 )
+from pulsimgui.services.theme_service import (
+    ThemeService,
+    Theme,
+    ThemeColors,
+    LIGHT_THEME,
+    DARK_THEME,
+    MODERN_DARK_THEME,
+    BUILTIN_THEMES,
+)
 
 __all__ = [
     "SettingsService",
@@ -18,4 +27,11 @@ __all__ = [
     "SimulationState",
     "DCResult",
     "ACResult",
+    "ThemeService",
+    "Theme",
+    "ThemeColors",
+    "LIGHT_THEME",
+    "DARK_THEME",
+    "MODERN_DARK_THEME",
+    "BUILTIN_THEMES",
 ]

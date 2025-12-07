@@ -225,14 +225,16 @@ class SchematicView(QGraphicsView):
             # Wire tool: start, add point, or complete wire
             scene_pos = self.mapToScene(event.position().toPoint())
 
-            # Check if clicking on a pin (magnetic snap)
+            # Check if clicking on a pin (magnetic snap) - pins take priority
+            # Wires ALWAYS snap to grid or pin for clean schematics
             clicked_on_pin = False
             if isinstance(self.scene(), SchematicScene):
                 nearest_pin = self.scene().find_nearest_pin(scene_pos)
                 if nearest_pin is not None:
                     scene_pos = nearest_pin[0]
                     clicked_on_pin = True
-                elif self._snap_to_grid:
+                else:
+                    # Always snap wires to grid
                     scene_pos = self.scene().snap_to_grid(scene_pos)
 
             if self._wire_preview is None:
@@ -295,13 +297,14 @@ class SchematicView(QGraphicsView):
             )
             event.accept()
         elif self._wire_preview is not None:
-            # Check for magnetic snap to nearby pin
+            # Wires ALWAYS snap to grid or pin for clean schematics
             if isinstance(self.scene(), SchematicScene):
                 nearest_pin = self.scene().find_nearest_pin(scene_pos)
                 if nearest_pin is not None:
                     # Snap to pin position
                     scene_pos = nearest_pin[0]
-                elif self._snap_to_grid:
+                else:
+                    # Always snap wires to grid
                     scene_pos = self.scene().snap_to_grid(scene_pos)
             self._wire_preview.set_end(scene_pos)
             event.accept()

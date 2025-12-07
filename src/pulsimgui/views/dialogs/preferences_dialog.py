@@ -72,7 +72,9 @@ class PreferencesDialog(QDialog):
         appearance_layout = QFormLayout(appearance_group)
 
         self._theme_combo = QComboBox()
-        self._theme_combo.addItems(["System", "Light", "Dark"])
+        self._theme_combo.addItem("Light", "light")
+        self._theme_combo.addItem("Dark", "dark")
+        self._theme_combo.addItem("Modern Dark", "modern_dark")
         appearance_layout.addRow("Theme:", self._theme_combo)
 
         layout.addWidget(appearance_group)
@@ -190,10 +192,12 @@ class PreferencesDialog(QDialog):
 
     def _load_settings(self) -> None:
         """Load current settings into UI."""
-        # General
+        # General - find theme by data
         theme = self._settings.get_theme()
-        theme_map = {"system": 0, "light": 1, "dark": 2}
-        self._theme_combo.setCurrentIndex(theme_map.get(theme, 0))
+        for i in range(self._theme_combo.count()):
+            if self._theme_combo.itemData(i) == theme:
+                self._theme_combo.setCurrentIndex(i)
+                break
 
         self._project_location_edit.setText(self._settings.get_default_project_location())
         self._autosave_checkbox.setChecked(self._settings.get_auto_save_enabled())
@@ -206,9 +210,9 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> None:
         """Apply settings without closing dialog."""
-        # General
-        theme_map = {0: "system", 1: "light", 2: "dark"}
-        self._settings.set_theme(theme_map[self._theme_combo.currentIndex()])
+        # General - get theme from combo data
+        theme = self._theme_combo.currentData()
+        self._settings.set_theme(theme)
 
         self._settings.set_default_project_location(self._project_location_edit.text())
         self._settings.set_auto_save_enabled(self._autosave_checkbox.isChecked())
