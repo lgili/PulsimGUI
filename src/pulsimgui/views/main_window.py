@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
+        self._schematic_view.component_dropped.connect(self._on_component_dropped)
+        self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
 
     def _create_actions(self) -> None:
@@ -630,11 +632,65 @@ class MainWindow(QMainWindow):
         component = Component(type=comp_type, name=name, x=x, y=y)
 
         # Add to circuit and scene
-        self._project.current_schematic.circuit.add_component(component)
+        self._project.get_active_circuit().add_component(component)
         self._schematic_scene.add_component(component)
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
+
+        # Mark project dirty
+        self._project.mark_dirty()
+        self._update_title()
+
+    def _on_component_dropped(self, comp_type_name: str, x: float, y: float) -> None:
+        """Handle component drop from library panel."""
+        from pulsimgui.models.component import Component, ComponentType
+
+        # Convert type name to ComponentType enum
+        try:
+            comp_type = ComponentType[comp_type_name]
+        except KeyError:
+            return
+
+        # Generate unique name
+        name = self._generate_component_name(comp_type)
+
+        # Create component at drop position
+        component = Component(type=comp_type, name=name, x=x, y=y)
+
+        # Add to circuit and scene
+        self._project.get_active_circuit().add_component(component)
+        self._schematic_scene.add_component(component)
+
+        # Update library recent list
+        self._library_panel.add_to_recent(comp_type)
+
+        # Mark project dirty
+        self._project.mark_dirty()
+        self._update_title()
+
+    def _on_wire_created(self, segments: list) -> None:
+        """Handle wire creation from schematic view."""
+        from pulsimgui.models.wire import Wire, WireSegment
+        from pulsimgui.views.schematic.items import WireItem
+
+        if not segments:
+            return
+
+        # Create wire model
+        wire_segments = [
+            WireSegment(x1=seg[0], y1=seg[1], x2=seg[2], y2=seg[3])
+            for seg in segments
+        ]
+        wire = Wire(segments=wire_segments)
+
+        # Add to circuit
+        self._project.get_active_circuit().add_wire(wire)
+
+        # Add to scene
+        wire_item = WireItem(wire)
+        wire_item.set_dark_mode(self._settings.get_theme() == "dark")
+        self._schematic_scene.addItem(wire_item)
 
         # Mark project dirty
         self._project.mark_dirty()
@@ -663,7 +719,7 @@ class MainWindow(QMainWindow):
 
         # Find next available number
         existing_names = {
-            c.name for c in self._project.current_schematic.circuit.components
+            c.name for c in self._project.get_active_circuit().components.values()
         }
         num = 1
         while f"{prefix}{num}" in existing_names:

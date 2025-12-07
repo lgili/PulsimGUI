@@ -18,6 +18,7 @@ from pulsimgui.views.schematic.items.component_item import (
 from pulsimgui.views.schematic.items.wire_item import (
     WireItem,
     WirePreviewItem,
+    WireInProgressItem,
     calculate_orthogonal_path,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "create_component_item",
     "WireItem",
     "WirePreviewItem",
+    "WireInProgressItem",
     "calculate_orthogonal_path",
 ]

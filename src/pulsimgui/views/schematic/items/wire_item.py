@@ -36,6 +36,9 @@ class WireItem(QGraphicsPathItem):
         # Enable selection
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable)
 
+        # Set default pen for proper bounding rect calculation
+        self.setPen(QPen(self.LINE_COLOR, self.LINE_WIDTH))
+
         # Build path from wire segments
         self._rebuild_path()
 
@@ -155,6 +158,38 @@ def calculate_orthogonal_path(
 
     points.append(end)
     return points
+
+
+class WireInProgressItem(QGraphicsPathItem):
+    """Item showing confirmed wire segments while still drawing."""
+
+    CONFIRMED_COLOR = QColor(0, 150, 0)  # Green for confirmed segments
+    CONFIRMED_WIDTH = 2.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._segments: list[tuple[float, float, float, float]] = []
+        self.setPen(QPen(self.CONFIRMED_COLOR, self.CONFIRMED_WIDTH))
+
+    def add_segments(self, segments: list[tuple[float, float, float, float]]) -> None:
+        """Add confirmed segments."""
+        self._segments.extend(segments)
+        self._rebuild_path()
+
+    def _rebuild_path(self) -> None:
+        """Rebuild path from segments."""
+        path = QPainterPath()
+        if self._segments:
+            first = self._segments[0]
+            path.moveTo(first[0], first[1])
+            path.lineTo(first[2], first[3])
+            for seg in self._segments[1:]:
+                path.lineTo(seg[2], seg[3])
+        self.setPath(path)
+
+    def get_all_segments(self) -> list[tuple[float, float, float, float]]:
+        """Get all confirmed segments."""
+        return self._segments.copy()
 
 
 class WirePreviewItem(QGraphicsPathItem):

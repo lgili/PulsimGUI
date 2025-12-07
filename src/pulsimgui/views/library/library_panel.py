@@ -18,6 +18,49 @@ from PySide6.QtWidgets import (
 from pulsimgui.models.component import ComponentType
 
 
+class DraggableTreeWidget(QTreeWidget):
+    """Tree widget with proper drag support."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, supportedActions) -> None:
+        """Start drag operation for the current item."""
+        item = self.currentItem()
+        if not item:
+            return
+
+        comp_type = item.data(0, Qt.ItemDataRole.UserRole)
+        if not comp_type:
+            return
+
+        # Create mime data
+        mime_data = QMimeData()
+        mime_data.setData(
+            "application/x-pulsim-component",
+            QByteArray(comp_type.name.encode()),
+        )
+
+        # Create drag
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+
+        # Create drag pixmap
+        pixmap = QPixmap(100, 30)
+        pixmap.fill(QColor(240, 240, 240))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(0, 0, 0))
+        painter.drawRect(0, 0, 99, 29)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, item.text(0).split(" (")[0])
+        painter.end()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(pixmap.rect().center())
+
+        drag.exec(Qt.DropAction.CopyAction)
+
+
 # Component metadata for library display
 COMPONENT_LIBRARY = {
     "Passive": [
@@ -138,12 +181,10 @@ class LibraryPanel(QWidget):
         layout.addLayout(search_layout)
 
         # Component tree
-        self._tree = QTreeWidget()
+        self._tree = DraggableTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setIndentation(16)
         self._tree.setAnimated(True)
-        self._tree.setDragEnabled(True)
-        self._tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -308,43 +349,3 @@ class LibraryPanel(QWidget):
         if comp_type in self._favorites:
             self._favorites.remove(comp_type)
             self._update_favorites_items()
-
-    def startDrag(self, supportedActions) -> None:
-        """Start drag operation for the current item."""
-        item = self._tree.currentItem()
-        if not item:
-            return
-
-        comp_type = item.data(0, Qt.ItemDataRole.UserRole)
-        if not comp_type:
-            return
-
-        # Create mime data
-        mime_data = QMimeData()
-        mime_data.setData(
-            "application/x-pulsim-component",
-            QByteArray(comp_type.name.encode()),
-        )
-
-        # Create drag
-        drag = QDrag(self._tree)
-        drag.setMimeData(mime_data)
-
-        # Create drag pixmap
-        pixmap = QPixmap(80, 30)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(0, 0, 0))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, item.text(0).split(" (")[0])
-        painter.end()
-        drag.setPixmap(pixmap)
-
-        drag.exec(Qt.DropAction.CopyAction)
-
-    def mouseMoveEvent(self, event) -> None:
-        """Handle mouse move for drag initiation."""
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            item = self._tree.currentItem()
-            if item and item.data(0, Qt.ItemDataRole.UserRole):
-                self.startDrag(Qt.DropAction.CopyAction)
-        super().mouseMoveEvent(event)

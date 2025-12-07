@@ -426,11 +426,11 @@ class SimulationService(QObject):
             "nodes": {},
         }
 
-        if project and project.current_schematic:
-            circuit = project.current_schematic.circuit
+        if project:
+            circuit = project.get_active_circuit()
 
             # Convert components
-            for comp in circuit.components:
+            for comp in circuit.components.values():
                 comp_data = {
                     "id": str(comp.id),
                     "type": comp.type.name,
@@ -441,7 +441,7 @@ class SimulationService(QObject):
                 circuit_data["components"].append(comp_data)
 
             # Convert wires
-            for wire in circuit.wires:
+            for wire in circuit.wires.values():
                 wire_data = {
                     "id": str(wire.id),
                     "segments": [(s.x1, s.y1, s.x2, s.y2) for s in wire.segments],

@@ -125,7 +125,7 @@ class SchematicScene(QGraphicsScene):
         # Add component items
         from pulsimgui.views.schematic.items import create_component_item
 
-        for component in self._circuit.components:
+        for component in self._circuit.components.values():
             item = create_component_item(component)
             item.set_dark_mode(self._dark_mode)
             self.addItem(item)
@@ -162,3 +162,30 @@ class SchematicScene(QGraphicsScene):
         if item_type is not None:
             items = [item for item in items if isinstance(item, item_type)]
         return items
+
+    def find_nearest_pin(self, pos: QPointF, max_distance: float = 15.0) -> tuple[QPointF, object, int] | None:
+        """
+        Find the nearest component pin within max_distance.
+
+        Returns:
+            Tuple of (pin_position, component_item, pin_index) or None if no pin nearby
+        """
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        nearest_pin = None
+        nearest_distance = max_distance
+
+        for item in self.items():
+            if isinstance(item, ComponentItem):
+                component = item.component
+                for pin_index, pin in enumerate(component.pins):
+                    pin_pos = item.get_pin_position(pin_index)
+                    dx = pin_pos.x() - pos.x()
+                    dy = pin_pos.y() - pos.y()
+                    distance = (dx * dx + dy * dy) ** 0.5
+
+                    if distance < nearest_distance:
+                        nearest_distance = distance
+                        nearest_pin = (pin_pos, item, pin_index)
+
+        return nearest_pin

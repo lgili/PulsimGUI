@@ -3,10 +3,11 @@
 from enum import Enum, auto
 
 from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent
+from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QGraphicsView
 
 from pulsimgui.views.schematic.scene import SchematicScene
+from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem
 
 
 class Tool(Enum):
@@ -36,6 +37,8 @@ class SchematicView(QGraphicsView):
     zoom_changed = Signal(float)
     mouse_moved = Signal(float, float)
     tool_changed = Signal(Tool)
+    component_dropped = Signal(str, float, float)  # component_type_name, x, y
+    wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -51,6 +54,11 @@ class SchematicView(QGraphicsView):
         self._current_tool = Tool.SELECT
         self._snap_to_grid = True
 
+        # Wire drawing state
+        self._wire_preview: WirePreviewItem | None = None
+        self._wire_in_progress: WireInProgressItem | None = None  # Shows confirmed segments
+        self._wire_start: QPointF | None = None
+
         # Set up view
         self.setScene(scene or SchematicScene())
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -63,6 +71,9 @@ class SchematicView(QGraphicsView):
 
         # Set background
         self.setBackgroundBrush(Qt.GlobalColor.white)
+
+        # Enable drag-and-drop
+        self.setAcceptDrops(True)
 
     @property
     def schematic_scene(self) -> SchematicScene:
@@ -204,17 +215,75 @@ class SchematicView(QGraphicsView):
             super().wheelEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Handle mouse press for panning."""
+        """Handle mouse press for panning and wire drawing."""
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
+        elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.WIRE:
+            # Wire tool: start, add point, or complete wire
+            scene_pos = self.mapToScene(event.position().toPoint())
+
+            # Check if clicking on a pin (magnetic snap)
+            clicked_on_pin = False
+            if isinstance(self.scene(), SchematicScene):
+                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                if nearest_pin is not None:
+                    scene_pos = nearest_pin[0]
+                    clicked_on_pin = True
+                elif self._snap_to_grid:
+                    scene_pos = self.scene().snap_to_grid(scene_pos)
+
+            if self._wire_preview is None:
+                # Start new wire
+                self._wire_start = scene_pos
+                self._wire_preview = WirePreviewItem(scene_pos)
+                self._wire_in_progress = WireInProgressItem()
+                self.scene().addItem(self._wire_in_progress)
+                self.scene().addItem(self._wire_preview)
+            elif clicked_on_pin:
+                # Clicked on a pin - auto-finish the wire
+                # Update preview end to pin position
+                self._wire_preview.set_end(scene_pos)
+
+                # Add final segments from preview
+                final_segments = self._wire_preview.get_segments()
+                if final_segments:
+                    self._wire_in_progress.add_segments(final_segments)
+
+                # Get all accumulated segments and emit
+                all_segments = self._wire_in_progress.get_all_segments()
+                if all_segments:
+                    self.wire_created.emit(all_segments)
+
+                # Clean up
+                self.scene().removeItem(self._wire_preview)
+                self.scene().removeItem(self._wire_in_progress)
+                self._wire_preview = None
+                self._wire_in_progress = None
+                self._wire_start = None
+            else:
+                # Add current segment to confirmed segments and continue
+                current_segments = self._wire_preview.get_segments()
+                if current_segments:
+                    self._wire_in_progress.add_segments(current_segments)
+
+                # Update start point for next segment
+                self._wire_start = scene_pos
+
+                # Reset preview from new point
+                self.scene().removeItem(self._wire_preview)
+                self._wire_preview = WirePreviewItem(scene_pos)
+                self.scene().addItem(self._wire_preview)
+            event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """Handle mouse move for panning and coordinate updates."""
+        """Handle mouse move for panning, wire preview, and coordinate updates."""
+        scene_pos = self.mapToScene(event.position().toPoint())
+
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -225,11 +294,21 @@ class SchematicView(QGraphicsView):
                 int(self.verticalScrollBar().value() - delta.y())
             )
             event.accept()
+        elif self._wire_preview is not None:
+            # Check for magnetic snap to nearby pin
+            if isinstance(self.scene(), SchematicScene):
+                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                if nearest_pin is not None:
+                    # Snap to pin position
+                    scene_pos = nearest_pin[0]
+                elif self._snap_to_grid:
+                    scene_pos = self.scene().snap_to_grid(scene_pos)
+            self._wire_preview.set_end(scene_pos)
+            event.accept()
         else:
             super().mouseMoveEvent(event)
 
         # Emit mouse position in scene coordinates
-        scene_pos = self.mapToScene(event.position().toPoint())
         self.mouse_moved.emit(scene_pos.x(), scene_pos.y())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -240,6 +319,35 @@ class SchematicView(QGraphicsView):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Handle double-click to complete wire."""
+        if event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.WIRE:
+            if self._wire_preview is not None and self._wire_in_progress is not None:
+                # Get final segment
+                scene_pos = self.mapToScene(event.position().toPoint())
+                if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
+                    scene_pos = self.scene().snap_to_grid(scene_pos)
+
+                # Add final segments from preview
+                final_segments = self._wire_preview.get_segments()
+                if final_segments:
+                    self._wire_in_progress.add_segments(final_segments)
+
+                # Get all accumulated segments and emit
+                all_segments = self._wire_in_progress.get_all_segments()
+                if all_segments:
+                    self.wire_created.emit(all_segments)
+
+                # Clean up
+                self.scene().removeItem(self._wire_preview)
+                self.scene().removeItem(self._wire_in_progress)
+                self._wire_preview = None
+                self._wire_in_progress = None
+                self._wire_start = None
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle keyboard shortcuts."""
@@ -261,14 +369,67 @@ class SchematicView(QGraphicsView):
         # Tool shortcuts (without modifiers)
         if not modifiers:
             if key == Qt.Key.Key_Escape:
-                self.current_tool = Tool.SELECT
-                self.scene().clearSelection()
+                # Cancel wire drawing if in progress
+                if self._wire_preview is not None:
+                    self.cancel_wire()
+                else:
+                    self.current_tool = Tool.SELECT
+                    self.scene().clearSelection()
                 return
             elif key == Qt.Key.Key_W:
                 self.current_tool = Tool.WIRE
                 return
+            elif key == Qt.Key.Key_Space:
+                # Toggle wire direction while drawing
+                if self._wire_preview is not None:
+                    self._wire_preview.toggle_direction()
+                return
 
         super().keyPressEvent(event)
+
+    def cancel_wire(self) -> None:
+        """Cancel current wire drawing operation."""
+        if self._wire_preview is not None:
+            self.scene().removeItem(self._wire_preview)
+            self._wire_preview = None
+        if self._wire_in_progress is not None:
+            self.scene().removeItem(self._wire_in_progress)
+            self._wire_in_progress = None
+        self._wire_start = None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Handle drag enter to accept component drops."""
+        if event.mimeData().hasFormat("application/x-pulsim-component"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        """Handle drag move to show drop location."""
+        if event.mimeData().hasFormat("application/x-pulsim-component"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Handle drop to add component at location."""
+        if event.mimeData().hasFormat("application/x-pulsim-component"):
+            # Get component type from mime data
+            data = event.mimeData().data("application/x-pulsim-component")
+            comp_type_name = bytes(data).decode()
+
+            # Get drop position in scene coordinates
+            scene_pos = self.mapToScene(event.position().toPoint())
+
+            # Snap to grid if enabled
+            if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
+                scene_pos = self.scene().snap_to_grid(scene_pos)
+
+            # Emit signal to add component
+            self.component_dropped.emit(comp_type_name, scene_pos.x(), scene_pos.y())
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 # Import QColor for dark mode
