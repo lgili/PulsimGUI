@@ -122,8 +122,34 @@ class SchematicScene(QGraphicsScene):
         if self._circuit is None:
             return
 
-        # TODO: Add component items and wire items from circuit
-        # This will be implemented when ComponentItem is created
+        # Add component items
+        from pulsimgui.views.schematic.items import create_component_item
+
+        for component in self._circuit.components:
+            item = create_component_item(component)
+            item.set_dark_mode(self._dark_mode)
+            self.addItem(item)
+
+        # TODO: Add wire items from circuit
+
+    def add_component(self, component) -> None:
+        """Add a component to the scene."""
+        from pulsimgui.views.schematic.items import create_component_item
+
+        item = create_component_item(component)
+        item.set_dark_mode(self._dark_mode)
+        self.addItem(item)
+        self.component_added.emit(component)
+
+    def remove_component(self, component) -> None:
+        """Remove a component from the scene."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        for item in self.items():
+            if isinstance(item, ComponentItem) and item.component == component:
+                self.removeItem(item)
+                self.component_removed.emit(component)
+                break
 
     def _on_selection_changed(self) -> None:
         """Handle selection changes."""

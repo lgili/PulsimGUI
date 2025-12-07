@@ -19,6 +19,8 @@ from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.views.dialogs import PreferencesDialog
+from pulsimgui.views.library import LibraryPanel
+from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
 
 
@@ -286,9 +288,9 @@ class MainWindow(QMainWindow):
         self.library_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        library_placeholder = QLabel("Component Library\n(Coming Soon)")
-        library_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.library_dock.setWidget(library_placeholder)
+        self._library_panel = LibraryPanel()
+        self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
+        self.library_dock.setWidget(self._library_panel)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.library_dock)
 
         # Properties Panel (right)
@@ -297,9 +299,9 @@ class MainWindow(QMainWindow):
         self.properties_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        props_placeholder = QLabel("Properties Panel\n(Coming Soon)")
-        props_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.properties_dock.setWidget(props_placeholder)
+        self._properties_panel = PropertiesPanel()
+        self._properties_panel.property_changed.connect(self._on_property_changed)
+        self.properties_dock.setWidget(self._properties_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
         # Waveform Viewer (bottom)
@@ -573,6 +575,74 @@ class MainWindow(QMainWindow):
             self._schematic_scene.grid_size = self._settings.get_grid_size()
             self._schematic_scene.show_grid = self._settings.get_show_grid()
             self.action_toggle_grid.setChecked(self._settings.get_show_grid())
+
+    def _on_library_component_selected(self, comp_type) -> None:
+        """Handle component selection from library (double-click to add)."""
+        from pulsimgui.models.component import Component
+
+        # Create new component at center of view
+        view_center = self._schematic_view.mapToScene(
+            self._schematic_view.viewport().rect().center()
+        )
+
+        # Snap to grid
+        x = self._schematic_scene.snap_to_grid(view_center).x()
+        y = self._schematic_scene.snap_to_grid(view_center).y()
+
+        # Generate unique name
+        name = self._generate_component_name(comp_type)
+
+        # Create component
+        component = Component(type=comp_type, name=name, x=x, y=y)
+
+        # Add to circuit and scene
+        self._project.current_schematic.circuit.add_component(component)
+        self._schematic_scene.add_component(component)
+
+        # Update library recent list
+        self._library_panel.add_to_recent(comp_type)
+
+        # Mark project dirty
+        self._project.mark_dirty()
+        self._update_title()
+
+    def _generate_component_name(self, comp_type) -> str:
+        """Generate a unique component name."""
+        from pulsimgui.models.component import ComponentType
+
+        prefix_map = {
+            ComponentType.RESISTOR: "R",
+            ComponentType.CAPACITOR: "C",
+            ComponentType.INDUCTOR: "L",
+            ComponentType.VOLTAGE_SOURCE: "V",
+            ComponentType.CURRENT_SOURCE: "I",
+            ComponentType.GROUND: "GND",
+            ComponentType.DIODE: "D",
+            ComponentType.MOSFET_N: "M",
+            ComponentType.MOSFET_P: "M",
+            ComponentType.IGBT: "Q",
+            ComponentType.SWITCH: "S",
+            ComponentType.TRANSFORMER: "T",
+        }
+
+        prefix = prefix_map.get(comp_type, "X")
+
+        # Find next available number
+        existing_names = {
+            c.name for c in self._project.current_schematic.circuit.components
+        }
+        num = 1
+        while f"{prefix}{num}" in existing_names:
+            num += 1
+
+        return f"{prefix}{num}"
+
+    def _on_property_changed(self, name: str, value) -> None:
+        """Handle property change from properties panel."""
+        # Mark project dirty and update display
+        self._project.mark_dirty()
+        self._update_title()
+        self._schematic_scene.update()
 
     def _check_save(self) -> bool:
         """Check if user wants to save unsaved changes. Returns True if safe to proceed."""

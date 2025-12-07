@@ -100,37 +100,37 @@
 ## Phase 3: Component Library & Properties
 
 ### 3.1 Library Panel
-- [ ] 3.1.1 Create LibraryPanel widget
-- [ ] 3.1.2 Implement category tree structure
-- [ ] 3.1.3 Add component icons to tree items
-- [ ] 3.1.4 Implement drag from library
-- [ ] 3.1.5 Implement search/filter functionality
-- [ ] 3.1.6 Add favorites category
-- [ ] 3.1.7 Add recently used category
-- [ ] 3.1.8 Implement tooltips with descriptions
+- [x] 3.1.1 Create LibraryPanel widget
+- [x] 3.1.2 Implement category tree structure
+- [x] 3.1.3 Add component icons to tree items
+- [x] 3.1.4 Implement drag from library
+- [x] 3.1.5 Implement search/filter functionality
+- [x] 3.1.6 Add favorites category
+- [x] 3.1.7 Add recently used category
+- [x] 3.1.8 Implement tooltips with descriptions
 
 ### 3.2 Properties Panel
-- [ ] 3.2.1 Create PropertiesPanel widget
-- [ ] 3.2.2 Display component name (editable)
-- [ ] 3.2.3 Implement numeric input with SI prefixes
-- [ ] 3.2.4 Implement dropdown for enum parameters
-- [ ] 3.2.5 Implement checkbox for boolean parameters
-- [ ] 3.2.6 Show parameters for selected component
-- [ ] 3.2.7 Handle multi-selection (common parameters)
-- [ ] 3.2.8 Input validation with error display
+- [x] 3.2.1 Create PropertiesPanel widget
+- [x] 3.2.2 Display component name (editable)
+- [x] 3.2.3 Implement numeric input with SI prefixes
+- [x] 3.2.4 Implement dropdown for enum parameters
+- [x] 3.2.5 Implement checkbox for boolean parameters
+- [x] 3.2.6 Show parameters for selected component
+- [x] 3.2.7 Handle multi-selection (common parameters)
+- [x] 3.2.8 Input validation with error display
 
 ### 3.3 Waveform Editors
-- [ ] 3.3.1 Create DC source editor
-- [ ] 3.3.2 Create pulse waveform editor with preview
-- [ ] 3.3.3 Create sine waveform editor with preview
-- [ ] 3.3.4 Create PWL editor with point table
-- [ ] 3.3.5 Create PWM waveform editor
+- [x] 3.3.1 Create DC source editor
+- [x] 3.3.2 Create pulse waveform editor with preview
+- [x] 3.3.3 Create sine waveform editor with preview
+- [x] 3.3.4 Create PWL editor with point table
+- [x] 3.3.5 Create PWM waveform editor
 
 ### 3.4 Device Library
-- [ ] 3.4.1 Create device library dialog
-- [ ] 3.4.2 Import Pulsim's pre-defined devices
-- [ ] 3.4.3 Display device specifications
-- [ ] 3.4.4 Apply device parameters to component
+- [x] 3.4.1 Create device library dialog
+- [x] 3.4.2 Import Pulsim's pre-defined devices
+- [x] 3.4.3 Display device specifications
+- [x] 3.4.4 Apply device parameters to component
 
 ## Phase 4: Simulation Integration
 
