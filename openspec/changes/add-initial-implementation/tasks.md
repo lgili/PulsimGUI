@@ -263,9 +263,9 @@
 - [x] 8.1.3 Breadcrumb navigation
 
 ### 8.2 Parameter Sweeps
-- [ ] 8.2.1 Parameter sweep configuration dialog
-- [ ] 8.2.2 Run parallel sweeps
-- [ ] 8.2.3 Display sweep results
+- [x] 8.2.1 Parameter sweep configuration dialog
+- [x] 8.2.2 Run parallel sweeps
+- [x] 8.2.3 Display sweep results
 
 ### 8.3 Thermal Viewer
 - [ ] 8.3.1 Display thermal network

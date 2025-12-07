@@ -1,11 +1,14 @@
 """Simulation service for running Pulsim simulations."""
 
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any
+import copy
+import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace
+from enum import Enum, auto
+from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition
+from PySide6.QtCore import QObject, Signal, QMutex, QThread, QWaitCondition
 
 
 class SimulationState(Enum):
@@ -81,6 +84,103 @@ class ACResult:
     def is_valid(self) -> bool:
         """Check if results are valid."""
         return len(self.frequencies) > 0 and not self.error_message
+
+
+@dataclass
+class ParameterSweepSettings:
+    """Configuration for single-parameter sweeps."""
+
+    component_id: str
+    component_name: str
+    parameter_name: str
+    start_value: float
+    end_value: float
+    points: int = 5
+    scale: str = "linear"
+    output_signal: str = "V(out)"
+    parallel_workers: int = 1
+    baseline_value: float = 1.0
+
+    def generate_values(self) -> list[float]:
+        """Generate sweep points."""
+        if self.points <= 1:
+            return [self.start_value]
+
+        if self.scale == "log":
+            if self.start_value <= 0 or self.end_value <= 0:
+                raise ValueError("Logarithmic sweeps require positive bounds")
+            start = math.log10(self.start_value)
+            stop = math.log10(self.end_value)
+            step = (stop - start) / (self.points - 1)
+            return [10 ** (start + i * step) for i in range(self.points)]
+
+        step = (self.end_value - self.start_value) / (self.points - 1)
+        return [self.start_value + i * step for i in range(self.points)]
+
+    def compute_scale_factor(self, value: float) -> float:
+        """Return amplitude scaling for placeholder simulation."""
+        if abs(self.baseline_value) < 1e-30:
+            return 1.0
+        return value / self.baseline_value
+
+
+@dataclass
+class ParameterSweepRun:
+    """Result of an individual sweep point."""
+
+    order: int
+    parameter_value: float
+    result: SimulationResult
+
+
+@dataclass
+class ParameterSweepResult:
+    """Aggregated sweep results."""
+
+    settings: ParameterSweepSettings
+    runs: list[ParameterSweepRun] = field(default_factory=list)
+    duration: float = 0.0
+
+    def sorted_runs(self) -> list[ParameterSweepRun]:
+        """Return runs in configured order."""
+        return sorted(self.runs, key=lambda run: run.order)
+
+    def to_waveform_result(self) -> SimulationResult:
+        """Build a SimulationResult aggregating sweep traces."""
+        combined = SimulationResult()
+        ordered = self.sorted_runs()
+        if not ordered:
+            return combined
+
+        combined.time = ordered[0].result.time.copy()
+
+        for run in ordered:
+            signal = run.result.signals.get(self.settings.output_signal)
+            if not signal:
+                continue
+            label = (
+                f"{self.settings.output_signal}"
+                f" [{self.settings.parameter_name}={run.parameter_value:g}]"
+            )
+            combined.signals[label] = signal
+
+        combined.statistics = {
+            "sweep_points": len(ordered),
+            "parameter": self.settings.parameter_name,
+        }
+        return combined
+
+    def xy_dataset(self) -> tuple[list[float], list[float]]:
+        """Return (parameter, output) pairs for XY plotting."""
+        xs: list[float] = []
+        ys: list[float] = []
+
+        for run in self.sorted_runs():
+            xs.append(run.parameter_value)
+            signal = run.result.signals.get(self.settings.output_signal)
+            ys.append(signal[-1] if signal else 0.0)
+
+        return xs, ys
 
 
 class SimulationWorker(QThread):
@@ -222,6 +322,140 @@ class SimulationWorker(QThread):
         return self._paused
 
 
+class ParameterSweepWorker(QThread):
+    """Worker that runs multiple simulations for parameter sweeps."""
+
+    progress = Signal(float, str)
+    finished_signal = Signal(ParameterSweepResult)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        circuit_data: dict,
+        sweep_settings: ParameterSweepSettings,
+        base_settings: SimulationSettings,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._circuit_data = circuit_data
+        self._sweep_settings = sweep_settings
+        self._base_settings = base_settings
+        self._cancelled = False
+
+    def run(self) -> None:
+        """Execute the sweep."""
+        runs: list[ParameterSweepRun] = []
+        start_time = time.time()
+
+        try:
+            values = self._sweep_settings.generate_values()
+            total = len(values)
+            if total == 0:
+                raise ValueError("No sweep points configured")
+
+            parallel = max(1, self._sweep_settings.parallel_workers)
+            if parallel > 1:
+                with ThreadPoolExecutor(max_workers=parallel) as executor:
+                    futures = {
+                        executor.submit(self._simulate_value, idx, value): idx
+                        for idx, value in enumerate(values)
+                    }
+                    for future in as_completed(futures):
+                        if self._cancelled:
+                            break
+                        run = future.result()
+                        runs.append(run)
+                        self._emit_progress(len(runs), total)
+            else:
+                for idx, value in enumerate(values):
+                    if self._cancelled:
+                        break
+                    runs.append(self._simulate_value(idx, value))
+                    self._emit_progress(len(runs), total)
+
+            if not self._cancelled:
+                self._emit_progress(total, total)
+
+            duration = time.time() - start_time
+            result = ParameterSweepResult(
+                settings=self._sweep_settings,
+                runs=runs,
+                duration=duration,
+            )
+            self.finished_signal.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+            result = ParameterSweepResult(settings=self._sweep_settings, runs=runs)
+            self.finished_signal.emit(result)
+
+    def cancel(self) -> None:
+        """Request cancellation."""
+        self._cancelled = True
+
+    @property
+    def was_cancelled(self) -> bool:
+        """Return whether cancellation was requested."""
+        return self._cancelled
+
+    def _emit_progress(self, completed: int, total: int) -> None:
+        if not total:
+            return
+        percent = (completed / total) * 100.0
+        self.progress.emit(percent, f"Sweep {completed}/{total}")
+
+    def _simulate_value(self, order: int, value: float) -> ParameterSweepRun:
+        circuit_copy = copy.deepcopy(self._circuit_data)
+        self._apply_parameter_value(circuit_copy, value)
+        settings_copy = replace(self._base_settings)
+        result = self._run_placeholder_simulation(settings_copy, value)
+        return ParameterSweepRun(order=order, parameter_value=value, result=result)
+
+    def _apply_parameter_value(self, circuit_data: dict, value: float) -> None:
+        for component in circuit_data.get("components", []):
+            if component.get("id") == self._sweep_settings.component_id:
+                params = component.setdefault("parameters", {})
+                params[self._sweep_settings.parameter_name] = value
+                return
+        raise ValueError("Target component not found in circuit data")
+
+    def _run_placeholder_simulation(
+        self, settings: SimulationSettings, parameter_value: float
+    ) -> SimulationResult:
+        result = SimulationResult()
+        result.time = []
+        result.signals = {
+            self._sweep_settings.output_signal: [],
+        }
+        if "V(in)" not in result.signals:
+            result.signals["V(in)"] = []
+        if "I(R1)" not in result.signals:
+            result.signals["I(R1)"] = []
+
+        duration = settings.t_stop - settings.t_start
+        total_steps = max(1, settings.output_points)
+        dt = duration / total_steps
+        scale = self._sweep_settings.compute_scale_factor(parameter_value)
+
+        for i in range(total_steps + 1):
+            t = settings.t_start + i * dt
+            result.time.append(t)
+
+            v_out = 5.0 * scale * (1 - math.exp(-t * 10000)) * math.sin(2 * math.pi * 1000 * t)
+            v_in = 10.0 * math.sin(2 * math.pi * 1000 * t)
+            i_r1 = v_out / 1000.0
+
+            result.signals[self._sweep_settings.output_signal].append(v_out)
+            result.signals.setdefault("V(in)", []).append(v_in)
+            result.signals.setdefault("I(R1)", []).append(i_r1)
+
+        result.statistics = {
+            "simulation_time": duration,
+            "time_steps": len(result.time),
+            "sweep_value": parameter_value,
+        }
+        return result
+
+
 class SimulationService(QObject):
     """Service for managing simulations."""
 
@@ -232,6 +466,7 @@ class SimulationService(QObject):
     simulation_finished = Signal(SimulationResult)
     dc_finished = Signal(DCResult)
     ac_finished = Signal(ACResult)
+    parameter_sweep_finished = Signal(ParameterSweepResult)
     error = Signal(str)
 
     def __init__(self, parent=None):
@@ -239,6 +474,7 @@ class SimulationService(QObject):
 
         self._state = SimulationState.IDLE
         self._worker: SimulationWorker | None = None
+        self._sweep_worker: ParameterSweepWorker | None = None
         self._settings = SimulationSettings()
         self._last_result: SimulationResult | None = None
 
@@ -372,11 +608,33 @@ class SimulationService(QObject):
             self.error.emit(str(e))
             self.ac_finished.emit(result)
 
+    def run_parameter_sweep(
+        self, circuit_data: dict, sweep_settings: ParameterSweepSettings
+    ) -> None:
+        """Run a parameter sweep across multiple simulations."""
+        if self.is_running:
+            self.error.emit("Simulation already running")
+            return
+
+        self._set_state(SimulationState.RUNNING)
+
+        self._sweep_worker = ParameterSweepWorker(circuit_data, sweep_settings, self._settings)
+        self._sweep_worker.progress.connect(self._on_progress)
+        self._sweep_worker.finished_signal.connect(self._on_parameter_sweep_finished)
+        self._sweep_worker.error.connect(self._on_error)
+        self._sweep_worker.finished.connect(self._on_sweep_thread_finished)
+        self._sweep_worker.start()
+
     def stop(self) -> None:
         """Stop the current simulation."""
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(5000)  # Wait up to 5 seconds
+            self._set_state(SimulationState.CANCELLED)
+
+        if self._sweep_worker and self._sweep_worker.isRunning():
+            self._sweep_worker.cancel()
+            self._sweep_worker.wait(5000)
             self._set_state(SimulationState.CANCELLED)
 
     def pause(self) -> None:
@@ -407,11 +665,28 @@ class SimulationService(QObject):
     def _on_finished(self, result: SimulationResult) -> None:
         """Handle simulation completion."""
         self._last_result = result
-        if result.error_message:
+        if result.error_message == "Simulation cancelled":
+            self._set_state(SimulationState.CANCELLED)
+        elif result.error_message:
             self._set_state(SimulationState.ERROR)
         else:
             self._set_state(SimulationState.COMPLETED)
         self.simulation_finished.emit(result)
+
+    def _on_parameter_sweep_finished(self, result: ParameterSweepResult) -> None:
+        """Handle completion of a parameter sweep."""
+        if self._sweep_worker and self._sweep_worker.was_cancelled:
+            self._set_state(SimulationState.CANCELLED)
+        elif not result.runs:
+            self._set_state(SimulationState.ERROR)
+        else:
+            self._set_state(SimulationState.COMPLETED)
+
+        self.parameter_sweep_finished.emit(result)
+
+    def _on_sweep_thread_finished(self) -> None:
+        """Clear sweep worker reference when the thread ends."""
+        self._sweep_worker = None
 
     def _on_error(self, message: str) -> None:
         """Handle error from worker."""

@@ -6,6 +6,8 @@ from pulsimgui.services.simulation_service import (
     SimulationSettings,
     SimulationResult,
     SimulationState,
+    ParameterSweepSettings,
+    ParameterSweepResult,
     DCResult,
     ACResult,
 )
@@ -35,6 +37,8 @@ __all__ = [
     "SimulationSettings",
     "SimulationResult",
     "SimulationState",
+    "ParameterSweepSettings",
+    "ParameterSweepResult",
     "DCResult",
     "ACResult",
     "ThemeService",

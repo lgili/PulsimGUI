@@ -26,7 +26,11 @@ from pulsimgui.models.subcircuit import (
     detect_boundary_ports,
 )
 from pulsimgui.services.settings_service import SettingsService
-from pulsimgui.services.simulation_service import SimulationService, SimulationState
+from pulsimgui.services.simulation_service import (
+    SimulationService,
+    SimulationState,
+    ParameterSweepResult,
+)
 from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.shortcut_service import ShortcutService
@@ -39,6 +43,8 @@ from pulsimgui.views.dialogs import (
     KeyboardShortcutsDialog,
     TemplateDialog,
     CreateSubcircuitDialog,
+    ParameterSweepDialog,
+    ParameterSweepResultsDialog,
 )
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
@@ -257,6 +263,9 @@ class MainWindow(QMainWindow):
         self.action_sim_settings.setShortcut(QKeySequence("Ctrl+Alt+S"))
         self.action_sim_settings.triggered.connect(self._on_simulation_settings)
 
+        self.action_parameter_sweep = QAction("Parameter &Sweep...", self)
+        self.action_parameter_sweep.triggered.connect(self._on_parameter_sweep)
+
         # Help actions
         self.action_about = QAction("&About PulsimGui", self)
         self.action_about.triggered.connect(self._on_about)
@@ -330,6 +339,8 @@ class MainWindow(QMainWindow):
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_dc_op)
         sim_menu.addAction(self.action_ac)
+        sim_menu.addSeparator()
+        sim_menu.addAction(self.action_parameter_sweep)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_sim_settings)
 
@@ -480,6 +491,9 @@ class MainWindow(QMainWindow):
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
+        self._simulation_service.parameter_sweep_finished.connect(
+            self._on_parameter_sweep_finished
+        )
         self._simulation_service.error.connect(self._on_simulation_error)
 
         # Hierarchy service signals
@@ -1212,6 +1226,25 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self._simulation_service.settings = dialog.get_settings()
 
+    def _on_parameter_sweep(self) -> None:
+        """Open the parameter sweep configuration dialog."""
+        circuit = self._current_circuit()
+        if not circuit.components:
+            QMessageBox.information(
+                self,
+                "No Components",
+                "Add at least one component with numeric parameters before running a sweep.",
+            )
+            return
+
+        dialog = ParameterSweepDialog(circuit, self)
+        if dialog.exec():
+            sweep_settings = dialog.get_settings()
+            if not sweep_settings:
+                return
+            circuit_data = self._simulation_service.convert_gui_circuit(self._project)
+            self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
+
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
         """Handle simulation state change."""
         is_running = state in (SimulationState.RUNNING, SimulationState.PAUSED)
@@ -1223,6 +1256,7 @@ class MainWindow(QMainWindow):
         self.action_pause.setEnabled(is_running)
         self.action_dc_op.setEnabled(not is_running)
         self.action_ac.setEnabled(not is_running)
+        self.action_parameter_sweep.setEnabled(not is_running)
 
         self._sim_progress.setVisible(is_running)
 
@@ -1297,6 +1331,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "AC Analysis Error", f"AC analysis failed:\n{result.error_message}"
             )
+
+    def _on_parameter_sweep_finished(self, result: ParameterSweepResult) -> None:
+        """Handle parameter sweep completion."""
+        if not result.runs:
+            QMessageBox.warning(
+                self,
+                "Parameter Sweep",
+                "Parameter sweep did not produce any results.",
+            )
+            return
+
+        dialog = ParameterSweepResultsDialog(result, self)
+        dialog.exec()
 
     def _on_simulation_error(self, message: str) -> None:
         """Handle simulation error."""
