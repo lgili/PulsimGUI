@@ -21,6 +21,7 @@ class ComponentItem(QGraphicsItem):
     - Rotation and mirroring
     - Pin markers
     - Name and value labels
+    - DC operating point overlay
     """
 
     # Drawing settings
@@ -30,6 +31,8 @@ class ComponentItem(QGraphicsItem):
     SELECTED_COLOR = QColor(0, 120, 215)
     PIN_RADIUS = 3.0
     PIN_COLOR = QColor(200, 0, 0)
+    DC_OVERLAY_COLOR = QColor(0, 128, 0)  # Green for DC values
+    DC_OVERLAY_COLOR_DARK = QColor(100, 220, 100)
 
     def __init__(self, component: Component, parent: QGraphicsItem | None = None):
         super().__init__(parent)
@@ -37,6 +40,10 @@ class ComponentItem(QGraphicsItem):
         self._component = component
         self._dark_mode = False
         self._show_labels = True
+        self._show_dc_overlay = False
+        self._dc_voltage: float | None = None
+        self._dc_current: float | None = None
+        self._dc_power: float | None = None
 
         # Enable item features
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
@@ -55,6 +62,15 @@ class ComponentItem(QGraphicsItem):
         self._value_label = QGraphicsTextItem("", self)
         self._value_label.setDefaultTextColor(QColor(100, 100, 100))
 
+        # Create DC overlay label
+        self._dc_label = QGraphicsTextItem("", self)
+        self._dc_label.setDefaultTextColor(self.DC_OVERLAY_COLOR)
+        font = self._dc_label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() - 1)
+        self._dc_label.setFont(font)
+        self._dc_label.setVisible(False)
+
         self._update_labels()
 
     @property
@@ -67,6 +83,8 @@ class ComponentItem(QGraphicsItem):
         self._dark_mode = dark
         color = self.LINE_COLOR_DARK if dark else self.LINE_COLOR
         self._name_label.setDefaultTextColor(color)
+        dc_color = self.DC_OVERLAY_COLOR_DARK if dark else self.DC_OVERLAY_COLOR
+        self._dc_label.setDefaultTextColor(dc_color)
         self.update()
 
     def set_show_labels(self, show: bool) -> None:
@@ -74,6 +92,54 @@ class ComponentItem(QGraphicsItem):
         self._show_labels = show
         self._name_label.setVisible(show)
         self._value_label.setVisible(show)
+
+    def set_show_dc_overlay(self, show: bool) -> None:
+        """Set DC overlay visibility."""
+        self._show_dc_overlay = show
+        self._update_dc_label()
+
+    def set_dc_values(
+        self,
+        voltage: float | None = None,
+        current: float | None = None,
+        power: float | None = None,
+    ) -> None:
+        """Set DC operating point values for this component."""
+        self._dc_voltage = voltage
+        self._dc_current = current
+        self._dc_power = power
+        self._update_dc_label()
+
+    def clear_dc_values(self) -> None:
+        """Clear DC operating point values."""
+        self._dc_voltage = None
+        self._dc_current = None
+        self._dc_power = None
+        self._update_dc_label()
+
+    def _update_dc_label(self) -> None:
+        """Update the DC overlay label content and visibility."""
+        from pulsimgui.utils.si_prefix import format_si_value
+
+        if not self._show_dc_overlay:
+            self._dc_label.setVisible(False)
+            return
+
+        # Build label text from available values
+        parts = []
+        if self._dc_current is not None:
+            parts.append(format_si_value(self._dc_current, "A"))
+        if self._dc_power is not None:
+            parts.append(format_si_value(self._dc_power, "W"))
+
+        if parts:
+            self._dc_label.setPlainText(" | ".join(parts))
+            self._dc_label.setVisible(True)
+            # Position to the right of the component
+            rect = self.boundingRect()
+            self._dc_label.setPos(rect.right() + 5, rect.center().y() - 8)
+        else:
+            self._dc_label.setVisible(False)
 
     def get_pin_position(self, pin_index: int) -> QPointF:
         """Get scene position of a pin."""
@@ -158,7 +224,14 @@ class ComponentItem(QGraphicsItem):
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value):
         """Handle item changes."""
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            # Snap position to grid before applying
+            scene = self.scene()
+            if scene is not None:
+                new_pos = value  # QPointF
+                snapped_pos = scene.snap_to_grid(new_pos)
+                return snapped_pos
+        elif change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             # Update component model position
             pos = self.pos()
             self._component.x = pos.x()

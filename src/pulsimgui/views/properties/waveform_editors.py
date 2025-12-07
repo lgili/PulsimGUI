@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
 )
 
-from pulsimgui.views.properties.properties_panel import SILineEdit
+from pulsimgui.views.properties.properties_panel import SIValueWidget
 
 
 class WaveformPreview(QWidget):
@@ -102,7 +102,7 @@ class DCEditor(QWidget):
     def _setup_ui(self) -> None:
         layout = QFormLayout(self)
 
-        self._value_edit = SILineEdit("V")
+        self._value_edit = SIValueWidget("V")
         self._value_edit.value_changed.connect(self._on_value_changed)
         layout.addRow("Value:", self._value_edit)
 
@@ -133,31 +133,31 @@ class PulseEditor(QWidget):
         # Parameters
         params_layout = QFormLayout()
 
-        self._v1_edit = SILineEdit("V")
+        self._v1_edit = SIValueWidget("V")
         self._v1_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Initial (V1):", self._v1_edit)
 
-        self._v2_edit = SILineEdit("V")
+        self._v2_edit = SIValueWidget("V")
         self._v2_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Pulsed (V2):", self._v2_edit)
 
-        self._td_edit = SILineEdit("s")
+        self._td_edit = SIValueWidget("s")
         self._td_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Delay (TD):", self._td_edit)
 
-        self._tr_edit = SILineEdit("s")
+        self._tr_edit = SIValueWidget("s")
         self._tr_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Rise time (TR):", self._tr_edit)
 
-        self._tf_edit = SILineEdit("s")
+        self._tf_edit = SIValueWidget("s")
         self._tf_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Fall time (TF):", self._tf_edit)
 
-        self._pw_edit = SILineEdit("s")
+        self._pw_edit = SIValueWidget("s")
         self._pw_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Pulse width (PW):", self._pw_edit)
 
-        self._per_edit = SILineEdit("s")
+        self._per_edit = SIValueWidget("s")
         self._per_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Period (PER):", self._per_edit)
 
@@ -231,27 +231,27 @@ class SineEditor(QWidget):
         # Parameters
         params_layout = QFormLayout()
 
-        self._vo_edit = SILineEdit("V")
+        self._vo_edit = SIValueWidget("V")
         self._vo_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Offset (VO):", self._vo_edit)
 
-        self._va_edit = SILineEdit("V")
+        self._va_edit = SIValueWidget("V")
         self._va_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Amplitude (VA):", self._va_edit)
 
-        self._freq_edit = SILineEdit("Hz")
+        self._freq_edit = SIValueWidget("Hz")
         self._freq_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Frequency:", self._freq_edit)
 
-        self._td_edit = SILineEdit("s")
+        self._td_edit = SIValueWidget("s")
         self._td_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Delay (TD):", self._td_edit)
 
-        self._theta_edit = SILineEdit("")
+        self._theta_edit = SIValueWidget("")
         self._theta_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Damping (θ):", self._theta_edit)
 
-        self._phase_edit = SILineEdit("°")
+        self._phase_edit = SIValueWidget("°")
         self._phase_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Phase:", self._phase_edit)
 
@@ -415,19 +415,19 @@ class PWMEditor(QWidget):
         # Parameters
         params_layout = QFormLayout()
 
-        self._vlow_edit = SILineEdit("V")
+        self._vlow_edit = SIValueWidget("V")
         self._vlow_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Low level:", self._vlow_edit)
 
-        self._vhigh_edit = SILineEdit("V")
+        self._vhigh_edit = SIValueWidget("V")
         self._vhigh_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("High level:", self._vhigh_edit)
 
-        self._freq_edit = SILineEdit("Hz")
+        self._freq_edit = SIValueWidget("Hz")
         self._freq_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Frequency:", self._freq_edit)
 
-        self._duty_edit = SILineEdit("%")
+        self._duty_edit = SIValueWidget("%")
         self._duty_edit.value_changed.connect(self._on_value_changed)
         params_layout.addRow("Duty cycle:", self._duty_edit)
 

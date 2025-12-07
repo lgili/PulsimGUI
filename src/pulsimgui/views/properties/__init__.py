@@ -1,6 +1,6 @@
 """Properties panel views."""
 
-from pulsimgui.views.properties.properties_panel import PropertiesPanel, SILineEdit
+from pulsimgui.views.properties.properties_panel import PropertiesPanel, SIValueWidget
 from pulsimgui.views.properties.waveform_editors import (
     WaveformEditorDialog,
     WaveformPreview,
@@ -11,9 +11,13 @@ from pulsimgui.views.properties.waveform_editors import (
     PWMEditor,
 )
 
+# Alias for backward compatibility
+SILineEdit = SIValueWidget
+
 __all__ = [
     "PropertiesPanel",
-    "SILineEdit",
+    "SIValueWidget",
+    "SILineEdit",  # Backward compatibility alias
     "WaveformEditorDialog",
     "WaveformPreview",
     "DCEditor",

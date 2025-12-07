@@ -39,6 +39,7 @@ class SchematicView(QGraphicsView):
     tool_changed = Signal(Tool)
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
+    grid_toggle_requested = Signal()  # emitted when G key is pressed
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -69,8 +70,8 @@ class SchematicView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setMouseTracking(True)
 
-        # Set background
-        self.setBackgroundBrush(Qt.GlobalColor.white)
+        # Don't set background brush here - let scene's drawBackground handle it
+        # The scene will draw the background with grid dots
 
         # Enable drag-and-drop
         self.setAcceptDrops(True)
@@ -115,11 +116,7 @@ class SchematicView(QGraphicsView):
 
     def set_dark_mode(self, dark: bool) -> None:
         """Set dark mode appearance."""
-        if dark:
-            self.setBackgroundBrush(QColor(30, 30, 30))
-        else:
-            self.setBackgroundBrush(Qt.GlobalColor.white)
-
+        # Don't set background brush - let scene's drawBackground handle it
         if isinstance(self.scene(), SchematicScene):
             self.scene().set_dark_mode(dark)
 
@@ -381,6 +378,10 @@ class SchematicView(QGraphicsView):
                 return
             elif key == Qt.Key.Key_W:
                 self.current_tool = Tool.WIRE
+                return
+            elif key == Qt.Key.Key_G:
+                # Toggle grid visibility
+                self.grid_toggle_requested.emit()
                 return
             elif key == Qt.Key.Key_Space:
                 # Toggle wire direction while drawing

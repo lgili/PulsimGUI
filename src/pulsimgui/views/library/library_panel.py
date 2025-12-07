@@ -1,7 +1,7 @@
 """Component library panel with drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal
-from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor
+from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF
+from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QPen
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -16,6 +16,199 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import ComponentType
+
+
+def create_component_drag_pixmap(comp_type: ComponentType, size: int = 70) -> QPixmap:
+    """Create a pixmap with the component symbol for drag preview."""
+    # Create transparent pixmap
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Set up pen for drawing
+    pen = QPen(QColor(0, 0, 0), 2)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    # Center the drawing
+    cx, cy = size / 2, size / 2
+    painter.translate(cx, cy)
+
+    # Draw symbol based on component type
+    if comp_type == ComponentType.RESISTOR:
+        _draw_resistor(painter)
+    elif comp_type == ComponentType.CAPACITOR:
+        _draw_capacitor(painter)
+    elif comp_type == ComponentType.INDUCTOR:
+        _draw_inductor(painter)
+    elif comp_type == ComponentType.VOLTAGE_SOURCE:
+        _draw_voltage_source(painter)
+    elif comp_type == ComponentType.CURRENT_SOURCE:
+        _draw_current_source(painter)
+    elif comp_type == ComponentType.GROUND:
+        _draw_ground(painter)
+    elif comp_type == ComponentType.DIODE:
+        _draw_diode(painter)
+    elif comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
+        _draw_mosfet(painter, comp_type == ComponentType.MOSFET_N)
+    elif comp_type == ComponentType.IGBT:
+        _draw_igbt(painter)
+    elif comp_type == ComponentType.SWITCH:
+        _draw_switch(painter)
+    elif comp_type == ComponentType.TRANSFORMER:
+        _draw_transformer(painter)
+    else:
+        # Fallback: draw a simple box
+        painter.drawRect(-15, -15, 30, 30)
+
+    painter.end()
+    return pixmap
+
+
+def _draw_resistor(painter: QPainter) -> None:
+    """Draw resistor zigzag symbol."""
+    points = [
+        (-25, 0), (-18, 0), (-15, -8), (-9, 8), (-3, -8),
+        (3, 8), (9, -8), (15, 8), (18, 0), (25, 0)
+    ]
+    for i in range(len(points) - 1):
+        painter.drawLine(
+            QPointF(points[i][0], points[i][1]),
+            QPointF(points[i + 1][0], points[i + 1][1])
+        )
+
+
+def _draw_capacitor(painter: QPainter) -> None:
+    """Draw capacitor symbol (two parallel plates)."""
+    # Lead lines
+    painter.drawLine(QPointF(-20, 0), QPointF(-5, 0))
+    painter.drawLine(QPointF(5, 0), QPointF(20, 0))
+    # Plates
+    painter.drawLine(QPointF(-5, -12), QPointF(-5, 12))
+    painter.drawLine(QPointF(5, -12), QPointF(5, 12))
+
+
+def _draw_inductor(painter: QPainter) -> None:
+    """Draw inductor coil symbol."""
+    # Lead lines
+    painter.drawLine(QPointF(-25, 0), QPointF(-18, 0))
+    painter.drawLine(QPointF(18, 0), QPointF(25, 0))
+    # Coil arcs
+    for i in range(4):
+        x = -13 + i * 9
+        painter.drawArc(QRectF(x, -6, 9, 12), 0 * 16, 180 * 16)
+
+
+def _draw_voltage_source(painter: QPainter) -> None:
+    """Draw voltage source circle with +/-."""
+    # Circle
+    painter.drawEllipse(QPointF(0, 0), 15, 15)
+    # Lead lines
+    painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
+    painter.drawLine(QPointF(15, 0), QPointF(25, 0))
+    # Plus sign
+    painter.drawLine(QPointF(-8, 0), QPointF(-3, 0))
+    painter.drawLine(QPointF(-5.5, -3), QPointF(-5.5, 3))
+    # Minus sign
+    painter.drawLine(QPointF(3, 0), QPointF(8, 0))
+
+
+def _draw_current_source(painter: QPainter) -> None:
+    """Draw current source circle with arrow."""
+    # Circle
+    painter.drawEllipse(QPointF(0, 0), 15, 15)
+    # Lead lines
+    painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
+    painter.drawLine(QPointF(15, 0), QPointF(25, 0))
+    # Arrow inside
+    painter.drawLine(QPointF(-8, 0), QPointF(8, 0))
+    painter.drawLine(QPointF(4, -4), QPointF(8, 0))
+    painter.drawLine(QPointF(4, 4), QPointF(8, 0))
+
+
+def _draw_ground(painter: QPainter) -> None:
+    """Draw ground symbol."""
+    # Vertical line
+    painter.drawLine(QPointF(0, -15), QPointF(0, 0))
+    # Horizontal lines
+    painter.drawLine(QPointF(-12, 0), QPointF(12, 0))
+    painter.drawLine(QPointF(-8, 5), QPointF(8, 5))
+    painter.drawLine(QPointF(-4, 10), QPointF(4, 10))
+
+
+def _draw_diode(painter: QPainter) -> None:
+    """Draw diode symbol."""
+    # Lead lines
+    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
+    painter.drawLine(QPointF(8, 0), QPointF(20, 0))
+    # Triangle
+    triangle = [QPointF(-8, 0), QPointF(8, -10), QPointF(8, 10)]
+    painter.drawPolygon(triangle)
+    # Bar
+    painter.drawLine(QPointF(8, -10), QPointF(8, 10))
+
+
+def _draw_mosfet(painter: QPainter, is_nmos: bool) -> None:
+    """Draw MOSFET symbol."""
+    # Gate line
+    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
+    painter.drawLine(QPointF(-8, -10), QPointF(-8, 10))
+    # Channel
+    painter.drawLine(QPointF(-4, -10), QPointF(-4, -5))
+    painter.drawLine(QPointF(-4, -2), QPointF(-4, 2))
+    painter.drawLine(QPointF(-4, 5), QPointF(-4, 10))
+    # Drain and Source
+    painter.drawLine(QPointF(-4, -7), QPointF(8, -7))
+    painter.drawLine(QPointF(8, -7), QPointF(8, -15))
+    painter.drawLine(QPointF(-4, 7), QPointF(8, 7))
+    painter.drawLine(QPointF(8, 7), QPointF(8, 15))
+    # Body connection
+    painter.drawLine(QPointF(-4, 0), QPointF(8, 0))
+    painter.drawLine(QPointF(8, 0), QPointF(8, 7))
+    # Arrow (direction depends on N or P)
+    if is_nmos:
+        painter.drawLine(QPointF(2, 0), QPointF(6, -3))
+        painter.drawLine(QPointF(2, 0), QPointF(6, 3))
+    else:
+        painter.drawLine(QPointF(-2, -3), QPointF(2, 0))
+        painter.drawLine(QPointF(-2, 3), QPointF(2, 0))
+
+
+def _draw_igbt(painter: QPainter) -> None:
+    """Draw IGBT symbol."""
+    # Similar to MOSFET but with collector bar
+    _draw_mosfet(painter, True)
+    # Extra bar at collector
+    painter.drawLine(QPointF(6, -12), QPointF(10, -12))
+
+
+def _draw_switch(painter: QPainter) -> None:
+    """Draw switch symbol."""
+    # Two terminals
+    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
+    painter.drawLine(QPointF(8, 0), QPointF(20, 0))
+    # Contact points
+    painter.drawEllipse(QPointF(-8, 0), 2, 2)
+    painter.drawEllipse(QPointF(8, 0), 2, 2)
+    # Switch arm (open position)
+    painter.drawLine(QPointF(-6, 0), QPointF(6, -10))
+
+
+def _draw_transformer(painter: QPainter) -> None:
+    """Draw transformer symbol."""
+    # Primary coil
+    for i in range(3):
+        y = -10 + i * 10
+        painter.drawArc(QRectF(-15, y, 8, 10), 90 * 16, 180 * 16)
+    # Secondary coil
+    for i in range(3):
+        y = -10 + i * 10
+        painter.drawArc(QRectF(7, y, 8, 10), -90 * 16, 180 * 16)
+    # Core lines
+    painter.drawLine(QPointF(-2, -15), QPointF(-2, 15))
+    painter.drawLine(QPointF(2, -15), QPointF(2, 15))
 
 
 class DraggableTreeWidget(QTreeWidget):
@@ -47,14 +240,8 @@ class DraggableTreeWidget(QTreeWidget):
         drag = QDrag(self)
         drag.setMimeData(mime_data)
 
-        # Create drag pixmap
-        pixmap = QPixmap(100, 30)
-        pixmap.fill(QColor(240, 240, 240))
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(0, 0, 0))
-        painter.drawRect(0, 0, 99, 29)
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, item.text(0).split(" (")[0])
-        painter.end()
+        # Create drag pixmap with component symbol
+        pixmap = create_component_drag_pixmap(comp_type)
         drag.setPixmap(pixmap)
         drag.setHotSpot(pixmap.rect().center())
 

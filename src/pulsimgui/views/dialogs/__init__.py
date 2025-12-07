@@ -4,6 +4,7 @@ from pulsimgui.views.dialogs.preferences_dialog import PreferencesDialog
 from pulsimgui.views.dialogs.device_library_dialog import DeviceLibraryDialog, DEVICE_LIBRARY
 from pulsimgui.views.dialogs.simulation_settings_dialog import SimulationSettingsDialog
 from pulsimgui.views.dialogs.dc_results_dialog import DCResultsDialog
+from pulsimgui.views.dialogs.bode_plot_dialog import BodePlotDialog
 
 __all__ = [
     "PreferencesDialog",
@@ -11,4 +12,5 @@ __all__ = [
     "DEVICE_LIBRARY",
     "SimulationSettingsDialog",
     "DCResultsDialog",
+    "BodePlotDialog",
 ]

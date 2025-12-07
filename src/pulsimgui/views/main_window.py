@@ -20,7 +20,7 @@ from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import SimulationService, SimulationState
 from pulsimgui.services.theme_service import ThemeService, Theme
-from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog, DCResultsDialog
+from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog, DCResultsDialog, BodePlotDialog
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
@@ -54,6 +54,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(800, 600)
         self.resize(1200, 800)
 
+        # Force menu bar inside window (not in macOS system bar)
+        self.menuBar().setNativeMenuBar(False)
+
         # Central widget - Schematic Editor
         self._schematic_scene = SchematicScene()
         self._schematic_view = SchematicView(self._schematic_scene)
@@ -64,7 +67,9 @@ class MainWindow(QMainWindow):
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.wire_created.connect(self._on_wire_created)
+        self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
+        self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -140,6 +145,12 @@ class MainWindow(QMainWindow):
         self.action_toggle_grid.setChecked(self._settings.get_show_grid())
         self.action_toggle_grid.setShortcut(QKeySequence("G"))
         self.action_toggle_grid.triggered.connect(self._on_toggle_grid)
+
+        self.action_toggle_dc_overlay = QAction("Show &DC Values", self)
+        self.action_toggle_dc_overlay.setCheckable(True)
+        self.action_toggle_dc_overlay.setChecked(False)
+        self.action_toggle_dc_overlay.setShortcut(QKeySequence("D"))
+        self.action_toggle_dc_overlay.triggered.connect(self._on_toggle_dc_overlay)
 
         self.action_theme_light = QAction("&Light", self)
         self.action_theme_light.setCheckable(True)
@@ -223,6 +234,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_zoom_fit)
         view_menu.addSeparator()
         view_menu.addAction(self.action_toggle_grid)
+        view_menu.addAction(self.action_toggle_dc_overlay)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
         view_menu.addSeparator()
@@ -250,25 +262,39 @@ class MainWindow(QMainWindow):
         """Create the main toolbar."""
         toolbar = QToolBar("Main Toolbar")
         toolbar.setObjectName("MainToolbar")
-        toolbar.setIconSize(QSize(24, 24))
+        toolbar.setIconSize(QSize(20, 20))
         toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
 
+        # File actions with short text labels
+        self.action_new.setText("New")
+        self.action_open.setText("Open")
+        self.action_save.setText("Save")
         toolbar.addAction(self.action_new)
         toolbar.addAction(self.action_open)
         toolbar.addAction(self.action_save)
         toolbar.addSeparator()
+
+        # Edit actions
+        self.action_undo.setText("Undo")
+        self.action_redo.setText("Redo")
         toolbar.addAction(self.action_undo)
         toolbar.addAction(self.action_redo)
         toolbar.addSeparator()
-        toolbar.addAction(self.action_cut)
-        toolbar.addAction(self.action_copy)
-        toolbar.addAction(self.action_paste)
-        toolbar.addSeparator()
+
+        # Zoom actions
+        self.action_zoom_in.setText("Zoom+")
+        self.action_zoom_out.setText("Zoom-")
+        self.action_zoom_fit.setText("Fit")
         toolbar.addAction(self.action_zoom_in)
         toolbar.addAction(self.action_zoom_out)
         toolbar.addAction(self.action_zoom_fit)
         toolbar.addSeparator()
+
+        # Simulation actions
+        self.action_run.setText("Run")
+        self.action_stop.setText("Stop")
         toolbar.addAction(self.action_run)
         toolbar.addAction(self.action_stop)
 
@@ -374,6 +400,7 @@ class MainWindow(QMainWindow):
         self._simulation_service.progress.connect(self._on_simulation_progress)
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
+        self._simulation_service.ac_finished.connect(self._on_ac_finished)
         self._simulation_service.error.connect(self._on_simulation_error)
 
     def _restore_state(self) -> None:
@@ -406,16 +433,15 @@ class MainWindow(QMainWindow):
         # Apply stylesheet
         self.setStyleSheet(self._theme_service.generate_stylesheet())
 
-        # Update schematic view
-        self._schematic_view.set_dark_mode(theme.is_dark)
-        self._schematic_scene.set_dark_mode(theme.is_dark)
-
         # Update schematic colors from theme
-        from PySide6.QtGui import QColor, QBrush
+        from PySide6.QtGui import QColor
         bg_color = QColor(theme.colors.schematic_background)
         grid_color = QColor(theme.colors.schematic_grid)
-        self._schematic_view.setBackgroundBrush(QBrush(bg_color))
+        self._schematic_scene.set_background_color(bg_color)
         self._schematic_scene.set_grid_color(grid_color)
+
+        # Update component colors (dark mode affects line colors)
+        self._schematic_scene.set_dark_mode(theme.is_dark)
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -481,6 +507,45 @@ class MainWindow(QMainWindow):
             self._selection_label.setText(f"{count} selected")
         else:
             self._selection_label.setText("")
+
+    def _on_scene_selection_changed(self) -> None:
+        """Handle selection change in schematic scene."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        # Don't update if focus is in properties panel (user is editing)
+        if self._has_properties_focus():
+            return
+
+        selected_items = self._schematic_scene.selectedItems()
+
+        # Filter to get only ComponentItems
+        selected_components = [
+            item.component for item in selected_items
+            if isinstance(item, ComponentItem)
+        ]
+
+        if len(selected_components) == 1:
+            # Single component selected - show its properties
+            self._properties_panel.set_component(selected_components[0])
+        elif len(selected_components) > 1:
+            # Multiple components selected
+            self._properties_panel.set_components(selected_components)
+        else:
+            # No components selected - clear panel
+            self._properties_panel.set_component(None)
+
+    def _has_properties_focus(self) -> bool:
+        """Check if any widget in properties panel or its dock has focus."""
+        focus_widget = QApplication.focusWidget()
+        if focus_widget is None:
+            return False
+        # Check if focus widget is inside properties panel or its dock
+        widget = focus_widget
+        while widget is not None:
+            if widget == self._properties_panel or widget == self.properties_dock:
+                return True
+            widget = widget.parent()
+        return False
 
     # Slots
     def _on_new_project(self) -> None:
@@ -588,6 +653,17 @@ class MainWindow(QMainWindow):
         """Toggle grid visibility."""
         self._schematic_scene.show_grid = checked
         self._settings.set_show_grid(checked)
+
+    def _on_grid_toggle_from_view(self) -> None:
+        """Handle grid toggle request from view (G key)."""
+        new_state = not self._schematic_scene.show_grid
+        self._schematic_scene.show_grid = new_state
+        self._settings.set_show_grid(new_state)
+        self.action_toggle_grid.setChecked(new_state)
+
+    def _on_toggle_dc_overlay(self, checked: bool) -> None:
+        """Toggle DC operating point overlay visibility."""
+        self._schematic_scene.show_dc_overlay = checked
 
     def _on_preferences(self) -> None:
         """Show preferences dialog."""
@@ -716,9 +792,34 @@ class MainWindow(QMainWindow):
 
     def _on_property_changed(self, name: str, value) -> None:
         """Handle property change from properties panel."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
         # Mark project dirty and update display
         self._project.mark_dirty()
         self._update_title()
+
+        # Get the component being edited from properties panel
+        edited_component = self._properties_panel._component
+        if edited_component is None:
+            return
+
+        # Find and update the corresponding component item in the scene
+        for item in self._schematic_scene.items():
+            if isinstance(item, ComponentItem) and item.component is edited_component:
+                # Update position if changed
+                if name == "position_x":
+                    item.setPos(edited_component.x, edited_component.y)
+                elif name == "position_y":
+                    item.setPos(edited_component.x, edited_component.y)
+                elif name == "rotation":
+                    item.setRotation(edited_component.rotation)
+                # Update name label
+                item._name_label.setPlainText(edited_component.name)
+                # Update labels for parameter changes (value text)
+                item._update_labels()
+                item.update()
+                break
+
         self._schematic_scene.update()
 
     def _check_save(self) -> bool:
@@ -845,11 +946,27 @@ class MainWindow(QMainWindow):
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""
         if result.is_valid:
+            # Update schematic with DC values and show overlay
+            self._schematic_scene.set_dc_results(result)
+            self.action_toggle_dc_overlay.setChecked(True)
+
+            # Show results dialog
             dialog = DCResultsDialog(result, self)
             dialog.exec()
         else:
             QMessageBox.warning(
                 self, "DC Analysis Error", f"DC analysis failed:\n{result.error_message}"
+            )
+
+    def _on_ac_finished(self, result) -> None:
+        """Handle AC analysis completion."""
+        if result.is_valid:
+            # Show Bode plot dialog
+            dialog = BodePlotDialog(result, self)
+            dialog.exec()
+        else:
+            QMessageBox.warning(
+                self, "AC Analysis Error", f"AC analysis failed:\n{result.error_message}"
             )
 
     def _on_simulation_error(self, message: str) -> None:

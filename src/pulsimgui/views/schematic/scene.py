@@ -25,7 +25,7 @@ class SchematicScene(QGraphicsScene):
 
     # Grid settings - 20px is good for schematics
     GRID_SIZE = 20.0  # pixels
-    GRID_DOT_SIZE = 2.0  # dot diameter in pixels
+    GRID_DOT_SIZE = 3.0  # dot diameter in pixels
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,7 +34,9 @@ class SchematicScene(QGraphicsScene):
         self._show_grid = True
         self._grid_size = self.GRID_SIZE
         self._dark_mode = False
-        self._grid_color = QColor(200, 200, 200)
+        self._grid_color = QColor(180, 180, 180)  # Slightly darker for visibility
+        self._background_color = QColor(255, 255, 255)  # White background
+        self._show_dc_overlay = False
 
         # Set scene rect (large canvas)
         self.setSceneRect(-5000, -5000, 10000, 10000)
@@ -76,13 +78,31 @@ class SchematicScene(QGraphicsScene):
         self.update()
 
     def set_dark_mode(self, dark: bool) -> None:
-        """Set dark mode for grid colors."""
+        """Set dark mode for grid colors and update all components."""
         self._dark_mode = dark
+        if dark:
+            self._background_color = QColor(30, 30, 30)
+            self._grid_color = QColor(60, 60, 60)
+        else:
+            self._background_color = QColor(255, 255, 255)
+            self._grid_color = QColor(180, 180, 180)
+
+        # Update all component items
+        from pulsimgui.views.schematic.items import ComponentItem
+        for item in self.items():
+            if isinstance(item, ComponentItem):
+                item.set_dark_mode(dark)
+
         self.update()
 
     def set_grid_color(self, color: QColor) -> None:
         """Set the grid dot color from theme."""
         self._grid_color = color
+        self.update()
+
+    def set_background_color(self, color: QColor) -> None:
+        """Set the background color from theme."""
+        self._background_color = color
         self.update()
 
     def snap_to_grid(self, point: QPointF) -> QPointF:
@@ -93,7 +113,8 @@ class SchematicScene(QGraphicsScene):
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         """Draw the grid background."""
-        super().drawBackground(painter, rect)
+        # Draw solid background color first
+        painter.fillRect(rect, self._background_color)
 
         if not self._show_grid:
             return
@@ -192,3 +213,56 @@ class SchematicScene(QGraphicsScene):
                         nearest_pin = (pin_pos, item, pin_index)
 
         return nearest_pin
+
+    # DC Overlay methods
+
+    @property
+    def show_dc_overlay(self) -> bool:
+        """Get DC overlay visibility."""
+        return self._show_dc_overlay
+
+    @show_dc_overlay.setter
+    def show_dc_overlay(self, show: bool) -> None:
+        """Set DC overlay visibility for all components."""
+        self._show_dc_overlay = show
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        for item in self.items():
+            if isinstance(item, ComponentItem):
+                item.set_show_dc_overlay(show)
+
+    def set_dc_results(self, dc_result) -> None:
+        """
+        Apply DC operating point results to all components.
+
+        Args:
+            dc_result: DCResult object with node_voltages, branch_currents, power_dissipation
+        """
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        for item in self.items():
+            if isinstance(item, ComponentItem):
+                comp_name = item.component.name
+
+                # Get current (I(component_name))
+                current_key = f"I({comp_name})"
+                current = dc_result.branch_currents.get(current_key)
+
+                # Get power (P(component_name))
+                power_key = f"P({comp_name})"
+                power = dc_result.power_dissipation.get(power_key)
+
+                item.set_dc_values(current=current, power=power)
+
+        # Auto-show overlay when results are set
+        self.show_dc_overlay = True
+
+    def clear_dc_results(self) -> None:
+        """Clear all DC results from components."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        for item in self.items():
+            if isinstance(item, ComponentItem):
+                item.clear_dc_values()
+
+        self._show_dc_overlay = False

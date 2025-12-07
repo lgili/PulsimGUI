@@ -24,8 +24,8 @@ from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 
 
-class SILineEdit(QLineEdit):
-    """Line edit that accepts SI prefix notation (e.g., 10k, 4.7u)."""
+class SIValueWidget(QWidget):
+    """Widget with line edit for SI value and fixed unit label."""
 
     value_changed = Signal(float)
 
@@ -33,10 +33,21 @@ class SILineEdit(QLineEdit):
         super().__init__(parent)
         self._unit = unit
         self._value = 0.0
-        self._valid = True
 
-        self.editingFinished.connect(self._on_editing_finished)
-        self.textChanged.connect(self._validate)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._edit = QLineEdit()
+        self._edit.setMinimumWidth(80)
+        self._edit.editingFinished.connect(self._on_editing_finished)
+        self._edit.textChanged.connect(self._validate)
+        layout.addWidget(self._edit)
+
+        if unit:
+            self._unit_label = QLabel(unit)
+            self._unit_label.setMinimumWidth(20)
+            layout.addWidget(self._unit_label)
 
     @property
     def value(self) -> float:
@@ -45,37 +56,58 @@ class SILineEdit(QLineEdit):
     @value.setter
     def value(self, val: float) -> None:
         self._value = val
-        self.setText(format_si_value(val, self._unit))
+        # Format without unit in the text field
+        self._edit.setText(self._format_value(val))
+
+    def _format_value(self, val: float) -> str:
+        """Format value with SI prefix but without unit."""
+        if val == 0:
+            return "0"
+
+        prefixes = [
+            (1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k"),
+            (1, ""), (1e-3, "m"), (1e-6, "u"), (1e-9, "n"), (1e-12, "p")
+        ]
+
+        for scale, prefix in prefixes:
+            if abs(val) >= scale:
+                scaled = val / scale
+                # Format nicely - remove trailing zeros
+                if scaled == int(scaled):
+                    return f"{int(scaled)}{prefix}"
+                else:
+                    return f"{scaled:.3g}{prefix}"
+
+        return f"{val:.3g}"
 
     def _validate(self) -> None:
         """Validate input and update style."""
-        text = self.text().strip()
+        text = self._edit.text().strip()
         if not text:
-            self._valid = True
-            self.setStyleSheet("")
+            self._edit.setStyleSheet("")
             return
 
         try:
             parse_si_value(text)
-            self._valid = True
-            self.setStyleSheet("")
+            self._edit.setStyleSheet("")
         except ValueError:
-            self._valid = False
-            self.setStyleSheet("border: 1px solid red;")
+            self._edit.setStyleSheet("border: 1px solid red;")
 
     def _on_editing_finished(self) -> None:
         """Parse value when editing is finished."""
-        text = self.text().strip()
+        text = self._edit.text().strip()
         if not text:
             return
 
         try:
-            self._value = parse_si_value(text)
-            self.setText(format_si_value(self._value, self._unit))
-            self.value_changed.emit(self._value)
+            new_value = parse_si_value(text)
+            if new_value != self._value:
+                self._value = new_value
+                self._edit.setText(self._format_value(self._value))
+                self.value_changed.emit(self._value)
         except ValueError:
             # Revert to previous value
-            self.setText(format_si_value(self._value, self._unit))
+            self._edit.setText(self._format_value(self._value))
 
 
 class PropertiesPanel(QWidget):
@@ -270,10 +302,10 @@ class PropertiesPanel(QWidget):
         elif isinstance(value, (int, float)):
             # Determine unit based on parameter name
             unit = self._get_unit_for_param(name)
-            edit = SILineEdit(unit)
-            edit.value = value
-            edit.value_changed.connect(lambda v: self._on_param_changed(name, v))
-            return edit
+            widget = SIValueWidget(unit)
+            widget.value = value
+            widget.value_changed.connect(lambda v: self._on_param_changed(name, v))
+            return widget
 
         elif isinstance(value, str):
             edit = QLineEdit(value)
@@ -314,12 +346,12 @@ class PropertiesPanel(QWidget):
 
         # Value edit for DC
         if waveform.get("type") == "dc":
-            value_edit = SILineEdit("V")
-            value_edit.value = waveform.get("value", 0)
-            value_edit.value_changed.connect(
+            value_widget = SIValueWidget("V")
+            value_widget.value = waveform.get("value", 0)
+            value_widget.value_changed.connect(
                 lambda v: self._on_waveform_value_changed(name, "value", v)
             )
-            layout.addWidget(value_edit)
+            layout.addWidget(value_widget)
 
         # Edit button for complex waveforms
         edit_btn = QPushButton("Edit Waveform...")
