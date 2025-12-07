@@ -9,7 +9,7 @@
 - [x] 1.1.4 Create basic application entry point (main.py)
 - [x] 1.1.5 Set up pytest with pytest-qt for testing
 - [x] 1.1.6 Configure black, ruff for code formatting/linting
-- [ ] 1.1.7 Set up GitHub Actions CI pipeline
+- [x] 1.1.7 Set up GitHub Actions CI pipeline
 
 ### 1.2 Application Shell
 - [x] 1.2.1 Create QMainWindow subclass with basic layout
