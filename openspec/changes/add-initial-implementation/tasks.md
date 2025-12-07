@@ -42,60 +42,60 @@
 ## Phase 2: Schematic Editor
 
 ### 2.1 Canvas and Viewport
-- [ ] 2.1.1 Create SchematicScene (QGraphicsScene)
-- [ ] 2.1.2 Create SchematicView (QGraphicsView) with pan/zoom
-- [ ] 2.1.3 Implement mouse wheel zoom to cursor
-- [ ] 2.1.4 Implement middle-button pan
-- [ ] 2.1.5 Implement zoom to fit
-- [ ] 2.1.6 Add zoom level display to status bar
+- [x] 2.1.1 Create SchematicScene (QGraphicsScene)
+- [x] 2.1.2 Create SchematicView (QGraphicsView) with pan/zoom
+- [x] 2.1.3 Implement mouse wheel zoom to cursor
+- [x] 2.1.4 Implement middle-button pan
+- [x] 2.1.5 Implement zoom to fit
+- [x] 2.1.6 Add zoom level display to status bar
 
 ### 2.2 Grid System
-- [ ] 2.2.1 Implement grid rendering (dots or lines)
-- [ ] 2.2.2 Implement snap-to-grid functionality
-- [ ] 2.2.3 Add grid size configuration
-- [ ] 2.2.4 Scale grid dots with zoom level
+- [x] 2.2.1 Implement grid rendering (dots or lines)
+- [x] 2.2.2 Implement snap-to-grid functionality
+- [x] 2.2.3 Add grid size configuration
+- [x] 2.2.4 Scale grid dots with zoom level
 
 ### 2.3 Component Graphics
-- [ ] 2.3.1 Create ComponentItem base class (QGraphicsItem)
-- [ ] 2.3.2 Implement resistor symbol
-- [ ] 2.3.3 Implement capacitor symbol
-- [ ] 2.3.4 Implement inductor symbol
-- [ ] 2.3.5 Implement voltage source symbol
-- [ ] 2.3.6 Implement current source symbol
-- [ ] 2.3.7 Implement ground symbol
-- [ ] 2.3.8 Implement diode symbol
-- [ ] 2.3.9 Implement MOSFET symbol (N and P)
+- [x] 2.3.1 Create ComponentItem base class (QGraphicsItem)
+- [x] 2.3.2 Implement resistor symbol
+- [x] 2.3.3 Implement capacitor symbol
+- [x] 2.3.4 Implement inductor symbol
+- [x] 2.3.5 Implement voltage source symbol
+- [x] 2.3.6 Implement current source symbol
+- [x] 2.3.7 Implement ground symbol
+- [x] 2.3.8 Implement diode symbol
+- [x] 2.3.9 Implement MOSFET symbol (N and P)
 - [ ] 2.3.10 Implement IGBT symbol
-- [ ] 2.3.11 Implement switch symbol
+- [x] 2.3.11 Implement switch symbol
 - [ ] 2.3.12 Implement transformer symbol
-- [ ] 2.3.13 Add pin markers to all symbols
-- [ ] 2.3.14 Implement component rotation (90° increments)
-- [ ] 2.3.15 Implement component mirroring
+- [x] 2.3.13 Add pin markers to all symbols
+- [x] 2.3.14 Implement component rotation (90° increments)
+- [x] 2.3.15 Implement component mirroring
 
 ### 2.4 Component Placement
-- [ ] 2.4.1 Implement drag-and-drop from library
-- [ ] 2.4.2 Show ghost preview during placement
-- [ ] 2.4.3 Implement keyboard shortcuts for components (R, C, L, etc.)
-- [ ] 2.4.4 Auto-generate unique component names
-- [ ] 2.4.5 Implement component selection (click, box select)
-- [ ] 2.4.6 Implement multi-select with Ctrl+click
-- [ ] 2.4.7 Implement component moving
+- [x] 2.4.1 Implement drag-and-drop from library
+- [x] 2.4.2 Show ghost preview during placement
+- [x] 2.4.3 Implement keyboard shortcuts for components (R, C, L, etc.)
+- [x] 2.4.4 Auto-generate unique component names
+- [x] 2.4.5 Implement component selection (click, box select)
+- [x] 2.4.6 Implement multi-select with Ctrl+click
+- [x] 2.4.7 Implement component moving
 
 ### 2.5 Wire Routing
-- [ ] 2.5.1 Create WireItem class (QGraphicsPathItem)
-- [ ] 2.5.2 Implement wire tool activation
-- [ ] 2.5.3 Implement click-to-start-wire on pin
-- [ ] 2.5.4 Implement orthogonal routing preview
-- [ ] 2.5.5 Implement wire completion on pin click
-- [ ] 2.5.6 Implement wire junction creation
-- [ ] 2.5.7 Implement wire cancellation (Escape)
-- [ ] 2.5.8 Show connection dots on connected pins
+- [x] 2.5.1 Create WireItem class (QGraphicsPathItem)
+- [x] 2.5.2 Implement wire tool activation
+- [x] 2.5.3 Implement click-to-start-wire on pin
+- [x] 2.5.4 Implement orthogonal routing preview
+- [x] 2.5.5 Implement wire completion on pin click
+- [x] 2.5.6 Implement wire junction creation
+- [x] 2.5.7 Implement wire cancellation (Escape)
+- [x] 2.5.8 Show connection dots on connected pins
 
 ### 2.6 Labels and Annotations
-- [ ] 2.6.1 Display component names
-- [ ] 2.6.2 Display component values
-- [ ] 2.6.3 Allow label position adjustment
-- [ ] 2.6.4 Implement label visibility toggle
+- [x] 2.6.1 Display component names
+- [x] 2.6.2 Display component values
+- [x] 2.6.3 Allow label position adjustment
+- [x] 2.6.4 Implement label visibility toggle
 
 ## Phase 3: Component Library & Properties
 

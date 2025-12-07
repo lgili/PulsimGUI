@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.views.schematic import SchematicScene, SchematicView
 
 
 class MainWindow(QMainWindow):
@@ -46,15 +47,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(800, 600)
         self.resize(1200, 800)
 
-        # Central widget (schematic editor placeholder)
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        placeholder = QLabel("Schematic Editor (Coming Soon)")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("font-size: 24px; color: #888;")
-        layout.addWidget(placeholder)
-        self.setCentralWidget(central)
+        # Central widget - Schematic Editor
+        self._schematic_scene = SchematicScene()
+        self._schematic_view = SchematicView(self._schematic_scene)
+        self.setCentralWidget(self._schematic_view)
+
+        # Connect schematic signals
+        self._schematic_view.zoom_changed.connect(self.update_zoom)
+        self._schematic_view.mouse_moved.connect(self.update_coordinates)
+        self._schematic_scene.selection_changed_custom.connect(self.update_selection)
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -114,17 +115,21 @@ class MainWindow(QMainWindow):
         # View actions
         self.action_zoom_in = QAction("Zoom &In", self)
         self.action_zoom_in.setShortcut(QKeySequence.StandardKey.ZoomIn)
+        self.action_zoom_in.triggered.connect(self._on_zoom_in)
 
         self.action_zoom_out = QAction("Zoom &Out", self)
         self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
+        self.action_zoom_out.triggered.connect(self._on_zoom_out)
 
         self.action_zoom_fit = QAction("Zoom to &Fit", self)
         self.action_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
+        self.action_zoom_fit.triggered.connect(self._on_zoom_fit)
 
         self.action_toggle_grid = QAction("Show &Grid", self)
         self.action_toggle_grid.setCheckable(True)
         self.action_toggle_grid.setChecked(self._settings.get_show_grid())
         self.action_toggle_grid.setShortcut(QKeySequence("G"))
+        self.action_toggle_grid.triggered.connect(self._on_toggle_grid)
 
         self.action_theme_light = QAction("&Light Theme", self)
         self.action_theme_light.setCheckable(True)
@@ -539,6 +544,23 @@ class MainWindow(QMainWindow):
             "<p>Copyright (c) 2024 Luiz Gili</p>"
             "<p>Licensed under MIT License</p>",
         )
+
+    def _on_zoom_in(self) -> None:
+        """Zoom in the schematic view."""
+        self._schematic_view.zoom_in()
+
+    def _on_zoom_out(self) -> None:
+        """Zoom out the schematic view."""
+        self._schematic_view.zoom_out()
+
+    def _on_zoom_fit(self) -> None:
+        """Zoom to fit all items."""
+        self._schematic_view.zoom_to_fit()
+
+    def _on_toggle_grid(self, checked: bool) -> None:
+        """Toggle grid visibility."""
+        self._schematic_scene.show_grid = checked
+        self._settings.set_show_grid(checked)
 
     def _check_save(self) -> bool:
         """Check if user wants to save unsaved changes. Returns True if safe to proceed."""
