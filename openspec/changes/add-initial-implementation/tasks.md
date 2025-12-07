@@ -19,7 +19,7 @@
 - [x] 1.2.5 Implement status bar with coordinate display
 - [x] 1.2.6 Add basic keyboard shortcut framework
 - [x] 1.2.7 Implement light/dark theme switching
-- [ ] 1.2.8 Create preferences dialog skeleton
+- [x] 1.2.8 Create preferences dialog skeleton
 
 ### 1.3 Core Data Models
 - [x] 1.3.1 Define Component model class

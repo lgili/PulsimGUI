@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.views.dialogs import PreferencesDialog
 from pulsimgui.views.schematic import SchematicScene, SchematicView
 
 
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
 
         self.action_preferences = QAction("&Preferences...", self)
         self.action_preferences.setShortcut(QKeySequence("Ctrl+,"))
+        self.action_preferences.triggered.connect(self._on_preferences)
 
         # View actions
         self.action_zoom_in = QAction("Zoom &In", self)
@@ -561,6 +563,16 @@ class MainWindow(QMainWindow):
         """Toggle grid visibility."""
         self._schematic_scene.show_grid = checked
         self._settings.set_show_grid(checked)
+
+    def _on_preferences(self) -> None:
+        """Show preferences dialog."""
+        dialog = PreferencesDialog(self._settings, self)
+        if dialog.exec():
+            # Apply settings that may have changed
+            self._apply_theme()
+            self._schematic_scene.grid_size = self._settings.get_grid_size()
+            self._schematic_scene.show_grid = self._settings.get_show_grid()
+            self.action_toggle_grid.setChecked(self._settings.get_show_grid())
 
     def _check_save(self) -> bool:
         """Check if user wants to save unsaved changes. Returns True if safe to proceed."""
