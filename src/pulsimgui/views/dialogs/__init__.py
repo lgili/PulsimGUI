@@ -7,6 +7,7 @@ from pulsimgui.views.dialogs.dc_results_dialog import DCResultsDialog
 from pulsimgui.views.dialogs.bode_plot_dialog import BodePlotDialog
 from pulsimgui.views.dialogs.keyboard_shortcuts_dialog import KeyboardShortcutsDialog
 from pulsimgui.views.dialogs.template_dialog import TemplateDialog
+from pulsimgui.views.dialogs.create_subcircuit_dialog import CreateSubcircuitDialog
 
 __all__ = [
     "PreferencesDialog",
@@ -17,4 +18,5 @@ __all__ = [
     "BodePlotDialog",
     "KeyboardShortcutsDialog",
     "TemplateDialog",
+    "CreateSubcircuitDialog",
 ]

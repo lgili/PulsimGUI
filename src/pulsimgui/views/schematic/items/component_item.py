@@ -524,6 +524,32 @@ class TransformerItem(ComponentItem):
         return f"1:{turns_ratio}"
 
 
+class SubcircuitItem(ComponentItem):
+    """Graphics item for subcircuit instances."""
+
+    def __init__(self, component: Component, parent: QGraphicsItem | None = None):
+        self._symbol_width = float(component.parameters.get("symbol_width", 120.0))
+        self._symbol_height = float(component.parameters.get("symbol_height", 80.0))
+        super().__init__(component, parent)
+        self._name_label.setVisible(False)
+        self._value_label.setVisible(False)
+
+    def boundingRect(self) -> QRectF:
+        half_w = self._symbol_width / 2
+        half_h = self._symbol_height / 2
+        return QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        rect = self.boundingRect()
+        painter.drawRect(rect)
+
+        # Draw title centered inside block
+        painter.save()
+        painter.setFont(self._name_label.font())
+        painter.drawText(rect.adjusted(4, 4, -4, -4), Qt.AlignmentFlag.AlignCenter, self._component.name)
+        painter.restore()
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -540,6 +566,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.IGBT: IGBTItem,
         ComponentType.SWITCH: SwitchItem,
         ComponentType.TRANSFORMER: TransformerItem,
+        ComponentType.SUBCIRCUIT: SubcircuitItem,
     }
 
     item_class = item_classes.get(component.type, ComponentItem)

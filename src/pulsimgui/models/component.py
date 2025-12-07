@@ -21,6 +21,7 @@ class ComponentType(Enum):
     IGBT = auto()
     SWITCH = auto()
     TRANSFORMER = auto()
+    SUBCIRCUIT = auto()  # Hierarchical subcircuit instance
 
 
 @dataclass
@@ -147,9 +148,15 @@ class Component:
     @classmethod
     def from_dict(cls, data: dict) -> "Component":
         """Deserialize component from dictionary."""
+        comp_type = ComponentType[data["type"]]
+        if comp_type == ComponentType.SUBCIRCUIT:
+            from pulsimgui.models.subcircuit import SubcircuitInstance
+
+            return SubcircuitInstance.from_dict(data)
+
         return cls(
             id=UUID(data["id"]),
-            type=ComponentType[data["type"]],
+            type=comp_type,
             name=data["name"],
             x=data["x"],
             y=data["y"],

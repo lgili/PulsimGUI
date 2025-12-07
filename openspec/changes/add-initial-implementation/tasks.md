@@ -258,9 +258,9 @@
 ## Phase 8: Advanced Features (Post-MVP)
 
 ### 8.1 Hierarchical Schematics
-- [ ] 8.1.1 Create subcircuit from selection
-- [ ] 8.1.2 Navigate into subcircuits
-- [ ] 8.1.3 Breadcrumb navigation
+- [x] 8.1.1 Create subcircuit from selection
+- [x] 8.1.2 Navigate into subcircuits
+- [x] 8.1.3 Breadcrumb navigation
 
 ### 8.2 Parameter Sweeps
 - [ ] 8.2.1 Parameter sweep configuration dialog

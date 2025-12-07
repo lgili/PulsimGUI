@@ -88,9 +88,11 @@ class SchematicScene(QGraphicsScene):
             self._grid_color = QColor(180, 180, 180)
 
         # Update all component items
-        from pulsimgui.views.schematic.items import ComponentItem
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
         for item in self.items():
             if isinstance(item, ComponentItem):
+                item.set_dark_mode(dark)
+            elif isinstance(item, WireItem):
                 item.set_dark_mode(dark)
 
         self.update()
@@ -152,14 +154,17 @@ class SchematicScene(QGraphicsScene):
             return
 
         # Add component items
-        from pulsimgui.views.schematic.items import create_component_item
+        from pulsimgui.views.schematic.items import create_component_item, WireItem
 
         for component in self._circuit.components.values():
             item = create_component_item(component)
             item.set_dark_mode(self._dark_mode)
             self.addItem(item)
 
-        # TODO: Add wire items from circuit
+        for wire in self._circuit.wires.values():
+            wire_item = WireItem(wire)
+            wire_item.set_dark_mode(self._dark_mode)
+            self.addItem(wire_item)
 
     def add_component(self, component) -> None:
         """Add a component to the scene."""

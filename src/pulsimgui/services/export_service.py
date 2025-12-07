@@ -10,6 +10,7 @@ from PySide6.QtGui import QImage, QPainter
 from PySide6.QtSvg import QSvgGenerator
 
 from pulsimgui.models.component import ComponentType
+from pulsimgui.utils.net_utils import build_node_map
 
 if TYPE_CHECKING:
     from pulsimgui.models.circuit import Circuit
@@ -52,7 +53,7 @@ class ExportService:
         ]
 
         # Build node map from wire connections
-        node_map = ExportService._build_node_map(circuit)
+        node_map = build_node_map(circuit)
 
         # Export components
         for comp in circuit.components.values():
@@ -68,69 +69,6 @@ class ExportService:
         lines.append(".end")
 
         Path(filepath).write_text("\n".join(lines))
-
-    @staticmethod
-    def _build_node_map(circuit: "Circuit") -> dict[tuple[str, int], str]:
-        """Build a map of (component_id, pin_index) -> node_name."""
-        node_map: dict[tuple[str, int], str] = {}
-        node_counter = 1
-
-        # First, find ground connections - they should be node 0
-        for comp in circuit.components.values():
-            if comp.type == ComponentType.GROUND:
-                # Find what's connected to this ground
-                gnd_pos = comp.get_pin_position(0)
-                for other_comp in circuit.components.values():
-                    if other_comp.id == comp.id:
-                        continue
-                    for pin_idx in range(len(other_comp.pins)):
-                        pin_pos = other_comp.get_pin_position(pin_idx)
-                        if abs(pin_pos[0] - gnd_pos[0]) < 5 and abs(pin_pos[1] - gnd_pos[1]) < 5:
-                            node_map[(str(other_comp.id), pin_idx)] = "0"
-
-        # Then, assign node names to remaining pins based on wire connections
-        for wire in circuit.wires.values():
-            if not wire.segments:
-                continue
-
-            # Get connected pins for this wire
-            connected_pins = []
-            for seg in wire.segments:
-                # Check start and end of each segment
-                for pos in [(seg.x1, seg.y1), (seg.x2, seg.y2)]:
-                    for comp in circuit.components.values():
-                        for pin_idx in range(len(comp.pins)):
-                            pin_pos = comp.get_pin_position(pin_idx)
-                            if abs(pin_pos[0] - pos[0]) < 5 and abs(pin_pos[1] - pos[1]) < 5:
-                                connected_pins.append((str(comp.id), pin_idx))
-
-            if not connected_pins:
-                continue
-
-            # Check if any pin already has a node assigned
-            existing_node = None
-            for pin_key in connected_pins:
-                if pin_key in node_map:
-                    existing_node = node_map[pin_key]
-                    break
-
-            # Assign the same node to all connected pins
-            if existing_node is None:
-                existing_node = str(node_counter)
-                node_counter += 1
-
-            for pin_key in connected_pins:
-                node_map[pin_key] = existing_node
-
-        # Assign unique nodes to any unconnected pins
-        for comp in circuit.components.values():
-            for pin_idx in range(len(comp.pins)):
-                key = (str(comp.id), pin_idx)
-                if key not in node_map:
-                    node_map[key] = str(node_counter)
-                    node_counter += 1
-
-        return node_map
 
     @staticmethod
     def _component_to_spice(comp, node_map: dict[tuple[str, int], str]) -> str:

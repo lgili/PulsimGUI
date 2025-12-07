@@ -27,6 +27,7 @@ from pulsimgui.services.template_service import (
     TemplateInfo,
     TemplateCategory,
 )
+from pulsimgui.services.hierarchy_service import HierarchyService, HierarchyLevel
 
 __all__ = [
     "SettingsService",
@@ -53,4 +54,6 @@ __all__ = [
     "TemplateService",
     "TemplateInfo",
     "TemplateCategory",
+    "HierarchyService",
+    "HierarchyLevel",
 ]

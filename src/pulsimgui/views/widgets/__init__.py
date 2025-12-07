@@ -7,6 +7,10 @@ from pulsimgui.views.widgets.loading_indicator import (
     BusyCursor,
     with_busy_cursor,
 )
+from pulsimgui.views.widgets.breadcrumb_widget import (
+    BreadcrumbWidget,
+    HierarchyBar,
+)
 
 __all__ = [
     "SpinnerWidget",
@@ -14,4 +18,6 @@ __all__ = [
     "LoadingDialog",
     "BusyCursor",
     "with_busy_cursor",
+    "BreadcrumbWidget",
+    "HierarchyBar",
 ]

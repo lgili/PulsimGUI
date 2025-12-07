@@ -4,8 +4,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.subcircuit import SubcircuitDefinition
 
 
 @dataclass
@@ -51,6 +53,7 @@ class Project:
     path: Path | None = None
     circuits: dict[str, Circuit] = field(default_factory=dict)
     active_circuit: str = "main"
+    subcircuits: dict[UUID, SubcircuitDefinition] = field(default_factory=dict)
     simulation_settings: SimulationSettings = field(default_factory=SimulationSettings)
     created: datetime = field(default_factory=datetime.now)
     modified: datetime = field(default_factory=datetime.now)
@@ -111,6 +114,7 @@ class Project:
             "active_circuit": self.active_circuit,
             "simulation_settings": self.simulation_settings.to_dict(),
             "circuits": {name: c.to_dict() for name, c in self.circuits.items()},
+            "subcircuits": [definition.to_dict() for definition in self.subcircuits.values()],
         }
 
     @classmethod
@@ -119,6 +123,11 @@ class Project:
         circuits = {}
         for name, circuit_data in data.get("circuits", {}).items():
             circuits[name] = Circuit.from_dict(circuit_data)
+
+        subcircuits: dict[UUID, SubcircuitDefinition] = {}
+        for definition_data in data.get("subcircuits", []):
+            definition = SubcircuitDefinition.from_dict(definition_data)
+            subcircuits[definition.id] = definition
 
         return cls(
             name=data.get("name", "Untitled Project"),
@@ -130,6 +139,7 @@ class Project:
             ),
             created=datetime.fromisoformat(data["created"]) if "created" in data else datetime.now(),
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
+            subcircuits=subcircuits,
         )
 
     def save(self, path: Path | None = None) -> None:
@@ -156,3 +166,20 @@ class Project:
         project = cls.from_dict(data, path)
         project.mark_clean()
         return project
+
+    # Subcircuit helpers
+
+    def add_subcircuit(self, definition: SubcircuitDefinition) -> None:
+        """Add a subcircuit definition to the project."""
+        self.subcircuits[definition.id] = definition
+        self.mark_dirty()
+
+    def get_subcircuit(self, definition_id: UUID) -> SubcircuitDefinition | None:
+        """Retrieve a subcircuit definition by ID."""
+        return self.subcircuits.get(definition_id)
+
+    def remove_subcircuit(self, definition_id: UUID) -> None:
+        """Remove a subcircuit definition if present."""
+        if definition_id in self.subcircuits:
+            del self.subcircuits[definition_id]
+            self.mark_dirty()

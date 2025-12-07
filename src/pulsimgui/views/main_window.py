@@ -18,12 +18,19 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.commands.base import CommandStack
+from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.project import Project
+from pulsimgui.models.subcircuit import (
+    SubcircuitInstance,
+    create_subcircuit_from_selection,
+    detect_boundary_ports,
+)
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import SimulationService, SimulationState
 from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.shortcut_service import ShortcutService
+from pulsimgui.services.hierarchy_service import HierarchyService
 from pulsimgui.views.dialogs import (
     PreferencesDialog,
     SimulationSettingsDialog,
@@ -31,12 +38,14 @@ from pulsimgui.views.dialogs import (
     BodePlotDialog,
     KeyboardShortcutsDialog,
     TemplateDialog,
+    CreateSubcircuitDialog,
 )
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
 from pulsimgui.views.waveform import WaveformViewer
+from pulsimgui.views.widgets import HierarchyBar
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +59,7 @@ class MainWindow(QMainWindow):
         self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
+        self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(parent=self)
 
         self._setup_window()
@@ -72,10 +82,21 @@ class MainWindow(QMainWindow):
         # Force menu bar inside window (not in macOS system bar)
         self.menuBar().setNativeMenuBar(False)
 
-        # Central widget - Schematic Editor
+        # Central widget - Schematic Editor + hierarchy bar
         self._schematic_scene = SchematicScene()
         self._schematic_view = SchematicView(self._schematic_scene)
-        self.setCentralWidget(self._schematic_view)
+        self._hierarchy_bar = HierarchyBar()
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._hierarchy_bar)
+        layout.addWidget(self._schematic_view)
+        self.setCentralWidget(central)
+
+        # Ensure scene reflects current hierarchy level
+        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
 
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
@@ -83,8 +104,10 @@ class MainWindow(QMainWindow):
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
+        self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
+        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -158,6 +181,10 @@ class MainWindow(QMainWindow):
 
         self.action_select_all = QAction("Select &All", self)
         self.action_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+
+        self.action_create_subcircuit = QAction("Create &Subcircuit...", self)
+        self.action_create_subcircuit.setEnabled(False)
+        self.action_create_subcircuit.triggered.connect(self._on_create_subcircuit)
 
         self.action_preferences = QAction("&Preferences...", self)
         self.action_preferences.setShortcut(QKeySequence("Ctrl+,"))
@@ -273,6 +300,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_delete)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_select_all)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_preferences)
         edit_menu.addAction(self.action_keyboard_shortcuts)
@@ -453,6 +482,12 @@ class MainWindow(QMainWindow):
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
         self._simulation_service.error.connect(self._on_simulation_error)
 
+        # Hierarchy service signals
+        self._hierarchy_service.hierarchy_changed.connect(self._on_hierarchy_changed)
+        self._hierarchy_service.breadcrumb_updated.connect(self._on_breadcrumb_updated)
+        self._hierarchy_bar.navigate_up.connect(self._hierarchy_service.ascend)
+        self._hierarchy_bar.navigate_to_level.connect(self._hierarchy_service.navigate_to_level)
+
     def _restore_state(self) -> None:
         """Restore window geometry and state."""
         geometry = self._settings.get_window_geometry()
@@ -553,6 +588,12 @@ class MainWindow(QMainWindow):
         else:
             self._modified_label.setText("")
 
+    def _current_circuit(self) -> Circuit:
+        """Return the circuit for the current hierarchy level."""
+        if hasattr(self, "_hierarchy_service"):
+            return self._hierarchy_service.get_current_circuit()
+        return self._project.get_active_circuit()
+
     def _setup_autosave_timer(self) -> None:
         """Set up the auto-save timer based on settings."""
         self._autosave_timer = QTimer(self)
@@ -612,10 +653,6 @@ class MainWindow(QMainWindow):
         """Handle selection change in schematic scene."""
         from pulsimgui.views.schematic.items import ComponentItem
 
-        # Don't update if focus is in properties panel (user is editing)
-        if self._has_properties_focus():
-            return
-
         selected_items = self._schematic_scene.selectedItems()
 
         # Filter to get only ComponentItems
@@ -623,6 +660,12 @@ class MainWindow(QMainWindow):
             item.component for item in selected_items
             if isinstance(item, ComponentItem)
         ]
+
+        self.action_create_subcircuit.setEnabled(len(selected_components) > 0)
+
+        # Don't update properties if user is editing there
+        if self._has_properties_focus():
+            return
 
         if len(selected_components) == 1:
             # Single component selected - show its properties
@@ -647,6 +690,106 @@ class MainWindow(QMainWindow):
             widget = widget.parent()
         return False
 
+    def _on_hierarchy_changed(self, _level) -> None:
+        """Refresh scene when hierarchy level changes."""
+        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._schematic_scene.clearSelection()
+        self._properties_panel.set_component(None)
+        self.update_selection(0)
+
+    def _on_breadcrumb_updated(self, levels: list) -> None:
+        """Update hierarchy bar breadcrumb display."""
+        self._hierarchy_bar.update_hierarchy(levels)
+
+    def _on_subcircuit_open_requested(self, component) -> None:
+        """Handle double-click on a subcircuit instance to descend."""
+        definition_id = getattr(component, "subcircuit_id", None)
+        if not definition_id:
+            QMessageBox.warning(self, "Missing subcircuit", "This subcircuit has no definition attached.")
+            return
+
+        if not self._hierarchy_service.descend_into(component.id, definition_id):
+            QMessageBox.warning(self, "Cannot navigate", "Subcircuit definition could not be loaded.")
+
+    def _on_create_subcircuit(self) -> None:
+        """Create a subcircuit definition from the current selection."""
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+        from pulsimgui.models.component import ComponentType
+
+        selected_items = self._schematic_scene.selectedItems()
+        component_items = [item for item in selected_items if isinstance(item, ComponentItem)]
+        wire_items = [item for item in selected_items if isinstance(item, WireItem)]
+
+        if not component_items:
+            QMessageBox.information(self, "Create Subcircuit", "Select at least one component.")
+            return
+
+        current_circuit = self._current_circuit()
+        component_ids = [item.component.id for item in component_items]
+        wire_ids = [item.wire.id for item in wire_items]
+
+        candidates = detect_boundary_ports(current_circuit, component_ids)
+        candidate_names = [c.name for c in candidates]
+
+        dialog = CreateSubcircuitDialog(len(component_items), candidate_names, self)
+        if not dialog.exec():
+            return
+
+        selected_names = set(dialog.get_selected_ports())
+        if selected_names:
+            selected_candidates = [c for c in candidates if c.name in selected_names]
+        else:
+            selected_candidates = candidates
+
+        try:
+            definition, ports, center = create_subcircuit_from_selection(
+                current_circuit,
+                selected_component_ids=component_ids,
+                selected_wire_ids=wire_ids,
+                name=dialog.get_name(),
+                description=dialog.get_description(),
+                symbol_size=dialog.get_symbol_size(),
+                boundary_ports=selected_candidates,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Create Subcircuit", str(exc))
+            return
+
+        # Remove selected items from circuit and scene
+        for item in component_items:
+            current_circuit.remove_component(item.component.id)
+            self._schematic_scene.removeItem(item)
+
+        for item in wire_items:
+            current_circuit.remove_wire(item.wire.id)
+            self._schematic_scene.removeItem(item)
+
+        # Register definition and add instance
+        self._project.add_subcircuit(definition)
+        self._hierarchy_service.register_subcircuit(definition)
+
+        instance = SubcircuitInstance(
+            name=self._generate_component_name(ComponentType.SUBCIRCUIT),
+            x=center[0],
+            y=center[1],
+            parameters={
+                "symbol_width": definition.symbol_width,
+                "symbol_height": definition.symbol_height,
+            },
+            pins=definition.get_pins(),
+            subcircuit_id=definition.id,
+        )
+
+        current_circuit.add_component(instance)
+        self._schematic_scene.add_component(instance)
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+        self.statusBar().showMessage(
+            f"Created subcircuit '{definition.name}' with {len(ports)} port(s)", 3000
+        )
+
     def _clear_scene(self) -> None:
         """Clear all items from the schematic scene."""
         self._schematic_scene.clear()
@@ -654,23 +797,9 @@ class MainWindow(QMainWindow):
 
     def _load_project_to_scene(self) -> None:
         """Load the current project's circuit into the schematic scene."""
-        from pulsimgui.views.schematic.items import ComponentItem, WireItem
-
-        self._clear_scene()
-
-        circuit = self._project.get_active_circuit()
-
-        # Add all components
-        for component in circuit.components.values():
-            self._schematic_scene.add_component(component)
-
-        # Add all wires
-        for wire in circuit.wires.values():
-            wire_item = WireItem(wire)
-            wire_item.set_dark_mode(self._theme_service.is_dark)
-            self._schematic_scene.addItem(wire_item)
-
-        # Apply theme to new items
+        self._hierarchy_service.set_project(self._project)
+        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
 
     # Slots
@@ -680,7 +809,9 @@ class MainWindow(QMainWindow):
             return
         self._project = Project()
         self._command_stack.clear()
-        self._clear_scene()
+        self._hierarchy_service.set_project(self._project)
+        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
 
@@ -779,7 +910,9 @@ class MainWindow(QMainWindow):
             return
         self._project = Project()
         self._command_stack.clear()
-        self._clear_scene()
+        self._hierarchy_service.set_project(self._project)
+        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
         self.statusBar().showMessage("Project closed", 3000)
@@ -874,7 +1007,7 @@ class MainWindow(QMainWindow):
         component = Component(type=comp_type, name=name, x=x, y=y)
 
         # Add to circuit and scene
-        self._project.get_active_circuit().add_component(component)
+        self._current_circuit().add_component(component)
         self._schematic_scene.add_component(component)
 
         # Update library recent list
@@ -902,7 +1035,7 @@ class MainWindow(QMainWindow):
         component = Component(type=comp_type, name=name, x=x, y=y)
 
         # Add to circuit and scene
-        self._project.get_active_circuit().add_component(component)
+        self._current_circuit().add_component(component)
         self._schematic_scene.add_component(component)
 
         # Update library recent list
@@ -929,7 +1062,7 @@ class MainWindow(QMainWindow):
         wire = Wire(segments=wire_segments)
 
         # Add to circuit
-        self._project.get_active_circuit().add_wire(wire)
+        self._current_circuit().add_wire(wire)
 
         # Add to scene
         wire_item = WireItem(wire)
@@ -964,7 +1097,7 @@ class MainWindow(QMainWindow):
 
         # Find next available number
         existing_names = {
-            c.name for c in self._project.get_active_circuit().components.values()
+            c.name for c in self._current_circuit().components.values()
         }
         num = 1
         while f"{prefix}{num}" in existing_names:
@@ -1182,7 +1315,7 @@ class MainWindow(QMainWindow):
             if not (path.endswith(".sp") or path.endswith(".cir")):
                 path += ".sp"
             try:
-                circuit = self._project.get_active_circuit()
+                circuit = self._current_circuit()
                 ExportService.export_spice_netlist(circuit, path)
                 self.statusBar().showMessage(f"Exported SPICE netlist: {path}", 3000)
             except Exception as e:

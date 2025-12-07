@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QGraphicsView
 
+from pulsimgui.models.component import ComponentType
 from pulsimgui.views.schematic.scene import SchematicScene
 from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem
 
@@ -40,6 +41,7 @@ class SchematicView(QGraphicsView):
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
     grid_toggle_requested = Signal()  # emitted when G key is pressed
+    subcircuit_open_requested = Signal(object)  # Component instance
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -347,6 +349,18 @@ class SchematicView(QGraphicsView):
                 self._wire_start = None
                 event.accept()
                 return
+        elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
+            item = self.itemAt(event.position().toPoint())
+            if item is not None:
+                from pulsimgui.views.schematic.items import ComponentItem
+
+                if (
+                    isinstance(item, ComponentItem)
+                    and item.component.type == ComponentType.SUBCIRCUIT
+                ):
+                    self.subcircuit_open_requested.emit(item.component)
+                    event.accept()
+                    return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
