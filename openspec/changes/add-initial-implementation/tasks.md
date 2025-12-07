@@ -65,9 +65,9 @@
 - [x] 2.3.7 Implement ground symbol
 - [x] 2.3.8 Implement diode symbol
 - [x] 2.3.9 Implement MOSFET symbol (N and P)
-- [ ] 2.3.10 Implement IGBT symbol
+- [x] 2.3.10 Implement IGBT symbol
 - [x] 2.3.11 Implement switch symbol
-- [ ] 2.3.12 Implement transformer symbol
+- [x] 2.3.12 Implement transformer symbol
 - [x] 2.3.13 Add pin markers to all symbols
 - [x] 2.3.14 Implement component rotation (90° increments)
 - [x] 2.3.15 Implement component mirroring

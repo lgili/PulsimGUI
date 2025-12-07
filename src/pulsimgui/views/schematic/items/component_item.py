@@ -387,6 +387,70 @@ class SwitchItem(ComponentItem):
         painter.drawLine(QPointF(-8, 0), QPointF(6, -10))
 
 
+class IGBTItem(ComponentItem):
+    """Graphics item for IGBT (Insulated Gate Bipolar Transistor)."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -25, 50, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        """Draw IGBT symbol (similar to MOSFET but with BJT-style collector)."""
+        # Gate line (insulated)
+        painter.drawLine(QPointF(-20, 0), QPointF(-10, 0))
+        painter.drawLine(QPointF(-10, -10), QPointF(-10, 10))
+
+        # Gate insulation gap
+        painter.drawLine(QPointF(-6, -12), QPointF(-6, 12))
+
+        # Emitter connection (bottom)
+        painter.drawLine(QPointF(-6, 10), QPointF(10, 10))
+        painter.drawLine(QPointF(10, 10), QPointF(10, 20))
+
+        # Collector connection (top)
+        painter.drawLine(QPointF(-6, -10), QPointF(10, -10))
+        painter.drawLine(QPointF(10, -10), QPointF(10, -20))
+
+        # Arrow on emitter (pointing outward for NPN-like IGBT)
+        painter.drawLine(QPointF(-6, 5), QPointF(5, 12))
+        painter.drawLine(QPointF(5, 12), QPointF(1, 8))
+        painter.drawLine(QPointF(5, 12), QPointF(1, 14))
+
+
+class TransformerItem(ComponentItem):
+    """Graphics item for transformer."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-35, -25, 70, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        """Draw transformer symbol (two coupled inductors with core)."""
+        from PySide6.QtCore import QRectF as QR
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Primary winding (left side) - 3 arcs
+        painter.drawLine(QPointF(-30, -15), QPointF(-15, -15))
+        for i in range(3):
+            y = -10 + i * 10
+            painter.drawArc(QR(-15, y - 5, 10, 10), 90 * 16, 180 * 16)
+        painter.drawLine(QPointF(-30, 15), QPointF(-15, 15))
+
+        # Core lines (two vertical parallel lines)
+        painter.drawLine(QPointF(-3, -18), QPointF(-3, 18))
+        painter.drawLine(QPointF(3, -18), QPointF(3, 18))
+
+        # Secondary winding (right side) - 3 arcs
+        painter.drawLine(QPointF(30, -15), QPointF(15, -15))
+        for i in range(3):
+            y = -10 + i * 10
+            painter.drawArc(QR(5, y - 5, 10, 10), 270 * 16, 180 * 16)
+        painter.drawLine(QPointF(30, 15), QPointF(15, 15))
+
+    def _get_value_text(self) -> str:
+        turns_ratio = self._component.parameters.get("turns_ratio", 1.0)
+        return f"1:{turns_ratio}"
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -400,7 +464,9 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.DIODE: DiodeItem,
         ComponentType.MOSFET_N: MOSFETItem,
         ComponentType.MOSFET_P: MOSFETItem,
+        ComponentType.IGBT: IGBTItem,
         ComponentType.SWITCH: SwitchItem,
+        ComponentType.TRANSFORMER: TransformerItem,
     }
 
     item_class = item_classes.get(component.type, ComponentItem)
