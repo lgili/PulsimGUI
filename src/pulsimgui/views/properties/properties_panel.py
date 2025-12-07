@@ -377,6 +377,8 @@ class PropertiesPanel(QWidget):
             "rs": "Ω",
             "rds_on": "Ω",
             "lm": "H",
+            "frequency": "Hz",
+            "amplitude": "V",
         }
         return units.get(name, "")
 

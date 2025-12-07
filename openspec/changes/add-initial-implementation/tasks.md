@@ -273,7 +273,7 @@
 - [x] 8.3.3 Loss breakdown charts
 
 ### 8.4 Control Blocks
-- [ ] 8.4.1 Add PI controller symbol
-- [ ] 8.4.2 Add PID controller symbol
-- [ ] 8.4.3 Add math block symbols
-- [ ] 8.4.4 Add PWM generator symbol
+- [x] 8.4.1 Add PI controller symbol
+- [x] 8.4.2 Add PID controller symbol
+- [x] 8.4.3 Add math block symbols
+- [x] 8.4.4 Add PWM generator symbol

@@ -13,6 +13,10 @@ from pulsimgui.views.schematic.items.component_item import (
     IGBTItem,
     SwitchItem,
     TransformerItem,
+    PIControllerItem,
+    PIDControllerItem,
+    MathBlockItem,
+    PWMGeneratorItem,
     create_component_item,
 )
 from pulsimgui.views.schematic.items.wire_item import (
@@ -35,6 +39,10 @@ __all__ = [
     "IGBTItem",
     "SwitchItem",
     "TransformerItem",
+    "PIControllerItem",
+    "PIDControllerItem",
+    "MathBlockItem",
+    "PWMGeneratorItem",
     "create_component_item",
     "WireItem",
     "WirePreviewItem",

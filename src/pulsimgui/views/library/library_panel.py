@@ -59,6 +59,14 @@ def create_component_drag_pixmap(comp_type: ComponentType, size: int = 70) -> QP
         _draw_switch(painter)
     elif comp_type == ComponentType.TRANSFORMER:
         _draw_transformer(painter)
+    elif comp_type == ComponentType.PI_CONTROLLER:
+        _draw_block(painter, "PI")
+    elif comp_type == ComponentType.PID_CONTROLLER:
+        _draw_block(painter, "PID")
+    elif comp_type == ComponentType.MATH_BLOCK:
+        _draw_block(painter, "Σ")
+    elif comp_type == ComponentType.PWM_GENERATOR:
+        _draw_block(painter, "PWM")
     else:
         # Fallback: draw a simple box
         painter.drawRect(-15, -15, 30, 30)
@@ -211,6 +219,18 @@ def _draw_transformer(painter: QPainter) -> None:
     painter.drawLine(QPointF(2, -15), QPointF(2, 15))
 
 
+def _draw_block(painter: QPainter, label: str) -> None:
+    """Draw simple rectangular control block with centered text."""
+    rect = QRectF(-20, -15, 40, 30)
+    painter.drawRect(rect)
+    painter.save()
+    font = painter.font()
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+    painter.restore()
+
+
 class DraggableTreeWidget(QTreeWidget):
     """Tree widget with proper drag support."""
 
@@ -328,6 +348,32 @@ COMPONENT_LIBRARY = {
             "name": "Ideal Switch",
             "shortcut": "S",
             "description": "Controlled ideal switch",
+        },
+    ],
+    "Control Blocks": [
+        {
+            "type": ComponentType.PI_CONTROLLER,
+            "name": "PI Controller",
+            "shortcut": "Ctrl+P",
+            "description": "Two-input PI compensator block",
+        },
+        {
+            "type": ComponentType.PID_CONTROLLER,
+            "name": "PID Controller",
+            "shortcut": "Ctrl+Shift+P",
+            "description": "Two-input PID controller block",
+        },
+        {
+            "type": ComponentType.MATH_BLOCK,
+            "name": "Math Block",
+            "shortcut": "Ctrl+M",
+            "description": "Generic math operation block (sum, diff, gain)",
+        },
+        {
+            "type": ComponentType.PWM_GENERATOR,
+            "name": "PWM Generator",
+            "shortcut": "Ctrl+W",
+            "description": "Carrier-based PWM signal generator",
         },
     ],
 }

@@ -21,6 +21,10 @@ class ComponentType(Enum):
     IGBT = auto()
     SWITCH = auto()
     TRANSFORMER = auto()
+    PI_CONTROLLER = auto()
+    PID_CONTROLLER = auto()
+    MATH_BLOCK = auto()
+    PWM_GENERATOR = auto()
     SUBCIRCUIT = auto()  # Hierarchical subcircuit instance
 
 
@@ -67,6 +71,26 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "S1", 30, -15),
         Pin(3, "S2", 30, 15),
     ],
+    ComponentType.PI_CONTROLLER: [
+        Pin(0, "IN", -35, -12),
+        Pin(1, "FB", -35, 12),
+        Pin(2, "OUT", 35, 0),
+    ],
+    ComponentType.PID_CONTROLLER: [
+        Pin(0, "IN", -35, -12),
+        Pin(1, "FB", -35, 12),
+        Pin(2, "OUT", 35, 0),
+    ],
+    ComponentType.MATH_BLOCK: [
+        Pin(0, "A", -35, -12),
+        Pin(1, "B", -35, 12),
+        Pin(2, "OUT", 35, 0),
+    ],
+    ComponentType.PWM_GENERATOR: [
+        Pin(0, "CTRL", -35, -12),
+        Pin(1, "CLK", -35, 12),
+        Pin(2, "OUT", 35, 0),
+    ],
 }
 
 # Default parameter templates for each component type
@@ -83,6 +107,29 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.IGBT: {"vth": 3.0, "vce_sat": 2.0},
     ComponentType.SWITCH: {"ron": 0.001, "roff": 1e9, "initial_state": False},
     ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3},
+    ComponentType.PI_CONTROLLER: {
+        "kp": 1.0,
+        "ki": 100.0,
+        "output_min": -1.0,
+        "output_max": 1.0,
+    },
+    ComponentType.PID_CONTROLLER: {
+        "kp": 1.0,
+        "ki": 100.0,
+        "kd": 0.01,
+        "output_min": -1.0,
+        "output_max": 1.0,
+    },
+    ComponentType.MATH_BLOCK: {
+        "operation": "sum",
+        "gain": 1.0,
+    },
+    ComponentType.PWM_GENERATOR: {
+        "frequency": 10000.0,
+        "duty_cycle": 0.5,
+        "carrier": "sawtooth",
+        "amplitude": 1.0,
+    },
 }
 
 

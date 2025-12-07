@@ -550,6 +550,79 @@ class SubcircuitItem(ComponentItem):
         painter.restore()
 
 
+class BlockComponentItem(ComponentItem):
+    """Base class for rectangular control block style components."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-40, -25, 80, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        rect = self.boundingRect()
+        painter.drawRect(rect)
+        painter.save()
+        font = QFont(painter.font())
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.block_label())
+        painter.restore()
+
+    def block_label(self) -> str:
+        return self._component.type.name
+
+
+class PIControllerItem(BlockComponentItem):
+    """Item for PI controller block."""
+
+    def block_label(self) -> str:
+        return "PI"
+
+    def _get_value_text(self) -> str:
+        kp = self._component.parameters.get("kp", 0.0)
+        ki = self._component.parameters.get("ki", 0.0)
+        return f"Kp={kp:g} Ki={ki:g}"
+
+
+class PIDControllerItem(BlockComponentItem):
+    """Item for PID controller block."""
+
+    def block_label(self) -> str:
+        return "PID"
+
+    def _get_value_text(self) -> str:
+        kp = self._component.parameters.get("kp", 0.0)
+        ki = self._component.parameters.get("ki", 0.0)
+        kd = self._component.parameters.get("kd", 0.0)
+        return f"Kp={kp:g} Ki={ki:g} Kd={kd:g}"
+
+
+class MathBlockItem(BlockComponentItem):
+    """Item for generic math block."""
+
+    def block_label(self) -> str:
+        operation = self._component.parameters.get("operation", "Σ")
+        return operation.upper() if len(operation) <= 3 else operation[:3].upper()
+
+    def _get_value_text(self) -> str:
+        operation = self._component.parameters.get("operation", "sum")
+        gain = self._component.parameters.get("gain", 1.0)
+        return f"{operation} · {gain:g}"
+
+
+class PWMGeneratorItem(BlockComponentItem):
+    """Item for PWM generator block."""
+
+    def block_label(self) -> str:
+        return "PWM"
+
+    def _get_value_text(self) -> str:
+        from pulsimgui.utils.si_prefix import format_si_value
+
+        freq = self._component.parameters.get("frequency", 0.0)
+        duty = self._component.parameters.get("duty_cycle", 0.0) * 100.0
+        freq_text = format_si_value(freq, "Hz") if freq else "0 Hz"
+        return f"{freq_text} / {duty:.0f}%"
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -566,6 +639,10 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.IGBT: IGBTItem,
         ComponentType.SWITCH: SwitchItem,
         ComponentType.TRANSFORMER: TransformerItem,
+        ComponentType.PI_CONTROLLER: PIControllerItem,
+        ComponentType.PID_CONTROLLER: PIDControllerItem,
+        ComponentType.MATH_BLOCK: MathBlockItem,
+        ComponentType.PWM_GENERATOR: PWMGeneratorItem,
         ComponentType.SUBCIRCUIT: SubcircuitItem,
     }
 

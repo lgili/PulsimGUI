@@ -90,3 +90,17 @@ class TestComponent:
         data = comp.to_dict()
         restored = Component.from_dict(data)
         assert restored.id == original_id
+
+    def test_control_blocks_have_defaults(self):
+        pi = Component(type=ComponentType.PI_CONTROLLER)
+        assert len(pi.pins) == 3
+        assert "kp" in pi.parameters and "ki" in pi.parameters
+
+        pid = Component(type=ComponentType.PID_CONTROLLER)
+        assert "kd" in pid.parameters
+
+        math_block = Component(type=ComponentType.MATH_BLOCK)
+        assert math_block.parameters["operation"] == "sum"
+
+        pwm = Component(type=ComponentType.PWM_GENERATOR)
+        assert pwm.parameters["frequency"] == 10000.0
