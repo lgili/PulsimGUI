@@ -11,6 +11,12 @@ from pulsimgui.services.simulation_service import (
     DCResult,
     ACResult,
 )
+from pulsimgui.services.thermal_service import (
+    ThermalAnalysisService,
+    ThermalResult,
+    ThermalDeviceResult,
+    ThermalStage,
+)
 from pulsimgui.services.theme_service import (
     ThemeService,
     Theme,
@@ -41,6 +47,10 @@ __all__ = [
     "ParameterSweepResult",
     "DCResult",
     "ACResult",
+    "ThermalAnalysisService",
+    "ThermalResult",
+    "ThermalDeviceResult",
+    "ThermalStage",
     "ThemeService",
     "Theme",
     "ThemeColors",

@@ -31,6 +31,7 @@ from pulsimgui.services.simulation_service import (
     SimulationState,
     ParameterSweepResult,
 )
+from pulsimgui.services.thermal_service import ThermalAnalysisService
 from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.shortcut_service import ShortcutService
@@ -45,6 +46,7 @@ from pulsimgui.views.dialogs import (
     CreateSubcircuitDialog,
     ParameterSweepDialog,
     ParameterSweepResultsDialog,
+    ThermalViewerDialog,
 )
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
@@ -67,6 +69,7 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(parent=self)
+        self._thermal_service = ThermalAnalysisService(parent=self)
 
         self._setup_window()
         self._create_actions()
@@ -266,6 +269,9 @@ class MainWindow(QMainWindow):
         self.action_parameter_sweep = QAction("Parameter &Sweep...", self)
         self.action_parameter_sweep.triggered.connect(self._on_parameter_sweep)
 
+        self.action_thermal_viewer = QAction("&Thermal Viewer...", self)
+        self.action_thermal_viewer.triggered.connect(self._on_show_thermal_viewer)
+
         # Help actions
         self.action_about = QAction("&About PulsimGui", self)
         self.action_about.triggered.connect(self._on_about)
@@ -341,6 +347,7 @@ class MainWindow(QMainWindow):
         sim_menu.addAction(self.action_ac)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_parameter_sweep)
+        sim_menu.addAction(self.action_thermal_viewer)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_sim_settings)
 
@@ -1244,6 +1251,33 @@ class MainWindow(QMainWindow):
                 return
             circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
+
+    def _on_show_thermal_viewer(self) -> None:
+        """Generate synthetic thermal data and open the viewer dialog."""
+        circuit = self._current_circuit()
+        if not circuit or not circuit.components:
+            QMessageBox.information(
+                self,
+                "No Components",
+                "Add components to the schematic before opening the thermal viewer.",
+            )
+            return
+
+        try:
+            result = self._thermal_service.build_result(
+                circuit,
+                self._simulation_service.last_result,
+            )
+        except Exception as exc:  # pragma: no cover - defensive dialog
+            QMessageBox.warning(
+                self,
+                "Thermal Viewer",
+                f"Unable to generate thermal data:\n{exc}",
+            )
+            return
+
+        dialog = ThermalViewerDialog(result, self)
+        dialog.exec()
 
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
         """Handle simulation state change."""

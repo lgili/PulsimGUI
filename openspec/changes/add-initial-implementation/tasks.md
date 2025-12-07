@@ -268,9 +268,9 @@
 - [x] 8.2.3 Display sweep results
 
 ### 8.3 Thermal Viewer
-- [ ] 8.3.1 Display thermal network
-- [ ] 8.3.2 Show temperature vs time
-- [ ] 8.3.3 Loss breakdown charts
+- [x] 8.3.1 Display thermal network
+- [x] 8.3.2 Show temperature vs time
+- [x] 8.3.3 Loss breakdown charts
 
 ### 8.4 Control Blocks
 - [ ] 8.4.1 Add PI controller symbol
