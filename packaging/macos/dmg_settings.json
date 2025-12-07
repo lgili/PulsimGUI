@@ -1,0 +1,31 @@
+{
+    "title": "PulsimGui",
+    "icon": "icons/pulsimgui.icns",
+    "background": "macos/dmg_background.png",
+    "icon-size": 100,
+    "window": {
+        "position": {
+            "x": 100,
+            "y": 100
+        },
+        "size": {
+            "width": 640,
+            "height": 480
+        }
+    },
+    "format": "UDBZ",
+    "contents": [
+        {
+            "x": 180,
+            "y": 250,
+            "type": "file",
+            "path": "dist/PulsimGui.app"
+        },
+        {
+            "x": 460,
+            "y": 250,
+            "type": "link",
+            "path": "/Applications"
+        }
+    ]
+}

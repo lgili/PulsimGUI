@@ -18,6 +18,15 @@ from pulsimgui.services.theme_service import (
     MODERN_DARK_THEME,
     BUILTIN_THEMES,
 )
+from pulsimgui.services.export_service import ExportService
+from pulsimgui.services.shortcut_service import ShortcutService, ShortcutInfo
+from pulsimgui.services.error_service import ErrorService, ErrorSeverity, ErrorInfo
+from pulsimgui.services.recovery_service import RecoveryService
+from pulsimgui.services.template_service import (
+    TemplateService,
+    TemplateInfo,
+    TemplateCategory,
+)
 
 __all__ = [
     "SettingsService",
@@ -34,4 +43,14 @@ __all__ = [
     "DARK_THEME",
     "MODERN_DARK_THEME",
     "BUILTIN_THEMES",
+    "ExportService",
+    "ShortcutService",
+    "ShortcutInfo",
+    "ErrorService",
+    "ErrorSeverity",
+    "ErrorInfo",
+    "RecoveryService",
+    "TemplateService",
+    "TemplateInfo",
+    "TemplateCategory",
 ]

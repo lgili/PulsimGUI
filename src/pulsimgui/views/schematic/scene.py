@@ -100,6 +100,11 @@ class SchematicScene(QGraphicsScene):
         self._grid_color = color
         self.update()
 
+    @property
+    def background_color(self) -> QColor:
+        """Get the current background color."""
+        return self._background_color
+
     def set_background_color(self, color: QColor) -> None:
         """Set the background color from theme."""
         self._background_color = color

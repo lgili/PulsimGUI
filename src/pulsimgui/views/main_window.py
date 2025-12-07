@@ -1,6 +1,8 @@
 """Main application window."""
 
-from PySide6.QtCore import Qt, QSize
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -20,7 +22,17 @@ from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import SimulationService, SimulationState
 from pulsimgui.services.theme_service import ThemeService, Theme
-from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog, DCResultsDialog, BodePlotDialog
+from pulsimgui.services.export_service import ExportService
+from pulsimgui.services.shortcut_service import ShortcutService
+from pulsimgui.views.dialogs import (
+    PreferencesDialog,
+    SimulationSettingsDialog,
+    DCResultsDialog,
+    BodePlotDialog,
+    KeyboardShortcutsDialog,
+    TemplateDialog,
+)
+from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
@@ -35,6 +47,7 @@ class MainWindow(QMainWindow):
 
         self._settings = SettingsService()
         self._theme_service = ThemeService(parent=self)
+        self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
         self._simulation_service = SimulationService(parent=self)
@@ -48,6 +61,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._restore_state()
         self._apply_theme()
+        self._setup_autosave_timer()
 
     def _setup_window(self) -> None:
         """Configure main window properties."""
@@ -79,6 +93,10 @@ class MainWindow(QMainWindow):
         self.action_new.setShortcut(QKeySequence.StandardKey.New)
         self.action_new.triggered.connect(self._on_new_project)
 
+        self.action_new_from_template = QAction("New from &Template...", self)
+        self.action_new_from_template.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.action_new_from_template.triggered.connect(self._on_new_from_template)
+
         self.action_open = QAction("&Open Project...", self)
         self.action_open.setShortcut(QKeySequence.StandardKey.Open)
         self.action_open.triggered.connect(self._on_open_project)
@@ -91,8 +109,25 @@ class MainWindow(QMainWindow):
         self.action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.action_save_as.triggered.connect(self._on_save_as)
 
-        self.action_export_netlist = QAction("Export &Netlist...", self)
-        self.action_export_netlist.setShortcut(QKeySequence("Ctrl+E"))
+        # Export actions
+        self.action_export_spice = QAction("Export &SPICE Netlist...", self)
+        self.action_export_spice.triggered.connect(self._on_export_spice)
+
+        self.action_export_json = QAction("Export &JSON Netlist...", self)
+        self.action_export_json.triggered.connect(self._on_export_json)
+
+        self.action_export_png = QAction("Export Schematic as &PNG...", self)
+        self.action_export_png.triggered.connect(self._on_export_png)
+
+        self.action_export_svg = QAction("Export Schematic as S&VG...", self)
+        self.action_export_svg.triggered.connect(self._on_export_svg)
+
+        self.action_export_csv = QAction("Export Waveforms as &CSV...", self)
+        self.action_export_csv.triggered.connect(self._on_export_csv)
+
+        self.action_close = QAction("&Close Project", self)
+        self.action_close.setShortcut(QKeySequence("Ctrl+W"))
+        self.action_close.triggered.connect(self._on_close_project)
 
         self.action_exit = QAction("E&xit", self)
         self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -127,6 +162,9 @@ class MainWindow(QMainWindow):
         self.action_preferences = QAction("&Preferences...", self)
         self.action_preferences.setShortcut(QKeySequence("Ctrl+,"))
         self.action_preferences.triggered.connect(self._on_preferences)
+
+        self.action_keyboard_shortcuts = QAction("&Keyboard Shortcuts...", self)
+        self.action_keyboard_shortcuts.triggered.connect(self._on_keyboard_shortcuts)
 
         # View actions
         self.action_zoom_in = QAction("Zoom &In", self)
@@ -203,6 +241,7 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.action_new)
+        file_menu.addAction(self.action_new_from_template)
         file_menu.addAction(self.action_open)
         self.recent_menu = file_menu.addMenu("Open &Recent")
         self._update_recent_menu()
@@ -210,7 +249,16 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_save)
         file_menu.addAction(self.action_save_as)
         file_menu.addSeparator()
-        file_menu.addAction(self.action_export_netlist)
+        file_menu.addAction(self.action_close)
+        file_menu.addSeparator()
+        export_menu = file_menu.addMenu("&Export")
+        export_menu.addAction(self.action_export_spice)
+        export_menu.addAction(self.action_export_json)
+        export_menu.addSeparator()
+        export_menu.addAction(self.action_export_png)
+        export_menu.addAction(self.action_export_svg)
+        export_menu.addSeparator()
+        export_menu.addAction(self.action_export_csv)
         file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
 
@@ -227,6 +275,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_select_all)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_preferences)
+        edit_menu.addAction(self.action_keyboard_shortcuts)
 
         # View menu
         view_menu = menubar.addMenu("&View")
@@ -489,10 +538,60 @@ class MainWindow(QMainWindow):
 
     def _update_title(self) -> None:
         """Update window title based on project state."""
-        title = f"PulsimGui - {self._project.name}"
+        if self._project.path:
+            title = f"PulsimGui - {self._project.path.name}"
+        else:
+            title = f"PulsimGui - {self._project.name}"
         if self._project.is_dirty:
             title += " *"
         self.setWindowTitle(title)
+
+    def _update_modified_indicator(self) -> None:
+        """Update the modified indicator in the status bar."""
+        if self._project.is_dirty:
+            self._modified_label.setText("Modified")
+        else:
+            self._modified_label.setText("")
+
+    def _setup_autosave_timer(self) -> None:
+        """Set up the auto-save timer based on settings."""
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._on_autosave)
+        self._update_autosave_timer()
+
+    def _update_autosave_timer(self) -> None:
+        """Update auto-save timer based on current settings."""
+        if self._settings.get_auto_save_enabled():
+            interval_minutes = self._settings.get_auto_save_interval()
+            self._autosave_timer.start(interval_minutes * 60 * 1000)  # Convert to ms
+        else:
+            self._autosave_timer.stop()
+
+    def _on_autosave(self) -> None:
+        """Handle auto-save timer timeout."""
+        if not self._project.is_dirty:
+            return
+
+        # Save backup copy
+        if self._project.path:
+            # Save to backup file (original.pulsim.bak)
+            backup_path = Path(str(self._project.path) + ".bak")
+            try:
+                self._project.save(str(backup_path))
+                self.statusBar().showMessage("Auto-saved backup", 2000)
+            except Exception:
+                pass  # Silently fail on backup
+        else:
+            # No file yet - save to temp location
+            import tempfile
+            temp_dir = Path(tempfile.gettempdir()) / "pulsimgui_autosave"
+            temp_dir.mkdir(exist_ok=True)
+            backup_path = temp_dir / f"{self._project.name}.pulsim"
+            try:
+                self._project.save(str(backup_path))
+                self.statusBar().showMessage(f"Auto-saved to {backup_path}", 2000)
+            except Exception:
+                pass  # Silently fail on backup
 
     def update_coordinates(self, x: float, y: float) -> None:
         """Update coordinate display in status bar."""
@@ -548,6 +647,32 @@ class MainWindow(QMainWindow):
             widget = widget.parent()
         return False
 
+    def _clear_scene(self) -> None:
+        """Clear all items from the schematic scene."""
+        self._schematic_scene.clear()
+        self._properties_panel.set_component(None)
+
+    def _load_project_to_scene(self) -> None:
+        """Load the current project's circuit into the schematic scene."""
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+
+        self._clear_scene()
+
+        circuit = self._project.get_active_circuit()
+
+        # Add all components
+        for component in circuit.components.values():
+            self._schematic_scene.add_component(component)
+
+        # Add all wires
+        for wire in circuit.wires.values():
+            wire_item = WireItem(wire)
+            wire_item.set_dark_mode(self._theme_service.is_dark)
+            self._schematic_scene.addItem(wire_item)
+
+        # Apply theme to new items
+        self._apply_current_theme()
+
     # Slots
     def _on_new_project(self) -> None:
         """Create a new project."""
@@ -555,7 +680,34 @@ class MainWindow(QMainWindow):
             return
         self._project = Project()
         self._command_stack.clear()
+        self._clear_scene()
         self._update_title()
+        self._update_modified_indicator()
+
+    def _on_new_from_template(self) -> None:
+        """Create a new project from a template."""
+        if not self._check_save():
+            return
+
+        dialog = TemplateDialog(self)
+        if dialog.exec():
+            template_id = dialog.get_selected_template_id()
+            if template_id:
+                # Create circuit from template
+                circuit = TemplateService.create_circuit_from_template(template_id)
+                if circuit:
+                    # Create new project with the template circuit
+                    self._project = Project(name=circuit.name)
+                    self._project._circuits = {circuit.id: circuit}
+                    self._project._active_circuit_id = circuit.id
+                    self._command_stack.clear()
+                    self._load_project_to_scene()
+                    self._project.mark_dirty()
+                    self._update_title()
+                    self._update_modified_indicator()
+                    self.statusBar().showMessage(
+                        f"Created new project from template: {circuit.name}", 3000
+                    )
 
     def _on_open_project(self) -> None:
         """Open a project file."""
@@ -576,9 +728,12 @@ class MainWindow(QMainWindow):
         try:
             self._project = Project.load(path)
             self._command_stack.clear()
+            self._load_project_to_scene()
             self._settings.add_recent_project(path)
             self._update_recent_menu()
             self._update_title()
+            self._update_modified_indicator()
+            self.statusBar().showMessage(f"Opened: {path}", 3000)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
 
@@ -591,6 +746,8 @@ class MainWindow(QMainWindow):
                 self._project.save()
                 self._command_stack.set_clean()
                 self._update_title()
+                self._update_modified_indicator()
+                self.statusBar().showMessage("Project saved", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
 
@@ -611,20 +768,35 @@ class MainWindow(QMainWindow):
                 self._settings.add_recent_project(path)
                 self._update_recent_menu()
                 self._update_title()
+                self._update_modified_indicator()
+                self.statusBar().showMessage(f"Saved: {path}", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
+
+    def _on_close_project(self) -> None:
+        """Close the current project and create a new empty one."""
+        if not self._check_save():
+            return
+        self._project = Project()
+        self._command_stack.clear()
+        self._clear_scene()
+        self._update_title()
+        self._update_modified_indicator()
+        self.statusBar().showMessage("Project closed", 3000)
 
     def _on_undo(self) -> None:
         """Undo the last command."""
         self._command_stack.undo()
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
     def _on_redo(self) -> None:
         """Redo the last undone command."""
         self._command_stack.redo()
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
     def _on_about(self) -> None:
         """Show about dialog."""
@@ -675,6 +847,12 @@ class MainWindow(QMainWindow):
             self._schematic_scene.grid_size = self._settings.get_grid_size()
             self._schematic_scene.show_grid = self._settings.get_show_grid()
             self.action_toggle_grid.setChecked(self._settings.get_show_grid())
+            self._update_autosave_timer()
+
+    def _on_keyboard_shortcuts(self) -> None:
+        """Show keyboard shortcuts dialog."""
+        dialog = KeyboardShortcutsDialog(self._shortcut_service, self)
+        dialog.exec()
 
     def _on_library_component_selected(self, comp_type) -> None:
         """Handle component selection from library (double-click to add)."""
@@ -705,6 +883,7 @@ class MainWindow(QMainWindow):
         # Mark project dirty
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
     def _on_component_dropped(self, comp_type_name: str, x: float, y: float) -> None:
         """Handle component drop from library panel."""
@@ -732,6 +911,7 @@ class MainWindow(QMainWindow):
         # Mark project dirty
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
@@ -759,6 +939,7 @@ class MainWindow(QMainWindow):
         # Mark project dirty
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
     def _generate_component_name(self, comp_type) -> str:
         """Generate a unique component name."""
@@ -798,6 +979,7 @@ class MainWindow(QMainWindow):
         # Mark project dirty and update display
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
 
         # Get the component being edited from properties panel
         edited_component = self._properties_panel._component
@@ -986,3 +1168,100 @@ class MainWindow(QMainWindow):
     def _on_simulation_error(self, message: str) -> None:
         """Handle simulation error."""
         QMessageBox.critical(self, "Simulation Error", message)
+
+    # Export handlers
+    def _on_export_spice(self) -> None:
+        """Export circuit to SPICE netlist."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export SPICE Netlist",
+            self._settings.get_default_project_location(),
+            "SPICE Netlist (*.sp *.cir);;All Files (*)",
+        )
+        if path:
+            if not (path.endswith(".sp") or path.endswith(".cir")):
+                path += ".sp"
+            try:
+                circuit = self._project.get_active_circuit()
+                ExportService.export_spice_netlist(circuit, path)
+                self.statusBar().showMessage(f"Exported SPICE netlist: {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export SPICE netlist:\n{e}")
+
+    def _on_export_json(self) -> None:
+        """Export circuit to JSON netlist (Pulsim format)."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export JSON Netlist",
+            self._settings.get_default_project_location(),
+            "JSON Netlist (*.json);;All Files (*)",
+        )
+        if path:
+            if not path.endswith(".json"):
+                path += ".json"
+            try:
+                ExportService.export_json_netlist(self._project, path)
+                self.statusBar().showMessage(f"Exported JSON netlist: {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export JSON netlist:\n{e}")
+
+    def _on_export_png(self) -> None:
+        """Export schematic to PNG image."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Schematic as PNG",
+            self._settings.get_default_project_location(),
+            "PNG Image (*.png);;All Files (*)",
+        )
+        if path:
+            if not path.endswith(".png"):
+                path += ".png"
+            try:
+                ExportService.export_schematic_png(self._schematic_scene, path)
+                self.statusBar().showMessage(f"Exported schematic: {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export PNG:\n{e}")
+
+    def _on_export_svg(self) -> None:
+        """Export schematic to SVG image."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Schematic as SVG",
+            self._settings.get_default_project_location(),
+            "SVG Image (*.svg);;All Files (*)",
+        )
+        if path:
+            if not path.endswith(".svg"):
+                path += ".svg"
+            try:
+                ExportService.export_schematic_svg(self._schematic_scene, path)
+                self.statusBar().showMessage(f"Exported schematic: {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export SVG:\n{e}")
+
+    def _on_export_csv(self) -> None:
+        """Export waveforms to CSV file."""
+        result = self._simulation_service.last_result
+        if result is None or not result.is_valid:
+            QMessageBox.warning(
+                self,
+                "No Data",
+                "No simulation results available to export.\n"
+                "Run a simulation first.",
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Waveforms as CSV",
+            self._settings.get_default_project_location(),
+            "CSV File (*.csv);;All Files (*)",
+        )
+        if path:
+            if not path.endswith(".csv"):
+                path += ".csv"
+            try:
+                ExportService.export_waveforms_csv(result, path)
+                self.statusBar().showMessage(f"Exported waveforms: {path}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export CSV:\n{e}")

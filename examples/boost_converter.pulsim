@@ -1,0 +1,218 @@
+{
+  "version": "1.0",
+  "name": "Boost Converter",
+  "description": "5V to 12V boost converter with 100kHz switching frequency",
+  "created": "2024-01-01T00:00:00Z",
+  "modified": "2024-01-01T00:00:00Z",
+  "circuits": {
+    "main": {
+      "id": "main",
+      "name": "Boost Converter",
+      "components": {
+        "Vin": {
+          "id": "Vin",
+          "type": "voltage_source",
+          "name": "Vin",
+          "position": [100, 200],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "voltage": 5
+            }
+          }
+        },
+        "Vpwm": {
+          "id": "Vpwm",
+          "type": "voltage_source",
+          "name": "Vpwm",
+          "position": [300, 400],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "waveform": {
+              "type": "pwm",
+              "frequency": 100000,
+              "duty_cycle": 0.583,
+              "v_high": 15,
+              "v_low": 0
+            }
+          }
+        },
+        "L1": {
+          "id": "L1",
+          "type": "inductor",
+          "name": "L1",
+          "position": [250, 100],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "inductance": 47e-6,
+            "initial_current": 0
+          }
+        },
+        "M1": {
+          "id": "M1",
+          "type": "mosfet_n",
+          "name": "M1",
+          "position": [400, 200],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "rds_on": 0.01,
+            "rds_off": 1e9,
+            "v_threshold": 2.5
+          }
+        },
+        "D1": {
+          "id": "D1",
+          "type": "diode",
+          "name": "D1",
+          "position": [500, 100],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "v_forward": 0.5,
+            "r_on": 0.01
+          }
+        },
+        "Cout": {
+          "id": "Cout",
+          "type": "capacitor",
+          "name": "Cout",
+          "position": [650, 200],
+          "rotation": 90,
+          "mirrored": false,
+          "parameters": {
+            "capacitance": 100e-6,
+            "initial_voltage": 0
+          }
+        },
+        "Rload": {
+          "id": "Rload",
+          "type": "resistor",
+          "name": "Rload",
+          "position": [750, 200],
+          "rotation": 90,
+          "mirrored": false,
+          "parameters": {
+            "resistance": 24
+          }
+        },
+        "GND1": {
+          "id": "GND1",
+          "type": "ground",
+          "name": "GND",
+          "position": [400, 450],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {}
+        }
+      },
+      "wires": {
+        "W1": {
+          "id": "W1",
+          "points": [[100, 100], [200, 100]],
+          "connections": [
+            {"component_id": "Vin", "pin_index": 0},
+            {"component_id": "L1", "pin_index": 0}
+          ]
+        },
+        "W2": {
+          "id": "W2",
+          "points": [[300, 100], [400, 100], [400, 150]],
+          "connections": [
+            {"component_id": "L1", "pin_index": 1},
+            {"component_id": "M1", "pin_index": 0}
+          ]
+        },
+        "W3": {
+          "id": "W3",
+          "points": [[400, 100], [450, 100]],
+          "connections": [
+            {"component_id": "M1", "pin_index": 0},
+            {"component_id": "D1", "pin_index": 0}
+          ]
+        },
+        "W4": {
+          "id": "W4",
+          "points": [[300, 300], [350, 300], [350, 200]],
+          "connections": [
+            {"component_id": "Vpwm", "pin_index": 0},
+            {"component_id": "M1", "pin_index": 2}
+          ]
+        },
+        "W5": {
+          "id": "W5",
+          "points": [[550, 100], [650, 100], [650, 150]],
+          "connections": [
+            {"component_id": "D1", "pin_index": 1},
+            {"component_id": "Cout", "pin_index": 0}
+          ]
+        },
+        "W6": {
+          "id": "W6",
+          "points": [[650, 100], [750, 100], [750, 150]],
+          "connections": [
+            {"component_id": "Cout", "pin_index": 0},
+            {"component_id": "Rload", "pin_index": 0}
+          ]
+        },
+        "W7": {
+          "id": "W7",
+          "points": [[100, 300], [100, 450], [400, 450]],
+          "connections": [
+            {"component_id": "Vin", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W8": {
+          "id": "W8",
+          "points": [[400, 250], [400, 450]],
+          "connections": [
+            {"component_id": "M1", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W9": {
+          "id": "W9",
+          "points": [[300, 500], [300, 550], [400, 550], [400, 450]],
+          "connections": [
+            {"component_id": "Vpwm", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W10": {
+          "id": "W10",
+          "points": [[650, 250], [650, 450], [400, 450]],
+          "connections": [
+            {"component_id": "Cout", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W11": {
+          "id": "W11",
+          "points": [[750, 250], [750, 450], [650, 450]],
+          "connections": [
+            {"component_id": "Rload", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        }
+      }
+    }
+  },
+  "active_circuit": "main",
+  "simulation_settings": {
+    "transient": {
+      "stop_time": 0.01,
+      "time_step": 1e-7,
+      "start_time": 0
+    },
+    "solver": {
+      "type": "rk4",
+      "relative_tolerance": 1e-4,
+      "absolute_tolerance": 1e-6
+    }
+  }
+}

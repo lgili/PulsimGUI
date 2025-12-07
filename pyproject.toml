@@ -38,6 +38,10 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+build = [
+    "pyinstaller>=6.0.0",
+    "dmgbuild>=1.6.0;sys_platform=='darwin'",
+]
 
 [project.scripts]
 pulsimgui = "pulsimgui.__main__:main"

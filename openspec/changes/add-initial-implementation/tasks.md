@@ -202,58 +202,58 @@
 ## Phase 6: Project Management
 
 ### 6.1 File Operations
-- [ ] 6.1.1 Implement Save Project (Ctrl+S)
-- [ ] 6.1.2 Implement Save As (Ctrl+Shift+S)
-- [ ] 6.1.3 Implement Open Project (Ctrl+O)
-- [ ] 6.1.4 Implement New Project (Ctrl+N)
-- [ ] 6.1.5 Implement Close Project
-- [ ] 6.1.6 Track unsaved changes
-- [ ] 6.1.7 Prompt to save on close
+- [x] 6.1.1 Implement Save Project (Ctrl+S)
+- [x] 6.1.2 Implement Save As (Ctrl+Shift+S)
+- [x] 6.1.3 Implement Open Project (Ctrl+O)
+- [x] 6.1.4 Implement New Project (Ctrl+N)
+- [x] 6.1.5 Implement Close Project
+- [x] 6.1.6 Track unsaved changes
+- [x] 6.1.7 Prompt to save on close
 
 ### 6.2 Recent Files
-- [ ] 6.2.1 Track recently opened projects
-- [ ] 6.2.2 Display in File menu
-- [ ] 6.2.3 Persist recent files list
+- [x] 6.2.1 Track recently opened projects
+- [x] 6.2.2 Display in File menu
+- [x] 6.2.3 Persist recent files list
 
 ### 6.3 Auto-Save
-- [ ] 6.3.1 Implement auto-save timer
-- [ ] 6.3.2 Save backup copies
-- [ ] 6.3.3 Add auto-save settings
+- [x] 6.3.1 Implement auto-save timer
+- [x] 6.3.2 Save backup copies
+- [x] 6.3.3 Add auto-save settings
 
 ### 6.4 Import/Export
-- [ ] 6.4.1 Export to SPICE netlist
-- [ ] 6.4.2 Export to JSON netlist (Pulsim format)
-- [ ] 6.4.3 Export schematic as PNG/SVG
-- [ ] 6.4.4 Export waveforms as CSV
+- [x] 6.4.1 Export to SPICE netlist
+- [x] 6.4.2 Export to JSON netlist (Pulsim format)
+- [x] 6.4.3 Export schematic as PNG/SVG
+- [x] 6.4.4 Export waveforms as CSV
 
 ## Phase 7: Polish and Distribution
 
 ### 7.1 User Experience
-- [ ] 7.1.1 Refine keyboard shortcuts
-- [ ] 7.1.2 Add keyboard shortcut customization
-- [ ] 7.1.3 Improve error messages
-- [ ] 7.1.4 Add loading indicators
-- [ ] 7.1.5 Implement crash recovery
+- [x] 7.1.1 Refine keyboard shortcuts
+- [x] 7.1.2 Add keyboard shortcut customization
+- [x] 7.1.3 Improve error messages
+- [x] 7.1.4 Add loading indicators
+- [x] 7.1.5 Implement crash recovery
 
 ### 7.2 Templates
-- [ ] 7.2.1 Create buck converter template
-- [ ] 7.2.2 Create boost converter template
-- [ ] 7.2.3 Create full-bridge template
-- [ ] 7.2.4 Implement "New from Template" dialog
+- [x] 7.2.1 Create buck converter template
+- [x] 7.2.2 Create boost converter template
+- [x] 7.2.3 Create full-bridge template
+- [x] 7.2.4 Implement "New from Template" dialog
 
 ### 7.3 Packaging
-- [ ] 7.3.1 Configure PyInstaller for Windows
-- [ ] 7.3.2 Configure PyInstaller for macOS
-- [ ] 7.3.3 Configure PyInstaller for Linux (AppImage)
-- [ ] 7.3.4 Create Windows installer (NSIS)
-- [ ] 7.3.5 Create macOS DMG
-- [ ] 7.3.6 Set up release automation
+- [x] 7.3.1 Configure PyInstaller for Windows
+- [x] 7.3.2 Configure PyInstaller for macOS
+- [x] 7.3.3 Configure PyInstaller for Linux (AppImage)
+- [x] 7.3.4 Create Windows installer (NSIS)
+- [x] 7.3.5 Create macOS DMG
+- [x] 7.3.6 Set up release automation
 
 ### 7.4 Documentation
-- [ ] 7.4.1 Write user manual
-- [ ] 7.4.2 Create tutorial videos
-- [ ] 7.4.3 Write developer documentation
-- [ ] 7.4.4 Create example projects
+- [x] 7.4.1 Write user manual
+- [x] 7.4.2 Create tutorial videos
+- [x] 7.4.3 Write developer documentation
+- [x] 7.4.4 Create example projects
 
 ## Phase 8: Advanced Features (Post-MVP)
 

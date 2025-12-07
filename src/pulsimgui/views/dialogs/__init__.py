@@ -5,6 +5,8 @@ from pulsimgui.views.dialogs.device_library_dialog import DeviceLibraryDialog, D
 from pulsimgui.views.dialogs.simulation_settings_dialog import SimulationSettingsDialog
 from pulsimgui.views.dialogs.dc_results_dialog import DCResultsDialog
 from pulsimgui.views.dialogs.bode_plot_dialog import BodePlotDialog
+from pulsimgui.views.dialogs.keyboard_shortcuts_dialog import KeyboardShortcutsDialog
+from pulsimgui.views.dialogs.template_dialog import TemplateDialog
 
 __all__ = [
     "PreferencesDialog",
@@ -13,4 +15,6 @@ __all__ = [
     "SimulationSettingsDialog",
     "DCResultsDialog",
     "BodePlotDialog",
+    "KeyboardShortcutsDialog",
+    "TemplateDialog",
 ]

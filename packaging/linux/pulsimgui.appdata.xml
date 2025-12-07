@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.pulsim.pulsimgui</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>PulsimGui</name>
+  <summary>Power Electronics Circuit Simulator</summary>
+  <description>
+    <p>
+      PulsimGui is a cross-platform graphical user interface for the Pulsim
+      power electronics simulator. It provides an intuitive schematic editor
+      for designing and simulating power converter circuits.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Schematic editor with drag-and-drop component placement</li>
+      <li>Comprehensive component library (MOSFETs, IGBTs, diodes, etc.)</li>
+      <li>Transient, DC, and AC analysis</li>
+      <li>Real-time waveform viewer with cursors and measurements</li>
+      <li>Light and dark themes</li>
+      <li>Project templates for common converter topologies</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">pulsimgui.desktop</launchable>
+  <url type="homepage">https://github.com/lgili/PulsimGui</url>
+  <url type="bugtracker">https://github.com/lgili/PulsimGui/issues</url>
+  <developer_name>Luiz Gili</developer_name>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2024-12-07">
+      <description>
+        <p>Initial release with core functionality:</p>
+        <ul>
+          <li>Schematic editor with pan, zoom, and grid</li>
+          <li>Component library with power electronics devices</li>
+          <li>Wire routing and connection</li>
+          <li>Simulation integration</li>
+          <li>Waveform viewer</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <provides>
+    <binary>pulsimgui</binary>
+  </provides>
+</component>
