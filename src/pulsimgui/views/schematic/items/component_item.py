@@ -623,6 +623,99 @@ class PWMGeneratorItem(BlockComponentItem):
         return f"{freq_text} / {duty:.0f}%"
 
 
+class ScopeItemBase(ComponentItem):
+    """Base class for electrical/thermal scope blocks."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-45, -30, 90, 60)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        rect = self.boundingRect()
+        painter.drawRoundedRect(rect, 6, 6)
+
+        screen = rect.adjusted(8, 8, -8, -20)
+        painter.save()
+        painter.drawRect(screen)
+        painter.setPen(QPen(painter.pen().color(), 1, Qt.PenStyle.DotLine))
+        mid_y = screen.center().y()
+        painter.drawLine(QPointF(screen.left(), mid_y), QPointF(screen.right(), mid_y))
+        painter.restore()
+
+        painter.save()
+        font = QFont(painter.font())
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(rect.left(), rect.bottom() - 18, rect.width(), 16),
+            Qt.AlignmentFlag.AlignCenter,
+            self.scope_label(),
+        )
+        painter.restore()
+
+    def scope_label(self) -> str:
+        return "SCOPE"
+
+    def _get_value_text(self) -> str:
+        count = self._component.parameters.get("channel_count", 1)
+        return f"{count} ch"
+
+
+class ElectricalScopeItem(ScopeItemBase):
+    def scope_label(self) -> str:
+        return "SCOPE"
+
+
+class ThermalScopeItem(ScopeItemBase):
+    def scope_label(self) -> str:
+        return "THERM"
+
+
+class SignalMuxItem(ComponentItem):
+    """Item for signal mux blocks."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-45, -35, 90, 70)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        polygon = [QPointF(-35, -25), QPointF(-35, 25), QPointF(35, 0)]
+        painter.drawPolygon(polygon)
+        painter.drawLine(QPointF(35, 0), QPointF(45, 0))
+
+        painter.save()
+        font = QFont(painter.font())
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(-20, -10, 30, 20), Qt.AlignmentFlag.AlignCenter, "MUX")
+        painter.restore()
+
+    def _get_value_text(self) -> str:
+        count = self._component.parameters.get("input_count", 2)
+        return f"{count}->1"
+
+
+class SignalDemuxItem(ComponentItem):
+    """Item for signal demux blocks."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-45, -35, 90, 70)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        polygon = [QPointF(-35, 0), QPointF(35, -25), QPointF(35, 25)]
+        painter.drawPolygon(polygon)
+        painter.drawLine(QPointF(-45, 0), QPointF(-35, 0))
+
+        painter.save()
+        font = QFont(painter.font())
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(-10, -10, 30, 20), Qt.AlignmentFlag.AlignCenter, "DEMUX")
+        painter.restore()
+
+    def _get_value_text(self) -> str:
+        count = self._component.parameters.get("output_count", 2)
+        return f"1->{count}"
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -643,6 +736,10 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.PID_CONTROLLER: PIDControllerItem,
         ComponentType.MATH_BLOCK: MathBlockItem,
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
+        ComponentType.ELECTRICAL_SCOPE: ElectricalScopeItem,
+        ComponentType.THERMAL_SCOPE: ThermalScopeItem,
+        ComponentType.SIGNAL_MUX: SignalMuxItem,
+        ComponentType.SIGNAL_DEMUX: SignalDemuxItem,
         ComponentType.SUBCIRCUIT: SubcircuitItem,
     }
 

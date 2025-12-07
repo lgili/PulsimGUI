@@ -1,6 +1,7 @@
 """Main application window."""
 
 from pathlib import Path
+from uuid import UUID
 
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.component import ComponentType
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
@@ -27,6 +29,7 @@ from pulsimgui.models.subcircuit import (
 )
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import (
+    SimulationResult,
     SimulationService,
     SimulationState,
     ParameterSweepResult,
@@ -52,6 +55,7 @@ from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
+from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar
 
@@ -70,6 +74,10 @@ class MainWindow(QMainWindow):
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(parent=self)
         self._thermal_service = ThermalAnalysisService(parent=self)
+        self._scope_windows: dict[str, ScopeWindow] = {}
+        self._suppress_scope_state = False
+        self._latest_electrical_result: SimulationResult | None = None
+        self._latest_thermal_waveform: SimulationResult | None = None
 
         self._setup_window()
         self._create_actions()
@@ -114,8 +122,11 @@ class MainWindow(QMainWindow):
         self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
         self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
+        self._schematic_view.scope_open_requested.connect(self._on_scope_open_requested)
+        self._schematic_view.wire_alias_changed.connect(self._on_wire_alias_changed)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
+        self._schematic_scene.component_removed.connect(self._on_component_removed)
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
 
     def _create_actions(self) -> None:
@@ -828,7 +839,10 @@ class MainWindow(QMainWindow):
         """Create a new project."""
         if not self._check_save():
             return
+        self._close_all_scope_windows(persist_state=False)
         self._project = Project()
+        self._latest_electrical_result = None
+        self._latest_thermal_waveform = None
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
@@ -849,7 +863,10 @@ class MainWindow(QMainWindow):
                 circuit = TemplateService.create_circuit_from_template(template_id)
                 if circuit:
                     # Create new project with the template circuit
+                    self._close_all_scope_windows(persist_state=False)
                     self._project = Project(name=circuit.name)
+                    self._latest_electrical_result = None
+                    self._latest_thermal_waveform = None
                     self._project._circuits = {circuit.id: circuit}
                     self._project._active_circuit_id = circuit.id
                     self._command_stack.clear()
@@ -878,7 +895,10 @@ class MainWindow(QMainWindow):
     def _open_project_file(self, path: str) -> None:
         """Open a project from the given path."""
         try:
+            self._close_all_scope_windows(persist_state=False)
             self._project = Project.load(path)
+            self._latest_electrical_result = None
+            self._latest_thermal_waveform = None
             self._command_stack.clear()
             self._load_project_to_scene()
             self._settings.add_recent_project(path)
@@ -929,7 +949,10 @@ class MainWindow(QMainWindow):
         """Close the current project and create a new empty one."""
         if not self._check_save():
             return
+        self._close_all_scope_windows(persist_state=False)
         self._project = Project()
+        self._latest_electrical_result = None
+        self._latest_thermal_waveform = None
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
@@ -1067,6 +1090,17 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._update_modified_indicator()
 
+    def _on_component_removed(self, component) -> None:
+        """Tear down scope window state when a component disappears."""
+        comp_id = str(component.id)
+        window = self._scope_windows.get(comp_id)
+        if window is not None:
+            window.close()
+        if comp_id in self._project.scope_windows:
+            del self._project.scope_windows[comp_id]
+            self._project.mark_dirty()
+            self._update_modified_indicator()
+
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
         from pulsimgui.models.wire import Wire, WireSegment
@@ -1093,6 +1127,29 @@ class MainWindow(QMainWindow):
         # Mark project dirty
         self._project.mark_dirty()
         self._update_title()
+        self._update_modified_indicator()
+
+    def _on_wire_alias_changed(self, wire) -> None:
+        """Update project state when a wire alias is renamed."""
+        self._project.mark_dirty()
+        self._update_modified_indicator()
+        self._refresh_scope_window_bindings()
+
+    def _on_scope_open_requested(self, component) -> None:
+        """Open (or focus) a dedicated window for the requested scope."""
+        if component is None:
+            return
+        self._open_scope_window(component)
+
+    def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
+        """Persist window state whenever a scope window closes."""
+        self._scope_windows.pop(component_id, None)
+        if self._suppress_scope_state:
+            return
+        state = self._project.scope_state_for(component_id)
+        state.is_open = False
+        state.geometry = list(geometry)
+        self._project.mark_dirty()
         self._update_modified_indicator()
 
     def _generate_component_name(self, comp_type) -> str:
@@ -1158,6 +1215,131 @@ class MainWindow(QMainWindow):
                 break
 
         self._schematic_scene.update()
+        self._refresh_scope_window_bindings()
+
+    # ------------------------------------------------------------------
+    # Scope window helpers
+    # ------------------------------------------------------------------
+    def _open_scope_window(
+        self,
+        component,
+        geometry: list[int] | None = None,
+        update_state: bool = True,
+    ) -> ScopeWindow:
+        comp_id = str(component.id)
+        window = self._scope_windows.get(comp_id)
+        if window is None:
+            window = ScopeWindow(comp_id, component.name, component.type, self)
+            window.closed.connect(self._on_scope_window_closed)
+            self._scope_windows[comp_id] = window
+
+        window.set_component_name(component.name)
+        circuit = self._current_circuit()
+        window.set_bindings(build_scope_channel_bindings(component, circuit))
+
+        target_geometry = geometry
+        if target_geometry is None:
+            state = self._project.scope_windows.get(comp_id)
+            if state and state.geometry:
+                target_geometry = state.geometry
+        window.apply_geometry_state(target_geometry)
+        window.apply_simulation_result(self._scope_result_for_component(component))
+
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+        if update_state and not self._suppress_scope_state:
+            state = self._project.scope_state_for(comp_id)
+            state.is_open = True
+            state.geometry = list(window.capture_geometry_state())
+            self._project.mark_dirty()
+            self._update_modified_indicator()
+        return window
+
+    def _close_all_scope_windows(self, persist_state: bool = True) -> None:
+        if not self._scope_windows:
+            return
+        previous = self._suppress_scope_state
+        self._suppress_scope_state = not persist_state
+        try:
+            for window in list(self._scope_windows.values()):
+                window.close()
+        finally:
+            self._suppress_scope_state = previous
+        if not persist_state:
+            self._scope_windows.clear()
+
+    def _refresh_scope_window_bindings(self) -> None:
+        if not self._scope_windows:
+            return
+        circuit = self._current_circuit()
+        for comp_id, window in list(self._scope_windows.items()):
+            component = self._get_component_by_id(comp_id, circuit)
+            if component is None:
+                window.close()
+                continue
+            window.set_component_name(component.name)
+            window.set_bindings(build_scope_channel_bindings(component, circuit))
+            window.apply_simulation_result(self._scope_result_for_component(component))
+
+    def _scope_result_for_component(self, component) -> SimulationResult | None:
+        if component.type == ComponentType.THERMAL_SCOPE:
+            return self._ensure_thermal_waveform()
+        return self._latest_electrical_result
+
+    def _ensure_thermal_waveform(self) -> SimulationResult | None:
+        if self._latest_thermal_waveform is not None:
+            return self._latest_thermal_waveform
+        if not self._latest_electrical_result:
+            return None
+        circuit = self._current_circuit()
+        if circuit is None or not circuit.components:
+            return None
+        try:
+            thermal_result = self._thermal_service.build_result(
+                circuit,
+                self._latest_electrical_result,
+            )
+        except Exception as exc:  # pragma: no cover - UI feedback only
+            self.statusBar().showMessage(f"Unable to update thermal scopes: {exc}", 5000)
+            self._latest_thermal_waveform = None
+            return None
+
+        self._latest_thermal_waveform = self._thermal_result_to_waveform(thermal_result)
+        return self._latest_thermal_waveform
+
+    def _update_scope_results(self) -> None:
+        """Refresh scope windows after simulation state changes."""
+        self._latest_thermal_waveform = None
+        self._refresh_scope_window_bindings()
+
+    def _thermal_result_to_waveform(self, thermal_result) -> SimulationResult | None:
+        if not thermal_result or not thermal_result.time:
+            return None
+        subset = SimulationResult()
+        subset.time = list(thermal_result.time)
+        subset.signals = {}
+        subset.statistics = {
+            "ambient": thermal_result.ambient_temperature,
+            "devices": len(thermal_result.devices),
+        }
+        for device in thermal_result.devices:
+            if not device.temperature_trace:
+                continue
+            key = f"T({device.component_name})"
+            subset.signals[key] = list(device.temperature_trace)
+        return subset if subset.signals else None
+
+    def _get_component_by_id(self, component_id: str, circuit: Circuit | None = None):
+        circuit = circuit or self._current_circuit()
+        if circuit is None:
+            return None
+        try:
+            comp_uuid = UUID(component_id)
+        except (ValueError, TypeError):
+            return None
+        return circuit.components.get(comp_uuid)
 
     def _check_save(self) -> bool:
         """Check if user wants to save unsaved changes. Returns True if safe to proceed."""
@@ -1335,10 +1517,14 @@ class MainWindow(QMainWindow):
                 f"{len(result.signals)} signals",
                 5000,
             )
+            self._latest_electrical_result = result
         else:
             QMessageBox.warning(
                 self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
             )
+            self._latest_electrical_result = None
+
+        self._update_scope_results()
 
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""

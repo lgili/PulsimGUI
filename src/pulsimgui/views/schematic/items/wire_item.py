@@ -1,7 +1,7 @@
 """Wire graphics item with orthogonal routing."""
 
 from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QBrush
+from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QBrush, QFontMetricsF
 from PySide6.QtWidgets import (
     QGraphicsPathItem,
     QStyleOptionGraphicsItem,
@@ -101,10 +101,50 @@ class WireItem(QGraphicsPathItem):
                 self.JUNCTION_RADIUS,
             )
 
+        alias = (self._wire.alias or "").strip()
+        if alias:
+            self._draw_alias_label(painter, color, alias)
+
     def add_junction(self, x: float, y: float) -> None:
         """Add a junction point to the wire."""
         self._wire.junctions.append((x, y))
         self.update()
+
+    def _draw_alias_label(self, painter: QPainter, pen_color: QColor, alias: str) -> None:
+        path = self.path()
+        if path.isEmpty():
+            return
+
+        position = path.pointAtPercent(0.5)
+        painter.save()
+
+        font = painter.font()
+        font.setPointSizeF(max(font.pointSizeF() - 1, 8))
+        painter.setFont(font)
+
+        metrics = QFontMetricsF(font)
+        width = metrics.horizontalAdvance(alias) + 8
+        height = metrics.height() + 4
+        rect = QRectF(
+            position.x() - width / 2,
+            position.y() - height / 2,
+            width,
+            height,
+        )
+
+        bg_color = QColor(255, 255, 255, 230)
+        text_color = pen_color
+        if self._dark_mode:
+            bg_color = QColor(20, 20, 20, 230)
+            text_color = QColor(220, 255, 220)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(rect, 4, 4)
+
+        painter.setPen(QPen(text_color, 1))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, alias)
+        painter.restore()
 
 
 def calculate_orthogonal_path(

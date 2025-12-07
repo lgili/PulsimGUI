@@ -1,5 +1,6 @@
 """Component model for circuit elements."""
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
@@ -25,6 +26,10 @@ class ComponentType(Enum):
     PID_CONTROLLER = auto()
     MATH_BLOCK = auto()
     PWM_GENERATOR = auto()
+    ELECTRICAL_SCOPE = auto()
+    THERMAL_SCOPE = auto()
+    SIGNAL_MUX = auto()
+    SIGNAL_DEMUX = auto()
     SUBCIRCUIT = auto()  # Hierarchical subcircuit instance
 
 
@@ -50,6 +55,62 @@ class Pin:
             x=data["x"],
             y=data["y"],
         )
+
+
+def _generate_stacked_pins(
+    count: int,
+    x: float,
+    name_prefix: str,
+    start_index: int = 0,
+) -> list[Pin]:
+    """Create evenly spaced pins stacked vertically."""
+
+    if count <= 0:
+        return []
+
+    spacing = 18.0
+    offset = (count - 1) * spacing / 2.0
+    pins: list[Pin] = []
+    for idx in range(count):
+        pins.append(
+            Pin(
+                start_index + idx,
+                f"{name_prefix}{idx + 1}",
+                x,
+                -offset + idx * spacing,
+            )
+        )
+    return pins
+
+
+def _default_scope_pins(channel_count: int) -> list[Pin]:
+    """Create default pins for scope components."""
+
+    return _generate_stacked_pins(channel_count, -40, "CH")
+
+
+def _default_mux_pins(input_count: int) -> list[Pin]:
+    """Create default pins for mux blocks."""
+
+    pins = _generate_stacked_pins(input_count, -35, "IN")
+    pins.append(Pin(len(pins), "OUT", 35, 0))
+    return pins
+
+
+def _default_demux_pins(output_count: int) -> list[Pin]:
+    """Create default pins for demux blocks."""
+
+    pins = [Pin(0, "IN", -35, 0)]
+    pins.extend(
+        _generate_stacked_pins(output_count, 35, "OUT", start_index=1)
+    )
+    return pins
+
+
+def _scope_label_prefix(comp_type: ComponentType) -> str:
+    """Get default label prefix for scope channels based on component type."""
+
+    return "CH" if comp_type == ComponentType.ELECTRICAL_SCOPE else "T"
 
 
 # Default pin configurations for each component type
@@ -91,6 +152,10 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "CLK", -35, 12),
         Pin(2, "OUT", 35, 0),
     ],
+    ComponentType.ELECTRICAL_SCOPE: _default_scope_pins(2),
+    ComponentType.THERMAL_SCOPE: _default_scope_pins(2),
+    ComponentType.SIGNAL_MUX: _default_mux_pins(4),
+    ComponentType.SIGNAL_DEMUX: _default_demux_pins(4),
 }
 
 # Default parameter templates for each component type
@@ -130,6 +195,30 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "carrier": "sawtooth",
         "amplitude": 1.0,
     },
+    ComponentType.ELECTRICAL_SCOPE: {
+        "channel_count": 2,
+        "channels": [
+            {"label": "CH1", "overlay": False},
+            {"label": "CH2", "overlay": False},
+        ],
+    },
+    ComponentType.THERMAL_SCOPE: {
+        "channel_count": 2,
+        "channels": [
+            {"label": "T1", "overlay": False},
+            {"label": "T2", "overlay": False},
+        ],
+    },
+    ComponentType.SIGNAL_MUX: {
+        "input_count": 4,
+        "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
+        "ordering": [0, 1, 2, 3],
+    },
+    ComponentType.SIGNAL_DEMUX: {
+        "output_count": 4,
+        "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
+        "ordering": [0, 1, 2, 3],
+    },
 }
 
 
@@ -155,7 +244,9 @@ class Component:
                 Pin(p.index, p.name, p.x, p.y) for p in DEFAULT_PINS[self.type]
             ]
         if not self.parameters and self.type in DEFAULT_PARAMETERS:
-            self.parameters = DEFAULT_PARAMETERS[self.type].copy()
+            self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
+
+        _synchronize_special_component(self)
 
     def get_pin_position(self, pin_index: int) -> tuple[float, float]:
         """Get absolute position of a pin, accounting for rotation and mirroring."""
@@ -213,3 +304,105 @@ class Component:
             parameters=data.get("parameters", {}),
             pins=[Pin.from_dict(p) for p in data.get("pins", [])],
         )
+
+
+SCOPE_CHANNEL_LIMITS = (1, 8)
+MUX_CHANNEL_LIMITS = (2, 16)
+
+
+def _clamp(value: int, min_value: int, max_value: int) -> int:
+    return max(min_value, min(max_value, value))
+
+
+def _synchronize_special_component(component: Component) -> None:
+    if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+        _synchronize_scope(component)
+    elif component.type == ComponentType.SIGNAL_MUX:
+        _synchronize_mux(component)
+    elif component.type == ComponentType.SIGNAL_DEMUX:
+        _synchronize_demux(component)
+
+
+def _synchronize_scope(component: Component, force_count: int | None = None) -> None:
+    params = component.parameters
+    requested = force_count or params.get("channel_count") or len(params.get("channels", [])) or 1
+    channel_count = _clamp(int(requested), *SCOPE_CHANNEL_LIMITS)
+    params["channel_count"] = channel_count
+
+    channels = params.setdefault("channels", [])
+    prefix = _scope_label_prefix(component.type)
+
+    while len(channels) < channel_count:
+        channels.append({"label": f"{prefix}{len(channels) + 1}", "overlay": False})
+    if len(channels) > channel_count:
+        del channels[channel_count:]
+
+    for idx, channel in enumerate(channels):
+        channel.setdefault("label", f"{prefix}{idx + 1}")
+        channel.setdefault("overlay", False)
+
+    component.pins = _default_scope_pins(channel_count)
+
+
+def _synchronize_mux(component: Component, force_count: int | None = None) -> None:
+    params = component.parameters
+    requested = force_count or params.get("input_count") or len(params.get("channel_labels", [])) or 2
+    input_count = _clamp(int(requested), *MUX_CHANNEL_LIMITS)
+    params["input_count"] = input_count
+
+    labels = params.setdefault("channel_labels", [])
+    while len(labels) < input_count:
+        labels.append(f"Ch{len(labels) + 1}")
+    if len(labels) > input_count:
+        del labels[input_count:]
+
+    ordering = params.setdefault("ordering", list(range(input_count)))
+    ordering = [int(idx) for idx in ordering[:input_count]]
+    while len(ordering) < input_count:
+        ordering.append(len(ordering))
+    params["ordering"] = [
+        max(0, min(input_count - 1, idx)) for idx in ordering
+    ]
+
+    component.pins = _default_mux_pins(input_count)
+
+
+def _synchronize_demux(component: Component, force_count: int | None = None) -> None:
+    params = component.parameters
+    requested = force_count or params.get("output_count") or len(params.get("channel_labels", [])) or 2
+    output_count = _clamp(int(requested), *MUX_CHANNEL_LIMITS)
+    params["output_count"] = output_count
+
+    labels = params.setdefault("channel_labels", [])
+    while len(labels) < output_count:
+        labels.append(f"Ch{len(labels) + 1}")
+    if len(labels) > output_count:
+        del labels[output_count:]
+
+    ordering = params.setdefault("ordering", list(range(output_count)))
+    ordering = [int(idx) for idx in ordering[:output_count]]
+    while len(ordering) < output_count:
+        ordering.append(len(ordering))
+    params["ordering"] = [
+        max(0, min(output_count - 1, idx)) for idx in ordering
+    ]
+
+    component.pins = _default_demux_pins(output_count)
+
+
+def set_scope_channel_count(component: Component, count: int) -> None:
+    """Update a scope component to use the provided channel count."""
+
+    _synchronize_scope(component, force_count=count)
+
+
+def set_mux_input_count(component: Component, count: int) -> None:
+    """Update a mux component's input count and pin layout."""
+
+    _synchronize_mux(component, force_count=count)
+
+
+def set_demux_output_count(component: Component, count: int) -> None:
+    """Update a demux component's output count and pin layout."""
+
+    _synchronize_demux(component, force_count=count)

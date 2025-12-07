@@ -8,6 +8,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from pulsimgui.models.circuit import Circuit
 
 
+PIN_HIT_TOLERANCE = 5.0
+
+
 def build_node_map(circuit: "Circuit") -> dict[tuple[str, int], str]:
     """Build a connectivity map for component pins.
 
@@ -68,3 +71,71 @@ def build_node_map(circuit: "Circuit") -> dict[tuple[str, int], str]:
                 node_counter += 1
 
     return node_map
+
+
+def build_node_alias_map(
+    circuit: "Circuit",
+    node_map: dict[tuple[str, int], str],
+) -> dict[str, str]:
+    """Map resolved node identifiers to user-visible aliases.
+
+    Preference order per node:
+        1. Explicit wire alias label
+        2. Wire-assigned node_name (if present)
+        3. Falls back to raw node identifier handled by caller
+    """
+
+    alias_map: dict[str, str] = {}
+    for wire in circuit.wires.values():
+        alias = (wire.alias or "").strip()
+        fallback = (wire.node_name or "").strip()
+        if not wire.segments:
+            continue
+
+        connected_nodes = _nodes_for_wire(circuit, wire, node_map)
+        if not connected_nodes:
+            continue
+
+        for node_id in connected_nodes:
+            if alias and node_id not in alias_map:
+                alias_map[node_id] = alias
+            elif fallback and node_id not in alias_map:
+                alias_map[node_id] = fallback
+
+    return alias_map
+
+
+def _nodes_for_wire(
+    circuit: "Circuit",
+    wire,
+    node_map: dict[tuple[str, int], str],
+) -> set[str]:
+    """Return all node identifiers touched by the given wire."""
+
+    nodes: set[str] = set()
+    endpoints: list[tuple[float, float]] = []
+    for segment in wire.segments:
+        endpoints.append((segment.x1, segment.y1))
+        endpoints.append((segment.x2, segment.y2))
+
+    if not endpoints:
+        return nodes
+
+    for component in circuit.components.values():
+        comp_id = str(component.id)
+        for pin_index, _pin in enumerate(component.pins):
+            pin_pos = component.get_pin_position(pin_index)
+            if _point_hits_any(pin_pos, endpoints):
+                node_id = node_map.get((comp_id, pin_index))
+                if node_id:
+                    nodes.add(node_id)
+
+    return nodes
+
+
+def _point_hits_any(point: tuple[float, float], endpoints: list[tuple[float, float]]) -> bool:
+    px, py = point
+    for ex, ey in endpoints:
+        if abs(px - ex) < PIN_HIT_TOLERANCE and abs(py - ey) < PIN_HIT_TOLERANCE:
+            return True
+    return False

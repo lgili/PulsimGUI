@@ -46,6 +46,32 @@ class SimulationSettings:
 
 
 @dataclass
+class ScopeWindowState:
+    """Persisted UI state for a per-scope window."""
+
+    component_id: str
+    is_open: bool = False
+    geometry: list[int] | None = None  # [x, y, width, height]
+
+    def to_dict(self) -> dict:
+        """Serialize the window state."""
+        return {
+            "component_id": self.component_id,
+            "is_open": self.is_open,
+            "geometry": self.geometry,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, fallback_id: str | None = None) -> "ScopeWindowState":
+        """Deserialize window state."""
+        return cls(
+            component_id=data.get("component_id") or fallback_id or "",
+            is_open=data.get("is_open", False),
+            geometry=data.get("geometry"),
+        )
+
+
+@dataclass
 class Project:
     """A project containing one or more circuit schematics."""
 
@@ -57,6 +83,7 @@ class Project:
     simulation_settings: SimulationSettings = field(default_factory=SimulationSettings)
     created: datetime = field(default_factory=datetime.now)
     modified: datetime = field(default_factory=datetime.now)
+    scope_windows: dict[str, ScopeWindowState] = field(default_factory=dict)
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self):
@@ -115,6 +142,10 @@ class Project:
             "simulation_settings": self.simulation_settings.to_dict(),
             "circuits": {name: c.to_dict() for name, c in self.circuits.items()},
             "subcircuits": [definition.to_dict() for definition in self.subcircuits.values()],
+            "scope_windows": {
+                component_id: state.to_dict()
+                for component_id, state in self.scope_windows.items()
+            },
         }
 
     @classmethod
@@ -129,6 +160,12 @@ class Project:
             definition = SubcircuitDefinition.from_dict(definition_data)
             subcircuits[definition.id] = definition
 
+        scope_windows: dict[str, ScopeWindowState] = {}
+        for component_id, state_data in data.get("scope_windows", {}).items():
+            state = ScopeWindowState.from_dict(state_data, component_id)
+            if state.component_id:
+                scope_windows[state.component_id] = state
+
         return cls(
             name=data.get("name", "Untitled Project"),
             path=path,
@@ -140,6 +177,7 @@ class Project:
             created=datetime.fromisoformat(data["created"]) if "created" in data else datetime.now(),
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
             subcircuits=subcircuits,
+            scope_windows=scope_windows,
         )
 
     def save(self, path: Path | None = None) -> None:
@@ -183,3 +221,11 @@ class Project:
         if definition_id in self.subcircuits:
             del self.subcircuits[definition_id]
             self.mark_dirty()
+
+    def scope_state_for(self, component_id: str) -> ScopeWindowState:
+        """Return (and create if needed) the window state for a scope component."""
+        state = self.scope_windows.get(component_id)
+        if state is None:
+            state = ScopeWindowState(component_id=component_id)
+            self.scope_windows[component_id] = state
+        return state

@@ -2,13 +2,13 @@
 
 from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent
-from PySide6.QtWidgets import QGraphicsView
+from PySide6.QtCore import Qt, Signal, QPointF, QEvent
+from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent
+from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu
 
 from pulsimgui.models.component import ComponentType
 from pulsimgui.views.schematic.scene import SchematicScene
-from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem
+from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
 
 class Tool(Enum):
@@ -40,8 +40,10 @@ class SchematicView(QGraphicsView):
     tool_changed = Signal(Tool)
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
+    wire_alias_changed = Signal(object)  # Wire model reference
     grid_toggle_requested = Signal()  # emitted when G key is pressed
     subcircuit_open_requested = Signal(object)  # Component instance
+    scope_open_requested = Signal(object)  # Component instance
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -61,6 +63,8 @@ class SchematicView(QGraphicsView):
         self._wire_preview: WirePreviewItem | None = None
         self._wire_in_progress: WireInProgressItem | None = None  # Shows confirmed segments
         self._wire_start: QPointF | None = None
+        self._alias_editor: QLineEdit | None = None
+        self._alias_wire_item: WireItem | None = None
 
         # Set up view
         self.setScene(scene or SchematicScene())
@@ -190,6 +194,11 @@ class SchematicView(QGraphicsView):
         self.scale(factor, factor)
         self._zoom_level = level
         self.zoom_changed.emit(self.zoom_percent)
+        self._position_alias_editor()
+
+    def resizeEvent(self, event):  # noqa: D401 - Qt override
+        super().resizeEvent(event)
+        self._position_alias_editor()
 
     def _update_cursor(self) -> None:
         """Update cursor based on current tool."""
@@ -212,6 +221,7 @@ class SchematicView(QGraphicsView):
         else:
             # Normal wheel = scroll
             super().wheelEvent(event)
+        self._position_alias_editor()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press for panning and wire drawing."""
@@ -294,6 +304,7 @@ class SchematicView(QGraphicsView):
             self.verticalScrollBar().setValue(
                 int(self.verticalScrollBar().value() - delta.y())
             )
+            self._position_alias_editor()
             event.accept()
         elif self._wire_preview is not None:
             # Wires ALWAYS snap to grid or pin for clean schematics
@@ -318,6 +329,7 @@ class SchematicView(QGraphicsView):
         if event.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._panning = False
             self._update_cursor()
+            self._position_alias_editor()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -354,13 +366,16 @@ class SchematicView(QGraphicsView):
             if item is not None:
                 from pulsimgui.views.schematic.items import ComponentItem
 
-                if (
-                    isinstance(item, ComponentItem)
-                    and item.component.type == ComponentType.SUBCIRCUIT
-                ):
-                    self.subcircuit_open_requested.emit(item.component)
-                    event.accept()
-                    return
+                if isinstance(item, ComponentItem):
+                    comp_type = item.component.type
+                    if comp_type == ComponentType.SUBCIRCUIT:
+                        self.subcircuit_open_requested.emit(item.component)
+                        event.accept()
+                        return
+                    if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+                        self.scope_open_requested.emit(item.component)
+                        event.accept()
+                        return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -382,6 +397,9 @@ class SchematicView(QGraphicsView):
 
         # Tool shortcuts (without modifiers)
         if not modifiers:
+            if key == Qt.Key.Key_F2:
+                if self._maybe_start_alias_edit():
+                    return
             if key == Qt.Key.Key_Escape:
                 # Cancel wire drawing if in progress
                 if self._wire_preview is not None:
@@ -404,6 +422,90 @@ class SchematicView(QGraphicsView):
                 return
 
         super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        item = self.itemAt(event.pos())
+        if isinstance(item, WireItem):
+            menu = QMenu(self)
+            rename_action = menu.addAction("Rename Signal...")
+            chosen = menu.exec(event.globalPos())
+            if chosen == rename_action:
+                self._begin_wire_alias_edit(item)
+                event.accept()
+                return
+        super().contextMenuEvent(event)
+
+    def eventFilter(self, watched, event):  # noqa: D401 - Qt override
+        if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self._finish_wire_alias_edit(save=False)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _maybe_start_alias_edit(self) -> bool:
+        scene = self.scene()
+        if scene is None:
+            return False
+
+        for item in scene.selectedItems():
+            if isinstance(item, WireItem):
+                self._begin_wire_alias_edit(item)
+                return True
+        return False
+
+    def _begin_wire_alias_edit(self, wire_item: WireItem) -> None:
+        if wire_item is None:
+            return
+
+        self._finish_wire_alias_edit(save=False)
+        editor = QLineEdit(self)
+        initial_text = wire_item.wire.alias or wire_item.wire.node_name or ""
+        editor.setText(initial_text)
+        editor.setFixedWidth(160)
+        editor.selectAll()
+        editor.installEventFilter(self)
+        editor.returnPressed.connect(lambda: self._finish_wire_alias_edit(True))
+        editor.editingFinished.connect(lambda: self._finish_wire_alias_edit(True))
+
+        self._alias_editor = editor
+        self._alias_wire_item = wire_item
+        self._position_alias_editor()
+        editor.show()
+        editor.setFocus()
+
+    def _position_alias_editor(self) -> None:
+        if not (self._alias_editor and self._alias_wire_item):
+            return
+
+        path = self._alias_wire_item.path()
+        if path.isEmpty():
+            return
+
+        scene_point = self._alias_wire_item.mapToScene(path.pointAtPercent(0.5))
+        view_point = self.mapFromScene(scene_point)
+        editor = self._alias_editor
+        editor.move(
+            int(view_point.x() - editor.width() / 2),
+            int(view_point.y() - editor.height() / 2),
+        )
+
+    def _finish_wire_alias_edit(self, save: bool) -> None:
+        if not self._alias_editor:
+            return
+
+        editor = self._alias_editor
+        wire_item = self._alias_wire_item
+        self._alias_editor = None
+        self._alias_wire_item = None
+
+        editor.removeEventFilter(self)
+        text = editor.text().strip()
+        editor.deleteLater()
+
+        if save and wire_item and wire_item.wire.alias != text:
+            wire_item.wire.alias = text
+            wire_item.update()
+            self.wire_alias_changed.emit(wire_item.wire)
 
     def cancel_wire(self) -> None:
         """Cancel current wire drawing operation."""

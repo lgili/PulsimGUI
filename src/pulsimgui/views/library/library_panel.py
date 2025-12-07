@@ -67,6 +67,14 @@ def create_component_drag_pixmap(comp_type: ComponentType, size: int = 70) -> QP
         _draw_block(painter, "Σ")
     elif comp_type == ComponentType.PWM_GENERATOR:
         _draw_block(painter, "PWM")
+    elif comp_type == ComponentType.ELECTRICAL_SCOPE:
+        _draw_scope_block(painter, label="SCOPE")
+    elif comp_type == ComponentType.THERMAL_SCOPE:
+        _draw_scope_block(painter, label="THERM")
+    elif comp_type == ComponentType.SIGNAL_MUX:
+        _draw_mux_block(painter)
+    elif comp_type == ComponentType.SIGNAL_DEMUX:
+        _draw_demux_block(painter)
     else:
         # Fallback: draw a simple box
         painter.drawRect(-15, -15, 30, 30)
@@ -231,6 +239,88 @@ def _draw_block(painter: QPainter, label: str) -> None:
     painter.restore()
 
 
+def _draw_scope_block(painter: QPainter, label: str) -> None:
+    """Draw a small scope-like rectangle with input tick marks."""
+
+    body = QRectF(-28, -20, 56, 40)
+    painter.drawRoundedRect(body, 6, 6)
+
+    # Screen grid
+    painter.save()
+    grid_pen = QPen(QColor(0, 0, 0, 150), 1, Qt.PenStyle.DotLine)
+    painter.setPen(grid_pen)
+    painter.drawLine(QPointF(-10, -10), QPointF(10, -10))
+    painter.drawLine(QPointF(-10, 0), QPointF(10, 0))
+    painter.drawLine(QPointF(-10, 10), QPointF(10, 10))
+    painter.restore()
+
+    # Trace
+    painter.drawPolyline(
+        [
+            QPointF(-10, 8),
+            QPointF(-5, -5),
+            QPointF(0, 0),
+            QPointF(6, -12),
+            QPointF(10, -8),
+        ]
+    )
+
+    # Input ticks (default 3 for preview)
+    tick_y = [-12, 0, 12]
+    for y in tick_y:
+        painter.drawLine(QPointF(-35, y), QPointF(-28, y))
+
+    painter.save()
+    font = painter.font()
+    font.setPointSizeF(max(font.pointSizeF() - 1, 8))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(body, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, label)
+    painter.restore()
+
+
+def _draw_mux_block(painter: QPainter) -> None:
+    """Draw a triangular mux with multiple inputs."""
+
+    polygon = [QPointF(-25, -20), QPointF(-25, 20), QPointF(20, 0)]
+    painter.drawPolygon(polygon)
+
+    # Input ticks
+    y_positions = [-15, -5, 5, 15]
+    for y in y_positions:
+        painter.drawLine(QPointF(-35, y), QPointF(-25, y))
+
+    # Output tick
+    painter.drawLine(QPointF(20, 0), QPointF(30, 0))
+
+    painter.drawText(
+        QRectF(-20, -10, 30, 20),
+        Qt.AlignmentFlag.AlignCenter,
+        "MUX",
+    )
+
+
+def _draw_demux_block(painter: QPainter) -> None:
+    """Draw an inverted triangular demux with multiple outputs."""
+
+    polygon = [QPointF(-20, 0), QPointF(25, -20), QPointF(25, 20)]
+    painter.drawPolygon(polygon)
+
+    # Input tick
+    painter.drawLine(QPointF(-30, 0), QPointF(-20, 0))
+
+    # Output ticks
+    y_positions = [-15, -5, 5, 15]
+    for y in y_positions:
+        painter.drawLine(QPointF(25, y), QPointF(35, y))
+
+    painter.drawText(
+        QRectF(-5, -10, 30, 20),
+        Qt.AlignmentFlag.AlignCenter,
+        "DEMUX",
+    )
+
+
 class DraggableTreeWidget(QTreeWidget):
     """Tree widget with proper drag support."""
 
@@ -374,6 +464,30 @@ COMPONENT_LIBRARY = {
             "name": "PWM Generator",
             "shortcut": "Ctrl+W",
             "description": "Carrier-based PWM signal generator",
+        },
+        {
+            "type": ComponentType.ELECTRICAL_SCOPE,
+            "name": "Electrical Scope",
+            "shortcut": "Ctrl+E",
+            "description": "Scope component with configurable input channels",
+        },
+        {
+            "type": ComponentType.THERMAL_SCOPE,
+            "name": "Thermal Scope",
+            "shortcut": "Ctrl+Shift+E",
+            "description": "Thermal scope for temperature/loss visualization",
+        },
+        {
+            "type": ComponentType.SIGNAL_MUX,
+            "name": "Signal Mux",
+            "shortcut": "Ctrl+Alt+M",
+            "description": "Combine multiple scalar signals into a bus",
+        },
+        {
+            "type": ComponentType.SIGNAL_DEMUX,
+            "name": "Signal Demux",
+            "shortcut": "Ctrl+Alt+D",
+            "description": "Split a bus back into labeled scalar signals",
         },
     ],
 }

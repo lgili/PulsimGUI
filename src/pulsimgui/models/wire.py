@@ -53,6 +53,7 @@ class Wire:
     end_connection: WireConnection | None = None
     junctions: list[tuple[float, float]] = field(default_factory=list)
     node_name: str = ""  # Electrical node name for netlist
+    alias: str = ""
 
     @property
     def start_point(self) -> tuple[float, float] | None:
@@ -90,6 +91,7 @@ class Wire:
             "end_connection": self.end_connection.to_dict() if self.end_connection else None,
             "junctions": self.junctions,
             "node_name": self.node_name,
+            "alias": self.alias,
         }
 
     @classmethod
@@ -110,4 +112,5 @@ class Wire:
             ),
             junctions=data.get("junctions", []),
             node_name=data.get("node_name", ""),
+            alias=data.get("alias", ""),
         )

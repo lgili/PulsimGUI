@@ -1,5 +1,6 @@
 """Properties panel for editing component parameters."""
 
+from functools import partial
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -20,7 +21,15 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    SCOPE_CHANNEL_LIMITS,
+    MUX_CHANNEL_LIMITS,
+    set_scope_channel_count,
+    set_mux_input_count,
+    set_demux_output_count,
+)
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 
 
@@ -122,6 +131,9 @@ class PropertiesPanel(QWidget):
         self._component: Component | None = None
         self._components: list[Component] = []
         self._widgets: dict[str, QWidget] = {}
+        self._scope_channel_layout = None
+        self._mux_channel_layout = None
+        self._demux_channel_layout = None
 
         self._setup_ui()
 
@@ -274,10 +286,24 @@ class PropertiesPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self._widgets.clear()
+        self._scope_channel_layout = None
+        self._mux_channel_layout = None
+        self._demux_channel_layout = None
 
     def _create_param_widgets(self) -> None:
         """Create widgets for component parameters."""
         if not self._component:
+            return
+
+        comp_type = self._component.type
+        if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+            self._create_scope_param_widgets()
+            return
+        if comp_type == ComponentType.SIGNAL_MUX:
+            self._create_mux_param_widgets()
+            return
+        if comp_type == ComponentType.SIGNAL_DEMUX:
+            self._create_demux_param_widgets()
             return
 
         params = self._component.parameters
@@ -320,6 +346,264 @@ class PropertiesPanel(QWidget):
                 return self._create_waveform_widget(name, value)
 
         return None
+
+    # --- Scope parameter editors -------------------------------------------------
+
+    def _create_scope_param_widgets(self) -> None:
+        if not self._component:
+            return
+
+        params = self._component.parameters
+        channel_count = params.get("channel_count", len(params.get("channels", [])) or 1)
+
+        count_spin = QSpinBox()
+        count_spin.setRange(*SCOPE_CHANNEL_LIMITS)
+        count_spin.setValue(channel_count)
+        count_spin.valueChanged.connect(self._on_scope_channel_count_changed)
+        self._params_layout.addRow("Channel Count:", count_spin)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._scope_channel_layout = layout
+        self._params_layout.addRow("Channels:", container)
+        self._rebuild_scope_channel_rows()
+
+    def _rebuild_scope_channel_rows(self) -> None:
+        if not (self._scope_channel_layout and self._component):
+            return
+
+        self._clear_dynamic_layout(self._scope_channel_layout)
+        channels = self._component.parameters.get("channels", [])
+
+        for idx, channel in enumerate(channels):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            row_layout.addWidget(QLabel(f"Input {idx + 1}"))
+
+            label_edit = QLineEdit(channel.get("label", ""))
+            label_edit.setPlaceholderText("Trace name")
+            label_edit.editingFinished.connect(
+                partial(self._on_scope_channel_label_changed, idx, label_edit)
+            )
+            row_layout.addWidget(label_edit)
+
+            overlay_check = QCheckBox("Overlay")
+            overlay_check.setChecked(channel.get("overlay", False))
+            overlay_check.toggled.connect(
+                partial(self._on_scope_channel_overlay_changed, idx, overlay_check)
+            )
+            row_layout.addWidget(overlay_check)
+
+            row_layout.addStretch()
+            self._scope_channel_layout.addWidget(row)
+
+    def _on_scope_channel_count_changed(self, value: int) -> None:
+        if not self._component:
+            return
+
+        set_scope_channel_count(self._component, value)
+        self.property_changed.emit("channel_count", value)
+        self._rebuild_scope_channel_rows()
+
+    def _on_scope_channel_label_changed(self, index: int, widget: QLineEdit) -> None:
+        if not self._component:
+            return
+
+        text = widget.text().strip()
+        if not text:
+            prefix = "CH" if self._component.type == ComponentType.ELECTRICAL_SCOPE else "T"
+            text = f"{prefix}{index + 1}"
+            widget.setText(text)
+
+        channels = self._component.parameters.get("channels", [])
+        if index >= len(channels):
+            return
+
+        if channels[index].get("label") != text:
+            channels[index]["label"] = text
+            self.property_changed.emit("channels", channels)
+
+    def _on_scope_channel_overlay_changed(self, index: int, checkbox: QCheckBox) -> None:
+        if not self._component:
+            return
+
+        channels = self._component.parameters.get("channels", [])
+        if index >= len(channels):
+            return
+
+        new_value = checkbox.isChecked()
+        if channels[index].get("overlay") != new_value:
+            channels[index]["overlay"] = new_value
+            self.property_changed.emit("channels", channels)
+
+    # --- Mux / Demux parameter editors ------------------------------------------
+
+    def _create_mux_param_widgets(self) -> None:
+        if not self._component:
+            return
+
+        count = self._component.parameters.get("input_count", 2)
+        spin = QSpinBox()
+        spin.setRange(*MUX_CHANNEL_LIMITS)
+        spin.setValue(count)
+        spin.valueChanged.connect(self._on_mux_count_changed)
+        self._params_layout.addRow("Inputs:", spin)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._mux_channel_layout = layout
+        self._params_layout.addRow("Channels:", container)
+        self._rebuild_mux_channel_rows()
+
+    def _create_demux_param_widgets(self) -> None:
+        if not self._component:
+            return
+
+        count = self._component.parameters.get("output_count", 2)
+        spin = QSpinBox()
+        spin.setRange(*MUX_CHANNEL_LIMITS)
+        spin.setValue(count)
+        spin.valueChanged.connect(self._on_demux_count_changed)
+        self._params_layout.addRow("Outputs:", spin)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._demux_channel_layout = layout
+        self._params_layout.addRow("Channels:", container)
+        self._rebuild_demux_channel_rows()
+
+    def _rebuild_mux_channel_rows(self) -> None:
+        if not (self._mux_channel_layout and self._component):
+            return
+
+        self._clear_dynamic_layout(self._mux_channel_layout)
+        labels = self._component.parameters.get("channel_labels", [])
+        ordering = self._component.parameters.get("ordering", [])
+        count = len(labels)
+
+        for idx, label in enumerate(labels):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            row_layout.addWidget(QLabel(f"In {idx + 1}"))
+
+            edit = QLineEdit(label)
+            edit.setPlaceholderText("Label")
+            edit.editingFinished.connect(
+                partial(self._on_bus_channel_label_changed, "mux", idx, edit)
+            )
+            row_layout.addWidget(edit)
+
+            order_spin = QSpinBox()
+            order_spin.setRange(0, max(0, count - 1))
+            order_spin.setValue(ordering[idx] if idx < len(ordering) else idx)
+            order_spin.valueChanged.connect(
+                partial(self._on_bus_channel_order_changed, "mux", idx, order_spin)
+            )
+            row_layout.addWidget(order_spin)
+
+            row_layout.addStretch()
+            self._mux_channel_layout.addWidget(row)
+
+    def _rebuild_demux_channel_rows(self) -> None:
+        if not (self._demux_channel_layout and self._component):
+            return
+
+        self._clear_dynamic_layout(self._demux_channel_layout)
+        labels = self._component.parameters.get("channel_labels", [])
+        ordering = self._component.parameters.get("ordering", [])
+        count = len(labels)
+
+        for idx, label in enumerate(labels):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            row_layout.addWidget(QLabel(f"Out {idx + 1}"))
+
+            edit = QLineEdit(label)
+            edit.setPlaceholderText("Label")
+            edit.editingFinished.connect(
+                partial(self._on_bus_channel_label_changed, "demux", idx, edit)
+            )
+            row_layout.addWidget(edit)
+
+            order_spin = QSpinBox()
+            order_spin.setRange(0, max(0, count - 1))
+            order_spin.setValue(ordering[idx] if idx < len(ordering) else idx)
+            order_spin.valueChanged.connect(
+                partial(self._on_bus_channel_order_changed, "demux", idx, order_spin)
+            )
+            row_layout.addWidget(order_spin)
+
+            row_layout.addStretch()
+            self._demux_channel_layout.addWidget(row)
+
+    def _on_mux_count_changed(self, value: int) -> None:
+        if not self._component:
+            return
+
+        set_mux_input_count(self._component, value)
+        self.property_changed.emit("input_count", value)
+        self._rebuild_mux_channel_rows()
+
+    def _on_demux_count_changed(self, value: int) -> None:
+        if not self._component:
+            return
+
+        set_demux_output_count(self._component, value)
+        self.property_changed.emit("output_count", value)
+        self._rebuild_demux_channel_rows()
+
+    def _on_bus_channel_label_changed(self, kind: str, index: int, widget: QLineEdit) -> None:
+        if not self._component:
+            return
+
+        text = widget.text().strip() or f"Ch{index + 1}"
+        widget.setText(text)
+
+        labels = self._component.parameters.get("channel_labels", [])
+        if index >= len(labels):
+            return
+
+        if labels[index] != text:
+            labels[index] = text
+            self.property_changed.emit("channel_labels", labels)
+
+    def _on_bus_channel_order_changed(self, kind: str, index: int, spin: QSpinBox) -> None:
+        if not self._component:
+            return
+
+        ordering = self._component.parameters.get("ordering", [])
+        if index >= len(ordering):
+            return
+
+        new_value = spin.value()
+        if ordering[index] != new_value:
+            ordering[index] = new_value
+            self.property_changed.emit("ordering", ordering)
+
+    # --- Utilities ----------------------------------------------------------------
+
+    @staticmethod
+    def _clear_dynamic_layout(layout: QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
 
     def _create_waveform_widget(self, name: str, waveform: dict) -> QWidget:
         """Create widget for waveform parameter."""
