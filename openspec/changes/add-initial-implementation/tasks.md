@@ -135,31 +135,31 @@
 ## Phase 4: Simulation Integration
 
 ### 4.1 Simulation Service
-- [ ] 4.1.1 Create SimulationService class
-- [ ] 4.1.2 Convert GUI circuit to Pulsim Circuit
-- [ ] 4.1.3 Run simulation in worker thread
-- [ ] 4.1.4 Emit progress signals during simulation
-- [ ] 4.1.5 Handle simulation errors gracefully
-- [ ] 4.1.6 Implement simulation cancellation
+- [x] 4.1.1 Create SimulationService class
+- [x] 4.1.2 Convert GUI circuit to Pulsim Circuit
+- [x] 4.1.3 Run simulation in worker thread
+- [x] 4.1.4 Emit progress signals during simulation
+- [x] 4.1.5 Handle simulation errors gracefully
+- [x] 4.1.6 Implement simulation cancellation
 
 ### 4.2 Simulation Control UI
-- [ ] 4.2.1 Create simulation settings dialog
-- [ ] 4.2.2 Implement transient settings tab
-- [ ] 4.2.3 Implement solver settings tab
-- [ ] 4.2.4 Add Run button to toolbar
-- [ ] 4.2.5 Add Stop button to toolbar
-- [ ] 4.2.6 Implement Pause/Resume
-- [ ] 4.2.7 Show progress bar during simulation
-- [ ] 4.2.8 Display simulation statistics after completion
+- [x] 4.2.1 Create simulation settings dialog
+- [x] 4.2.2 Implement transient settings tab
+- [x] 4.2.3 Implement solver settings tab
+- [x] 4.2.4 Add Run button to toolbar
+- [x] 4.2.5 Add Stop button to toolbar
+- [x] 4.2.6 Implement Pause/Resume
+- [x] 4.2.7 Show progress bar during simulation
+- [x] 4.2.8 Display simulation statistics after completion
 
 ### 4.3 DC Analysis
-- [ ] 4.3.1 Implement DC operating point analysis
-- [ ] 4.3.2 Display DC results in table
+- [x] 4.3.1 Implement DC operating point analysis
+- [x] 4.3.2 Display DC results in table
 - [ ] 4.3.3 Show DC values on schematic (optional overlay)
 
 ### 4.4 AC Analysis
-- [ ] 4.4.1 Implement AC analysis settings
-- [ ] 4.4.2 Run AC sweep
+- [x] 4.4.1 Implement AC analysis settings
+- [x] 4.4.2 Run AC sweep
 - [ ] 4.4.3 Display Bode plots
 
 ## Phase 5: Waveform Viewer

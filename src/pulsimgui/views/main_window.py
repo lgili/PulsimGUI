@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.project import Project
 from pulsimgui.services.settings_service import SettingsService
-from pulsimgui.views.dialogs import PreferencesDialog
+from pulsimgui.services.simulation_service import SimulationService, SimulationState
+from pulsimgui.views.dialogs import PreferencesDialog, SimulationSettingsDialog, DCResultsDialog
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         self._settings = SettingsService()
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
+        self._simulation_service = SimulationService(parent=self)
 
         self._setup_window()
         self._create_actions()
@@ -147,19 +149,29 @@ class MainWindow(QMainWindow):
         # Simulation actions
         self.action_run = QAction("&Run Simulation", self)
         self.action_run.setShortcut(QKeySequence("F5"))
+        self.action_run.triggered.connect(self._on_run_simulation)
 
         self.action_stop = QAction("&Stop Simulation", self)
         self.action_stop.setShortcut(QKeySequence("Shift+F5"))
         self.action_stop.setEnabled(False)
+        self.action_stop.triggered.connect(self._on_stop_simulation)
+
+        self.action_pause = QAction("&Pause", self)
+        self.action_pause.setShortcut(QKeySequence("F8"))
+        self.action_pause.setEnabled(False)
+        self.action_pause.triggered.connect(self._on_pause_simulation)
 
         self.action_dc_op = QAction("&DC Operating Point", self)
         self.action_dc_op.setShortcut(QKeySequence("F6"))
+        self.action_dc_op.triggered.connect(self._on_dc_analysis)
 
         self.action_ac = QAction("&AC Analysis", self)
         self.action_ac.setShortcut(QKeySequence("F7"))
+        self.action_ac.triggered.connect(self._on_ac_analysis)
 
         self.action_sim_settings = QAction("Simulation &Settings...", self)
-        self.action_sim_settings.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.action_sim_settings.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        self.action_sim_settings.triggered.connect(self._on_simulation_settings)
 
         # Help actions
         self.action_about = QAction("&About PulsimGui", self)
@@ -215,6 +227,7 @@ class MainWindow(QMainWindow):
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
         sim_menu.addAction(self.action_run)
+        sim_menu.addAction(self.action_pause)
         sim_menu.addAction(self.action_stop)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_dc_op)
@@ -254,6 +267,8 @@ class MainWindow(QMainWindow):
 
     def _create_status_bar(self) -> None:
         """Create the status bar."""
+        from PySide6.QtWidgets import QProgressBar
+
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
 
@@ -275,6 +290,18 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setMinimumWidth(1)
         status_bar.addWidget(spacer, 1)
+
+        # Simulation progress bar
+        self._sim_progress = QProgressBar()
+        self._sim_progress.setMinimumWidth(150)
+        self._sim_progress.setMaximumWidth(200)
+        self._sim_progress.setVisible(False)
+        status_bar.addPermanentWidget(self._sim_progress)
+
+        # Simulation status label
+        self._sim_status_label = QLabel("")
+        self._sim_status_label.setMinimumWidth(150)
+        status_bar.addPermanentWidget(self._sim_status_label)
 
         # Modified indicator
         self._modified_label = QLabel("")
@@ -331,6 +358,13 @@ class MainWindow(QMainWindow):
         self.action_theme_light.triggered.connect(lambda: self._set_theme("light"))
         self.action_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
         self.action_theme_system.triggered.connect(lambda: self._set_theme("system"))
+
+        # Simulation service signals
+        self._simulation_service.state_changed.connect(self._on_simulation_state_changed)
+        self._simulation_service.progress.connect(self._on_simulation_progress)
+        self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
+        self._simulation_service.dc_finished.connect(self._on_dc_finished)
+        self._simulation_service.error.connect(self._on_simulation_error)
 
     def _restore_state(self) -> None:
         """Restore window geometry and state."""
@@ -672,8 +706,109 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
+        # Stop any running simulation
+        if self._simulation_service.is_running:
+            self._simulation_service.stop()
+
         # Save window state
         self._settings.set_window_geometry(self.saveGeometry())
         self._settings.set_window_state(self.saveState())
 
         event.accept()
+
+    # Simulation handlers
+    def _on_run_simulation(self) -> None:
+        """Run transient simulation."""
+        circuit_data = self._simulation_service.convert_gui_circuit(self._project)
+        self._simulation_service.run_transient(circuit_data)
+
+    def _on_stop_simulation(self) -> None:
+        """Stop current simulation."""
+        self._simulation_service.stop()
+
+    def _on_pause_simulation(self) -> None:
+        """Pause/Resume simulation."""
+        if self._simulation_service.state == SimulationState.PAUSED:
+            self._simulation_service.resume()
+            self.action_pause.setText("&Pause")
+        else:
+            self._simulation_service.pause()
+            self.action_pause.setText("&Resume")
+
+    def _on_dc_analysis(self) -> None:
+        """Run DC operating point analysis."""
+        circuit_data = self._simulation_service.convert_gui_circuit(self._project)
+        self._simulation_service.run_dc_operating_point(circuit_data)
+
+    def _on_ac_analysis(self) -> None:
+        """Run AC analysis."""
+        # TODO: Show AC settings dialog first
+        circuit_data = self._simulation_service.convert_gui_circuit(self._project)
+        self._simulation_service.run_ac_analysis(circuit_data, 1, 1e6, 10)
+
+    def _on_simulation_settings(self) -> None:
+        """Show simulation settings dialog."""
+        dialog = SimulationSettingsDialog(self._simulation_service.settings, self)
+        if dialog.exec():
+            self._simulation_service.settings = dialog.get_settings()
+
+    def _on_simulation_state_changed(self, state: SimulationState) -> None:
+        """Handle simulation state change."""
+        is_running = state in (SimulationState.RUNNING, SimulationState.PAUSED)
+        is_paused = state == SimulationState.PAUSED
+
+        # Update UI
+        self.action_run.setEnabled(not is_running)
+        self.action_stop.setEnabled(is_running)
+        self.action_pause.setEnabled(is_running)
+        self.action_dc_op.setEnabled(not is_running)
+        self.action_ac.setEnabled(not is_running)
+
+        self._sim_progress.setVisible(is_running)
+
+        if state == SimulationState.IDLE:
+            self._sim_status_label.setText("")
+        elif state == SimulationState.RUNNING:
+            self._sim_status_label.setText("Running...")
+        elif state == SimulationState.PAUSED:
+            self._sim_status_label.setText("Paused")
+        elif state == SimulationState.COMPLETED:
+            self._sim_status_label.setText("Completed")
+        elif state == SimulationState.CANCELLED:
+            self._sim_status_label.setText("Cancelled")
+        elif state == SimulationState.ERROR:
+            self._sim_status_label.setText("Error")
+
+    def _on_simulation_progress(self, value: float, message: str) -> None:
+        """Handle simulation progress update."""
+        self._sim_progress.setValue(int(value))
+        self._sim_status_label.setText(message)
+
+    def _on_simulation_finished(self, result) -> None:
+        """Handle simulation completion."""
+        if result.is_valid:
+            # Show results in waveform viewer
+            # TODO: Update waveform viewer with results
+            self.statusBar().showMessage(
+                f"Simulation complete: {len(result.time)} points, "
+                f"{len(result.signals)} signals",
+                5000,
+            )
+        else:
+            QMessageBox.warning(
+                self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
+            )
+
+    def _on_dc_finished(self, result) -> None:
+        """Handle DC analysis completion."""
+        if result.is_valid:
+            dialog = DCResultsDialog(result, self)
+            dialog.exec()
+        else:
+            QMessageBox.warning(
+                self, "DC Analysis Error", f"DC analysis failed:\n{result.error_message}"
+            )
+
+    def _on_simulation_error(self, message: str) -> None:
+        """Handle simulation error."""
+        QMessageBox.critical(self, "Simulation Error", message)

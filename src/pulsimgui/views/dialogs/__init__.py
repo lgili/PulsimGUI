@@ -2,5 +2,13 @@
 
 from pulsimgui.views.dialogs.preferences_dialog import PreferencesDialog
 from pulsimgui.views.dialogs.device_library_dialog import DeviceLibraryDialog, DEVICE_LIBRARY
+from pulsimgui.views.dialogs.simulation_settings_dialog import SimulationSettingsDialog
+from pulsimgui.views.dialogs.dc_results_dialog import DCResultsDialog
 
-__all__ = ["PreferencesDialog", "DeviceLibraryDialog", "DEVICE_LIBRARY"]
+__all__ = [
+    "PreferencesDialog",
+    "DeviceLibraryDialog",
+    "DEVICE_LIBRARY",
+    "SimulationSettingsDialog",
+    "DCResultsDialog",
+]
