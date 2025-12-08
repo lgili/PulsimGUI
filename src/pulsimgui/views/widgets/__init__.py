@@ -11,6 +11,27 @@ from pulsimgui.views.widgets.breadcrumb_widget import (
     BreadcrumbWidget,
     HierarchyBar,
 )
+from pulsimgui.views.widgets.status_widgets import (
+    IconLabel,
+    CoordinateWidget,
+    ZoomWidget,
+    SelectionWidget,
+    ModifiedWidget,
+    SimulationStatusWidget,
+    StatusBanner,
+)
+from pulsimgui.views.widgets.animated_dock import (
+    AnimatedDockWidget,
+    DockTitleBar,
+)
+from pulsimgui.views.widgets.zoom_slider import (
+    ZoomSlider,
+    ZoomOverlay,
+)
+from pulsimgui.views.widgets.minimap import (
+    MinimapWidget,
+    MinimapOverlay,
+)
 
 __all__ = [
     "SpinnerWidget",
@@ -20,4 +41,17 @@ __all__ = [
     "with_busy_cursor",
     "BreadcrumbWidget",
     "HierarchyBar",
+    "IconLabel",
+    "CoordinateWidget",
+    "ZoomWidget",
+    "SelectionWidget",
+    "ModifiedWidget",
+    "SimulationStatusWidget",
+    "StatusBanner",
+    "AnimatedDockWidget",
+    "DockTitleBar",
+    "ZoomSlider",
+    "ZoomOverlay",
+    "MinimapWidget",
+    "MinimapOverlay",
 ]

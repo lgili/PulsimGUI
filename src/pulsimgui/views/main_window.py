@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QApplication,
+    QMenu,
 )
 
 from pulsimgui.commands.base import CommandStack
@@ -28,6 +29,7 @@ from pulsimgui.models.subcircuit import (
     detect_boundary_ports,
 )
 from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationResult,
     SimulationService,
@@ -39,6 +41,7 @@ from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.shortcut_service import ShortcutService
 from pulsimgui.services.hierarchy_service import HierarchyService
+from pulsimgui.resources.icons import IconService
 from pulsimgui.views.dialogs import (
     PreferencesDialog,
     SimulationSettingsDialog,
@@ -57,7 +60,7 @@ from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
-from pulsimgui.views.widgets import HierarchyBar
+from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
 
 
 class MainWindow(QMainWindow):
@@ -72,7 +75,7 @@ class MainWindow(QMainWindow):
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
-        self._simulation_service = SimulationService(parent=self)
+        self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(parent=self)
         self._scope_windows: dict[str, ScopeWindow] = {}
         self._suppress_scope_state = False
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
         self._create_status_bar()
         self._create_dock_widgets()
         self._connect_signals()
+        self._handle_backend_changed(self._simulation_service.backend_info, notify=False)
         self._restore_state()
         self._apply_theme()
         self._setup_autosave_timer()
@@ -115,8 +119,16 @@ class MainWindow(QMainWindow):
         # Ensure scene reflects current hierarchy level
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
 
+        # Create minimap overlay in corner of schematic view
+        self._minimap = MinimapOverlay(self._schematic_view)
+        self._minimap.set_source_view(self._schematic_view)
+        self._minimap.navigation_requested.connect(self._on_minimap_navigation)
+        self._minimap.move(10, 10)  # Position in top-left corner
+        self._minimap.raise_()
+
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
+        self._schematic_view.zoom_changed.connect(lambda _: self._minimap.update_minimap())
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.wire_created.connect(self._on_wire_created)
@@ -124,9 +136,16 @@ class MainWindow(QMainWindow):
         self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
         self._schematic_view.scope_open_requested.connect(self._on_scope_open_requested)
         self._schematic_view.wire_alias_changed.connect(self._on_wire_alias_changed)
+        self._schematic_view.quick_add_component.connect(self._on_quick_add_component)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
+        # Throttle minimap updates to avoid performance issues during rapid changes
+        self._minimap_update_timer = QTimer(self)
+        self._minimap_update_timer.setSingleShot(True)
+        self._minimap_update_timer.setInterval(50)  # 50ms throttle
+        self._minimap_update_timer.timeout.connect(self._minimap.update_minimap)
+        self._schematic_scene.changed.connect(lambda _: self._schedule_minimap_update())
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
 
     def _create_actions(self) -> None:
@@ -134,6 +153,7 @@ class MainWindow(QMainWindow):
         # File actions
         self.action_new = QAction("&New Project", self)
         self.action_new.setShortcut(QKeySequence.StandardKey.New)
+        self.action_new.setToolTip("New Project (Ctrl+N)")
         self.action_new.triggered.connect(self._on_new_project)
 
         self.action_new_from_template = QAction("New from &Template...", self)
@@ -142,10 +162,12 @@ class MainWindow(QMainWindow):
 
         self.action_open = QAction("&Open Project...", self)
         self.action_open.setShortcut(QKeySequence.StandardKey.Open)
+        self.action_open.setToolTip("Open Project (Ctrl+O)")
         self.action_open.triggered.connect(self._on_open_project)
 
         self.action_save = QAction("&Save", self)
         self.action_save.setShortcut(QKeySequence.StandardKey.Save)
+        self.action_save.setToolTip("Save Project (Ctrl+S)")
         self.action_save.triggered.connect(self._on_save)
 
         self.action_save_as = QAction("Save &As...", self)
@@ -179,11 +201,13 @@ class MainWindow(QMainWindow):
         # Edit actions
         self.action_undo = QAction("&Undo", self)
         self.action_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        self.action_undo.setToolTip("Undo (Ctrl+Z)")
         self.action_undo.setEnabled(False)
         self.action_undo.triggered.connect(self._on_undo)
 
         self.action_redo = QAction("&Redo", self)
         self.action_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        self.action_redo.setToolTip("Redo (Ctrl+Y)")
         self.action_redo.setEnabled(False)
         self.action_redo.triggered.connect(self._on_redo)
 
@@ -216,14 +240,17 @@ class MainWindow(QMainWindow):
         # View actions
         self.action_zoom_in = QAction("Zoom &In", self)
         self.action_zoom_in.setShortcut(QKeySequence.StandardKey.ZoomIn)
+        self.action_zoom_in.setToolTip("Zoom In (Ctrl+=)")
         self.action_zoom_in.triggered.connect(self._on_zoom_in)
 
         self.action_zoom_out = QAction("Zoom &Out", self)
         self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
+        self.action_zoom_out.setToolTip("Zoom Out (Ctrl+-)")
         self.action_zoom_out.triggered.connect(self._on_zoom_out)
 
         self.action_zoom_fit = QAction("Zoom to &Fit", self)
         self.action_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
+        self.action_zoom_fit.setToolTip("Zoom to Fit (Ctrl+0)")
         self.action_zoom_fit.triggered.connect(self._on_zoom_fit)
 
         self.action_toggle_grid = QAction("Show &Grid", self)
@@ -237,6 +264,12 @@ class MainWindow(QMainWindow):
         self.action_toggle_dc_overlay.setChecked(False)
         self.action_toggle_dc_overlay.setShortcut(QKeySequence("D"))
         self.action_toggle_dc_overlay.triggered.connect(self._on_toggle_dc_overlay)
+
+        self.action_toggle_minimap = QAction("Show &Minimap", self)
+        self.action_toggle_minimap.setCheckable(True)
+        self.action_toggle_minimap.setChecked(True)
+        self.action_toggle_minimap.setShortcut(QKeySequence("M"))
+        self.action_toggle_minimap.triggered.connect(self._on_toggle_minimap)
 
         self.action_theme_light = QAction("&Light", self)
         self.action_theme_light.setCheckable(True)
@@ -253,10 +286,12 @@ class MainWindow(QMainWindow):
         # Simulation actions
         self.action_run = QAction("&Run Simulation", self)
         self.action_run.setShortcut(QKeySequence("F5"))
+        self.action_run.setToolTip("Run Simulation (F5)")
         self.action_run.triggered.connect(self._on_run_simulation)
 
         self.action_stop = QAction("&Stop Simulation", self)
         self.action_stop.setShortcut(QKeySequence("Shift+F5"))
+        self.action_stop.setToolTip("Stop Simulation (Shift+F5)")
         self.action_stop.setEnabled(False)
         self.action_stop.triggered.connect(self._on_stop_simulation)
 
@@ -282,6 +317,12 @@ class MainWindow(QMainWindow):
 
         self.action_thermal_viewer = QAction("&Thermal Viewer...", self)
         self.action_thermal_viewer.triggered.connect(self._on_show_thermal_viewer)
+
+        # Quick add action
+        self.action_quick_add = QAction("&Quick Add Component...", self)
+        self.action_quick_add.setShortcut(QKeySequence("Ctrl+K"))
+        self.action_quick_add.setToolTip("Quick Add Component (Ctrl+K)")
+        self.action_quick_add.triggered.connect(self._on_quick_add)
 
         # Help actions
         self.action_about = QAction("&About PulsimGui", self)
@@ -340,6 +381,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.action_toggle_grid)
         view_menu.addAction(self.action_toggle_dc_overlay)
+        view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
         view_menu.addSeparator()
@@ -367,65 +409,89 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self.action_about)
 
     def _create_toolbar(self) -> None:
-        """Create the main toolbar."""
-        toolbar = QToolBar("Main Toolbar")
-        toolbar.setObjectName("MainToolbar")
-        toolbar.setIconSize(QSize(20, 20))
-        toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.addToolBar(toolbar)
+        """Create the main toolbar with professional icons and overflow menu."""
+        from PySide6.QtWidgets import QToolButton
 
-        # File actions with short text labels
-        self.action_new.setText("New")
-        self.action_open.setText("Open")
-        self.action_save.setText("Save")
-        toolbar.addAction(self.action_new)
-        toolbar.addAction(self.action_open)
-        toolbar.addAction(self.action_save)
-        toolbar.addSeparator()
+        self._toolbar = QToolBar("Main Toolbar")
+        self._toolbar.setObjectName("MainToolbar")
+        self._toolbar.setIconSize(QSize(20, 20))
+        self._toolbar.setMovable(False)
+        self._toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.addToolBar(self._toolbar)
+
+        # File actions with icons
+        self._toolbar.addAction(self.action_new)
+        self._toolbar.addAction(self.action_open)
+        self._toolbar.addAction(self.action_save)
+        self._toolbar.addSeparator()
 
         # Edit actions
-        self.action_undo.setText("Undo")
-        self.action_redo.setText("Redo")
-        toolbar.addAction(self.action_undo)
-        toolbar.addAction(self.action_redo)
-        toolbar.addSeparator()
+        self._toolbar.addAction(self.action_undo)
+        self._toolbar.addAction(self.action_redo)
+        self._toolbar.addSeparator()
 
         # Zoom actions
-        self.action_zoom_in.setText("Zoom+")
-        self.action_zoom_out.setText("Zoom-")
-        self.action_zoom_fit.setText("Fit")
-        toolbar.addAction(self.action_zoom_in)
-        toolbar.addAction(self.action_zoom_out)
-        toolbar.addAction(self.action_zoom_fit)
-        toolbar.addSeparator()
+        self._toolbar.addAction(self.action_zoom_in)
+        self._toolbar.addAction(self.action_zoom_out)
+        self._toolbar.addAction(self.action_zoom_fit)
+        self._toolbar.addSeparator()
 
         # Simulation actions
-        self.action_run.setText("Run")
-        self.action_stop.setText("Stop")
-        toolbar.addAction(self.action_run)
-        toolbar.addAction(self.action_stop)
+        self._toolbar.addAction(self.action_run)
+        self._toolbar.addAction(self.action_stop)
+
+        # Add flexible spacer
+        spacer = QWidget()
+        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
+        self._toolbar.addWidget(spacer)
+
+        # Overflow menu button for additional actions
+        self._overflow_btn = QToolButton()
+        self._overflow_btn.setIcon(IconService.get_icon("menu", "#374151"))
+        self._overflow_btn.setToolTip("More actions")
+        self._overflow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._overflow_btn.setAutoRaise(True)
+
+        overflow_menu = QMenu(self._overflow_btn)
+        overflow_menu.addAction(self.action_toggle_grid)
+        overflow_menu.addAction(self.action_toggle_dc_overlay)
+        overflow_menu.addSeparator()
+        overflow_menu.addAction(self.action_dc_op)
+        overflow_menu.addAction(self.action_ac)
+        overflow_menu.addAction(self.action_parameter_sweep)
+        overflow_menu.addSeparator()
+        overflow_menu.addAction(self.action_sim_settings)
+        overflow_menu.addAction(self.action_preferences)
+
+        self._overflow_btn.setMenu(overflow_menu)
+        self._toolbar.addWidget(self._overflow_btn)
 
     def _create_status_bar(self) -> None:
-        """Create the status bar."""
+        """Create the status bar with icons."""
         from PySide6.QtWidgets import QProgressBar
+        from pulsimgui.views.widgets import (
+            CoordinateWidget,
+            ZoomWidget,
+            SelectionWidget,
+            ModifiedWidget,
+            SimulationStatusWidget,
+        )
 
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
 
-        # Coordinate display
-        self._coord_label = QLabel("X: 0, Y: 0")
-        self._coord_label.setMinimumWidth(100)
-        status_bar.addWidget(self._coord_label)
+        # Coordinate display with icon
+        self._coord_widget = CoordinateWidget()
+        status_bar.addWidget(self._coord_widget)
 
-        # Zoom level
-        self._zoom_label = QLabel("100%")
-        self._zoom_label.setMinimumWidth(60)
-        status_bar.addWidget(self._zoom_label)
+        # Zoom level with icon
+        self._zoom_widget = ZoomWidget()
+        status_bar.addWidget(self._zoom_widget)
 
-        # Selection count
-        self._selection_label = QLabel("")
-        status_bar.addWidget(self._selection_label)
+        # Selection count with icon
+        self._selection_widget = SelectionWidget()
+        self._selection_widget.hide()  # Hidden when nothing selected
+        status_bar.addWidget(self._selection_widget)
 
         # Spacer
         spacer = QWidget()
@@ -439,14 +505,14 @@ class MainWindow(QMainWindow):
         self._sim_progress.setVisible(False)
         status_bar.addPermanentWidget(self._sim_progress)
 
-        # Simulation status label
-        self._sim_status_label = QLabel("")
-        self._sim_status_label.setMinimumWidth(150)
-        status_bar.addPermanentWidget(self._sim_status_label)
+        # Simulation status with icon
+        self._sim_status_widget = SimulationStatusWidget()
+        status_bar.addPermanentWidget(self._sim_status_widget)
 
-        # Modified indicator
-        self._modified_label = QLabel("")
-        status_bar.addPermanentWidget(self._modified_label)
+        # Modified indicator with icon
+        self._modified_widget = ModifiedWidget()
+        self._modified_widget.hide()  # Hidden when saved
+        status_bar.addPermanentWidget(self._modified_widget)
 
     def _create_dock_widgets(self) -> None:
         """Create dockable panels."""
@@ -456,7 +522,7 @@ class MainWindow(QMainWindow):
         self.library_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self._library_panel = LibraryPanel()
+        self._library_panel = LibraryPanel(theme_service=self._theme_service)
         self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
         self.library_dock.setWidget(self._library_panel)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.library_dock)
@@ -513,12 +579,61 @@ class MainWindow(QMainWindow):
             self._on_parameter_sweep_finished
         )
         self._simulation_service.error.connect(self._on_simulation_error)
+        self._simulation_service.backend_changed.connect(self._on_backend_changed)
 
         # Hierarchy service signals
         self._hierarchy_service.hierarchy_changed.connect(self._on_hierarchy_changed)
         self._hierarchy_service.breadcrumb_updated.connect(self._on_breadcrumb_updated)
         self._hierarchy_bar.navigate_up.connect(self._hierarchy_service.ascend)
         self._hierarchy_bar.navigate_to_level.connect(self._hierarchy_service.navigate_to_level)
+
+    def _update_simulation_actions(self) -> None:
+        """Enable or disable simulation actions based on backend readiness."""
+        backend_ready = self._simulation_service.is_backend_ready
+        is_running = self._simulation_service.is_running
+        self.action_run.setEnabled(backend_ready and not is_running)
+        self.action_stop.setEnabled(backend_ready and is_running)
+        self.action_pause.setEnabled(backend_ready and is_running)
+        self.action_dc_op.setEnabled(backend_ready and not is_running)
+        self.action_ac.setEnabled(backend_ready and not is_running)
+        self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
+
+    def _update_backend_status(self, info: BackendInfo | None = None) -> None:
+        """Refresh the status bar text to describe backend state."""
+        backend_info = info or self._simulation_service.backend_info
+        backend_ready = self._simulation_service.is_backend_ready
+        self._update_simulation_actions()
+        if backend_ready:
+            if not self._simulation_service.is_running:
+                self._sim_status_widget.setStatus(backend_info.label())
+            return
+        warning = (
+            self._simulation_service.backend_issue_message
+            or "Simulation backend unavailable."
+        )
+        self._sim_status_widget.setStatus(f"Backend unavailable: {warning}", is_error=True)
+        self._sim_progress.setVisible(False)
+
+    def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
+        """Apply backend changes and optionally notify the user."""
+        self._update_backend_status(info)
+        if not notify:
+            return
+        warning = self._simulation_service.backend_issue_message
+        if warning:
+            self.statusBar().showMessage(f"Backend unavailable: {warning}", 8000)
+            QMessageBox.warning(
+                self,
+                "Simulation Backend Unavailable",
+                "Simulations are disabled until a compatible backend is installed or selected.\n\n"
+                f"Details: {warning}",
+            )
+        else:
+            self.statusBar().showMessage(f"Backend ready: {info.label()}", 4000)
+
+    def _on_backend_changed(self, info: BackendInfo) -> None:
+        """Qt slot invoked when simulation backend changes."""
+        self._handle_backend_changed(info, notify=True)
 
     def _restore_state(self) -> None:
         """Restore window geometry and state."""
@@ -559,6 +674,34 @@ class MainWindow(QMainWindow):
 
         # Update component colors (dark mode affects line colors)
         self._schematic_scene.set_dark_mode(theme.is_dark)
+
+        # Update toolbar icons for current theme
+        self._update_toolbar_icons()
+
+        # Clear icon cache when theme changes
+        IconService.clear_cache()
+
+    def _update_toolbar_icons(self) -> None:
+        """Update toolbar icons with theme-appropriate colors."""
+        theme = self._theme_service.current_theme
+        icon_color = theme.colors.icon_default
+
+        # Map actions to icon names
+        icon_map = {
+            self.action_new: "file-plus",
+            self.action_open: "folder-open",
+            self.action_save: "save",
+            self.action_undo: "undo",
+            self.action_redo: "redo",
+            self.action_zoom_in: "zoom-in",
+            self.action_zoom_out: "zoom-out",
+            self.action_zoom_fit: "maximize",
+            self.action_run: "play",
+            self.action_stop: "square",
+        }
+
+        for action, icon_name in icon_map.items():
+            action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -615,10 +758,7 @@ class MainWindow(QMainWindow):
 
     def _update_modified_indicator(self) -> None:
         """Update the modified indicator in the status bar."""
-        if self._project.is_dirty:
-            self._modified_label.setText("Modified")
-        else:
-            self._modified_label.setText("")
+        self._modified_widget.setModified(self._project.is_dirty)
 
     def _current_circuit(self) -> Circuit:
         """Return the circuit for the current hierarchy level."""
@@ -668,18 +808,15 @@ class MainWindow(QMainWindow):
 
     def update_coordinates(self, x: float, y: float) -> None:
         """Update coordinate display in status bar."""
-        self._coord_label.setText(f"X: {x:.1f}, Y: {y:.1f}")
+        self._coord_widget.setCoordinates(x, y)
 
     def update_zoom(self, zoom_percent: float) -> None:
         """Update zoom level display in status bar."""
-        self._zoom_label.setText(f"{zoom_percent:.0f}%")
+        self._zoom_widget.setZoom(zoom_percent)
 
     def update_selection(self, count: int) -> None:
         """Update selection count in status bar."""
-        if count > 0:
-            self._selection_label.setText(f"{count} selected")
-        else:
-            self._selection_label.setText("")
+        self._selection_widget.setCount(count)
 
     def _on_scene_selection_changed(self) -> None:
         """Handle selection change in schematic scene."""
@@ -987,6 +1124,87 @@ class MainWindow(QMainWindow):
             "<p>Licensed under MIT License</p>",
         )
 
+    def _on_quick_add(self) -> None:
+        """Show quick-add palette for fast component insertion."""
+        from pulsimgui.views.dialogs.quick_add_dialog import QuickAddDialog
+
+        dialog = QuickAddDialog(self)
+
+        # Position near center of window
+        pos = self.geometry().center()
+        dialog.move(pos.x() - 200, pos.y() - 150)
+
+        def on_component_selected(comp_type):
+            # Add component at center of current view
+            view_center = self._schematic_view.mapToScene(
+                self._schematic_view.viewport().rect().center()
+            )
+            self._add_component_at(comp_type, view_center.x(), view_center.y())
+
+        dialog.component_selected.connect(on_component_selected)
+        dialog.exec()
+
+    def _on_quick_add_component(self, comp_type) -> None:
+        """Handle quick-add component from keyboard shortcut."""
+        # Try to position relative to selection, otherwise center of view
+        x, y = self._get_smart_placement_position()
+        self._add_component_at(comp_type, x, y)
+        self.statusBar().showMessage(
+            f"Added {comp_type.name.replace('_', ' ').title()}", 2000
+        )
+
+    def _get_smart_placement_position(self) -> tuple[float, float]:
+        """Get smart position for new component based on selection or view center."""
+        from PySide6.QtCore import QPointF
+
+        scene = self._schematic_view.scene()
+        grid_spacing = 20  # Default grid spacing
+
+        # Check if there's a selected component
+        if scene:
+            selected = scene.selectedItems()
+            if selected:
+                from pulsimgui.views.schematic.items import ComponentItem
+
+                # Find the rightmost selected component
+                comp_items = [item for item in selected if isinstance(item, ComponentItem)]
+                if comp_items:
+                    # Position to the right of the rightmost selected component
+                    rightmost = max(comp_items, key=lambda c: c.x())
+                    x = rightmost.x() + 100  # Offset to the right
+                    y = rightmost.y()
+                    return x, y
+
+        # Fallback to center of view
+        view_center = self._schematic_view.mapToScene(
+            self._schematic_view.viewport().rect().center()
+        )
+        return view_center.x(), view_center.y()
+
+    def _add_component_at(self, comp_type, x: float, y: float) -> None:
+        """Add a component at the specified position."""
+        from pulsimgui.models.component import Component
+
+        # Snap to grid
+        scene = self._schematic_view.scene()
+        if scene and hasattr(scene, 'snap_to_grid'):
+            from PySide6.QtCore import QPointF
+            snapped = scene.snap_to_grid(QPointF(x, y))
+            x, y = snapped.x(), snapped.y()
+
+        # Create component
+        component = Component(comp_type, x=x, y=y)
+        circuit = self._current_circuit()
+        circuit.add_component(component)
+
+        # Update scene
+        if scene:
+            scene.load_circuit(circuit)
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
     def _on_zoom_in(self) -> None:
         """Zoom in the schematic view."""
         self._schematic_view.zoom_in()
@@ -998,6 +1216,12 @@ class MainWindow(QMainWindow):
     def _on_zoom_fit(self) -> None:
         """Zoom to fit all items."""
         self._schematic_view.zoom_to_fit()
+
+    def _on_minimap_navigation(self, x: float, y: float) -> None:
+        """Handle navigation request from minimap."""
+        from PySide6.QtCore import QPointF
+        self._schematic_view.centerOn(QPointF(x, y))
+        self._minimap.update_minimap()
 
     def _on_toggle_grid(self, checked: bool) -> None:
         """Toggle grid visibility."""
@@ -1015,9 +1239,18 @@ class MainWindow(QMainWindow):
         """Toggle DC operating point overlay visibility."""
         self._schematic_scene.show_dc_overlay = checked
 
+    def _on_toggle_minimap(self, checked: bool) -> None:
+        """Toggle minimap visibility."""
+        self._minimap.setVisible(checked)
+
+    def _schedule_minimap_update(self) -> None:
+        """Schedule a throttled minimap update."""
+        if not self._minimap_update_timer.isActive():
+            self._minimap_update_timer.start()
+
     def _on_preferences(self) -> None:
         """Show preferences dialog."""
-        dialog = PreferencesDialog(self._settings, self)
+        dialog = PreferencesDialog(self._settings, self._simulation_service, self)
         if dialog.exec():
             # Apply settings that may have changed
             self._apply_theme()
@@ -1103,8 +1336,9 @@ class MainWindow(QMainWindow):
 
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
-        from pulsimgui.models.wire import Wire, WireSegment
-        from pulsimgui.views.schematic.items import WireItem
+        from pulsimgui.models.wire import Wire, WireSegment, WireConnection
+        from pulsimgui.views.schematic.items import WireItem, ComponentItem
+        from PySide6.QtCore import QPointF
 
         if not segments:
             return
@@ -1115,6 +1349,38 @@ class MainWindow(QMainWindow):
             for seg in segments
         ]
         wire = Wire(segments=wire_segments)
+
+        # Detect connections at wire endpoints
+        start_pt = QPointF(segments[0][0], segments[0][1])
+        end_pt = QPointF(segments[-1][2], segments[-1][3])
+
+        # Find connected components at start and end points
+        SNAP_TOLERANCE = 15.0
+        for item in self._schematic_scene.items():
+            if not isinstance(item, ComponentItem):
+                continue
+
+            component = item.component
+            for pin_index in range(len(component.pins)):
+                pin_pos = item.get_pin_position(pin_index)
+
+                # Check start connection
+                dist_start = ((start_pt.x() - pin_pos.x()) ** 2 +
+                              (start_pt.y() - pin_pos.y()) ** 2) ** 0.5
+                if dist_start < SNAP_TOLERANCE:
+                    wire.start_connection = WireConnection(
+                        component_id=component.id,
+                        pin_index=pin_index
+                    )
+
+                # Check end connection
+                dist_end = ((end_pt.x() - pin_pos.x()) ** 2 +
+                            (end_pt.y() - pin_pos.y()) ** 2) ** 0.5
+                if dist_end < SNAP_TOLERANCE:
+                    wire.end_connection = WireConnection(
+                        component_id=component.id,
+                        pin_index=pin_index
+                    )
 
         # Add to circuit
         self._current_circuit().add_wire(wire)
@@ -1411,7 +1677,12 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
-        dialog = SimulationSettingsDialog(self._simulation_service.settings, self)
+        dialog = SimulationSettingsDialog(
+            self._simulation_service.settings,
+            backend_info=self._simulation_service.backend_info,
+            backend_warning=self._simulation_service.backend_issue_message,
+            parent=self,
+        )
         if dialog.exec():
             self._simulation_service.settings = dialog.get_settings()
 
@@ -1466,33 +1737,34 @@ class MainWindow(QMainWindow):
         is_running = state in (SimulationState.RUNNING, SimulationState.PAUSED)
         is_paused = state == SimulationState.PAUSED
 
-        # Update UI
-        self.action_run.setEnabled(not is_running)
-        self.action_stop.setEnabled(is_running)
-        self.action_pause.setEnabled(is_running)
-        self.action_dc_op.setEnabled(not is_running)
-        self.action_ac.setEnabled(not is_running)
-        self.action_parameter_sweep.setEnabled(not is_running)
-
+        self._update_simulation_actions()
         self._sim_progress.setVisible(is_running)
 
+        if not self._simulation_service.is_backend_ready:
+            warning = (
+                self._simulation_service.backend_issue_message
+                or "Simulation backend unavailable."
+            )
+            self._sim_status_widget.setStatus(f"Backend unavailable: {warning}", is_error=True)
+            return
+
         if state == SimulationState.IDLE:
-            self._sim_status_label.setText("")
+            self._sim_status_widget.setStatus("Ready")
         elif state == SimulationState.RUNNING:
-            self._sim_status_label.setText("Running...")
+            self._sim_status_widget.setStatus("Running...", is_running=True)
         elif state == SimulationState.PAUSED:
-            self._sim_status_label.setText("Paused")
+            self._sim_status_widget.setStatus("Paused")
         elif state == SimulationState.COMPLETED:
-            self._sim_status_label.setText("Completed")
+            self._sim_status_widget.setStatus("Completed")
         elif state == SimulationState.CANCELLED:
-            self._sim_status_label.setText("Cancelled")
+            self._sim_status_widget.setStatus("Cancelled")
         elif state == SimulationState.ERROR:
-            self._sim_status_label.setText("Error")
+            self._sim_status_widget.setStatus("Error", is_error=True)
 
     def _on_simulation_progress(self, value: float, message: str) -> None:
         """Handle simulation progress update."""
         self._sim_progress.setValue(int(value))
-        self._sim_status_label.setText(message)
+        self._sim_status_widget.setStatus(message, is_running=True)
 
     def _on_simulation_data_point(self, time: float, signals: dict) -> None:
         """Handle streaming data point during simulation."""

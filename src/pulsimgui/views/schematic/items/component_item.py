@@ -1,10 +1,19 @@
 """Base class for component graphics items."""
 
 from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QTransform
+from PySide6.QtGui import (
+    QPainter,
+    QPen,
+    QColor,
+    QBrush,
+    QFont,
+    QTransform,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsTextItem,
+    QGraphicsDropShadowEffect,
     QStyleOptionGraphicsItem,
     QWidget,
 )
@@ -17,7 +26,8 @@ class ComponentItem(QGraphicsItem):
     Base graphics item for circuit components.
 
     Handles:
-    - Selection highlighting
+    - Selection highlighting with glow effect
+    - Hover highlighting
     - Rotation and mirroring
     - Pin markers
     - Name and value labels
@@ -29,8 +39,12 @@ class ComponentItem(QGraphicsItem):
     LINE_COLOR = QColor(0, 0, 0)
     LINE_COLOR_DARK = QColor(220, 220, 220)
     SELECTED_COLOR = QColor(0, 120, 215)
+    SELECTED_FILL = QColor(0, 120, 215, 25)  # Semi-transparent blue fill
+    HOVER_COLOR = QColor(100, 160, 220)
+    HOVER_FILL = QColor(100, 160, 220, 15)  # Very subtle hover fill
     PIN_RADIUS = 3.0
     PIN_COLOR = QColor(200, 0, 0)
+    PIN_HOVER_COLOR = QColor(255, 100, 100)  # Brighter red on hover
     DC_OVERLAY_COLOR = QColor(0, 128, 0)  # Green for DC values
     DC_OVERLAY_COLOR_DARK = QColor(100, 220, 100)
 
@@ -44,11 +58,13 @@ class ComponentItem(QGraphicsItem):
         self._dc_voltage: float | None = None
         self._dc_current: float | None = None
         self._dc_power: float | None = None
+        self._hovered = False
 
         # Enable item features
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        self.setAcceptHoverEvents(True)  # Enable hover events
 
         # Set position from component
         self.setPos(component.x, component.y)
@@ -56,9 +72,10 @@ class ComponentItem(QGraphicsItem):
         # Apply rotation
         self.setRotation(component.rotation)
 
-        # Create labels
+        # Create labels as child items
         self._name_label = QGraphicsTextItem(component.name, self)
         self._name_label.setDefaultTextColor(self.LINE_COLOR)
+
         self._value_label = QGraphicsTextItem("", self)
         self._value_label.setDefaultTextColor(QColor(100, 100, 100))
 
@@ -168,6 +185,10 @@ class ComponentItem(QGraphicsItem):
         widget: QWidget | None = None,
     ) -> None:
         """Paint the component - to be overridden by subclasses."""
+        # Draw hover/selection backgrounds first (behind component)
+        if self._hovered and not self.isSelected():
+            self._draw_hover(painter)
+
         self._setup_painter(painter)
         self._draw_symbol(painter)
         self._draw_pins(painter)
@@ -200,11 +221,55 @@ class ComponentItem(QGraphicsItem):
             painter.drawEllipse(QPointF(x, y), self.PIN_RADIUS, self.PIN_RADIUS)
 
     def _draw_selection(self, painter: QPainter) -> None:
-        """Draw selection highlight."""
-        painter.setPen(QPen(self.SELECTED_COLOR, 1, Qt.PenStyle.DashLine))
+        """Draw selection highlight with glow effect."""
+        rect = self.boundingRect().adjusted(-4, -4, 4, 4)
+
+        # Draw outer glow (multiple layers for soft effect)
+        for i in range(3):
+            glow_color = QColor(self.SELECTED_COLOR)
+            glow_color.setAlpha(40 - i * 12)
+            painter.setPen(QPen(glow_color, 3 - i, Qt.PenStyle.SolidLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(-i * 2, -i * 2, i * 2, i * 2), 4, 4)
+
+        # Draw semi-transparent fill
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(self.SELECTED_FILL))
+        painter.drawRoundedRect(rect, 4, 4)
+
+        # Draw solid border
+        painter.setPen(QPen(self.SELECTED_COLOR, 2, Qt.PenStyle.SolidLine))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        rect = self.boundingRect()
-        painter.drawRect(rect.adjusted(-2, -2, 2, 2))
+        painter.drawRoundedRect(rect, 4, 4)
+
+    def _draw_hover(self, painter: QPainter) -> None:
+        """Draw hover highlight (subtle)."""
+        if self.isSelected():
+            return  # Don't draw hover if already selected
+
+        rect = self.boundingRect().adjusted(-3, -3, 3, 3)
+
+        # Draw subtle fill
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(self.HOVER_FILL))
+        painter.drawRoundedRect(rect, 3, 3)
+
+        # Draw subtle border
+        painter.setPen(QPen(self.HOVER_COLOR, 1, Qt.PenStyle.SolidLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 3, 3)
+
+    def hoverEnterEvent(self, event) -> None:
+        """Handle hover enter."""
+        self._hovered = True
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        """Handle hover leave."""
+        self._hovered = False
+        self.update()
+        super().hoverLeaveEvent(event)
 
     def _update_labels(self) -> None:
         """Update label positions and content."""
@@ -236,6 +301,10 @@ class ComponentItem(QGraphicsItem):
             pos = self.pos()
             self._component.x = pos.x()
             self._component.y = pos.y()
+            # Notify scene to update connected wires
+            scene = self.scene()
+            if scene is not None and hasattr(scene, 'update_connected_wires'):
+                scene.update_connected_wires(self)
         return super().itemChange(change, value)
 
 

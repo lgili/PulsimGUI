@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.services.simulation_service import ACResult
+from pulsimgui.views.widgets import StatusBanner
 
 
 class BodePlotDialog(QDialog):
@@ -43,16 +44,15 @@ class BodePlotDialog(QDialog):
     def _setup_ui(self) -> None:
         """Set up the dialog UI."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
-        # Status label
+        # Status banner
         if self._result.is_valid:
-            status = QLabel(
+            status = StatusBanner.success(
                 f"AC analysis completed: {len(self._result.frequencies)} frequency points"
             )
-            status.setStyleSheet("color: green; font-weight: bold;")
         else:
-            status = QLabel(f"Error: {self._result.error_message}")
-            status.setStyleSheet("color: red; font-weight: bold;")
+            status = StatusBanner.error(f"Error: {self._result.error_message}")
         layout.addWidget(status)
 
         # Tab widget for plots and data

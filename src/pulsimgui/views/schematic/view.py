@@ -2,13 +2,86 @@
 
 from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal, QPointF, QEvent
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent
-from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu
+from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
+from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush
+from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
 
 from pulsimgui.models.component import ComponentType
+from pulsimgui.resources.icons import IconService
 from pulsimgui.views.schematic.scene import SchematicScene
 from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
+
+
+class ComponentDropPreviewItem(QGraphicsItem):
+    """Semi-transparent preview showing where component will be placed during drag."""
+
+    PREVIEW_COLOR = QColor(0, 120, 215, 80)  # Semi-transparent blue
+    PREVIEW_BORDER = QColor(0, 120, 215, 180)
+    PREVIEW_LINE_WIDTH = 1.5
+
+    def __init__(self, comp_type: ComponentType, parent=None):
+        super().__init__(parent)
+        self._comp_type = comp_type
+        self._bounds = self._get_bounds_for_type(comp_type)
+        self.setZValue(1000)  # Always on top
+
+    def _get_bounds_for_type(self, comp_type: ComponentType) -> QRectF:
+        """Get approximate bounding rect for component type."""
+        # These match the boundingRect() methods in component_item.py
+        bounds_map = {
+            ComponentType.RESISTOR: QRectF(-35, -15, 70, 30),
+            ComponentType.CAPACITOR: QRectF(-25, -20, 50, 40),
+            ComponentType.INDUCTOR: QRectF(-35, -15, 70, 30),
+            ComponentType.VOLTAGE_SOURCE: QRectF(-20, -30, 40, 60),
+            ComponentType.CURRENT_SOURCE: QRectF(-20, -30, 40, 60),
+            ComponentType.GROUND: QRectF(-15, -15, 30, 25),
+            ComponentType.DIODE: QRectF(-25, -15, 50, 30),
+            ComponentType.MOSFET_N: QRectF(-25, -25, 50, 50),
+            ComponentType.MOSFET_P: QRectF(-25, -25, 50, 50),
+            ComponentType.IGBT: QRectF(-25, -25, 50, 50),
+            ComponentType.SWITCH: QRectF(-25, -15, 50, 30),
+            ComponentType.TRANSFORMER: QRectF(-35, -25, 70, 50),
+            ComponentType.PI_CONTROLLER: QRectF(-40, -25, 80, 50),
+            ComponentType.PID_CONTROLLER: QRectF(-40, -25, 80, 50),
+            ComponentType.MATH_BLOCK: QRectF(-40, -25, 80, 50),
+            ComponentType.PWM_GENERATOR: QRectF(-40, -25, 80, 50),
+            ComponentType.ELECTRICAL_SCOPE: QRectF(-45, -30, 90, 60),
+            ComponentType.THERMAL_SCOPE: QRectF(-45, -30, 90, 60),
+            ComponentType.SIGNAL_MUX: QRectF(-45, -35, 90, 70),
+            ComponentType.SIGNAL_DEMUX: QRectF(-45, -35, 90, 70),
+            ComponentType.SUBCIRCUIT: QRectF(-60, -40, 120, 80),
+        }
+        return bounds_map.get(comp_type, QRectF(-40, -30, 80, 60))
+
+    def boundingRect(self) -> QRectF:
+        # Slightly larger for glow effect
+        return self._bounds.adjusted(-5, -5, 5, 5)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw outer glow
+        glow_color = QColor(self.PREVIEW_BORDER)
+        glow_color.setAlpha(30)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(glow_color))
+        painter.drawRoundedRect(self._bounds.adjusted(-4, -4, 4, 4), 6, 6)
+
+        # Draw fill
+        painter.setBrush(QBrush(self.PREVIEW_COLOR))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(self._bounds, 4, 4)
+
+        # Draw border
+        painter.setPen(QPen(self.PREVIEW_BORDER, self.PREVIEW_LINE_WIDTH, Qt.PenStyle.DashLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self._bounds, 4, 4)
+
+        # Draw crosshairs at center to show exact placement point
+        painter.setPen(QPen(self.PREVIEW_BORDER, 1))
+        cross_size = 8
+        painter.drawLine(QPointF(-cross_size, 0), QPointF(cross_size, 0))
+        painter.drawLine(QPointF(0, -cross_size), QPointF(0, cross_size))
 
 
 class Tool(Enum):
@@ -44,6 +117,7 @@ class SchematicView(QGraphicsView):
     grid_toggle_requested = Signal()  # emitted when G key is pressed
     subcircuit_open_requested = Signal(object)  # Component instance
     scope_open_requested = Signal(object)  # Component instance
+    quick_add_component = Signal(object)  # ComponentType for keyboard shortcuts
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -66,15 +140,23 @@ class SchematicView(QGraphicsView):
         self._alias_editor: QLineEdit | None = None
         self._alias_wire_item: WireItem | None = None
 
+        # Component drop preview state
+        self._drop_preview: ComponentDropPreviewItem | None = None
+        self._drop_comp_type: ComponentType | None = None
+
         # Set up view
         self.setScene(scene or SchematicScene())
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        # Use SmartViewportUpdate for better performance - only updates changed regions
+        # Falls back to full update when needed (e.g., during zoom/scroll)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setMouseTracking(True)
+        # Enable caching for better scrolling performance
+        self.setCacheMode(QGraphicsView.CacheModeFlag.CacheBackground)
 
         # Don't set background brush here - let scene's drawBackground handle it
         # The scene will draw the background with grid dots
@@ -420,20 +502,198 @@ class SchematicView(QGraphicsView):
                 if self._wire_preview is not None:
                     self._wire_preview.toggle_direction()
                 return
+            # Component shortcuts
+            elif key == Qt.Key.Key_R:
+                self.quick_add_component.emit(ComponentType.RESISTOR)
+                return
+            elif key == Qt.Key.Key_C:
+                self.quick_add_component.emit(ComponentType.CAPACITOR)
+                return
+            elif key == Qt.Key.Key_L:
+                self.quick_add_component.emit(ComponentType.INDUCTOR)
+                return
+            elif key == Qt.Key.Key_V:
+                self.quick_add_component.emit(ComponentType.VOLTAGE_SOURCE)
+                return
+            elif key == Qt.Key.Key_I:
+                self.quick_add_component.emit(ComponentType.CURRENT_SOURCE)
+                return
+            elif key == Qt.Key.Key_D:
+                self.quick_add_component.emit(ComponentType.DIODE)
+                return
+            elif key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
+                # Delete selected items
+                self._delete_selected_items()
+                return
 
         super().keyPressEvent(event)
 
+    def _delete_selected_items(self) -> None:
+        """Delete all selected items (wires and components)."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None or not isinstance(scene, SchematicScene):
+            return
+
+        selected = scene.selectedItems()
+        if not selected:
+            return
+
+        # Collect items to delete (copy list since we'll modify scene)
+        wires_to_delete = []
+        components_to_delete = []
+
+        for item in selected:
+            if isinstance(item, WireItem):
+                wires_to_delete.append(item)
+            elif isinstance(item, ComponentItem):
+                components_to_delete.append(item)
+
+        # Delete wires first
+        for wire_item in wires_to_delete:
+            self._delete_wire(wire_item)
+
+        # Delete components
+        for comp_item in components_to_delete:
+            self._delete_component(comp_item)
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        from pulsimgui.views.schematic.items import ComponentItem
+
         item = self.itemAt(event.pos())
+        icon_color = "#374151"
+
         if isinstance(item, WireItem):
             menu = QMenu(self)
-            rename_action = menu.addAction("Rename Signal...")
+            menu.setStyleSheet(self._get_context_menu_style())
+
+            rename_action = menu.addAction(
+                IconService.get_icon("edit", icon_color), "Rename Signal..."
+            )
+            rename_action.setShortcut("F2")
+
+            copy_action = menu.addAction(
+                IconService.get_icon("copy", icon_color), "Copy Signal Name"
+            )
+
+            menu.addSeparator()
+
+            delete_action = menu.addAction(
+                IconService.get_icon("trash", icon_color), "Delete Wire"
+            )
+            delete_action.setShortcut("Del")
+
             chosen = menu.exec(event.globalPos())
             if chosen == rename_action:
                 self._begin_wire_alias_edit(item)
-                event.accept()
-                return
+            elif chosen == copy_action:
+                name = item.wire.alias or item.wire.node_name or ""
+                if name:
+                    QApplication.clipboard().setText(name)
+            elif chosen == delete_action:
+                self._delete_wire(item)
+            event.accept()
+            return
+
+        elif isinstance(item, ComponentItem):
+            menu = QMenu(self)
+            menu.setStyleSheet(self._get_context_menu_style())
+
+            props_action = menu.addAction(
+                IconService.get_icon("sliders", icon_color), "Edit Properties..."
+            )
+
+            rotate_menu = menu.addMenu(
+                IconService.get_icon("refresh", icon_color), "Rotate"
+            )
+            rotate_cw = rotate_menu.addAction("Rotate 90° CW")
+            rotate_cw.setShortcut("R")
+            rotate_ccw = rotate_menu.addAction("Rotate 90° CCW")
+            rotate_ccw.setShortcut("Shift+R")
+
+            menu.addSeparator()
+
+            copy_action = menu.addAction(
+                IconService.get_icon("copy", icon_color), "Copy"
+            )
+            copy_action.setShortcut("Ctrl+C")
+
+            delete_action = menu.addAction(
+                IconService.get_icon("trash", icon_color), "Delete"
+            )
+            delete_action.setShortcut("Del")
+
+            chosen = menu.exec(event.globalPos())
+            if chosen == rotate_cw:
+                self._rotate_component(item, 90)
+            elif chosen == rotate_ccw:
+                self._rotate_component(item, -90)
+            elif chosen == delete_action:
+                self._delete_component(item)
+            event.accept()
+            return
+
         super().contextMenuEvent(event)
+
+    def _get_context_menu_style(self) -> str:
+        """Get stylesheet for context menus."""
+        return """
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 24px 6px 8px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #f3f4f6;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #e5e7eb;
+                margin: 4px 8px;
+            }
+            QMenu::icon {
+                padding-left: 8px;
+            }
+        """
+
+    def _delete_wire(self, wire_item: WireItem) -> None:
+        """Delete a wire from the scene and circuit."""
+        scene = self.scene()
+        if scene is None or not isinstance(scene, SchematicScene):
+            return
+        if scene.circuit is not None:
+            scene.circuit.remove_wire(wire_item.wire.id)
+        scene.removeItem(wire_item)
+
+    def _delete_component(self, comp_item) -> None:
+        """Delete a component from the scene and circuit."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None or not isinstance(scene, SchematicScene):
+            return
+        if isinstance(comp_item, ComponentItem) and scene.circuit is not None:
+            scene.circuit.remove_component(comp_item.component.id)
+            scene.component_removed.emit(comp_item.component)
+        scene.removeItem(comp_item)
+
+    def _rotate_component(self, comp_item, angle: int) -> None:
+        """Rotate a component by the given angle."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(comp_item, ComponentItem):
+            return
+        current = comp_item.component.rotation
+        new_rotation = (current + angle) % 360
+        comp_item.component.rotation = new_rotation
+        comp_item.setRotation(new_rotation)
+        comp_item.update()
 
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
         if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:
@@ -518,18 +778,58 @@ class SchematicView(QGraphicsView):
         self._wire_start = None
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        """Handle drag enter to accept component drops."""
+        """Handle drag enter to accept component drops and show preview."""
         if event.mimeData().hasFormat("application/x-pulsim-component"):
+            # Get component type
+            data = event.mimeData().data("application/x-pulsim-component")
+            comp_type_name = bytes(data).decode()
+
+            try:
+                comp_type = ComponentType[comp_type_name]
+                self._drop_comp_type = comp_type
+
+                # Create preview item
+                self._drop_preview = ComponentDropPreviewItem(comp_type)
+                self.scene().addItem(self._drop_preview)
+
+                # Position at current drag location (snapped to grid)
+                scene_pos = self.mapToScene(event.position().toPoint())
+                if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
+                    scene_pos = self.scene().snap_to_grid(scene_pos)
+                self._drop_preview.setPos(scene_pos)
+
+            except (KeyError, ValueError):
+                pass  # Invalid component type
+
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        """Handle drag move to show drop location."""
+        """Handle drag move to update preview location."""
         if event.mimeData().hasFormat("application/x-pulsim-component"):
+            # Update preview position
+            if self._drop_preview is not None:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
+                    scene_pos = self.scene().snap_to_grid(scene_pos)
+                self._drop_preview.setPos(scene_pos)
+
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        """Handle drag leave to remove preview."""
+        self._remove_drop_preview()
+        super().dragLeaveEvent(event)
+
+    def _remove_drop_preview(self) -> None:
+        """Remove the drop preview item from the scene."""
+        if self._drop_preview is not None:
+            self.scene().removeItem(self._drop_preview)
+            self._drop_preview = None
+            self._drop_comp_type = None
 
     def dropEvent(self, event: QDropEvent) -> None:
         """Handle drop to add component at location."""
@@ -545,12 +845,11 @@ class SchematicView(QGraphicsView):
             if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
                 scene_pos = self.scene().snap_to_grid(scene_pos)
 
+            # Remove preview before adding the real component
+            self._remove_drop_preview()
+
             # Emit signal to add component
             self.component_dropped.emit(comp_type_name, scene_pos.x(), scene_pos.y())
             event.acceptProposedAction()
         else:
             event.ignore()
-
-
-# Import QColor for dark mode
-from PySide6.QtGui import QColor

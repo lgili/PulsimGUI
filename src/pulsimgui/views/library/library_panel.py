@@ -1,7 +1,7 @@
 """Component library panel with drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF
-from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QPen
+from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize
+from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QPen, QIcon
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -13,28 +13,44 @@ from PySide6.QtWidgets import (
     QLabel,
     QHeaderView,
     QAbstractItemView,
+    QApplication,
 )
 
 from pulsimgui.models.component import ComponentType
+from pulsimgui.resources.icons import IconService
 
 
-def create_component_drag_pixmap(comp_type: ComponentType, size: int = 70) -> QPixmap:
+def create_component_drag_pixmap(
+    comp_type: ComponentType, size: int = 36, color: str = "#1f2937"
+) -> QPixmap:
     """Create a pixmap with the component symbol for drag preview."""
-    # Create transparent pixmap
+    # Get device pixel ratio for HiDPI support
+    app = QApplication.instance()
+    if app:
+        screen = app.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 2.0
+    else:
+        dpr = 2.0
+
+    # Create pixmap at the logical size (Qt handles HiDPI scaling)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    # Set up pen for drawing
-    pen = QPen(QColor(0, 0, 0), 2)
+    # Scale factor to fit symbols (drawn at ~50px) into target size
+    # Symbols are drawn with coords roughly -25 to +25, so ~50px span
+    symbol_scale = size / 60.0  # Leave some margin
+
+    # Set up pen for drawing with theme color (scale pen width too)
+    pen = QPen(QColor(color), max(1.0, 2.0 * symbol_scale))
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
 
-    # Center the drawing
-    cx, cy = size / 2, size / 2
-    painter.translate(cx, cy)
+    # Center the drawing and apply scale
+    painter.translate(size / 2, size / 2)
+    painter.scale(symbol_scale, symbol_scale)
 
     # Draw symbol based on component type
     if comp_type == ComponentType.RESISTOR:
@@ -321,6 +337,109 @@ def _draw_demux_block(painter: QPainter) -> None:
     )
 
 
+def create_component_thumbnail(
+    comp_type: ComponentType, size: int = 36, color: str = "#6b7280"
+) -> QIcon:
+    """Create a small thumbnail icon for the component tree.
+
+    Uses a smaller internal drawing scale to fit the component symbol
+    properly within the icon bounds.
+    """
+    # Get device pixel ratio for HiDPI support
+    app = QApplication.instance()
+    if app:
+        screen = app.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 2.0
+    else:
+        dpr = 2.0
+
+    render_size = int(size * dpr)
+
+    # Create transparent pixmap at high resolution
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    pixmap.setDevicePixelRatio(dpr)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Set up pen for drawing with theme color - thicker line for bolder look
+    pen = QPen(QColor(color), 2.5)
+    pen.setCosmetic(True)  # Keep pen width constant regardless of transform
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    # The component drawings are centered at origin and span roughly -35 to +35 (70px total)
+    # for some components like scope blocks. We need to fit this into `size` logical pixels.
+    #
+    # The scale factor should map 60 drawing units to `size` logical pixels.
+    # A smaller divisor means the component fills more of the icon space.
+    scale_factor = size / 60.0
+
+    # Translate to center of logical size area (not render_size)
+    # QPainter with devicePixelRatio will handle the conversion
+    painter.translate(size / 2.0, size / 2.0)
+    painter.scale(scale_factor, scale_factor)
+
+    # Draw symbol based on component type
+    if comp_type == ComponentType.RESISTOR:
+        _draw_resistor(painter)
+    elif comp_type == ComponentType.CAPACITOR:
+        _draw_capacitor(painter)
+    elif comp_type == ComponentType.INDUCTOR:
+        _draw_inductor(painter)
+    elif comp_type == ComponentType.VOLTAGE_SOURCE:
+        _draw_voltage_source(painter)
+    elif comp_type == ComponentType.CURRENT_SOURCE:
+        _draw_current_source(painter)
+    elif comp_type == ComponentType.GROUND:
+        _draw_ground(painter)
+    elif comp_type == ComponentType.DIODE:
+        _draw_diode(painter)
+    elif comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
+        _draw_mosfet(painter, comp_type == ComponentType.MOSFET_N)
+    elif comp_type == ComponentType.IGBT:
+        _draw_igbt(painter)
+    elif comp_type == ComponentType.SWITCH:
+        _draw_switch(painter)
+    elif comp_type == ComponentType.TRANSFORMER:
+        _draw_transformer(painter)
+    elif comp_type == ComponentType.PI_CONTROLLER:
+        _draw_block(painter, "PI")
+    elif comp_type == ComponentType.PID_CONTROLLER:
+        _draw_block(painter, "PID")
+    elif comp_type == ComponentType.MATH_BLOCK:
+        _draw_block(painter, "Σ")
+    elif comp_type == ComponentType.PWM_GENERATOR:
+        _draw_block(painter, "PWM")
+    elif comp_type == ComponentType.ELECTRICAL_SCOPE:
+        _draw_scope_block(painter, label="")
+    elif comp_type == ComponentType.THERMAL_SCOPE:
+        _draw_scope_block(painter, label="")
+    elif comp_type == ComponentType.SIGNAL_MUX:
+        _draw_mux_block(painter)
+    elif comp_type == ComponentType.SIGNAL_DEMUX:
+        _draw_demux_block(painter)
+    else:
+        # Fallback: draw a simple box
+        painter.drawRect(-15, -15, 30, 30)
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+# Category icons mapping (using Lucide icon names)
+CATEGORY_ICONS = {
+    "Recently Used": "clock",
+    "Favorites": "star",
+    "Passive": "box",
+    "Sources": "zap",
+    "Semiconductors": "cpu",
+    "Switches": "toggle-left",
+    "Control Blocks": "square-function",
+}
+
+
 class DraggableTreeWidget(QTreeWidget):
     """Tree widget with proper drag support."""
 
@@ -499,50 +618,57 @@ class LibraryPanel(QWidget):
     component_selected = Signal(ComponentType)
     component_double_clicked = Signal(ComponentType)
 
-    def __init__(self, parent=None):
+    def __init__(self, theme_service=None, parent=None):
         super().__init__(parent)
 
+        self._theme_service = theme_service
         self._favorites: list[ComponentType] = []
         self._recent: list[ComponentType] = []
         self._max_recent = 5
+        self._icon_color = "#6b7280"  # Default muted color
 
         self._setup_ui()
         self._populate_tree()
 
+        # Connect to theme changes
+        if self._theme_service:
+            self._theme_service.theme_changed.connect(self._on_theme_changed)
+            self._update_colors_from_theme()
+
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        # Search bar
-        search_layout = QHBoxLayout()
-        search_layout.setSpacing(4)
-
+        # Search bar with icon
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Search components...")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
-        search_layout.addWidget(self._search_edit)
+        # Add search icon
+        search_icon = IconService.get_icon("search", "#9ca3af", 16)
+        self._search_edit.addAction(search_icon, QLineEdit.ActionPosition.LeadingPosition)
+        layout.addWidget(self._search_edit)
 
-        layout.addLayout(search_layout)
-
-        # Component tree
+        # Component tree with improved styling
         self._tree = DraggableTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setIndentation(16)
+        self._tree.setIndentation(20)
         self._tree.setAnimated(True)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.setMouseTracking(True)
+        self._tree.setIconSize(QSize(36, 36))
+        self._tree.setUniformRowHeights(False)  # Allow different row heights
 
         layout.addWidget(self._tree)
 
-        # Info label
+        # Info label with better styling
         self._info_label = QLabel("")
         self._info_label.setWordWrap(True)
-        self._info_label.setStyleSheet("color: gray; font-size: 11px;")
+        self._info_label.setProperty("muted", True)
         layout.addWidget(self._info_label)
 
     def _populate_tree(self) -> None:
@@ -554,6 +680,7 @@ class LibraryPanel(QWidget):
         self._recent_item.setFlags(
             self._recent_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
         )
+        self._set_category_icon(self._recent_item, "Recently Used")
         self._update_recent_items()
 
         # Favorites category
@@ -561,6 +688,7 @@ class LibraryPanel(QWidget):
         self._favorites_item.setFlags(
             self._favorites_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
         )
+        self._set_category_icon(self._favorites_item, "Favorites")
         self._update_favorites_items()
 
         # Component categories
@@ -570,6 +698,7 @@ class LibraryPanel(QWidget):
                 category_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
             )
             category_item.setExpanded(True)
+            self._set_category_icon(category_item, category)
 
             for comp in components:
                 item = QTreeWidgetItem(category_item)
@@ -577,6 +706,8 @@ class LibraryPanel(QWidget):
                 item.setData(0, Qt.ItemDataRole.UserRole, comp["type"])
                 item.setData(0, Qt.ItemDataRole.UserRole + 1, comp["description"])
                 item.setToolTip(0, f"{comp['description']}\nShortcut: {comp['shortcut']}")
+                # Add component thumbnail icon
+                item.setIcon(0, create_component_thumbnail(comp["type"], 36, self._icon_color))
 
     def _update_recent_items(self) -> None:
         """Update the recently used items."""
@@ -596,6 +727,7 @@ class LibraryPanel(QWidget):
                 item.setText(0, comp_info["name"])
                 item.setData(0, Qt.ItemDataRole.UserRole, comp_type)
                 item.setToolTip(0, comp_info["description"])
+                item.setIcon(0, create_component_thumbnail(comp_type, 36, self._icon_color))
 
     def _update_favorites_items(self) -> None:
         """Update the favorites items."""
@@ -615,6 +747,7 @@ class LibraryPanel(QWidget):
                 item.setText(0, comp_info["name"])
                 item.setData(0, Qt.ItemDataRole.UserRole, comp_type)
                 item.setToolTip(0, comp_info["description"])
+                item.setIcon(0, create_component_thumbnail(comp_type, 36, self._icon_color))
 
     def _find_component_info(self, comp_type: ComponentType) -> dict | None:
         """Find component info by type."""
@@ -696,3 +829,20 @@ class LibraryPanel(QWidget):
         if comp_type in self._favorites:
             self._favorites.remove(comp_type)
             self._update_favorites_items()
+
+    def _set_category_icon(self, item: QTreeWidgetItem, category_name: str) -> None:
+        """Set the icon for a category item."""
+        icon_name = CATEGORY_ICONS.get(category_name, "folder")
+        # Use 36px to match tree iconSize
+        item.setIcon(0, IconService.get_icon(icon_name, self._icon_color, 36))
+
+    def _on_theme_changed(self, theme) -> None:
+        """Handle theme change event."""
+        self._update_colors_from_theme()
+        self._populate_tree()
+
+    def _update_colors_from_theme(self) -> None:
+        """Update colors based on current theme."""
+        if self._theme_service:
+            theme = self._theme_service.current_theme
+            self._icon_color = theme.colors.foreground_muted

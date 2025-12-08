@@ -18,17 +18,27 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QGroupBox,
     QLabel,
+    QMessageBox,
 )
 
+from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.services.simulation_service import SimulationService
 
 
 class PreferencesDialog(QDialog):
     """Dialog for editing application preferences."""
 
-    def __init__(self, settings: SettingsService, parent=None):
+    def __init__(
+        self,
+        settings: SettingsService,
+        simulation_service: SimulationService | None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._settings = settings
+        self._simulation_service = simulation_service
+        self._backend_infos: dict[str, BackendInfo] = {}
 
         self.setWindowTitle("Preferences")
         self.setMinimumSize(500, 400)
@@ -159,6 +169,30 @@ class PreferencesDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
+        backend_group = QGroupBox("Backend")
+        backend_layout = QFormLayout(backend_group)
+
+        self._backend_combo = QComboBox()
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_selection_changed)
+        backend_layout.addRow("Active backend:", self._backend_combo)
+
+        self._backend_version_label = QLabel("-")
+        backend_layout.addRow("Version:", self._backend_version_label)
+
+        self._backend_status_label = QLabel("-")
+        self._backend_status_label.setWordWrap(True)
+        backend_layout.addRow("Status:", self._backend_status_label)
+
+        self._backend_location_label = QLabel("-")
+        self._backend_location_label.setWordWrap(True)
+        backend_layout.addRow("Location:", self._backend_location_label)
+
+        self._backend_capabilities_label = QLabel("-")
+        self._backend_capabilities_label.setWordWrap(True)
+        backend_layout.addRow("Capabilities:", self._backend_capabilities_label)
+
+        layout.addWidget(backend_group)
+
         # Solver group
         solver_group = QGroupBox("Solver")
         solver_layout = QFormLayout(solver_group)
@@ -188,7 +222,80 @@ class PreferencesDialog(QDialog):
         layout.addWidget(output_group)
 
         layout.addStretch()
+
+        self._populate_backend_options()
         return widget
+
+    def _populate_backend_options(self) -> None:
+        if not hasattr(self, "_backend_combo"):
+            return
+
+        self._backend_combo.blockSignals(True)
+        self._backend_combo.clear()
+
+        if not self._simulation_service:
+            self._backend_combo.addItem("Demo backend", "placeholder")
+            self._backend_combo.setEnabled(False)
+            self._apply_backend_details(None)
+            self._backend_combo.blockSignals(False)
+            return
+
+        infos = self._simulation_service.available_backends
+        self._backend_infos = {info.identifier: info for info in infos}
+
+        for info in infos:
+            self._backend_combo.addItem(info.label(), info.identifier)
+
+        active_id = self._simulation_service.backend_info.identifier
+        index = next(
+            (idx for idx in range(self._backend_combo.count()) if self._backend_combo.itemData(idx) == active_id),
+            0,
+        )
+        self._backend_combo.setCurrentIndex(index)
+        self._backend_combo.setEnabled(not self._simulation_service.is_running)
+
+        active_info = self._backend_infos.get(active_id, self._simulation_service.backend_info)
+        self._apply_backend_details(active_info)
+        self._backend_combo.blockSignals(False)
+
+    def _apply_backend_details(self, info: BackendInfo | None) -> None:
+        if info is None:
+            self._backend_version_label.setText("-")
+            self._backend_status_label.setText("Simulation service unavailable")
+            self._backend_location_label.setText("-")
+            self._backend_capabilities_label.setText("-")
+            return
+
+        self._backend_version_label.setText(info.version or "-")
+        status_text = info.message or info.status or "-"
+        self._backend_status_label.setText(status_text)
+        self._backend_location_label.setText(info.location or "-")
+        capabilities = ", ".join(sorted(info.capabilities)) if info.capabilities else "-"
+        self._backend_capabilities_label.setText(capabilities)
+
+    def _on_backend_selection_changed(self, index: int) -> None:
+        if not self._simulation_service or index < 0:
+            return
+        identifier = self._backend_combo.itemData(index)
+        if not identifier:
+            return
+
+        current_id = self._simulation_service.backend_info.identifier
+        if identifier == current_id:
+            info = self._backend_infos.get(identifier, self._simulation_service.backend_info)
+            self._apply_backend_details(info)
+            return
+
+        try:
+            info = self._simulation_service.set_backend_preference(identifier)
+        except Exception as exc:  # pragma: no cover - UI feedback only
+            QMessageBox.warning(self, "Backend Selection", str(exc))
+            self._populate_backend_options()
+            return
+
+        self._backend_infos[identifier] = info
+        self._apply_backend_details(info)
+        self._backend_combo.setEnabled(not self._simulation_service.is_running)
 
     def _load_settings(self) -> None:
         """Load current settings into UI."""

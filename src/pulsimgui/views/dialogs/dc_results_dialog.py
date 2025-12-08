@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.services.simulation_service import DCResult
 from pulsimgui.utils.si_prefix import format_si_value
+from pulsimgui.views.widgets import StatusBanner
 
 
 class DCResultsDialog(QDialog):
@@ -37,14 +38,13 @@ class DCResultsDialog(QDialog):
     def _setup_ui(self) -> None:
         """Set up the dialog UI."""
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
-        # Status label
+        # Status banner
         if self._result.is_valid:
-            status = QLabel("DC operating point converged successfully.")
-            status.setStyleSheet("color: green; font-weight: bold;")
+            status = StatusBanner.success("DC operating point converged successfully.")
         else:
-            status = QLabel(f"Error: {self._result.error_message}")
-            status.setStyleSheet("color: red; font-weight: bold;")
+            status = StatusBanner.error(f"Error: {self._result.error_message}")
         layout.addWidget(status)
 
         # Tab widget
@@ -71,9 +71,19 @@ class DCResultsDialog(QDialog):
         self._power_table = self._create_table(["Component", "Power"])
         power_layout.addWidget(self._power_table)
 
-        # Total power
+        # Total power summary card
         self._total_power_label = QLabel("")
-        self._total_power_label.setStyleSheet("font-weight: bold;")
+        self._total_power_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 6px;
+                padding: 10px 14px;
+                color: #0369a1;
+                font-weight: 600;
+                font-size: 12px;
+            }
+        """)
         power_layout.addWidget(self._total_power_label)
 
         self._tabs.addTab(power_widget, "Power Dissipation")
@@ -94,13 +104,46 @@ class DCResultsDialog(QDialog):
         layout.addLayout(button_layout)
 
     def _create_table(self, headers: list[str]) -> QTableWidget:
-        """Create a results table."""
+        """Create a styled results table."""
         table = QTableWidget()
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setShowGrid(False)
+        table.verticalHeader().setVisible(False)
+
+        # Apply modern styling
+        table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                background-color: #ffffff;
+                gridline-color: transparent;
+            }
+            QTableWidget::item {
+                padding: 8px 12px;
+                border-bottom: 1px solid #f3f4f6;
+            }
+            QTableWidget::item:selected {
+                background-color: #dbeafe;
+                color: #1e40af;
+            }
+            QTableWidget::item:alternate {
+                background-color: #f9fafb;
+            }
+            QHeaderView::section {
+                background-color: #f9fafb;
+                color: #374151;
+                font-weight: 600;
+                font-size: 11px;
+                padding: 10px 12px;
+                border: none;
+                border-bottom: 2px solid #e5e7eb;
+            }
+        """)
         return table
 
     def _populate_tables(self) -> None:
