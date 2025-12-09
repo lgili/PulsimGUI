@@ -143,14 +143,9 @@ a = Analysis(
         'notebook',
         'pytest',
 
-        # Other unused modules
-        'xml.etree.ElementTree',
-        'doctest',
-        'pydoc',
-        'unittest',
     ],
     noarchive=False,
-    optimize=2,
+    optimize=0,  # Don't optimize - numpy requires docstrings
 )
 
 # Remove unnecessary PySide6 modules to reduce size
