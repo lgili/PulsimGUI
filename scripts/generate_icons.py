@@ -29,25 +29,94 @@ ICONS_DIR = PROJECT_ROOT / "packaging" / "icons"
 
 
 def create_placeholder_svg() -> str:
-    """Create a simple SVG placeholder icon."""
+    """Create a modern, minimalist SVG icon for PulsimGui."""
     return '''<?xml version="1.0" encoding="UTF-8"?>
 <svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#4A90D9"/>
-      <stop offset="100%" style="stop-color:#2E5D8C"/>
+    <!-- Modern gradient background -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="50%" style="stop-color:#16213e"/>
+      <stop offset="100%" style="stop-color:#0f3460"/>
     </linearGradient>
+    <!-- Accent gradient for the pulse -->
+    <linearGradient id="pulseGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d9ff"/>
+      <stop offset="50%" style="stop-color:#00ff88"/>
+      <stop offset="100%" style="stop-color:#00d9ff"/>
+    </linearGradient>
+    <!-- Glow effect -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Subtle inner shadow -->
+    <filter id="innerShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feOffset dx="0" dy="2"/>
+      <feGaussianBlur stdDeviation="3" result="offset-blur"/>
+      <feComposite operator="out" in="SourceGraphic" in2="offset-blur" result="inverse"/>
+      <feFlood flood-color="#000" flood-opacity="0.2" result="color"/>
+      <feComposite operator="in" in="color" in2="inverse" result="shadow"/>
+      <feComposite operator="over" in="shadow" in2="SourceGraphic"/>
+    </filter>
   </defs>
-  <!-- Background -->
-  <rect x="16" y="16" width="224" height="224" rx="32" fill="url(#bg)"/>
-  <!-- Circuit symbol - simplified waveform -->
-  <path d="M 48 128 L 80 128 L 96 80 L 112 176 L 128 80 L 144 176 L 160 128 L 208 128"
-        stroke="white" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- Ground symbol -->
-  <path d="M 128 176 L 128 200 M 112 200 L 144 200 M 120 208 L 136 208 M 126 216 L 130 216"
-        stroke="white" stroke-width="4" fill="none" stroke-linecap="round"/>
-  <!-- Text -->
-  <text x="128" y="56" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="white">PulsimGui</text>
+
+  <!-- Background with rounded corners (iOS/macOS style) -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bgGrad)" filter="url(#innerShadow)"/>
+
+  <!-- Subtle grid pattern -->
+  <g opacity="0.1" stroke="#ffffff" stroke-width="0.5">
+    <line x1="48" y1="8" x2="48" y2="248"/>
+    <line x1="88" y1="8" x2="88" y2="248"/>
+    <line x1="128" y1="8" x2="128" y2="248"/>
+    <line x1="168" y1="8" x2="168" y2="248"/>
+    <line x1="208" y1="8" x2="208" y2="248"/>
+    <line x1="8" y1="88" x2="248" y2="88"/>
+    <line x1="8" y1="128" x2="248" y2="128"/>
+    <line x1="8" y1="168" x2="248" y2="168"/>
+  </g>
+
+  <!-- PWM Pulse waveform - signature of power electronics -->
+  <g filter="url(#glow)">
+    <!-- Main pulse signal -->
+    <path d="M 40 148
+             L 40 148 L 56 148 L 56 108 L 88 108 L 88 148
+             L 104 148 L 104 108 L 136 108 L 136 148
+             L 152 148 L 152 108 L 184 108 L 184 148
+             L 200 148 L 200 108 L 216 108 L 216 148"
+          stroke="url(#pulseGrad)" stroke-width="5" fill="none"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Circuit nodes/connection points -->
+  <circle cx="40" cy="148" r="6" fill="#00d9ff" filter="url(#glow)"/>
+  <circle cx="216" cy="148" r="6" fill="#00ff88" filter="url(#glow)"/>
+
+  <!-- Stylized "P" lettermark hint with circuit aesthetic -->
+  <g opacity="0.15">
+    <circle cx="128" cy="128" r="70" stroke="#ffffff" stroke-width="2" fill="none"/>
+  </g>
+
+  <!-- Small accent dots representing data/simulation points -->
+  <g fill="#00d9ff" opacity="0.6">
+    <circle cx="56" cy="108" r="3"/>
+    <circle cx="104" cy="108" r="3"/>
+    <circle cx="152" cy="108" r="3"/>
+    <circle cx="200" cy="108" r="3"/>
+  </g>
+
+  <!-- PULSIM text - modern, clean typography -->
+  <text x="128" y="198"
+        text-anchor="middle"
+        font-family="SF Pro Display, -apple-system, Helvetica Neue, Arial, sans-serif"
+        font-size="32"
+        font-weight="600"
+        letter-spacing="6"
+        fill="#ffffff"
+        opacity="0.95">PULSIM</text>
 </svg>'''
 
 
