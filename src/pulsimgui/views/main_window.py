@@ -675,6 +675,9 @@ class MainWindow(QMainWindow):
         # Update component colors (dark mode affects line colors)
         self._schematic_scene.set_dark_mode(theme.is_dark)
 
+        # Update minimap colors
+        self._minimap.set_dark_mode(theme.is_dark)
+
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
 

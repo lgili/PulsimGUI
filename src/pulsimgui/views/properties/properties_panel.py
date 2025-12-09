@@ -36,34 +36,52 @@ from pulsimgui.resources.icons import IconService
 
 
 class SectionHeader(QWidget):
-    """A styled section header with icon and title."""
+    """A styled section header with icon and title - modern card style."""
 
-    def __init__(self, icon_name: str, title: str, icon_color: str = "#0078D4", parent=None):
+    def __init__(self, icon_name: str, title: str, icon_color: str = "#3b82f6", parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 8, 0, 4)
-        layout.setSpacing(6)
+        self._icon_name = icon_name
+        self._icon_color = icon_color
 
-        # Icon
-        icon_label = QLabel()
-        icon_label.setFixedSize(16, 16)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 8)
+        layout.setSpacing(10)
+
+        # Icon with background circle
+        icon_container = QWidget()
+        icon_container.setFixedSize(28, 28)
+        icon_container.setStyleSheet(f"""
+            background-color: {icon_color}15;
+            border-radius: 14px;
+        """)
+        icon_layout = QHBoxLayout(icon_container)
+        icon_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._icon_label = QLabel()
+        self._icon_label.setFixedSize(16, 16)
         icon = IconService.get_icon(icon_name, icon_color)
         if not icon.isNull():
-            icon_label.setPixmap(icon.pixmap(16, 16))
-        layout.addWidget(icon_label)
+            self._icon_label.setPixmap(icon.pixmap(16, 16))
+        icon_layout.addWidget(self._icon_label)
+        layout.addWidget(icon_container)
 
         # Title
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-weight: 600; font-size: 11px;")
-        layout.addWidget(title_label)
+        self._title_label = QLabel(title)
+        self._title_label.setStyleSheet("""
+            font-weight: 600;
+            font-size: 13px;
+            letter-spacing: 0.3px;
+        """)
+        layout.addWidget(self._title_label)
 
         layout.addStretch()
 
-        # Bottom separator line
-        self._separator = QFrame()
-        self._separator.setFrameShape(QFrame.Shape.HLine)
-        self._separator.setStyleSheet("background-color: #e5e7eb;")
-        self._separator.setFixedHeight(1)
+    def set_dark_mode(self, dark: bool) -> None:
+        """Update colors for dark mode."""
+        # Icon colors adjust slightly for dark mode
+        icon = IconService.get_icon(self._icon_name, self._icon_color)
+        if not icon.isNull():
+            self._icon_label.setPixmap(icon.pixmap(16, 16))
 
 
 class SIValueWidget(QWidget):
@@ -171,28 +189,34 @@ class PropertiesPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Set up the panel UI."""
+        """Set up the panel UI with modern card-based design."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(0)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(16)
 
-        # Component info section
+        # Component info section - styled as a card
         self._info_container = QWidget()
+        self._info_container.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+            }
+        """)
         info_container_layout = QVBoxLayout(self._info_container)
         info_container_layout.setContentsMargins(0, 0, 0, 0)
-        info_container_layout.setSpacing(4)
+        info_container_layout.setSpacing(8)
 
-        info_header = SectionHeader("info", "Component Info")
+        info_header = SectionHeader("info", "Component Info", "#3b82f6")
         info_container_layout.addWidget(info_header)
 
         info_form = QWidget()
         info_layout = QFormLayout(info_form)
-        info_layout.setContentsMargins(4, 4, 4, 8)
-        info_layout.setSpacing(6)
+        info_layout.setContentsMargins(12, 8, 12, 12)
+        info_layout.setSpacing(12)
         info_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        info_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._type_label = QLabel("-")
-        self._type_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        self._type_label.setStyleSheet("color: #6b7280; font-size: 12px; font-weight: 500;")
         info_layout.addRow("Type:", self._type_label)
 
         self._name_edit = QLineEdit()

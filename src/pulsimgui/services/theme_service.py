@@ -493,29 +493,37 @@ class ThemeService(QObject):
     def generate_stylesheet(self) -> str:
         """Generate Qt stylesheet for current theme."""
         c = self._current_theme.colors
+        is_dark = self._current_theme.is_dark
+
+        # Modern shadow/elevation colors
+        shadow_color = "rgba(0, 0, 0, 0.08)" if not is_dark else "rgba(0, 0, 0, 0.3)"
 
         return f"""
 /* ===== Base Application ===== */
 QMainWindow, QDialog {{
     background-color: {c.background};
     color: {c.foreground};
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
 QWidget {{
     background-color: transparent;
     color: {c.foreground};
+    font-size: 13px;
 }}
 
 /* ===== Menu Bar ===== */
 QMenuBar {{
     background-color: {c.toolbar_background};
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 2px;
+    padding: 4px 8px;
+    spacing: 4px;
 }}
 
 QMenuBar::item {{
-    padding: 6px 10px;
-    border-radius: 4px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QMenuBar::item:selected {{
@@ -525,13 +533,14 @@ QMenuBar::item:selected {{
 QMenu {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
-    border-radius: 6px;
-    padding: 4px;
+    border-radius: 8px;
+    padding: 6px;
 }}
 
 QMenu::item {{
-    padding: 8px 24px 8px 12px;
-    border-radius: 4px;
+    padding: 8px 32px 8px 12px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QMenu::item:selected {{
@@ -541,29 +550,34 @@ QMenu::item:selected {{
 QMenu::separator {{
     height: 1px;
     background-color: {c.menu_separator};
-    margin: 4px 8px;
+    margin: 6px 10px;
 }}
 
-/* ===== Toolbar ===== */
+QMenu::icon {{
+    padding-left: 8px;
+}}
+
+/* ===== Toolbar - Modern flat design ===== */
 QToolBar {{
     background-color: {c.toolbar_background};
     border: none;
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 4px;
-    spacing: 4px;
+    padding: 6px 12px;
+    spacing: 2px;
 }}
 
 QToolBar::separator {{
     width: 1px;
     background-color: {c.divider};
-    margin: 4px 8px;
+    margin: 6px 12px;
 }}
 
 QToolButton {{
     background-color: transparent;
     border: none;
-    border-radius: 4px;
-    padding: 6px;
+    border-radius: 8px;
+    padding: 8px;
+    margin: 2px;
 }}
 
 QToolButton:hover {{
@@ -571,7 +585,8 @@ QToolButton:hover {{
 }}
 
 QToolButton:pressed {{
-    background-color: {c.primary_pressed};
+    background-color: {c.primary};
+    color: {c.primary_foreground};
 }}
 
 QToolButton:checked {{
@@ -579,78 +594,97 @@ QToolButton:checked {{
     color: {c.primary_foreground};
 }}
 
-/* ===== Dock Widgets ===== */
+/* ===== Dock Widgets - Clean panel design ===== */
 QDockWidget {{
     font-weight: 600;
+    font-size: 12px;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
 }}
 
 QDockWidget::title {{
     background-color: {c.panel_header};
-    padding: 8px;
+    padding: 10px 12px;
     border-bottom: 1px solid {c.panel_border};
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 11px;
+    font-weight: 600;
+    color: {c.foreground_muted};
 }}
 
 QDockWidget::close-button, QDockWidget::float-button {{
     background: transparent;
     border: none;
-    padding: 2px;
+    border-radius: 4px;
+    padding: 4px;
 }}
 
-/* ===== Scroll Bars ===== */
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
+    background-color: {c.menu_hover};
+}}
+
+/* ===== Scroll Bars - Thin modern style ===== */
 QScrollBar:vertical {{
-    background-color: {c.scrollbar_background};
-    width: 12px;
+    background-color: transparent;
+    width: 10px;
     border: none;
+    margin: 2px;
 }}
 
 QScrollBar::handle:vertical {{
     background-color: {c.scrollbar_handle};
-    border-radius: 6px;
-    min-height: 30px;
-    margin: 2px;
+    border-radius: 4px;
+    min-height: 40px;
+    margin: 0px 2px;
 }}
 
 QScrollBar::handle:vertical:hover {{
     background-color: {c.scrollbar_handle_hover};
 }}
 
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
     height: 0;
 }}
 
 QScrollBar:horizontal {{
-    background-color: {c.scrollbar_background};
-    height: 12px;
+    background-color: transparent;
+    height: 10px;
     border: none;
+    margin: 2px;
 }}
 
 QScrollBar::handle:horizontal {{
     background-color: {c.scrollbar_handle};
-    border-radius: 6px;
-    min-width: 30px;
-    margin: 2px;
+    border-radius: 4px;
+    min-width: 40px;
+    margin: 2px 0px;
 }}
 
 QScrollBar::handle:horizontal:hover {{
     background-color: {c.scrollbar_handle_hover};
 }}
 
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
     width: 0;
 }}
 
-/* ===== Tree View ===== */
+/* ===== Tree View - Component library style ===== */
 QTreeView, QTreeWidget {{
     background-color: {c.tree_background};
     border: none;
     outline: none;
+    padding: 4px;
 }}
 
 QTreeView::item, QTreeWidget::item {{
-    padding: 6px 4px;
-    border-radius: 4px;
+    padding: 8px 8px;
+    border-radius: 6px;
+    margin: 1px 4px;
 }}
 
 QTreeView::item:hover, QTreeWidget::item:hover {{
@@ -659,6 +693,7 @@ QTreeView::item:hover, QTreeWidget::item:hover {{
 
 QTreeView::item:selected, QTreeWidget::item:selected {{
     background-color: {c.tree_item_selected};
+    color: {c.foreground};
 }}
 
 QTreeView::item:selected:!active, QTreeWidget::item:selected:!active {{
@@ -667,6 +702,27 @@ QTreeView::item:selected:!active, QTreeWidget::item:selected:!active {{
 
 QTreeView::branch {{
     background-color: transparent;
+}}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {{
+    border-image: none;
+}}
+
+QTreeView::branch:open:has-children:!has-siblings,
+QTreeView::branch:open:has-children:has-siblings {{
+    border-image: none;
+}}
+
+/* Header for tree view */
+QHeaderView::section {{
+    background-color: {c.panel_header};
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 1px solid {c.border};
+    font-weight: 600;
+    font-size: 11px;
+    color: {c.foreground_muted};
 }}
 
 /* ===== Tab Widget ===== */
@@ -692,14 +748,15 @@ QTabBar::tab:hover:!selected {{
     background-color: {c.tab_hover};
 }}
 
-/* ===== Buttons ===== */
+/* ===== Buttons - Modern rounded style ===== */
 QPushButton {{
     background-color: {c.secondary};
     color: {c.secondary_foreground};
     border: none;
-    border-radius: 4px;
-    padding: 8px 16px;
+    border-radius: 8px;
+    padding: 10px 20px;
     font-weight: 500;
+    font-size: 13px;
 }}
 
 QPushButton:hover {{
@@ -713,6 +770,7 @@ QPushButton:pressed {{
 QPushButton:disabled {{
     background-color: {c.border};
     color: {c.foreground_muted};
+    opacity: 0.6;
 }}
 
 QPushButton[primary="true"] {{
@@ -724,17 +782,26 @@ QPushButton[primary="true"]:hover {{
     background-color: {c.primary_hover};
 }}
 
-/* ===== Input Fields ===== */
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
+/* Small variant for dialogs */
+QPushButton[size="small"] {{
+    padding: 6px 12px;
+    font-size: 12px;
+}}
+
+/* ===== Input Fields - Clean modern inputs ===== */
+QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 4px;
-    padding: 6px 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
     selection-background-color: {c.primary};
+    selection-color: {c.primary_foreground};
+    font-size: 13px;
 }}
 
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     border-color: {c.input_focus_border};
+    border-width: 2px;
 }}
 
 QLineEdit:disabled {{
@@ -742,51 +809,117 @@ QLineEdit:disabled {{
     color: {c.foreground_muted};
 }}
 
-/* ===== Combo Box ===== */
+QLineEdit::placeholder {{
+    color: {c.input_placeholder};
+}}
+
+/* Spin boxes */
+QSpinBox, QDoubleSpinBox {{
+    background-color: {c.input_background};
+    border: 1px solid {c.input_border};
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 13px;
+}}
+
+QSpinBox:focus, QDoubleSpinBox:focus {{
+    border-color: {c.input_focus_border};
+    border-width: 2px;
+}}
+
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: right;
+    width: 20px;
+    border: none;
+    border-radius: 0 8px 0 0;
+}}
+
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: right;
+    width: 20px;
+    border: none;
+    border-radius: 0 0 8px 0;
+}}
+
+/* ===== Combo Box - Modern dropdown ===== */
 QComboBox {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 4px;
-    padding: 6px 10px;
-    min-width: 100px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-width: 120px;
+    font-size: 13px;
 }}
 
 QComboBox:focus {{
     border-color: {c.input_focus_border};
+    border-width: 2px;
+}}
+
+QComboBox:hover {{
+    border-color: {c.primary};
 }}
 
 QComboBox::drop-down {{
     border: none;
-    width: 24px;
+    width: 28px;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+}}
+
+QComboBox::down-arrow {{
+    width: 12px;
+    height: 12px;
 }}
 
 QComboBox QAbstractItemView {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
+    border-radius: 8px;
+    padding: 4px;
     selection-background-color: {c.menu_hover};
+    outline: none;
 }}
 
-/* ===== Group Box ===== */
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin: 2px;
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {c.menu_hover};
+}}
+
+/* ===== Group Box - Section headers ===== */
 QGroupBox {{
     font-weight: 600;
+    font-size: 12px;
     border: 1px solid {c.border};
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 12px;
+    border-radius: 10px;
+    margin-top: 16px;
+    padding: 16px 12px 12px 12px;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 8px;
+    padding: 4px 12px;
     color: {c.foreground};
+    background-color: {c.background};
+    border-radius: 4px;
+    left: 12px;
 }}
 
-/* ===== Status Bar ===== */
+/* ===== Status Bar - Accent bar ===== */
 QStatusBar {{
     background-color: {c.statusbar_background};
     color: {c.statusbar_foreground};
     border: none;
+    min-height: 28px;
+    padding: 0 8px;
 }}
 
 QStatusBar::item {{
@@ -795,7 +928,21 @@ QStatusBar::item {{
 
 QStatusBar QLabel {{
     color: {c.statusbar_foreground};
-    padding: 2px 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+}}
+
+QStatusBar QProgressBar {{
+    background-color: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 4px;
+    max-height: 6px;
+    min-height: 6px;
+}}
+
+QStatusBar QProgressBar::chunk {{
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 3px;
 }}
 
 /* ===== Splitter ===== */

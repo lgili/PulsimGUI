@@ -18,13 +18,8 @@ class MinimapWidget(QFrame):
     navigation_requested = Signal(float, float)  # Scene x, y coordinates
 
     # Minimap settings
-    SIZE = 150  # Widget size in pixels
-    PADDING = 4
-    VIEWPORT_COLOR = QColor(0, 120, 215, 80)
-    VIEWPORT_BORDER = QColor(0, 120, 215, 200)
-    COMPONENT_COLOR = QColor(100, 100, 100)
-    WIRE_COLOR = QColor(0, 120, 80, 150)
-    BACKGROUND = QColor(250, 250, 250)
+    SIZE = 160  # Widget size in pixels
+    PADDING = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,21 +29,51 @@ class MinimapWidget(QFrame):
         self._scale = 1.0
         self._offset = QPointF()
         self._dragging = False
+        self._dark_mode = False
+
+        # Theme-aware colors (will be updated)
+        self._update_colors()
 
         self.setFixedSize(self.SIZE, self.SIZE)
-        self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Sunken)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._apply_styles()
 
+    def _update_colors(self) -> None:
+        """Update colors based on dark mode setting."""
+        if self._dark_mode:
+            self.VIEWPORT_COLOR = QColor(88, 166, 255, 60)
+            self.VIEWPORT_BORDER = QColor(88, 166, 255, 180)
+            self.COMPONENT_COLOR = QColor(180, 180, 180)
+            self.WIRE_COLOR = QColor(63, 185, 80, 150)
+            self.BACKGROUND = QColor(22, 27, 34)
+            self.BORDER_COLOR = QColor(48, 54, 61)
+        else:
+            self.VIEWPORT_COLOR = QColor(37, 99, 235, 50)
+            self.VIEWPORT_BORDER = QColor(37, 99, 235, 180)
+            self.COMPONENT_COLOR = QColor(120, 120, 120)
+            self.WIRE_COLOR = QColor(5, 150, 105, 150)
+            self.BACKGROUND = QColor(255, 255, 255)
+            self.BORDER_COLOR = QColor(229, 231, 235)
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Set dark mode and update colors."""
+        self._dark_mode = dark
+        self._update_colors()
+        self._apply_styles()
+        self.update()
+
     def _apply_styles(self) -> None:
         """Apply modern styling."""
-        self.setStyleSheet("""
-            MinimapWidget {
-                background-color: #fafafa;
-                border: 1px solid #e5e7eb;
-                border-radius: 6px;
-            }
+        bg = "#161b22" if self._dark_mode else "#ffffff"
+        border = "#30363d" if self._dark_mode else "#e5e7eb"
+        self.setStyleSheet(f"""
+            MinimapWidget {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
         """)
 
     def set_source_view(self, view: QGraphicsView) -> None:
@@ -199,6 +224,9 @@ class MinimapOverlay(QWidget):
         self._minimap.navigation_requested.connect(self.navigation_requested)
         layout.addWidget(self._minimap)
 
+        # Adjust size to account for shadow/border
+        self.setFixedSize(MinimapWidget.SIZE + 4, MinimapWidget.SIZE + 4)
+
     def set_source_view(self, view: QGraphicsView) -> None:
         """Set the source graphics view."""
         self._minimap.set_source_view(view)
@@ -206,3 +234,7 @@ class MinimapOverlay(QWidget):
     def update_minimap(self) -> None:
         """Update the minimap display."""
         self._minimap.update_minimap()
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Set dark mode for the minimap."""
+        self._minimap.set_dark_mode(dark)
