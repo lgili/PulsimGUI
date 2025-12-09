@@ -1,9 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec file for PulsimGui - Cross-platform power electronics simulator GUI."""
+"""PyInstaller spec file for PulsimGui - Cross-platform power electronics simulator GUI.
+
+This spec file creates a standalone application that includes:
+- All frontend dependencies (PySide6, pyqtgraph, numpy, qtawesome)
+- Backend simulation engine (pulsim with native extensions)
+- All required Qt plugins and resources
+"""
 
 import sys
 import os
 from pathlib import Path
+import site
 
 # Determine platform
 is_windows = sys.platform == 'win32'
@@ -21,6 +28,12 @@ SRC_DIR = SPEC_DIR / 'src'
 PACKAGING_DIR = SPEC_DIR / 'packaging'
 ICONS_DIR = PACKAGING_DIR / 'icons'
 
+# Find site-packages to locate pulsim
+site_packages = site.getsitepackages()
+if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+    # Virtual environment
+    site_packages = [str(Path(sys.prefix) / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages')]
+
 # Icon paths per platform
 if is_windows:
     ICON_FILE = ICONS_DIR / 'pulsimgui.ico'
@@ -32,8 +45,9 @@ else:
 # Convert to string (PyInstaller expects strings)
 ICON_FILE = str(ICON_FILE) if ICON_FILE.exists() else None
 
-# Hidden imports required for PySide6 and pyqtgraph
+# Hidden imports required for PySide6, pyqtgraph, and pulsim backend
 hidden_imports = [
+    # PySide6 core modules
     'PySide6.QtCore',
     'PySide6.QtGui',
     'PySide6.QtWidgets',
@@ -41,38 +55,99 @@ hidden_imports = [
     'PySide6.QtSvgWidgets',
     'PySide6.QtOpenGL',
     'PySide6.QtOpenGLWidgets',
+    'PySide6.QtPrintSupport',
+
+    # pyqtgraph modules
     'pyqtgraph',
     'pyqtgraph.graphicsItems',
     'pyqtgraph.graphicsItems.PlotItem',
+    'pyqtgraph.graphicsItems.PlotDataItem',
     'pyqtgraph.graphicsItems.ViewBox',
     'pyqtgraph.graphicsItems.AxisItem',
+    'pyqtgraph.graphicsItems.GridItem',
+    'pyqtgraph.graphicsItems.LegendItem',
+    'pyqtgraph.graphicsItems.InfiniteLine',
+    'pyqtgraph.graphicsItems.TextItem',
+    'pyqtgraph.graphicsItems.ScatterPlotItem',
+
+    # numpy modules
     'numpy',
     'numpy.core._methods',
     'numpy.lib.format',
+    'numpy.fft',
+    'numpy.linalg',
+
+    # qtawesome for icons
+    'qtawesome',
+    'qtawesome.iconic_font',
+
+    # pulsim backend - simulation engine
+    'pulsim',
+    'pulsim._pulsim',
+    'pulsim.devices',
+    'pulsim.remote',
+    'pulsim.remote.client',
+    'pulsim.remote.simulator_pb2',
+    'pulsim.remote.simulator_pb2_grpc',
+    'pulsim.remote.widgets',
+
+    # grpc for remote simulation (if used)
+    'grpc',
+    'grpc._cython',
+    'google.protobuf',
 ]
 
 # Collect data files
-datas = []
+datas = [
+    # Include pulsimgui resources
+    (str(SRC_DIR / 'pulsimgui' / 'resources'), 'pulsimgui/resources'),
+]
+
+# Collect binaries - pulsim native extension
+binaries = []
+for sp in site_packages:
+    pulsim_native = Path(sp) / 'pulsim'
+    if pulsim_native.exists():
+        # Find the native extension (.so on Unix, .pyd on Windows)
+        for ext in ['*.so', '*.pyd', '*.dylib']:
+            for native_file in pulsim_native.glob(f'_pulsim*{ext.replace("*", "")}'):
+                binaries.append((str(native_file), 'pulsim'))
+                break
 
 # Analysis
 a = Analysis(
     [str(SRC_DIR / 'pulsimgui' / '__main__.py')],
     pathex=[str(SRC_DIR)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
-    hookspath=[],
+    hookspath=[str(SPEC_DIR / 'hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # GUI toolkits we don't use
         'tkinter',
+        '_tkinter',
+        'Tkinter',
+
+        # Scientific libraries not needed
         'matplotlib',
         'scipy',
         'pandas',
         'PIL',
+        'Pillow',
+
+        # Development tools
         'IPython',
         'jupyter',
         'notebook',
+        'pytest',
+
+        # Other unused modules
+        'xml.etree.ElementTree',
+        'doctest',
+        'pydoc',
+        'unittest',
     ],
     noarchive=False,
     optimize=2,

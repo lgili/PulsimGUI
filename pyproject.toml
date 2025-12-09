@@ -41,8 +41,12 @@ dev = [
     "ruff>=0.1.0",
 ]
 build = [
+    # PyInstaller for creating standalone executables
     "pyinstaller>=6.0.0",
+    # macOS DMG creation
     "dmgbuild>=1.6.0;sys_platform=='darwin'",
+    # Ensure pulsim backend is available for bundling
+    "pulsim>=0.1.11",
 ]
 
 [project.scripts]
