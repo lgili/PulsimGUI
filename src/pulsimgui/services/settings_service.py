@@ -106,3 +106,16 @@ class SettingsService:
     def set_default_project_location(self, path: str) -> None:
         """Set default location for new projects."""
         self._settings.setValue("default_project_location", path)
+
+    # Backend preference
+    def get_backend_preference(self) -> str | None:
+        """Return the preferred backend identifier (if any)."""
+        value = self._settings.value("backend/preference", "")
+        return value or None
+
+    def set_backend_preference(self, identifier: str | None) -> None:
+        """Persist the preferred backend identifier."""
+        if identifier:
+            self._settings.setValue("backend/preference", identifier)
+        else:
+            self._settings.remove("backend/preference")

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Build script for creating PulsimGui distributions."""
+"""Build script for creating PulsimGui standalone distributions.
+
+This script creates self-contained executables that include:
+- All Python dependencies (PySide6, numpy, pyqtgraph, qtawesome)
+- The pulsim simulation backend with native extensions
+- All required Qt plugins and resources
+
+No additional installation is required on the target machine.
+"""
 
 import argparse
 import platform
@@ -13,6 +21,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
+HOOKS_DIR = PROJECT_ROOT / "hooks"
 
 
 def get_version() -> str:
@@ -35,12 +44,31 @@ def clean() -> None:
 
 
 def install_dependencies() -> None:
-    """Install build dependencies."""
+    """Install build dependencies and ensure all runtime deps are available."""
     print("Installing build dependencies...")
+
+    # Build tools
+    build_deps = [
+        "pyinstaller>=6.0",
+    ]
+
+    # Platform-specific build tools
+    if sys.platform == "darwin":
+        build_deps.append("dmgbuild>=1.6.0")
+
+    subprocess.run([
+        sys.executable, "-m", "pip", "install", *build_deps
+    ], check=True)
+
+    # Ensure all runtime dependencies are installed
+    print("Verifying runtime dependencies...")
     subprocess.run([
         sys.executable, "-m", "pip", "install",
-        "pyinstaller>=6.0",
-        "dmgbuild>=1.6.0;sys_platform=='darwin'",
+        "PySide6>=6.5.0",
+        "pyqtgraph>=0.13.0",
+        "numpy>=1.24.0",
+        "qtawesome>=1.3.0",
+        "pulsim>=0.1.11",
     ], check=True)
 
 

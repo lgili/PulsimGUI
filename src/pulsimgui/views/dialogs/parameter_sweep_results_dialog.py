@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QDialog, QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from pulsimgui.services.simulation_service import ParameterSweepResult
 from pulsimgui.views.waveform import WaveformViewer
+from pulsimgui.views.widgets import StatusBanner
 
 
 class ParameterSweepResultsDialog(QDialog):
@@ -21,13 +22,22 @@ class ParameterSweepResultsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
+        # Status banner with sweep info
+        num_runs = len(self._result.runs)
+        status = StatusBanner.success(
+            f"Parameter sweep completed: {num_runs} simulation runs"
+        )
+        layout.addWidget(status)
+
+        # Info label
         summary = QLabel(
-            f"Component: {self._result.settings.component_name}\n"
-            f"Parameter: {self._result.settings.parameter_name}\n"
+            f"Component: {self._result.settings.component_name}  |  "
+            f"Parameter: {self._result.settings.parameter_name}  |  "
             f"Output: {self._result.settings.output_signal}"
         )
-        summary.setStyleSheet("font-weight: bold;")
+        summary.setStyleSheet("color: #6b7280; font-size: 11px;")
         layout.addWidget(summary)
 
         tabs = QTabWidget()

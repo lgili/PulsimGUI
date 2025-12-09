@@ -87,82 +87,133 @@ class MeasurementsPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
         self._setup_ui()
+        self._apply_styles()
+
+    def _apply_styles(self) -> None:
+        """Apply modern styling."""
+        self.setStyleSheet("""
+            MeasurementsPanel {
+                background-color: #f9fafb;
+                border-radius: 8px;
+            }
+            QGroupBox {
+                font-weight: 600;
+                font-size: 11px;
+                color: #374151;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 8px;
+                background-color: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 6px;
+                background-color: #ffffff;
+            }
+        """)
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         # Cursor measurements
         cursor_group = QGroupBox("Cursor Measurements")
         cursor_layout = QGridLayout(cursor_group)
-        cursor_layout.setSpacing(2)
+        cursor_layout.setContentsMargins(10, 16, 10, 10)
+        cursor_layout.setSpacing(6)
+
+        label_style = "color: #6b7280; font-size: 10px;"
+        value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
 
         # Cursor 1
-        cursor_layout.addWidget(QLabel("C1 Time:"), 0, 0)
+        c1_label = QLabel("C1 Time")
+        c1_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(c1_label, 0, 0)
         self._c1_time = QLabel("---")
-        self._c1_time.setStyleSheet("color: red; font-weight: bold;")
+        self._c1_time.setStyleSheet(f"{value_style_base} color: #dc2626;")
         cursor_layout.addWidget(self._c1_time, 0, 1)
 
-        cursor_layout.addWidget(QLabel("C1 Value:"), 1, 0)
+        c1v_label = QLabel("C1 Value")
+        c1v_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(c1v_label, 1, 0)
         self._c1_value = QLabel("---")
-        self._c1_value.setStyleSheet("color: red;")
+        self._c1_value.setStyleSheet(f"{value_style_base} color: #dc2626;")
         cursor_layout.addWidget(self._c1_value, 1, 1)
 
         # Cursor 2
-        cursor_layout.addWidget(QLabel("C2 Time:"), 2, 0)
+        c2_label = QLabel("C2 Time")
+        c2_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(c2_label, 2, 0)
         self._c2_time = QLabel("---")
-        self._c2_time.setStyleSheet("color: blue; font-weight: bold;")
+        self._c2_time.setStyleSheet(f"{value_style_base} color: #2563eb;")
         cursor_layout.addWidget(self._c2_time, 2, 1)
 
-        cursor_layout.addWidget(QLabel("C2 Value:"), 3, 0)
+        c2v_label = QLabel("C2 Value")
+        c2v_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(c2v_label, 3, 0)
         self._c2_value = QLabel("---")
-        self._c2_value.setStyleSheet("color: blue;")
+        self._c2_value.setStyleSheet(f"{value_style_base} color: #2563eb;")
         cursor_layout.addWidget(self._c2_value, 3, 1)
 
-        # Delta
-        cursor_layout.addWidget(QLabel("Delta T:"), 4, 0)
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background-color: #e5e7eb;")
+        sep.setFixedHeight(1)
+        cursor_layout.addWidget(sep, 4, 0, 1, 2)
+
+        # Delta measurements
+        dt_label = QLabel("Delta T")
+        dt_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(dt_label, 5, 0)
         self._delta_t = QLabel("---")
-        self._delta_t.setStyleSheet("font-weight: bold;")
-        cursor_layout.addWidget(self._delta_t, 4, 1)
+        self._delta_t.setStyleSheet(f"{value_style_base} color: #059669;")
+        cursor_layout.addWidget(self._delta_t, 5, 1)
 
-        cursor_layout.addWidget(QLabel("Delta V:"), 5, 0)
+        dv_label = QLabel("Delta V")
+        dv_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(dv_label, 6, 0)
         self._delta_v = QLabel("---")
-        cursor_layout.addWidget(self._delta_v, 5, 1)
+        self._delta_v.setStyleSheet(f"{value_style_base} color: #059669;")
+        cursor_layout.addWidget(self._delta_v, 6, 1)
 
-        cursor_layout.addWidget(QLabel("Freq:"), 6, 0)
+        freq_label = QLabel("Frequency")
+        freq_label.setStyleSheet(label_style)
+        cursor_layout.addWidget(freq_label, 7, 0)
         self._frequency = QLabel("---")
-        cursor_layout.addWidget(self._frequency, 6, 1)
+        self._frequency.setStyleSheet(f"{value_style_base} color: #7c3aed;")
+        cursor_layout.addWidget(self._frequency, 7, 1)
 
         layout.addWidget(cursor_group)
 
         # Signal statistics
         stats_group = QGroupBox("Signal Statistics")
         stats_layout = QGridLayout(stats_group)
-        stats_layout.setSpacing(2)
+        stats_layout.setContentsMargins(10, 16, 10, 10)
+        stats_layout.setSpacing(6)
 
-        stats_layout.addWidget(QLabel("Min:"), 0, 0)
-        self._min_value = QLabel("---")
-        stats_layout.addWidget(self._min_value, 0, 1)
+        stat_labels = [
+            ("Min", "_min_value", "#0891b2"),
+            ("Max", "_max_value", "#dc2626"),
+            ("Mean", "_mean_value", "#374151"),
+            ("RMS", "_rms_value", "#7c3aed"),
+            ("Pk-Pk", "_pkpk_value", "#059669"),
+        ]
 
-        stats_layout.addWidget(QLabel("Max:"), 1, 0)
-        self._max_value = QLabel("---")
-        stats_layout.addWidget(self._max_value, 1, 1)
-
-        stats_layout.addWidget(QLabel("Mean:"), 2, 0)
-        self._mean_value = QLabel("---")
-        stats_layout.addWidget(self._mean_value, 2, 1)
-
-        stats_layout.addWidget(QLabel("RMS:"), 3, 0)
-        self._rms_value = QLabel("---")
-        stats_layout.addWidget(self._rms_value, 3, 1)
-
-        stats_layout.addWidget(QLabel("Pk-Pk:"), 4, 0)
-        self._pkpk_value = QLabel("---")
-        stats_layout.addWidget(self._pkpk_value, 4, 1)
+        for row, (name, attr, color) in enumerate(stat_labels):
+            label = QLabel(name)
+            label.setStyleSheet(label_style)
+            stats_layout.addWidget(label, row, 0)
+            value_label = QLabel("---")
+            value_label.setStyleSheet(f"{value_style_base} color: {color};")
+            stats_layout.addWidget(value_label, row, 1)
+            setattr(self, attr, value_label)
 
         layout.addWidget(stats_group)
         layout.addStretch()

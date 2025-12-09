@@ -119,7 +119,11 @@ class SchematicScene(QGraphicsScene):
         return QPointF(x, y)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        """Draw the grid background."""
+        """Draw the grid background with major grid markers every 5 cells.
+
+        Optimized for performance by batching draw operations and using
+        drawPoints for minor grid dots.
+        """
         # Draw solid background color first
         painter.fillRect(rect, self._background_color)
 
@@ -129,21 +133,58 @@ class SchematicScene(QGraphicsScene):
         # Calculate grid bounds - align to grid
         left = int(rect.left() / self._grid_size) * self._grid_size
         top = int(rect.top() / self._grid_size) * self._grid_size
+        right = rect.right()
+        bottom = rect.bottom()
 
-        # Set up painter for dots
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(self._grid_color))
+        # Major grid every 5 cells (100px with 20px grid)
+        major_interval = 5
 
-        # Draw grid dots
+        # Dot sizes
         dot_radius = self.GRID_DOT_SIZE / 2.0
+        major_dot_radius = self.GRID_DOT_SIZE
+
+        # Create colors for major dots (slightly darker/more visible)
+        major_color = QColor(self._grid_color)
+        if self._dark_mode:
+            major_color = major_color.lighter(140)
+        else:
+            major_color = major_color.darker(120)
+
+        # Collect points in batches for efficient drawing
+        minor_points = []
+        major_points = []
+
         x = left
-        while x <= rect.right():
+        grid_x = int(left / self._grid_size)
+        while x <= right:
             y = top
-            while y <= rect.bottom():
-                painter.drawEllipse(QPointF(x, y), dot_radius, dot_radius)
+            grid_y = int(top / self._grid_size)
+            while y <= bottom:
+                is_major = (grid_x % major_interval == 0) and (grid_y % major_interval == 0)
+                if is_major:
+                    major_points.append(QPointF(x, y))
+                else:
+                    minor_points.append(QPointF(x, y))
                 y += self._grid_size
+                grid_y += 1
             x += self._grid_size
+            grid_x += 1
+
+        # Batch draw minor dots using drawPoints (faster than individual drawEllipse)
+        if minor_points:
+            pen = QPen(self._grid_color)
+            pen.setWidthF(self.GRID_DOT_SIZE)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawPoints(minor_points)
+
+        # Draw major dots (still use ellipse for larger size, but batched)
+        if major_points:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(major_color))
+            for pt in major_points:
+                painter.drawEllipse(pt, major_dot_radius, major_dot_radius)
 
     def _rebuild_scene(self) -> None:
         """Rebuild scene from circuit model."""
@@ -201,6 +242,8 @@ class SchematicScene(QGraphicsScene):
         """
         Find the nearest component pin within max_distance.
 
+        Optimized with early termination when a very close pin is found.
+
         Returns:
             Tuple of (pin_position, component_item, pin_index) or None if no pin nearby
         """
@@ -208,6 +251,8 @@ class SchematicScene(QGraphicsScene):
 
         nearest_pin = None
         nearest_distance = max_distance
+        max_dist_sq = max_distance * max_distance
+        snap_threshold_sq = 25.0  # 5px - if within this, stop searching
 
         for item in self.items():
             if isinstance(item, ComponentItem):
@@ -216,11 +261,20 @@ class SchematicScene(QGraphicsScene):
                     pin_pos = item.get_pin_position(pin_index)
                     dx = pin_pos.x() - pos.x()
                     dy = pin_pos.y() - pos.y()
-                    distance = (dx * dx + dy * dy) ** 0.5
+                    dist_sq = dx * dx + dy * dy
 
+                    # Skip if clearly outside max distance
+                    if dist_sq > max_dist_sq:
+                        continue
+
+                    distance = dist_sq ** 0.5
                     if distance < nearest_distance:
                         nearest_distance = distance
                         nearest_pin = (pin_pos, item, pin_index)
+
+                        # Early termination if very close
+                        if dist_sq < snap_threshold_sq:
+                            return nearest_pin
 
         return nearest_pin
 
@@ -276,3 +330,40 @@ class SchematicScene(QGraphicsScene):
                 item.clear_dc_values()
 
         self._show_dc_overlay = False
+
+    def update_connected_wires(self, component_item) -> None:
+        """
+        Update wire endpoints that are connected to a component's pins.
+
+        Called when a component is moved to keep wires attached.
+        Uses the saved connection info in wire model to track connections.
+        """
+        from pulsimgui.views.schematic.items import WireItem
+
+        component_id = component_item.component.id
+
+        for item in self.items():
+            if not isinstance(item, WireItem):
+                continue
+
+            wire_item = item
+            wire = wire_item.wire
+
+            # Check if wire start is connected to this component
+            if (wire.start_connection is not None and
+                wire.start_connection.component_id == component_id):
+                pin_index = wire.start_connection.pin_index
+                new_pin_pos = component_item.get_pin_position(pin_index)
+                wire_item.update_endpoint_position('start', new_pin_pos)
+
+            # Check if wire end is connected to this component
+            if (wire.end_connection is not None and
+                wire.end_connection.component_id == component_id):
+                pin_index = wire.end_connection.pin_index
+                new_pin_pos = component_item.get_pin_position(pin_index)
+                wire_item.update_endpoint_position('end', new_pin_pos)
+
+    def load_circuit(self, circuit) -> None:
+        """Load a circuit and rebuild connections."""
+        self._circuit = circuit
+        self._rebuild_scene()

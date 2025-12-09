@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 
+from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.views.properties import SILineEdit
 
@@ -24,9 +25,17 @@ from pulsimgui.views.properties import SILineEdit
 class SimulationSettingsDialog(QDialog):
     """Dialog for configuring simulation settings."""
 
-    def __init__(self, settings: SimulationSettings, parent=None):
+    def __init__(
+        self,
+        settings: SimulationSettings,
+        backend_info: BackendInfo | None = None,
+        backend_warning: str | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._settings = settings
+        self._backend_info = backend_info
+        self._backend_warning = backend_warning
 
         self.setWindowTitle("Simulation Settings")
         self.setMinimumSize(450, 400)
@@ -37,6 +46,9 @@ class SimulationSettingsDialog(QDialog):
     def _setup_ui(self) -> None:
         """Set up the dialog UI."""
         layout = QVBoxLayout(self)
+
+        if self._backend_info or self._backend_warning:
+            layout.addWidget(self._create_backend_banner())
 
         # Tab widget
         self._tabs = QTabWidget()
@@ -54,6 +66,50 @@ class SimulationSettingsDialog(QDialog):
         button_box.accepted.connect(self._on_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _create_backend_banner(self) -> QWidget:
+        group = QGroupBox("Backend Status")
+        form = QFormLayout(group)
+
+        self._backend_name_label = QLabel("-")
+        form.addRow("Backend:", self._backend_name_label)
+
+        self._backend_version_label = QLabel("-")
+        form.addRow("Version:", self._backend_version_label)
+
+        self._backend_status_label = QLabel("-")
+        self._backend_status_label.setWordWrap(True)
+        form.addRow("Status:", self._backend_status_label)
+
+        self._backend_capabilities_label = QLabel("-")
+        self._backend_capabilities_label.setWordWrap(True)
+        form.addRow("Capabilities:", self._backend_capabilities_label)
+
+        warning_text = self._backend_warning or ""
+        self._backend_warning_label = QLabel(warning_text)
+        self._backend_warning_label.setWordWrap(True)
+        self._backend_warning_label.setStyleSheet("color: #b35a00;")
+        self._backend_warning_label.setVisible(bool(warning_text))
+        form.addRow("Warning:", self._backend_warning_label)
+
+        self._refresh_backend_banner()
+        return group
+
+    def _refresh_backend_banner(self) -> None:
+        info = self._backend_info
+        if not info:
+            self._backend_name_label.setText("No backend detected")
+            self._backend_version_label.setText("-")
+            self._backend_status_label.setText(self._backend_warning or "Install Pulsim to enable simulations.")
+            self._backend_capabilities_label.setText("-")
+            return
+
+        self._backend_name_label.setText(info.name or info.identifier)
+        self._backend_version_label.setText(info.version or "-")
+        status = info.message or info.status or "available"
+        self._backend_status_label.setText(status)
+        capabilities = ", ".join(sorted(info.capabilities)) if info.capabilities else "-"
+        self._backend_capabilities_label.setText(capabilities)
 
     def _create_transient_tab(self) -> QWidget:
         """Create transient simulation settings tab."""

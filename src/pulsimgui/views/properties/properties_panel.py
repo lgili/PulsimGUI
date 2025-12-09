@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
+    QFrame,
 )
 
 from pulsimgui.models.component import (
@@ -31,6 +32,38 @@ from pulsimgui.models.component import (
     set_demux_output_count,
 )
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
+from pulsimgui.resources.icons import IconService
+
+
+class SectionHeader(QWidget):
+    """A styled section header with icon and title."""
+
+    def __init__(self, icon_name: str, title: str, icon_color: str = "#0078D4", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 8, 0, 4)
+        layout.setSpacing(6)
+
+        # Icon
+        icon_label = QLabel()
+        icon_label.setFixedSize(16, 16)
+        icon = IconService.get_icon(icon_name, icon_color)
+        if not icon.isNull():
+            icon_label.setPixmap(icon.pixmap(16, 16))
+        layout.addWidget(icon_label)
+
+        # Title
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: 600; font-size: 11px;")
+        layout.addWidget(title_label)
+
+        layout.addStretch()
+
+        # Bottom separator line
+        self._separator = QFrame()
+        self._separator.setFrameShape(QFrame.Shape.HLine)
+        self._separator.setStyleSheet("background-color: #e5e7eb;")
+        self._separator.setFixedHeight(1)
 
 
 class SIValueWidget(QWidget):
@@ -140,29 +173,51 @@ class PropertiesPanel(QWidget):
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(0)
 
-        # Component info group
-        info_group = QGroupBox("Component")
-        info_layout = QFormLayout(info_group)
+        # Component info section
+        self._info_container = QWidget()
+        info_container_layout = QVBoxLayout(self._info_container)
+        info_container_layout.setContentsMargins(0, 0, 0, 0)
+        info_container_layout.setSpacing(4)
+
+        info_header = SectionHeader("info", "Component Info")
+        info_container_layout.addWidget(info_header)
+
+        info_form = QWidget()
+        info_layout = QFormLayout(info_form)
+        info_layout.setContentsMargins(4, 4, 4, 8)
+        info_layout.setSpacing(6)
+        info_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._type_label = QLabel("-")
+        self._type_label.setStyleSheet("color: #6b7280; font-size: 11px;")
         info_layout.addRow("Type:", self._type_label)
 
         self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("Component name")
         self._name_edit.editingFinished.connect(self._on_name_changed)
         info_layout.addRow("Name:", self._name_edit)
 
-        layout.addWidget(info_group)
+        info_container_layout.addWidget(info_form)
+        layout.addWidget(self._info_container)
+
+        # Parameters section header
+        self._params_header = SectionHeader("sliders", "Parameters")
+        layout.addWidget(self._params_header)
 
         # Parameters scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self._params_widget = QWidget()
         self._params_layout = QFormLayout(self._params_widget)
+        self._params_layout.setContentsMargins(4, 4, 4, 8)
+        self._params_layout.setSpacing(6)
+        self._params_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self._params_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
@@ -170,21 +225,42 @@ class PropertiesPanel(QWidget):
 
         layout.addWidget(scroll)
 
-        # Position group
-        pos_group = QGroupBox("Position")
-        pos_layout = QFormLayout(pos_group)
+        # Position section
+        self._pos_container = QWidget()
+        pos_container_layout = QVBoxLayout(self._pos_container)
+        pos_container_layout.setContentsMargins(0, 0, 0, 0)
+        pos_container_layout.setSpacing(4)
+
+        pos_header = SectionHeader("move", "Transform")
+        pos_container_layout.addWidget(pos_header)
+
+        pos_form = QWidget()
+        pos_layout = QFormLayout(pos_form)
+        pos_layout.setContentsMargins(4, 4, 4, 8)
+        pos_layout.setSpacing(6)
+        pos_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Position row with X and Y side by side
+        pos_row = QWidget()
+        pos_row_layout = QHBoxLayout(pos_row)
+        pos_row_layout.setContentsMargins(0, 0, 0, 0)
+        pos_row_layout.setSpacing(8)
 
         self._x_spin = QDoubleSpinBox()
         self._x_spin.setRange(-10000, 10000)
         self._x_spin.setDecimals(1)
+        self._x_spin.setPrefix("X: ")
         self._x_spin.valueChanged.connect(lambda v: self._on_position_changed("x", v))
-        pos_layout.addRow("X:", self._x_spin)
+        pos_row_layout.addWidget(self._x_spin)
 
         self._y_spin = QDoubleSpinBox()
         self._y_spin.setRange(-10000, 10000)
         self._y_spin.setDecimals(1)
+        self._y_spin.setPrefix("Y: ")
         self._y_spin.valueChanged.connect(lambda v: self._on_position_changed("y", v))
-        pos_layout.addRow("Y:", self._y_spin)
+        pos_row_layout.addWidget(self._y_spin)
+
+        pos_layout.addRow("Position:", pos_row)
 
         self._rotation_combo = QComboBox()
         self._rotation_combo.addItems(["0°", "90°", "180°", "270°"])
@@ -192,13 +268,14 @@ class PropertiesPanel(QWidget):
         pos_layout.addRow("Rotation:", self._rotation_combo)
 
         mirror_layout = QHBoxLayout()
-        self._mirror_h_check = QCheckBox("H")
+        mirror_layout.setSpacing(12)
+        self._mirror_h_check = QCheckBox("Horizontal")
         self._mirror_h_check.stateChanged.connect(
             lambda: self._on_mirror_changed("h", self._mirror_h_check.isChecked())
         )
         mirror_layout.addWidget(self._mirror_h_check)
 
-        self._mirror_v_check = QCheckBox("V")
+        self._mirror_v_check = QCheckBox("Vertical")
         self._mirror_v_check.stateChanged.connect(
             lambda: self._on_mirror_changed("v", self._mirror_v_check.isChecked())
         )
@@ -207,22 +284,26 @@ class PropertiesPanel(QWidget):
 
         pos_layout.addRow("Mirror:", mirror_layout)
 
-        layout.addWidget(pos_group)
+        pos_container_layout.addWidget(pos_form)
+        layout.addWidget(self._pos_container)
+
+        layout.addStretch()
 
         # No selection label
         self._no_selection_label = QLabel("No component selected")
         self._no_selection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._no_selection_label.setStyleSheet("color: gray;")
+        self._no_selection_label.setStyleSheet(
+            "color: #9ca3af; font-size: 12px; padding: 40px 20px;"
+        )
         layout.addWidget(self._no_selection_label)
 
         # Initially hide everything except no selection label
-        info_group.hide()
+        self._info_container.hide()
+        self._params_header.hide()
         scroll.hide()
-        pos_group.hide()
+        self._pos_container.hide()
 
-        self._info_group = info_group
         self._scroll = scroll
-        self._pos_group = pos_group
 
     def set_component(self, component: Component | None) -> None:
         """Set the component to display/edit."""
@@ -243,15 +324,17 @@ class PropertiesPanel(QWidget):
 
         if not self._component:
             self._no_selection_label.show()
-            self._info_group.hide()
+            self._info_container.hide()
+            self._params_header.hide()
             self._scroll.hide()
-            self._pos_group.hide()
+            self._pos_container.hide()
             return
 
         self._no_selection_label.hide()
-        self._info_group.show()
+        self._info_container.show()
+        self._params_header.show()
         self._scroll.show()
-        self._pos_group.show()
+        self._pos_container.show()
 
         # Update component info
         self._type_label.setText(self._component.type.name.replace("_", " ").title())

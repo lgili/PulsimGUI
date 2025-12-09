@@ -101,6 +101,13 @@ class ThemeColors:
     sim_stopped: str = "#6c757d"
     sim_error: str = "#dc3545"
 
+    # Icons
+    icon_default: str = "#374151"
+    icon_hover: str = "#1f2937"
+    icon_active: str = "#ffffff"
+    icon_disabled: str = "#9ca3af"
+    icon_accent: str = "#2563eb"
+
 
 @dataclass
 class Theme:
@@ -143,7 +150,82 @@ LIGHT_THEME = Theme(
     name="light",
     display_name="Light",
     is_dark=False,
-    colors=ThemeColors(),  # Uses all defaults
+    colors=ThemeColors(
+        # Base colors - clean, professional look
+        background="#ffffff",
+        background_alt="#f9fafb",
+        foreground="#1f2937",
+        foreground_muted="#6b7280",
+        # Primary accent - professional blue
+        primary="#2563eb",
+        primary_hover="#1d4ed8",
+        primary_pressed="#1e40af",
+        primary_foreground="#ffffff",
+        # Secondary
+        secondary="#6b7280",
+        secondary_hover="#4b5563",
+        secondary_foreground="#ffffff",
+        # Status colors - refined
+        success="#059669",
+        success_background="#d1fae5",
+        error="#dc2626",
+        error_background="#fee2e2",
+        warning="#d97706",
+        warning_background="#fef3c7",
+        info="#0284c7",
+        info_background="#e0f2fe",
+        # Borders - subtle
+        border="#e5e7eb",
+        border_focus="#2563eb",
+        divider="#f3f4f6",
+        # Input
+        input_background="#ffffff",
+        input_border="#d1d5db",
+        input_focus_border="#2563eb",
+        input_placeholder="#9ca3af",
+        # Toolbar
+        toolbar_background="#f9fafb",
+        toolbar_border="#e5e7eb",
+        menu_background="#ffffff",
+        menu_hover="#f3f4f6",
+        menu_separator="#e5e7eb",
+        # Panel
+        panel_background="#f9fafb",
+        panel_header="#f3f4f6",
+        panel_border="#e5e7eb",
+        # Tree
+        tree_background="#ffffff",
+        tree_item_hover="#f3f4f6",
+        tree_item_selected="#dbeafe",
+        tree_item_selected_inactive="#e5e7eb",
+        # Tabs
+        tab_background="#f3f4f6",
+        tab_active="#ffffff",
+        tab_hover="#e5e7eb",
+        tab_border="#e5e7eb",
+        # Status bar - professional blue
+        statusbar_background="#2563eb",
+        statusbar_foreground="#ffffff",
+        # Scrollbar
+        scrollbar_background="#f3f4f6",
+        scrollbar_handle="#d1d5db",
+        scrollbar_handle_hover="#9ca3af",
+        # Schematic
+        schematic_background="#ffffff",
+        schematic_grid="#e5e7eb",
+        schematic_wire="#059669",
+        schematic_wire_preview="#2563eb",
+        schematic_component="#1f2937",
+        schematic_component_fill="#ffffff",
+        schematic_pin="#dc2626",
+        schematic_selection="#2563eb",
+        schematic_text="#1f2937",
+        # Simulation
+        sim_running="#059669",
+        sim_paused="#d97706",
+        sim_stopped="#6b7280",
+        sim_error="#dc2626",
+    ),
 )
 
 DARK_THEME = Theme(
@@ -225,6 +307,12 @@ DARK_THEME = Theme(
         sim_paused="#cca700",
         sim_stopped="#6e6e6e",
         sim_error="#f14c4c",
+        # Icons
+        icon_default="#d1d5db",
+        icon_hover="#f3f4f6",
+        icon_active="#ffffff",
+        icon_disabled="#6b7280",
+        icon_accent="#3b82f6",
     ),
 )
 
@@ -307,6 +395,12 @@ MODERN_DARK_THEME = Theme(
         sim_paused="#d29922",
         sim_stopped="#6e7681",
         sim_error="#f85149",
+        # Icons
+        icon_default="#c9d1d9",
+        icon_hover="#f0f6fc",
+        icon_active="#ffffff",
+        icon_disabled="#6e7681",
+        icon_accent="#58a6ff",
     ),
 )
 

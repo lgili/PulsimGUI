@@ -1,14 +1,28 @@
 """Simulation service for running Pulsim simulations."""
 
+from __future__ import annotations
+
 import copy
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal, QMutex, QThread, QWaitCondition
+
+from pulsimgui.services.backend_adapter import (
+    BackendCallbacks,
+    BackendInfo,
+    BackendLoader,
+    SimulationBackend,
+)
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
+
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from pulsimgui.services.settings_service import SettingsService
 
 
 class SimulationState(Enum):
@@ -184,130 +198,89 @@ class ParameterSweepResult:
 
 
 class SimulationWorker(QThread):
-    """Worker thread for running simulations."""
+    """Worker thread for running simulations via the active backend."""
 
     progress = Signal(float, str)  # progress (0-100), message
     data_point = Signal(float, dict)  # time, signal_values
     finished_signal = Signal(SimulationResult)
     error = Signal(str)
 
-    def __init__(self, circuit_data: dict, settings: SimulationSettings, parent=None):
+    def __init__(
+        self,
+        backend: SimulationBackend,
+        circuit_data: dict,
+        settings: SimulationSettings,
+        parent=None,
+    ):
         super().__init__(parent)
+        self._backend = backend
         self._circuit_data = circuit_data
         self._settings = settings
         self._cancelled = False
         self._paused = False
         self._mutex = QMutex()
         self._pause_condition = QWaitCondition()
+        self._thread_ident: int | None = None
 
     def run(self) -> None:
         """Run the simulation."""
         result = SimulationResult()
 
         try:
-            self.progress.emit(0, "Initializing simulation...")
+            self._thread_ident = threading.get_ident()
+            callbacks = BackendCallbacks(
+                progress=lambda value, message: self.progress.emit(value, message),
+                data_point=lambda t, data: self.data_point.emit(t, data),
+                check_cancelled=lambda: self._cancelled,
+                wait_if_paused=self._wait_if_paused,
+            )
 
-            # Convert GUI circuit to simulation format
-            # In a real implementation, this would use Pulsim's Circuit class
-            circuit = self._convert_circuit()
+            backend_result = self._backend.run_transient(
+                self._circuit_data,
+                self._settings,
+                callbacks,
+            )
 
-            if self._cancelled:
-                return
+            result.time = list(backend_result.time)
+            result.signals = {name: list(values) for name, values in backend_result.signals.items()}
+            result.statistics = dict(backend_result.statistics)
+            result.error_message = backend_result.error_message
 
-            self.progress.emit(5, "Building circuit equations...")
+            if self._cancelled and not result.error_message:
+                result.error_message = "Simulation cancelled"
 
-            # Simulate - this is a placeholder implementation
-            # In production, this would call Pulsim's solver
-            t = self._settings.t_start
-            dt = (self._settings.t_stop - self._settings.t_start) / self._settings.output_points
-            total_steps = self._settings.output_points
-
-            result.time = []
-            result.signals = {}
-
-            self.progress.emit(10, "Running transient simulation...")
-
-            for i in range(total_steps + 1):
-                # Check for cancellation
-                if self._cancelled:
-                    result.error_message = "Simulation cancelled"
-                    self.finished_signal.emit(result)
-                    return
-
-                # Handle pause
-                self._mutex.lock()
-                while self._paused and not self._cancelled:
-                    self._pause_condition.wait(self._mutex)
-                self._mutex.unlock()
-
-                t = self._settings.t_start + i * dt
-                result.time.append(t)
-
-                # Placeholder: Generate dummy waveforms
-                # In real implementation, this would be actual simulation data
-                signals = self._simulate_step(t, circuit)
-                for name, value in signals.items():
-                    if name not in result.signals:
-                        result.signals[name] = []
-                    result.signals[name].append(value)
-
-                # Emit data point for real-time plotting
-                if i % 100 == 0:
-                    self.data_point.emit(t, signals)
-
-                # Update progress
-                progress = 10 + (i / total_steps) * 85
-                if i % (total_steps // 20 + 1) == 0:
-                    self.progress.emit(progress, f"Time: {t*1e6:.1f}µs")
-
-            self.progress.emit(95, "Finalizing results...")
-
-            # Calculate statistics
-            result.statistics = {
-                "simulation_time": self._settings.t_stop - self._settings.t_start,
-                "time_steps": len(result.time),
-                "signals_count": len(result.signals),
-            }
-
-            self.progress.emit(100, "Simulation complete")
+            if result.error_message:
+                self.error.emit(result.error_message)
             self.finished_signal.emit(result)
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive path
             result.error_message = str(e)
             self.error.emit(str(e))
             self.finished_signal.emit(result)
+        finally:
+            self._thread_ident = None
 
-    def _convert_circuit(self) -> dict:
-        """Convert GUI circuit data to simulation format."""
-        # Placeholder - in real implementation, this would create Pulsim Circuit
-        return self._circuit_data
-
-    def _simulate_step(self, t: float, circuit: dict) -> dict[str, float]:
-        """Simulate one time step - placeholder implementation."""
-        import math
-
-        # Generate placeholder waveforms based on circuit components
-        signals = {}
-
-        # Example: Generate some dummy signals
-        # In real implementation, this would be actual node voltages and currents
-        signals["V(out)"] = 5.0 * (1 - math.exp(-t * 10000)) * math.sin(2 * math.pi * 1000 * t)
-        signals["V(in)"] = 10.0 * math.sin(2 * math.pi * 1000 * t)
-        signals["I(R1)"] = signals["V(out)"] / 1000 if "V(out)" in signals else 0
-
-        return signals
+    def _wait_if_paused(self) -> None:
+        self._mutex.lock()
+        try:
+            while self._paused and not self._cancelled:
+                self._pause_condition.wait(self._mutex)
+        finally:
+            self._mutex.unlock()
 
     def cancel(self) -> None:
         """Cancel the simulation."""
         self._cancelled = True
         self._paused = False
         self._pause_condition.wakeAll()
+        self._notify_backend_control("request_stop")
 
     def pause(self) -> None:
         """Pause the simulation."""
         self._mutex.lock()
         self._paused = True
         self._mutex.unlock()
+        self._notify_backend_control("request_pause")
 
     def resume(self) -> None:
         """Resume a paused simulation."""
@@ -315,11 +288,26 @@ class SimulationWorker(QThread):
         self._paused = False
         self._mutex.unlock()
         self._pause_condition.wakeAll()
+        self._notify_backend_control("request_resume")
 
     @property
     def is_paused(self) -> bool:
         """Check if simulation is paused."""
         return self._paused
+
+    def _notify_backend_control(self, method_name: str) -> None:
+        run_id = self._thread_ident
+        if run_id is None:
+            return
+        handler = getattr(self._backend, method_name, None)
+        if handler is None:
+            return
+        try:
+            handler(run_id)
+        except TypeError:  # Backends that ignore run identifiers
+            handler()
+        except Exception:
+            pass
 
 
 class ParameterSweepWorker(QThread):
@@ -331,12 +319,14 @@ class ParameterSweepWorker(QThread):
 
     def __init__(
         self,
+        backend: SimulationBackend,
         circuit_data: dict,
         sweep_settings: ParameterSweepSettings,
         base_settings: SimulationSettings,
         parent=None,
     ):
         super().__init__(parent)
+        self._backend = backend
         self._circuit_data = circuit_data
         self._sweep_settings = sweep_settings
         self._base_settings = base_settings
@@ -407,8 +397,21 @@ class ParameterSweepWorker(QThread):
         circuit_copy = copy.deepcopy(self._circuit_data)
         self._apply_parameter_value(circuit_copy, value)
         settings_copy = replace(self._base_settings)
-        result = self._run_placeholder_simulation(settings_copy, value)
-        return ParameterSweepRun(order=order, parameter_value=value, result=result)
+
+        callbacks = BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: self._cancelled,
+            wait_if_paused=lambda: None,
+        )
+        backend_result = self._backend.run_transient(circuit_copy, settings_copy, callbacks)
+        sim_result = SimulationResult(
+            time=list(backend_result.time),
+            signals={name: list(series) for name, series in backend_result.signals.items()},
+            statistics=dict(backend_result.statistics),
+            error_message=backend_result.error_message,
+        )
+        return ParameterSweepRun(order=order, parameter_value=value, result=sim_result)
 
     def _apply_parameter_value(self, circuit_data: dict, value: float) -> None:
         for component in circuit_data.get("components", []):
@@ -418,46 +421,11 @@ class ParameterSweepWorker(QThread):
                 return
         raise ValueError("Target component not found in circuit data")
 
-    def _run_placeholder_simulation(
-        self, settings: SimulationSettings, parameter_value: float
-    ) -> SimulationResult:
-        result = SimulationResult()
-        result.time = []
-        result.signals = {
-            self._sweep_settings.output_signal: [],
-        }
-        if "V(in)" not in result.signals:
-            result.signals["V(in)"] = []
-        if "I(R1)" not in result.signals:
-            result.signals["I(R1)"] = []
-
-        duration = settings.t_stop - settings.t_start
-        total_steps = max(1, settings.output_points)
-        dt = duration / total_steps
-        scale = self._sweep_settings.compute_scale_factor(parameter_value)
-
-        for i in range(total_steps + 1):
-            t = settings.t_start + i * dt
-            result.time.append(t)
-
-            v_out = 5.0 * scale * (1 - math.exp(-t * 10000)) * math.sin(2 * math.pi * 1000 * t)
-            v_in = 10.0 * math.sin(2 * math.pi * 1000 * t)
-            i_r1 = v_out / 1000.0
-
-            result.signals[self._sweep_settings.output_signal].append(v_out)
-            result.signals.setdefault("V(in)", []).append(v_in)
-            result.signals.setdefault("I(R1)", []).append(i_r1)
-
-        result.statistics = {
-            "simulation_time": duration,
-            "time_steps": len(result.time),
-            "sweep_value": parameter_value,
-        }
-        return result
-
 
 class SimulationService(QObject):
     """Service for managing simulations."""
+
+    _READY_STATUSES = {"available", "detected"}
 
     # Signals
     state_changed = Signal(SimulationState)
@@ -468,8 +436,9 @@ class SimulationService(QObject):
     ac_finished = Signal(ACResult)
     parameter_sweep_finished = Signal(ParameterSweepResult)
     error = Signal(str)
+    backend_changed = Signal(BackendInfo)
 
-    def __init__(self, parent=None):
+    def __init__(self, settings_service: "SettingsService" | None = None, parent=None):
         super().__init__(parent)
 
         self._state = SimulationState.IDLE
@@ -477,6 +446,12 @@ class SimulationService(QObject):
         self._sweep_worker: ParameterSweepWorker | None = None
         self._settings = SimulationSettings()
         self._last_result: SimulationResult | None = None
+        self._settings_service = settings_service
+        preferred_backend = None
+        if settings_service is not None:
+            preferred_backend = settings_service.get_backend_preference()
+        self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
+        self._backend = self._backend_loader.backend
 
     @property
     def state(self) -> SimulationState:
@@ -503,8 +478,60 @@ class SimulationService(QObject):
         """Check if simulation is currently running."""
         return self._state in (SimulationState.RUNNING, SimulationState.PAUSED)
 
+    @property
+    def backend_info(self) -> BackendInfo:
+        """Return metadata about the active simulation backend."""
+        return self._backend.info
+
+    @property
+    def available_backends(self) -> list[BackendInfo]:
+        """Available backend options discovered at runtime."""
+        return self._backend_loader.available_backends
+
+    @property
+    def is_backend_ready(self) -> bool:
+        """Return True when a real simulation backend is available."""
+        info = self._backend.info
+        status = (info.status or "").lower()
+        return info.identifier != "placeholder" and status in self._READY_STATUSES
+
+    @property
+    def backend_issue_message(self) -> str | None:
+        """Human-friendly description when the backend cannot be used."""
+        if self.is_backend_ready:
+            return None
+        info = self._backend.info
+        detail = (info.message or "").strip()
+        if detail:
+            return detail
+        if info.identifier == "placeholder":
+            return "No simulation backend detected. Install Pulsim to enable simulations."
+        status = info.status or "unavailable"
+        return f"Backend '{info.name}' is not available (status: {status})."
+
+    def set_backend_preference(self, identifier: str) -> BackendInfo:
+        """Switch to the requested backend if possible."""
+        if self.is_running:
+            raise RuntimeError("Cannot change backend while a simulation is running")
+        info = self._backend_loader.activate(identifier)
+        self._backend = self._backend_loader.backend
+        if self._settings_service is not None:
+            self._settings_service.set_backend_preference(identifier)
+        self.backend_changed.emit(info)
+        return info
+
+    def _ensure_backend_ready(self) -> bool:
+        """Emit a user-facing error if no backend is currently usable."""
+        if self.is_backend_ready:
+            return True
+        issue = self.backend_issue_message or "Simulation backend unavailable."
+        self.error.emit(f"Simulation backend unavailable: {issue}")
+        return False
+
     def run_transient(self, circuit_data: dict) -> None:
         """Run a transient simulation."""
+        if not self._ensure_backend_ready():
+            return
         if self.is_running:
             self.error.emit("Simulation already running")
             return
@@ -512,7 +539,7 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
 
         # Create and start worker thread
-        self._worker = SimulationWorker(circuit_data, self._settings)
+        self._worker = SimulationWorker(self._backend, circuit_data, self._settings)
         self._worker.progress.connect(self._on_progress)
         self._worker.data_point.connect(self._on_data_point)
         self._worker.finished_signal.connect(self._on_finished)
@@ -522,6 +549,8 @@ class SimulationService(QObject):
 
     def run_dc_operating_point(self, circuit_data: dict) -> None:
         """Run DC operating point analysis."""
+        if not self._ensure_backend_ready():
+            return
         if self.is_running:
             self.error.emit("Simulation already running")
             return
@@ -562,6 +591,8 @@ class SimulationService(QObject):
         self, circuit_data: dict, f_start: float, f_stop: float, points_per_decade: int = 10
     ) -> None:
         """Run AC frequency sweep analysis."""
+        if not self._ensure_backend_ready():
+            return
         if self.is_running:
             self.error.emit("Simulation already running")
             return
@@ -612,13 +643,20 @@ class SimulationService(QObject):
         self, circuit_data: dict, sweep_settings: ParameterSweepSettings
     ) -> None:
         """Run a parameter sweep across multiple simulations."""
+        if not self._ensure_backend_ready():
+            return
         if self.is_running:
             self.error.emit("Simulation already running")
             return
 
         self._set_state(SimulationState.RUNNING)
 
-        self._sweep_worker = ParameterSweepWorker(circuit_data, sweep_settings, self._settings)
+        self._sweep_worker = ParameterSweepWorker(
+            self._backend,
+            circuit_data,
+            sweep_settings,
+            self._settings,
+        )
         self._sweep_worker.progress.connect(self._on_progress)
         self._sweep_worker.finished_signal.connect(self._on_parameter_sweep_finished)
         self._sweep_worker.error.connect(self._on_error)
@@ -699,40 +737,42 @@ class SimulationService(QObject):
             "components": [],
             "wires": [],
             "nodes": {},
+            "node_map": {},
+            "node_aliases": {},
+            "metadata": {},
         }
 
-        if project:
-            circuit = project.get_active_circuit()
+        if not project:
+            return circuit_data
 
-            # Convert components
-            for comp in circuit.components.values():
-                comp_data = {
-                    "id": str(comp.id),
-                    "type": comp.type.name,
-                    "name": comp.name,
-                    "parameters": comp.parameters.copy(),
-                    "pins": [(p.name, p.x, p.y) for p in comp.pins],
-                }
-                circuit_data["components"].append(comp_data)
+        circuit = project.get_active_circuit()
+        if circuit is None:
+            return circuit_data
 
-            # Convert wires
-            for wire in circuit.wires.values():
-                connections = []
-                if wire.start_connection:
-                    connections.append({
-                        "component_id": str(wire.start_connection.component_id),
-                        "pin_index": wire.start_connection.pin_index,
-                    })
-                if wire.end_connection:
-                    connections.append({
-                        "component_id": str(wire.end_connection.component_id),
-                        "pin_index": wire.end_connection.pin_index,
-                    })
-                wire_data = {
-                    "id": str(wire.id),
-                    "segments": [(s.x1, s.y1, s.x2, s.y2) for s in wire.segments],
-                    "connections": connections,
-                }
-                circuit_data["wires"].append(wire_data)
+        node_map_raw = build_node_map(circuit)
+        alias_map = build_node_alias_map(circuit, node_map_raw)
+        circuit_data["node_aliases"] = alias_map
+        circuit_data["metadata"] = {"name": circuit.name}
+
+        component_node_map: dict[str, list[str]] = {}
+
+        for comp in circuit.components.values():
+            comp_dict = comp.to_dict()
+            comp_dict["parameters"] = copy.deepcopy(comp.parameters)
+            comp_id = str(comp.id)
+            pin_nodes: list[str] = []
+            for pin_index in range(len(comp.pins)):
+                node_name = node_map_raw.get((comp_id, pin_index))
+                if node_name is None:
+                    node_name = ""
+                pin_nodes.append(node_name)
+            comp_dict["pin_nodes"] = pin_nodes
+            circuit_data["components"].append(comp_dict)
+            component_node_map[comp_id] = pin_nodes
+
+        circuit_data["node_map"] = component_node_map
+
+        for wire in circuit.wires.values():
+            circuit_data["wires"].append(wire.to_dict())
 
         return circuit_data
