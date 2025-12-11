@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
         self._minimap.navigation_requested.connect(self._on_minimap_navigation)
         self._minimap.move(10, 10)  # Position in top-left corner
         self._minimap.raise_()
+        self._minimap.hide()  # Hidden by default
 
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
@@ -267,7 +268,7 @@ class MainWindow(QMainWindow):
 
         self.action_toggle_minimap = QAction("Show &Minimap", self)
         self.action_toggle_minimap.setCheckable(True)
-        self.action_toggle_minimap.setChecked(True)
+        self.action_toggle_minimap.setChecked(False)  # Hidden by default
         self.action_toggle_minimap.setShortcut(QKeySequence("M"))
         self.action_toggle_minimap.triggered.connect(self._on_toggle_minimap)
 
@@ -384,11 +385,12 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
-        view_menu.addSeparator()
-        theme_menu = view_menu.addMenu("&Theme")
-        theme_menu.addAction(self.action_theme_light)
-        theme_menu.addAction(self.action_theme_dark)
-        theme_menu.addAction(self.action_theme_modern_dark)
+        # Theme menu hidden for now - focusing on polishing light theme first
+        # view_menu.addSeparator()
+        # theme_menu = view_menu.addMenu("&Theme")
+        # theme_menu.addAction(self.action_theme_light)
+        # theme_menu.addAction(self.action_theme_dark)
+        # theme_menu.addAction(self.action_theme_modern_dark)
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
@@ -535,6 +537,8 @@ class MainWindow(QMainWindow):
         )
         self._properties_panel = PropertiesPanel()
         self._properties_panel.property_changed.connect(self._on_property_changed)
+        self._properties_panel.flip_requested.connect(self._on_flip_from_panel)
+        self._properties_panel.rotate_requested.connect(self._on_rotate_from_panel)
         self.properties_dock.setWidget(self._properties_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
@@ -678,11 +682,14 @@ class MainWindow(QMainWindow):
         # Update minimap colors
         self._minimap.set_dark_mode(theme.is_dark)
 
+        # Update properties panel colors
+        self._properties_panel.set_dark_mode(theme.is_dark)
+
+        # Clear icon cache BEFORE updating icons
+        IconService.clear_cache()
+
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
-
-        # Clear icon cache when theme changes
-        IconService.clear_cache()
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -704,7 +711,10 @@ class MainWindow(QMainWindow):
         }
 
         for action, icon_name in icon_map.items():
-            action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
+            action.setIcon(IconService.get_icon(icon_name, icon_color, 20))
+
+        # Update overflow button icon
+        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 20))
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -1485,6 +1495,49 @@ class MainWindow(QMainWindow):
 
         self._schematic_scene.update()
         self._refresh_scope_window_bindings()
+
+    def _on_flip_from_panel(self, axis: str) -> None:
+        """Handle flip request from properties panel."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        edited_component = self._properties_panel._component
+        if edited_component is None:
+            return
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+        # Find and update the corresponding component item in the scene
+        for item in self._schematic_scene.items():
+            if isinstance(item, ComponentItem) and item.component is edited_component:
+                item.update_transform()
+                item.update()
+                break
+
+        self._schematic_scene.update()
+
+    def _on_rotate_from_panel(self, degrees: int) -> None:
+        """Handle rotate request from properties panel."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        edited_component = self._properties_panel._component
+        if edited_component is None:
+            return
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+        # Find and update the corresponding component item in the scene
+        for item in self._schematic_scene.items():
+            if isinstance(item, ComponentItem) and item.component is edited_component:
+                item.setRotation(edited_component.rotation)
+                item.update_transform()
+                item.update()
+                break
+
+        self._schematic_scene.update()
 
     # ------------------------------------------------------------------
     # Scope window helpers

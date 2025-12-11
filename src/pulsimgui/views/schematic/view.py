@@ -12,6 +12,100 @@ from pulsimgui.views.schematic.scene import SchematicScene
 from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
 
+class PinHighlightItem(QGraphicsItem):
+    """Visual indicator showing a highlighted pin when mouse is nearby."""
+
+    PIN_GLOW_COLOR = QColor(0, 180, 80)  # Green glow for connectable pins
+    PIN_GLOW_RADIUS = 12.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setZValue(999)  # Above components but below preview
+        self._visible = False
+
+    def boundingRect(self) -> QRectF:
+        r = self.PIN_GLOW_RADIUS + 2
+        return QRectF(-r, -r, r * 2, r * 2)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        if not self._visible:
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw outer glow (multiple rings for soft effect)
+        for i in range(3):
+            radius = self.PIN_GLOW_RADIUS - i * 3
+            alpha = 60 - i * 15
+            color = QColor(self.PIN_GLOW_COLOR)
+            color.setAlpha(alpha)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(QPointF(0, 0), radius, radius)
+
+        # Draw center dot
+        painter.setBrush(QBrush(self.PIN_GLOW_COLOR))
+        painter.drawEllipse(QPointF(0, 0), 4, 4)
+
+    def set_visible(self, visible: bool) -> None:
+        """Set visibility and trigger update."""
+        if self._visible != visible:
+            self._visible = visible
+            self.update()
+
+    def is_highlight_visible(self) -> bool:
+        return self._visible
+
+
+class AlignmentGuidesItem(QGraphicsItem):
+    """Visual guides showing alignment with other components."""
+
+    GUIDE_COLOR = QColor(255, 100, 100, 180)  # Red-ish for visibility
+    GUIDE_WIDTH = 1.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setZValue(998)  # Below pin highlight but above components
+        self._h_lines: list[float] = []  # Y coordinates for horizontal lines
+        self._v_lines: list[float] = []  # X coordinates for vertical lines
+        self._scene_rect = QRectF(-5000, -5000, 10000, 10000)
+
+    def boundingRect(self) -> QRectF:
+        return self._scene_rect
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        if not self._h_lines and not self._v_lines:
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = QPen(self.GUIDE_COLOR, self.GUIDE_WIDTH, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+
+        # Draw horizontal guides
+        for y in self._h_lines:
+            painter.drawLine(QPointF(self._scene_rect.left(), y),
+                           QPointF(self._scene_rect.right(), y))
+
+        # Draw vertical guides
+        for x in self._v_lines:
+            painter.drawLine(QPointF(x, self._scene_rect.top()),
+                           QPointF(x, self._scene_rect.bottom()))
+
+    def set_guides(self, h_lines: list[float], v_lines: list[float]) -> None:
+        """Set the alignment guide positions."""
+        if self._h_lines != h_lines or self._v_lines != v_lines:
+            self._h_lines = h_lines
+            self._v_lines = v_lines
+            self.update()
+
+    def clear_guides(self) -> None:
+        """Clear all guides."""
+        if self._h_lines or self._v_lines:
+            self._h_lines = []
+            self._v_lines = []
+            self.update()
+
+
 class ComponentDropPreviewItem(QGraphicsItem):
     """Semi-transparent preview showing where component will be placed during drag."""
 
@@ -144,13 +238,18 @@ class SchematicView(QGraphicsView):
         self._drop_preview: ComponentDropPreviewItem | None = None
         self._drop_comp_type: ComponentType | None = None
 
+        # Pin highlight for wire drawing feedback
+        self._pin_highlight: PinHighlightItem | None = None
+
+        # Alignment guides for component dragging
+        self._alignment_guides: AlignmentGuidesItem | None = None
+
         # Set up view
         self.setScene(scene or SchematicScene())
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        # Use SmartViewportUpdate for better performance - only updates changed regions
-        # Falls back to full update when needed (e.g., during zoom/scroll)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
+        # Use FullViewportUpdate to avoid rendering artifacts when moving items
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
@@ -393,14 +492,26 @@ class SchematicView(QGraphicsView):
             if isinstance(self.scene(), SchematicScene):
                 nearest_pin = self.scene().find_nearest_pin(scene_pos)
                 if nearest_pin is not None:
-                    # Snap to pin position
+                    # Snap to pin position and show highlight
                     scene_pos = nearest_pin[0]
+                    self._show_pin_highlight(scene_pos)
                 else:
-                    # Always snap wires to grid
+                    # Always snap wires to grid, hide pin highlight
                     scene_pos = self.scene().snap_to_grid(scene_pos)
+                    self._hide_pin_highlight()
             self._wire_preview.set_end(scene_pos)
             event.accept()
         else:
+            # When not drawing wire, still show pin highlight in wire mode
+            if self._current_tool == Tool.WIRE and isinstance(self.scene(), SchematicScene):
+                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                if nearest_pin is not None:
+                    self._show_pin_highlight(nearest_pin[0])
+                else:
+                    self._hide_pin_highlight()
+            else:
+                self._hide_pin_highlight()
+
             super().mouseMoveEvent(event)
 
         # Emit mouse position in scene coordinates
@@ -853,3 +964,63 @@ class SchematicView(QGraphicsView):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def _show_pin_highlight(self, pos: QPointF) -> None:
+        """Show pin highlight glow at the given position."""
+        if self._pin_highlight is None:
+            self._pin_highlight = PinHighlightItem()
+            self.scene().addItem(self._pin_highlight)
+
+        self._pin_highlight.setPos(pos)
+        self._pin_highlight.set_visible(True)
+
+    def _hide_pin_highlight(self) -> None:
+        """Hide the pin highlight glow."""
+        if self._pin_highlight is not None:
+            self._pin_highlight.set_visible(False)
+
+    def _show_alignment_guides(self, moving_item) -> None:
+        """Show alignment guides when moving a component."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(moving_item, ComponentItem):
+            return
+
+        scene = self.scene()
+        if not isinstance(scene, SchematicScene):
+            return
+
+        # Create guides item if needed
+        if self._alignment_guides is None:
+            self._alignment_guides = AlignmentGuidesItem()
+            scene.addItem(self._alignment_guides)
+
+        # Get center position of moving item
+        moving_center = moving_item.pos()
+        moving_x = moving_center.x()
+        moving_y = moving_center.y()
+
+        # Find alignments with other components
+        h_guides: list[float] = []
+        v_guides: list[float] = []
+        tolerance = 5.0  # Alignment tolerance in pixels
+
+        for item in scene.items():
+            if isinstance(item, ComponentItem) and item is not moving_item:
+                other_pos = item.pos()
+
+                # Check horizontal alignment (same Y)
+                if abs(other_pos.y() - moving_y) < tolerance:
+                    h_guides.append(other_pos.y())
+
+                # Check vertical alignment (same X)
+                if abs(other_pos.x() - moving_x) < tolerance:
+                    v_guides.append(other_pos.x())
+
+        # Update guides
+        self._alignment_guides.set_guides(h_guides, v_guides)
+
+    def _hide_alignment_guides(self) -> None:
+        """Hide the alignment guides."""
+        if self._alignment_guides is not None:
+            self._alignment_guides.clear_guides()

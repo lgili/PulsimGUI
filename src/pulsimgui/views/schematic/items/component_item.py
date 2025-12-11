@@ -9,6 +9,9 @@ from PySide6.QtGui import (
     QFont,
     QTransform,
     QRadialGradient,
+    QLinearGradient,
+    QPainterPath,
+    QPolygonF,
 )
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -38,12 +41,12 @@ class ComponentItem(QGraphicsItem):
     LINE_WIDTH = 2.0
     LINE_COLOR = QColor(0, 0, 0)
     LINE_COLOR_DARK = QColor(220, 220, 220)
-    SELECTED_COLOR = QColor(0, 120, 215)
-    SELECTED_FILL = QColor(0, 120, 215, 25)  # Semi-transparent blue fill
-    HOVER_COLOR = QColor(100, 160, 220)
-    HOVER_FILL = QColor(100, 160, 220, 15)  # Very subtle hover fill
-    PIN_RADIUS = 3.0
-    PIN_COLOR = QColor(200, 0, 0)
+    SELECTED_COLOR = QColor(59, 130, 246)  # Bright blue for selection
+    SELECTED_FILL = QColor(59, 130, 246, 30)  # Semi-transparent blue fill
+    HOVER_COLOR = QColor(147, 197, 253)  # Light blue on hover
+    HOVER_FILL = QColor(147, 197, 253, 20)  # Very subtle hover fill
+    PIN_RADIUS = 3.5  # Slightly larger pins
+    PIN_COLOR = QColor(220, 38, 38)  # Brighter red
     PIN_HOVER_COLOR = QColor(255, 100, 100)  # Brighter red on hover
     DC_OVERLAY_COLOR = QColor(0, 128, 0)  # Green for DC values
     DC_OVERLAY_COLOR_DARK = QColor(100, 220, 100)
@@ -102,6 +105,13 @@ class ComponentItem(QGraphicsItem):
         self._name_label.setDefaultTextColor(color)
         dc_color = self.DC_OVERLAY_COLOR_DARK if dark else self.DC_OVERLAY_COLOR
         self._dc_label.setDefaultTextColor(dc_color)
+        self.update()
+
+    def update_transform(self) -> None:
+        """Update the item transform based on component mirror state."""
+        # Force repaint to apply mirror
+        self.prepareGeometryChange()
+        self._update_labels()
         self.update()
 
     def set_show_labels(self, show: bool) -> None:
@@ -190,7 +200,17 @@ class ComponentItem(QGraphicsItem):
             self._draw_hover(painter)
 
         self._setup_painter(painter)
+
+        # Apply mirror transformation
+        painter.save()
+        scale_x = -1 if self._component.mirrored_h else 1
+        scale_y = -1 if self._component.mirrored_v else 1
+        painter.scale(scale_x, scale_y)
+
         self._draw_symbol(painter)
+        painter.restore()
+
+        # Draw pins without mirror (they're already handled)
         self._draw_pins(painter)
 
         if self.isSelected():
@@ -221,16 +241,8 @@ class ComponentItem(QGraphicsItem):
             painter.drawEllipse(QPointF(x, y), self.PIN_RADIUS, self.PIN_RADIUS)
 
     def _draw_selection(self, painter: QPainter) -> None:
-        """Draw selection highlight with glow effect."""
-        rect = self.boundingRect().adjusted(-4, -4, 4, 4)
-
-        # Draw outer glow (multiple layers for soft effect)
-        for i in range(3):
-            glow_color = QColor(self.SELECTED_COLOR)
-            glow_color.setAlpha(40 - i * 12)
-            painter.setPen(QPen(glow_color, 3 - i, Qt.PenStyle.SolidLine))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(-i * 2, -i * 2, i * 2, i * 2), 4, 4)
+        """Draw selection highlight."""
+        rect = self.boundingRect()
 
         # Draw semi-transparent fill
         painter.setPen(Qt.PenStyle.NoPen)
@@ -247,7 +259,7 @@ class ComponentItem(QGraphicsItem):
         if self.isSelected():
             return  # Don't draw hover if already selected
 
-        rect = self.boundingRect().adjusted(-3, -3, 3, 3)
+        rect = self.boundingRect()
 
         # Draw subtle fill
         painter.setPen(Qt.PenStyle.NoPen)
@@ -309,23 +321,48 @@ class ComponentItem(QGraphicsItem):
 
 
 class ResistorItem(ComponentItem):
-    """Graphics item for resistor."""
+    """Graphics item for resistor - modern rectangular style."""
+
+    # Color bands inspired design
+    BODY_COLOR = QColor(210, 180, 140)  # Tan/beige body
+    BODY_DARK = QColor(180, 150, 110)
+    BAND_COLORS = [
+        QColor(139, 69, 19),   # Brown
+        QColor(220, 20, 60),   # Red
+        QColor(255, 140, 0),   # Orange
+        QColor(255, 215, 0),   # Gold
+    ]
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-35, -15, 70, 30)
+        return QRectF(-35, -12, 70, 24)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw resistor zigzag symbol."""
-        # Draw zigzag
-        points = [
-            (-30, 0), (-20, 0), (-17, -10), (-11, 10), (-5, -10),
-            (1, 10), (7, -10), (13, 10), (17, 0), (30, 0)
-        ]
-        for i in range(len(points) - 1):
-            painter.drawLine(
-                QPointF(points[i][0], points[i][1]),
-                QPointF(points[i + 1][0], points[i + 1][1])
-            )
+        """Draw modern rectangular resistor with color bands."""
+        # Lead wires
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-35, 0), QPointF(-18, 0))
+        painter.drawLine(QPointF(18, 0), QPointF(35, 0))
+
+        # Resistor body with gradient
+        body_rect = QRectF(-18, -10, 36, 20)
+        body_gradient = QLinearGradient(body_rect.topLeft(), body_rect.bottomLeft())
+        body_gradient.setColorAt(0, self.BODY_COLOR)
+        body_gradient.setColorAt(0.5, self.BODY_DARK)
+        body_gradient.setColorAt(1, self.BODY_COLOR)
+
+        painter.setPen(QPen(QColor(120, 100, 80), 1.5))
+        painter.setBrush(body_gradient)
+        painter.drawRoundedRect(body_rect, 3, 3)
+
+        # Color bands
+        band_width = 4
+        band_positions = [-12, -4, 4, 12]
+        for i, pos in enumerate(band_positions):
+            band_rect = QRectF(pos - band_width/2, -8, band_width, 16)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.BAND_COLORS[i % len(self.BAND_COLORS)])
+            painter.drawRect(band_rect)
 
     def _get_value_text(self) -> str:
         from pulsimgui.utils.si_prefix import format_si_value
@@ -334,20 +371,48 @@ class ResistorItem(ComponentItem):
 
 
 class CapacitorItem(ComponentItem):
-    """Graphics item for capacitor."""
+    """Graphics item for capacitor - modern electrolytic style."""
+
+    PLATE_COLOR = QColor(70, 130, 180)  # Steel blue plates
+    PLATE_GRADIENT_LIGHT = QColor(100, 160, 210)
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -20, 50, 40)
+        return QRectF(-25, -18, 50, 36)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw capacitor symbol (two parallel plates)."""
-        # Lead lines
-        painter.drawLine(QPointF(-20, 0), QPointF(-5, 0))
-        painter.drawLine(QPointF(5, 0), QPointF(20, 0))
+        """Draw modern capacitor with metallic plates."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
-        # Plates
-        painter.drawLine(QPointF(-5, -15), QPointF(-5, 15))
-        painter.drawLine(QPointF(5, -15), QPointF(5, 15))
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(-6, 0))
+        painter.drawLine(QPointF(6, 0), QPointF(25, 0))
+
+        # Left plate (solid metallic look)
+        left_plate = QRectF(-6, -14, 4, 28)
+        plate_grad = QLinearGradient(left_plate.topLeft(), left_plate.topRight())
+        plate_grad.setColorAt(0, self.PLATE_GRADIENT_LIGHT)
+        plate_grad.setColorAt(0.5, self.PLATE_COLOR)
+        plate_grad.setColorAt(1, self.PLATE_GRADIENT_LIGHT)
+
+        painter.setPen(QPen(QColor(50, 100, 140), 1))
+        painter.setBrush(plate_grad)
+        painter.drawRect(left_plate)
+
+        # Right plate (slightly curved for polarized look)
+        painter.setPen(QPen(line_color, 2.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Draw curved plate using arc
+        path = QPainterPath()
+        path.moveTo(6, -14)
+        path.quadTo(10, 0, 6, 14)
+        painter.drawPath(path)
+
+        # Plus sign indicator (for polarized)
+        painter.setPen(QPen(line_color, 1.5))
+        painter.drawLine(QPointF(-16, -6), QPointF(-12, -6))
+        painter.drawLine(QPointF(-14, -8), QPointF(-14, -4))
 
     def _get_value_text(self) -> str:
         from pulsimgui.utils.si_prefix import format_si_value
@@ -356,24 +421,44 @@ class CapacitorItem(ComponentItem):
 
 
 class InductorItem(ComponentItem):
-    """Graphics item for inductor."""
+    """Graphics item for inductor - modern coil with core style."""
+
+    COIL_COLOR = QColor(180, 100, 50)  # Copper color
+    COIL_HIGHLIGHT = QColor(220, 150, 80)
+    CORE_COLOR = QColor(80, 80, 85)  # Ferrite core
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-35, -15, 70, 30)
+        return QRectF(-35, -14, 70, 28)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw inductor coil symbol."""
-        from PySide6.QtCore import QRectF as QR
+        """Draw modern inductor with copper coil appearance."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
-        # Lead lines
-        painter.drawLine(QPointF(-30, 0), QPointF(-20, 0))
-        painter.drawLine(QPointF(20, 0), QPointF(30, 0))
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-35, 0), QPointF(-22, 0))
+        painter.drawLine(QPointF(22, 0), QPointF(35, 0))
 
-        # Coil arcs
+        # Draw coil loops with 3D effect
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        for i in range(4):
-            x = -15 + i * 10
-            painter.drawArc(QR(x, -8, 10, 16), 0, 180 * 16)
+        num_loops = 4
+        loop_width = 11
+        start_x = -22
+
+        for i in range(num_loops):
+            x = start_x + i * loop_width
+            # Back of coil (darker)
+            painter.setPen(QPen(self.COIL_COLOR, 3))
+            arc_rect = QRectF(x, -10, loop_width, 20)
+            painter.drawArc(arc_rect, 0, 180 * 16)
+
+            # Front of coil (lighter/highlight)
+            painter.setPen(QPen(self.COIL_HIGHLIGHT, 2.5))
+            painter.drawArc(arc_rect, 180 * 16, 180 * 16)
+
+        # Core line (ferrite)
+        painter.setPen(QPen(self.CORE_COLOR, 1.5, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(-18, 0), QPointF(18, 0))
 
     def _get_value_text(self) -> str:
         from pulsimgui.utils.si_prefix import format_si_value
@@ -382,211 +467,381 @@ class InductorItem(ComponentItem):
 
 
 class VoltageSourceItem(ComponentItem):
-    """Graphics item for voltage source."""
+    """Graphics item for voltage source - modern battery/DC style."""
+
+    POSITIVE_COLOR = QColor(220, 60, 60)  # Red for positive
+    NEGATIVE_COLOR = QColor(60, 60, 180)  # Blue for negative
 
     def boundingRect(self) -> QRectF:
         return QRectF(-20, -30, 40, 60)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw voltage source circle with +/- symbols."""
-        # Circle
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        """Draw modern voltage source with gradient circle."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(0, -30), QPointF(0, -16))
+        painter.drawLine(QPointF(0, 16), QPointF(0, 30))
+
+        # Circle with gradient fill
+        circle_grad = QRadialGradient(QPointF(0, 0), 16)
+        circle_grad.setColorAt(0, QColor(255, 255, 255, 80))
+        circle_grad.setColorAt(0.7, QColor(240, 240, 240, 40))
+        circle_grad.setColorAt(1, QColor(200, 200, 200, 60))
+
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(circle_grad)
         painter.drawEllipse(QPointF(0, 0), 15, 15)
 
-        # Lead lines
-        painter.drawLine(QPointF(0, -25), QPointF(0, -15))
-        painter.drawLine(QPointF(0, 15), QPointF(0, 25))
+        # Plus sign (top) - red
+        painter.setPen(QPen(self.POSITIVE_COLOR, 2.5))
+        painter.drawLine(QPointF(-5, -7), QPointF(5, -7))
+        painter.drawLine(QPointF(0, -12), QPointF(0, -2))
 
-        # Plus sign (top)
-        painter.drawLine(QPointF(-5, -8), QPointF(5, -8))
-        painter.drawLine(QPointF(0, -13), QPointF(0, -3))
-
-        # Minus sign (bottom)
-        painter.drawLine(QPointF(-5, 8), QPointF(5, 8))
+        # Minus sign (bottom) - blue
+        painter.setPen(QPen(self.NEGATIVE_COLOR, 2.5))
+        painter.drawLine(QPointF(-5, 7), QPointF(5, 7))
 
 
 class CurrentSourceItem(ComponentItem):
-    """Graphics item for current source."""
+    """Graphics item for current source - modern style with arrow."""
+
+    ARROW_COLOR = QColor(60, 150, 60)  # Green arrow
 
     def boundingRect(self) -> QRectF:
         return QRectF(-20, -30, 40, 60)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw current source circle with arrow."""
-        # Circle
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        """Draw modern current source with bold arrow."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(0, -30), QPointF(0, -16))
+        painter.drawLine(QPointF(0, 16), QPointF(0, 30))
+
+        # Circle with subtle gradient
+        circle_grad = QRadialGradient(QPointF(0, 0), 16)
+        circle_grad.setColorAt(0, QColor(255, 255, 255, 80))
+        circle_grad.setColorAt(0.7, QColor(240, 240, 240, 40))
+        circle_grad.setColorAt(1, QColor(200, 200, 200, 60))
+
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(circle_grad)
         painter.drawEllipse(QPointF(0, 0), 15, 15)
 
-        # Lead lines
-        painter.drawLine(QPointF(0, -25), QPointF(0, -15))
-        painter.drawLine(QPointF(0, 15), QPointF(0, 25))
+        # Bold arrow (pointing up) - green
+        painter.setPen(QPen(self.ARROW_COLOR, 2.5))
+        painter.drawLine(QPointF(0, 9), QPointF(0, -9))
 
-        # Arrow (pointing up)
-        painter.drawLine(QPointF(0, 10), QPointF(0, -10))
-        painter.drawLine(QPointF(0, -10), QPointF(-4, -4))
-        painter.drawLine(QPointF(0, -10), QPointF(4, -4))
+        # Arrow head (filled)
+        arrow_head = QPolygonF([
+            QPointF(0, -10),
+            QPointF(-5, -3),
+            QPointF(5, -3),
+        ])
+        painter.setBrush(self.ARROW_COLOR)
+        painter.setPen(QPen(self.ARROW_COLOR, 1))
+        painter.drawPolygon(arrow_head)
 
 
 class GroundItem(ComponentItem):
-    """Graphics item for ground symbol."""
+    """Graphics item for ground symbol - modern chassis style."""
+
+    GROUND_COLOR = QColor(70, 70, 70)  # Dark gray
 
     def boundingRect(self) -> QRectF:
         return QRectF(-15, -15, 30, 25)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw ground symbol (three horizontal lines)."""
-        painter.drawLine(QPointF(0, -10), QPointF(0, 0))
-        painter.drawLine(QPointF(-12, 0), QPointF(12, 0))
-        painter.drawLine(QPointF(-8, 5), QPointF(8, 5))
-        painter.drawLine(QPointF(-4, 10), QPointF(4, 10))
+        """Draw modern ground symbol with gradient bars."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Vertical lead
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(0, -15), QPointF(0, 0))
+
+        # Ground bars with gradient effect
+        bars = [(12, 0, 3), (8, 5, 2.5), (4, 10, 2)]
+        for half_width, y, thickness in bars:
+            bar_grad = QLinearGradient(QPointF(-half_width, y), QPointF(half_width, y))
+            gray = self.GROUND_COLOR
+            bar_grad.setColorAt(0, gray.lighter(120))
+            bar_grad.setColorAt(0.5, gray)
+            bar_grad.setColorAt(1, gray.lighter(120))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bar_grad)
+            bar_rect = QRectF(-half_width, y - thickness/2, half_width * 2, thickness)
+            painter.drawRoundedRect(bar_rect, 1, 1)
 
 
 class DiodeItem(ComponentItem):
-    """Graphics item for diode."""
+    """Graphics item for diode - modern semiconductor style."""
+
+    ANODE_COLOR = QColor(80, 80, 80)  # Dark silicon
+    CATHODE_COLOR = QColor(150, 150, 160)  # Metallic band
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -15, 50, 30)
+        return QRectF(-28, -15, 56, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw diode symbol (triangle with bar)."""
-        # Lead lines
-        painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-        painter.drawLine(QPointF(8, 0), QPointF(20, 0))
+        """Draw modern diode with filled triangle and metallic band."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
-        # Triangle (pointing right)
-        from PySide6.QtGui import QPolygonF
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-28, 0), QPointF(-10, 0))
+        painter.drawLine(QPointF(10, 0), QPointF(28, 0))
+
+        # Triangle (anode) with gradient fill
         triangle = QPolygonF([
-            QPointF(-8, -12),
-            QPointF(-8, 12),
+            QPointF(-10, -12),
+            QPointF(-10, 12),
             QPointF(8, 0),
         ])
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        tri_grad = QLinearGradient(QPointF(-10, -12), QPointF(-10, 12))
+        tri_grad.setColorAt(0, self.ANODE_COLOR.lighter(130))
+        tri_grad.setColorAt(0.5, self.ANODE_COLOR)
+        tri_grad.setColorAt(1, self.ANODE_COLOR.lighter(130))
+
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(tri_grad)
         painter.drawPolygon(triangle)
 
-        # Bar (cathode)
-        painter.drawLine(QPointF(8, -12), QPointF(8, 12))
+        # Cathode bar (metallic band)
+        bar_rect = QRectF(8, -12, 4, 24)
+        bar_grad = QLinearGradient(bar_rect.topLeft(), bar_rect.topRight())
+        bar_grad.setColorAt(0, self.CATHODE_COLOR.lighter(120))
+        bar_grad.setColorAt(0.5, self.CATHODE_COLOR)
+        bar_grad.setColorAt(1, self.CATHODE_COLOR.lighter(120))
+
+        painter.setPen(QPen(QColor(100, 100, 110), 1))
+        painter.setBrush(bar_grad)
+        painter.drawRect(bar_rect)
 
 
 class MOSFETItem(ComponentItem):
-    """Graphics item for MOSFET (N or P channel)."""
+    """Graphics item for MOSFET (N or P channel) - modern encapsulated style."""
+
+    BODY_COLOR = QColor(60, 60, 65)  # Dark package
+    GATE_COLOR = QColor(100, 100, 180)  # Blue gate
+    NMOS_ARROW = QColor(50, 150, 50)  # Green for NMOS
+    PMOS_ARROW = QColor(180, 50, 50)  # Red for PMOS
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -25, 50, 50)
+        return QRectF(-25, -28, 50, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw MOSFET symbol."""
+        """Draw modern MOSFET with enhanced visibility."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
         is_nmos = self._component.type == ComponentType.MOSFET_N
 
-        # Gate line
-        painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-        painter.drawLine(QPointF(-8, -10), QPointF(-8, 10))
+        # Gate terminal
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(-10, 0))
 
-        # Channel
-        painter.drawLine(QPointF(-4, -15), QPointF(-4, -8))
-        painter.drawLine(QPointF(-4, -3), QPointF(-4, 3))
-        painter.drawLine(QPointF(-4, 8), QPointF(-4, 15))
+        # Gate plate (with highlight)
+        painter.setPen(QPen(self.GATE_COLOR, 3))
+        painter.drawLine(QPointF(-10, -12), QPointF(-10, 12))
 
-        # Drain/Source connections
-        painter.drawLine(QPointF(-4, -12), QPointF(15, -12))  # to D
-        painter.drawLine(QPointF(15, -12), QPointF(15, -20))
-        painter.drawLine(QPointF(-4, 12), QPointF(15, 12))    # to S
-        painter.drawLine(QPointF(15, 12), QPointF(15, 20))
+        # Oxide layer (gap)
+        painter.setPen(QPen(line_color, 1))
+        painter.drawLine(QPointF(-6, -14), QPointF(-6, 14))
 
-        # Body connection and arrow
-        painter.drawLine(QPointF(-4, 0), QPointF(15, 0))
+        # Channel segments
+        painter.setPen(QPen(line_color, 2.5))
+        painter.drawLine(QPointF(-6, -14), QPointF(-6, -8))
+        painter.drawLine(QPointF(-6, -4), QPointF(-6, 4))
+        painter.drawLine(QPointF(-6, 8), QPointF(-6, 14))
+
+        # Drain connection (top)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-6, -12), QPointF(15, -12))
+        painter.drawLine(QPointF(15, -12), QPointF(15, -28))
+
+        # Source connection (bottom)
+        painter.drawLine(QPointF(-6, 12), QPointF(15, 12))
+        painter.drawLine(QPointF(15, 12), QPointF(15, 28))
+
+        # Body connection
+        painter.drawLine(QPointF(-6, 0), QPointF(15, 0))
         painter.drawLine(QPointF(15, 0), QPointF(15, 12))
 
-        # Arrow (direction indicates N or P)
+        # Arrow with filled head (direction indicates N or P)
+        arrow_color = self.NMOS_ARROW if is_nmos else self.PMOS_ARROW
         if is_nmos:
             # Arrow pointing into channel
-            painter.drawLine(QPointF(-4, 0), QPointF(4, 0))
-            painter.drawLine(QPointF(2, -3), QPointF(4, 0))
-            painter.drawLine(QPointF(2, 3), QPointF(4, 0))
+            arrow_head = QPolygonF([
+                QPointF(6, 0),
+                QPointF(0, -4),
+                QPointF(0, 4),
+            ])
         else:
             # Arrow pointing out of channel
-            painter.drawLine(QPointF(4, 0), QPointF(-4, 0))
-            painter.drawLine(QPointF(-2, -3), QPointF(-4, 0))
-            painter.drawLine(QPointF(-2, 3), QPointF(-4, 0))
+            arrow_head = QPolygonF([
+                QPointF(-2, 0),
+                QPointF(4, -4),
+                QPointF(4, 4),
+            ])
+
+        painter.setPen(QPen(arrow_color, 1.5))
+        painter.setBrush(arrow_color)
+        painter.drawPolygon(arrow_head)
 
 
 class SwitchItem(ComponentItem):
-    """Graphics item for ideal switch."""
+    """Graphics item for ideal switch - modern toggle style."""
+
+    CONTACT_COLOR = QColor(200, 160, 60)  # Gold contacts
+    ARM_COLOR = QColor(100, 100, 110)  # Metallic arm
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -15, 50, 30)
+        return QRectF(-28, -15, 56, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw switch symbol."""
-        # Lead lines
-        painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-        painter.drawLine(QPointF(8, 0), QPointF(20, 0))
+        """Draw modern switch with metallic contacts."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
-        # Switch contacts
-        painter.drawEllipse(QPointF(-8, 0), 3, 3)
-        painter.drawEllipse(QPointF(8, 0), 3, 3)
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-28, 0), QPointF(-10, 0))
+        painter.drawLine(QPointF(10, 0), QPointF(28, 0))
 
-        # Switch arm (open position)
-        painter.drawLine(QPointF(-8, 0), QPointF(6, -10))
+        # Left contact (gold with gradient)
+        contact_grad = QRadialGradient(QPointF(-10, 0), 5)
+        contact_grad.setColorAt(0, self.CONTACT_COLOR.lighter(140))
+        contact_grad.setColorAt(0.7, self.CONTACT_COLOR)
+        contact_grad.setColorAt(1, self.CONTACT_COLOR.darker(120))
+
+        painter.setPen(QPen(self.CONTACT_COLOR.darker(130), 1))
+        painter.setBrush(contact_grad)
+        painter.drawEllipse(QPointF(-10, 0), 4, 4)
+
+        # Right contact
+        contact_grad2 = QRadialGradient(QPointF(10, 0), 5)
+        contact_grad2.setColorAt(0, self.CONTACT_COLOR.lighter(140))
+        contact_grad2.setColorAt(0.7, self.CONTACT_COLOR)
+        contact_grad2.setColorAt(1, self.CONTACT_COLOR.darker(120))
+
+        painter.setBrush(contact_grad2)
+        painter.drawEllipse(QPointF(10, 0), 4, 4)
+
+        # Switch arm (metallic look)
+        painter.setPen(QPen(self.ARM_COLOR, 3))
+        painter.drawLine(QPointF(-10, 0), QPointF(8, -12))
 
 
 class IGBTItem(ComponentItem):
-    """Graphics item for IGBT (Insulated Gate Bipolar Transistor)."""
+    """Graphics item for IGBT (Insulated Gate Bipolar Transistor) - modern power style."""
+
+    GATE_COLOR = QColor(100, 100, 180)  # Blue gate
+    ARROW_COLOR = QColor(180, 80, 40)  # Orange arrow
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -25, 50, 50)
+        return QRectF(-25, -28, 50, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw IGBT symbol (similar to MOSFET but with BJT-style collector)."""
-        # Gate line (insulated)
-        painter.drawLine(QPointF(-20, 0), QPointF(-10, 0))
-        painter.drawLine(QPointF(-10, -10), QPointF(-10, 10))
+        """Draw modern IGBT with enhanced gate and arrow."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
-        # Gate insulation gap
-        painter.drawLine(QPointF(-6, -12), QPointF(-6, 12))
+        # Gate terminal
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(-12, 0))
+
+        # Gate plate (highlighted)
+        painter.setPen(QPen(self.GATE_COLOR, 3))
+        painter.drawLine(QPointF(-12, -12), QPointF(-12, 12))
+
+        # Insulation gap (oxide layer)
+        painter.setPen(QPen(line_color, 2.5))
+        painter.drawLine(QPointF(-8, -14), QPointF(-8, 14))
 
         # Emitter connection (bottom)
-        painter.drawLine(QPointF(-6, 10), QPointF(10, 10))
-        painter.drawLine(QPointF(10, 10), QPointF(10, 20))
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-8, 10), QPointF(12, 10))
+        painter.drawLine(QPointF(12, 10), QPointF(12, 28))
 
         # Collector connection (top)
-        painter.drawLine(QPointF(-6, -10), QPointF(10, -10))
-        painter.drawLine(QPointF(10, -10), QPointF(10, -20))
+        painter.drawLine(QPointF(-8, -10), QPointF(12, -10))
+        painter.drawLine(QPointF(12, -10), QPointF(12, -28))
 
-        # Arrow on emitter (pointing outward for NPN-like IGBT)
-        painter.drawLine(QPointF(-6, 5), QPointF(5, 12))
-        painter.drawLine(QPointF(5, 12), QPointF(1, 8))
-        painter.drawLine(QPointF(5, 12), QPointF(1, 14))
+        # Arrow on emitter (filled, pointing outward)
+        arrow_head = QPolygonF([
+            QPointF(6, 14),
+            QPointF(0, 8),
+            QPointF(4, 10),
+        ])
+        painter.setPen(QPen(self.ARROW_COLOR, 2))
+        painter.drawLine(QPointF(-8, 5), QPointF(6, 14))
+
+        # Filled arrow head
+        arrow_tip = QPolygonF([
+            QPointF(6, 14),
+            QPointF(1, 10),
+            QPointF(3, 14),
+        ])
+        painter.setBrush(self.ARROW_COLOR)
+        painter.setPen(QPen(self.ARROW_COLOR, 1))
+        painter.drawPolygon(arrow_tip)
 
 
 class TransformerItem(ComponentItem):
-    """Graphics item for transformer."""
+    """Graphics item for transformer - modern magnetic core style."""
+
+    COIL_PRIMARY = QColor(180, 100, 50)  # Copper primary
+    COIL_SECONDARY = QColor(160, 80, 40)  # Copper secondary
+    CORE_COLOR = QColor(60, 60, 65)  # Ferrite core
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-35, -25, 70, 50)
+        return QRectF(-38, -28, 76, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        """Draw transformer symbol (two coupled inductors with core)."""
-        from PySide6.QtCore import QRectF as QR
+        """Draw modern transformer with copper coils and ferrite core."""
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
 
+        # Primary leads
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-38, -18), QPointF(-20, -18))
+        painter.drawLine(QPointF(-38, 18), QPointF(-20, 18))
+
+        # Primary winding (copper colored coils)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        # Primary winding (left side) - 3 arcs
-        painter.drawLine(QPointF(-30, -15), QPointF(-15, -15))
         for i in range(3):
-            y = -10 + i * 10
-            painter.drawArc(QR(-15, y - 5, 10, 10), 90 * 16, 180 * 16)
-        painter.drawLine(QPointF(-30, 15), QPointF(-15, 15))
+            y = -12 + i * 12
+            painter.setPen(QPen(self.COIL_PRIMARY, 2.5))
+            arc_rect = QRectF(-20, y - 6, 12, 12)
+            painter.drawArc(arc_rect, 90 * 16, 180 * 16)
+            painter.setPen(QPen(self.COIL_PRIMARY.lighter(130), 2))
+            painter.drawArc(arc_rect, 270 * 16, 180 * 16)
 
-        # Core lines (two vertical parallel lines)
-        painter.drawLine(QPointF(-3, -18), QPointF(-3, 18))
-        painter.drawLine(QPointF(3, -18), QPointF(3, 18))
+        # Core (ferrite bars with gradient)
+        core_grad = QLinearGradient(QPointF(-4, -22), QPointF(4, -22))
+        core_grad.setColorAt(0, self.CORE_COLOR.lighter(130))
+        core_grad.setColorAt(0.5, self.CORE_COLOR)
+        core_grad.setColorAt(1, self.CORE_COLOR.lighter(130))
 
-        # Secondary winding (right side) - 3 arcs
-        painter.drawLine(QPointF(30, -15), QPointF(15, -15))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(core_grad)
+        painter.drawRect(QRectF(-5, -22, 3, 44))
+        painter.drawRect(QRectF(2, -22, 3, 44))
+
+        # Secondary winding
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         for i in range(3):
-            y = -10 + i * 10
-            painter.drawArc(QR(5, y - 5, 10, 10), 270 * 16, 180 * 16)
-        painter.drawLine(QPointF(30, 15), QPointF(15, 15))
+            y = -12 + i * 12
+            painter.setPen(QPen(self.COIL_SECONDARY, 2.5))
+            arc_rect = QRectF(8, y - 6, 12, 12)
+            painter.drawArc(arc_rect, 270 * 16, 180 * 16)
+            painter.setPen(QPen(self.COIL_SECONDARY.lighter(130), 2))
+            painter.drawArc(arc_rect, 90 * 16, 180 * 16)
+
+        # Secondary leads
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(20, -18), QPointF(38, -18))
+        painter.drawLine(QPointF(20, 18), QPointF(38, 18))
 
     def _get_value_text(self) -> str:
         turns_ratio = self._component.parameters.get("turns_ratio", 1.0)
@@ -620,27 +875,46 @@ class SubcircuitItem(ComponentItem):
 
 
 class BlockComponentItem(ComponentItem):
-    """Base class for rectangular control block style components."""
+    """Base class for rectangular control block style components - clean modern style."""
+
+    BLOCK_FILL = QColor(255, 255, 255)  # White fill
+    BLOCK_BORDER = QColor(60, 60, 60)  # Dark border
+    ACCENT_COLOR = QColor(70, 130, 200)  # Blue accent stripe
 
     def boundingRect(self) -> QRectF:
         return QRectF(-40, -25, 80, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
         rect = self.boundingRect()
-        painter.drawRect(rect)
-        painter.save()
+
+        # White fill with border
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(self.BLOCK_FILL)
+        painter.drawRoundedRect(rect, 4, 4)
+
+        # Left accent stripe
+        accent_rect = QRectF(rect.left() + 2, rect.top() + 4, 4, rect.height() - 8)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.ACCENT_COLOR)
+        painter.drawRoundedRect(accent_rect, 2, 2)
+
+        # Block label
+        painter.setPen(line_color)
         font = QFont(painter.font())
         font.setBold(True)
+        font.setPointSize(11)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.block_label())
-        painter.restore()
 
     def block_label(self) -> str:
         return self._component.type.name
 
 
 class PIControllerItem(BlockComponentItem):
-    """Item for PI controller block."""
+    """Item for PI controller block - green accent."""
+
+    ACCENT_COLOR = QColor(60, 160, 80)  # Green for PI
 
     def block_label(self) -> str:
         return "PI"
@@ -652,7 +926,9 @@ class PIControllerItem(BlockComponentItem):
 
 
 class PIDControllerItem(BlockComponentItem):
-    """Item for PID controller block."""
+    """Item for PID controller block - cyan accent."""
+
+    ACCENT_COLOR = QColor(50, 150, 180)  # Cyan for PID
 
     def block_label(self) -> str:
         return "PID"
@@ -665,7 +941,9 @@ class PIDControllerItem(BlockComponentItem):
 
 
 class MathBlockItem(BlockComponentItem):
-    """Item for generic math block."""
+    """Item for generic math block - purple accent."""
+
+    ACCENT_COLOR = QColor(130, 90, 180)  # Purple for math
 
     def block_label(self) -> str:
         operation = self._component.parameters.get("operation", "Σ")
@@ -678,7 +956,9 @@ class MathBlockItem(BlockComponentItem):
 
 
 class PWMGeneratorItem(BlockComponentItem):
-    """Item for PWM generator block."""
+    """Item for PWM generator block - orange accent."""
+
+    ACCENT_COLOR = QColor(220, 120, 40)  # Orange for PWM
 
     def block_label(self) -> str:
         return "PWM"
@@ -693,33 +973,98 @@ class PWMGeneratorItem(BlockComponentItem):
 
 
 class ScopeItemBase(ComponentItem):
-    """Base class for electrical/thermal scope blocks."""
+    """Base class for electrical/thermal scope blocks - modern oscilloscope design."""
+
+    # Modern scope colors
+    SCOPE_BODY_COLOR = QColor(45, 52, 64)  # Dark charcoal body
+    SCOPE_BODY_LIGHT = QColor(60, 68, 82)  # Lighter for gradient
+    SCOPE_SCREEN_BG = QColor(15, 20, 25)   # Dark screen background
+    SCOPE_GRID_COLOR = QColor(40, 60, 50)  # Subtle green grid
+    SCOPE_SIGNAL_COLOR = QColor(50, 205, 100)  # Bright green signal
+    SCOPE_BEZEL_COLOR = QColor(30, 35, 42)  # Dark bezel
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-45, -30, 90, 60)
+        return QRectF(-50, -35, 100, 70)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         rect = self.boundingRect()
-        painter.drawRoundedRect(rect, 6, 6)
 
-        screen = rect.adjusted(8, 8, -8, -20)
-        painter.save()
-        painter.drawRect(screen)
-        painter.setPen(QPen(painter.pen().color(), 1, Qt.PenStyle.DotLine))
+        # Outer body with gradient
+        body_gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        body_gradient.setColorAt(0, self.SCOPE_BODY_LIGHT)
+        body_gradient.setColorAt(1, self.SCOPE_BODY_COLOR)
+
+        painter.setPen(QPen(QColor(25, 30, 38), 2))
+        painter.setBrush(body_gradient)
+        painter.drawRoundedRect(rect, 8, 8)
+
+        # Screen area with bezel
+        screen_outer = rect.adjusted(8, 8, -8, -18)
+        painter.setPen(QPen(self.SCOPE_BEZEL_COLOR, 3))
+        painter.setBrush(self.SCOPE_SCREEN_BG)
+        painter.drawRoundedRect(screen_outer, 4, 4)
+
+        # Screen inner (actual display)
+        screen = screen_outer.adjusted(3, 3, -3, -3)
+
+        # Draw grid lines
+        painter.setPen(QPen(self.SCOPE_GRID_COLOR, 0.5))
+        # Horizontal grid lines
+        for i in range(1, 4):
+            y = screen.top() + (screen.height() * i / 4)
+            painter.drawLine(QPointF(screen.left(), y), QPointF(screen.right(), y))
+        # Vertical grid lines
+        for i in range(1, 6):
+            x = screen.left() + (screen.width() * i / 6)
+            painter.drawLine(QPointF(x, screen.top()), QPointF(x, screen.bottom()))
+
+        # Draw center crosshair (brighter)
+        painter.setPen(QPen(QColor(60, 80, 70), 0.8))
         mid_y = screen.center().y()
+        mid_x = screen.center().x()
         painter.drawLine(QPointF(screen.left(), mid_y), QPointF(screen.right(), mid_y))
-        painter.restore()
+        painter.drawLine(QPointF(mid_x, screen.top()), QPointF(mid_x, screen.bottom()))
 
-        painter.save()
+        # Draw sample waveform (sine wave)
+        painter.setPen(QPen(self.SCOPE_SIGNAL_COLOR, 1.5))
+        path = QPainterPath()
+        import math
+        wave_points = 40
+        for i in range(wave_points + 1):
+            x = screen.left() + (screen.width() * i / wave_points)
+            # Sine wave centered on screen
+            y = mid_y - math.sin(i * 2 * math.pi / wave_points * 2) * (screen.height() * 0.3)
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        painter.drawPath(path)
+
+        # LED indicator (green glow)
+        led_x = rect.right() - 14
+        led_y = rect.bottom() - 10
+        led_glow = QRadialGradient(QPointF(led_x, led_y), 6)
+        led_glow.setColorAt(0, QColor(100, 255, 100, 200))
+        led_glow.setColorAt(0.5, QColor(50, 200, 50, 100))
+        led_glow.setColorAt(1, QColor(0, 100, 0, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(led_glow)
+        painter.drawEllipse(QPointF(led_x, led_y), 6, 6)
+        # LED center
+        painter.setBrush(QColor(100, 255, 100))
+        painter.drawEllipse(QPointF(led_x, led_y), 2, 2)
+
+        # Label at bottom
+        painter.setPen(QColor(180, 185, 195))
         font = QFont(painter.font())
         font.setBold(True)
+        font.setPointSize(8)
         painter.setFont(font)
         painter.drawText(
-            QRectF(rect.left(), rect.bottom() - 18, rect.width(), 16),
+            QRectF(rect.left(), rect.bottom() - 14, rect.width() - 20, 12),
             Qt.AlignmentFlag.AlignCenter,
             self.scope_label(),
         )
-        painter.restore()
 
     def scope_label(self) -> str:
         return "SCOPE"
@@ -730,58 +1075,179 @@ class ScopeItemBase(ComponentItem):
 
 
 class ElectricalScopeItem(ScopeItemBase):
+    SCOPE_SIGNAL_COLOR = QColor(50, 205, 100)  # Green for electrical
+
     def scope_label(self) -> str:
         return "SCOPE"
 
 
 class ThermalScopeItem(ScopeItemBase):
+    SCOPE_SIGNAL_COLOR = QColor(255, 120, 50)  # Orange for thermal
+    SCOPE_GRID_COLOR = QColor(60, 45, 40)  # Warm grid
+
     def scope_label(self) -> str:
         return "THERM"
 
-
-class SignalMuxItem(ComponentItem):
-    """Item for signal mux blocks."""
-
-    def boundingRect(self) -> QRectF:
-        return QRectF(-45, -35, 90, 70)
-
     def _draw_symbol(self, painter: QPainter) -> None:
-        polygon = [QPointF(-35, -25), QPointF(-35, 25), QPointF(35, 0)]
-        painter.drawPolygon(polygon)
-        painter.drawLine(QPointF(35, 0), QPointF(45, 0))
+        # Override to use thermal colors
+        rect = self.boundingRect()
 
-        painter.save()
+        # Outer body with gradient (warmer tone)
+        body_gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        body_gradient.setColorAt(0, QColor(65, 55, 50))
+        body_gradient.setColorAt(1, QColor(50, 42, 38))
+
+        painter.setPen(QPen(QColor(35, 28, 25), 2))
+        painter.setBrush(body_gradient)
+        painter.drawRoundedRect(rect, 8, 8)
+
+        # Screen area with bezel
+        screen_outer = rect.adjusted(8, 8, -8, -18)
+        painter.setPen(QPen(QColor(40, 32, 28), 3))
+        painter.setBrush(QColor(20, 15, 12))
+        painter.drawRoundedRect(screen_outer, 4, 4)
+
+        # Screen inner
+        screen = screen_outer.adjusted(3, 3, -3, -3)
+
+        # Draw grid lines (warm color)
+        painter.setPen(QPen(self.SCOPE_GRID_COLOR, 0.5))
+        for i in range(1, 4):
+            y = screen.top() + (screen.height() * i / 4)
+            painter.drawLine(QPointF(screen.left(), y), QPointF(screen.right(), y))
+        for i in range(1, 6):
+            x = screen.left() + (screen.width() * i / 6)
+            painter.drawLine(QPointF(x, screen.top()), QPointF(x, screen.bottom()))
+
+        # Center crosshair
+        painter.setPen(QPen(QColor(80, 60, 50), 0.8))
+        mid_y = screen.center().y()
+        mid_x = screen.center().x()
+        painter.drawLine(QPointF(screen.left(), mid_y), QPointF(screen.right(), mid_y))
+        painter.drawLine(QPointF(mid_x, screen.top()), QPointF(mid_x, screen.bottom()))
+
+        # Draw temperature waveform (rising curve)
+        painter.setPen(QPen(self.SCOPE_SIGNAL_COLOR, 1.5))
+        path = QPainterPath()
+        import math
+        wave_points = 40
+        for i in range(wave_points + 1):
+            x = screen.left() + (screen.width() * i / wave_points)
+            # Exponential rise then plateau
+            t = i / wave_points
+            y = mid_y - (1 - math.exp(-t * 4)) * (screen.height() * 0.35) + (screen.height() * 0.2)
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        painter.drawPath(path)
+
+        # LED indicator (orange glow)
+        led_x = rect.right() - 14
+        led_y = rect.bottom() - 10
+        led_glow = QRadialGradient(QPointF(led_x, led_y), 6)
+        led_glow.setColorAt(0, QColor(255, 180, 100, 200))
+        led_glow.setColorAt(0.5, QColor(255, 120, 50, 100))
+        led_glow.setColorAt(1, QColor(200, 80, 0, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(led_glow)
+        painter.drawEllipse(QPointF(led_x, led_y), 6, 6)
+        painter.setBrush(QColor(255, 180, 100))
+        painter.drawEllipse(QPointF(led_x, led_y), 2, 2)
+
+        # Label at bottom
+        painter.setPen(QColor(200, 180, 165))
         font = QFont(painter.font())
         font.setBold(True)
+        font.setPointSize(8)
         painter.setFont(font)
-        painter.drawText(QRectF(-20, -10, 30, 20), Qt.AlignmentFlag.AlignCenter, "MUX")
-        painter.restore()
+        painter.drawText(
+            QRectF(rect.left(), rect.bottom() - 14, rect.width() - 20, 12),
+            Qt.AlignmentFlag.AlignCenter,
+            self.scope_label(),
+        )
+
+
+class SignalMuxItem(ComponentItem):
+    """Item for signal mux blocks - Simulink/PLECS style (vertical bar with inputs)."""
+
+    PIN_SPACING = 18.0  # Match pin spacing from component.py
+    PIN_X = 20  # Distance from center to pins
+
+    def boundingRect(self) -> QRectF:
+        input_count = self._component.parameters.get("input_count", 3)
+        height = max(50, input_count * self.PIN_SPACING + 20)
+        return QRectF(-25, -height/2, 50, height)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        input_count = self._component.parameters.get("input_count", 3)
+
+        # Calculate pin positions (same as _generate_stacked_pins in component.py)
+        offset = (input_count - 1) * self.PIN_SPACING / 2.0
+
+        # Central vertical bar height to cover all inputs
+        bar_height = (input_count - 1) * self.PIN_SPACING + 16
+        bar_width = 8
+        bar_rect = QRectF(-bar_width/2, -bar_height/2, bar_width, bar_height)
+
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(line_color)
+        painter.drawRect(bar_rect)
+
+        # Input lines (left side) - aligned with pin positions
+        painter.setPen(QPen(line_color, 2))
+        for i in range(input_count):
+            y = -offset + i * self.PIN_SPACING
+            # Horizontal input line from pin position to bar
+            painter.drawLine(QPointF(-self.PIN_X, y), QPointF(-bar_width/2, y))
+
+        # Output line (right side, center)
+        painter.drawLine(QPointF(bar_width/2, 0), QPointF(self.PIN_X, 0))
 
     def _get_value_text(self) -> str:
-        count = self._component.parameters.get("input_count", 2)
+        count = self._component.parameters.get("input_count", 3)
         return f"{count}->1"
 
 
 class SignalDemuxItem(ComponentItem):
-    """Item for signal demux blocks."""
+    """Item for signal demux blocks - Simulink/PLECS style (vertical bar with outputs)."""
+
+    PIN_SPACING = 18.0  # Match pin spacing from component.py
+    PIN_X = 20  # Distance from center to pins
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-45, -35, 90, 70)
+        output_count = self._component.parameters.get("output_count", 3)
+        height = max(50, output_count * self.PIN_SPACING + 20)
+        return QRectF(-25, -height/2, 50, height)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        polygon = [QPointF(-35, 0), QPointF(35, -25), QPointF(35, 25)]
-        painter.drawPolygon(polygon)
-        painter.drawLine(QPointF(-45, 0), QPointF(-35, 0))
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        output_count = self._component.parameters.get("output_count", 3)
 
-        painter.save()
-        font = QFont(painter.font())
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(QRectF(-10, -10, 30, 20), Qt.AlignmentFlag.AlignCenter, "DEMUX")
-        painter.restore()
+        # Calculate pin positions (same as _generate_stacked_pins in component.py)
+        offset = (output_count - 1) * self.PIN_SPACING / 2.0
+
+        # Central vertical bar height to cover all outputs
+        bar_height = (output_count - 1) * self.PIN_SPACING + 16
+        bar_width = 8
+        bar_rect = QRectF(-bar_width/2, -bar_height/2, bar_width, bar_height)
+
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(line_color)
+        painter.drawRect(bar_rect)
+
+        # Input line (left side, center)
+        painter.drawLine(QPointF(-self.PIN_X, 0), QPointF(-bar_width/2, 0))
+
+        # Output lines (right side) - aligned with pin positions
+        for i in range(output_count):
+            y = -offset + i * self.PIN_SPACING
+            # Horizontal output line from bar to pin position
+            painter.drawLine(QPointF(bar_width/2, y), QPointF(self.PIN_X, y))
 
     def _get_value_text(self) -> str:
-        count = self._component.parameters.get("output_count", 2)
+        count = self._component.parameters.get("output_count", 3)
         return f"1->{count}"
 
 

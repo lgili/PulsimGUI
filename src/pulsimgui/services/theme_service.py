@@ -233,86 +233,86 @@ DARK_THEME = Theme(
     display_name="Dark",
     is_dark=True,
     colors=ThemeColors(
-        # Base colors
+        # Base colors - VS Code style
         background="#1e1e1e",
         background_alt="#252526",
-        foreground="#d4d4d4",
-        foreground_muted="#808080",
-        # Primary accent
-        primary="#0078d4",
-        primary_hover="#1c8ae6",
-        primary_pressed="#005a9e",
-        primary_foreground="#ffffff",
-        # Secondary
-        secondary="#5a5a5a",
-        secondary_hover="#6a6a6a",
+        foreground="#e0e0e0",
+        foreground_muted="#b0b0b0",  # Brighter for labels
+        # Primary accent - brighter blue
+        primary="#4fc3f7",
+        primary_hover="#29b6f6",
+        primary_pressed="#0288d1",
+        primary_foreground="#000000",
+        # Secondary - lighter for visibility
+        secondary="#4a4a4a",
+        secondary_hover="#5a5a5a",
         secondary_foreground="#ffffff",
         # Status colors
         success="#4ec9b0",
         success_background="#1e3a34",
         error="#f14c4c",
         error_background="#3a1e1e",
-        warning="#cca700",
+        warning="#ffca28",
         warning_background="#3a3a1e",
-        info="#3794ff",
+        info="#4fc3f7",
         info_background="#1e2a3a",
-        # Borders
-        border="#3c3c3c",
-        border_focus="#0078d4",
-        divider="#3c3c3c",
-        # Input
-        input_background="#3c3c3c",
-        input_border="#3c3c3c",
-        input_focus_border="#0078d4",
-        input_placeholder="#6e6e6e",
+        # Borders - slightly lighter
+        border="#4a4a4a",
+        border_focus="#4fc3f7",
+        divider="#404040",
+        # Input - more visible
+        input_background="#2d2d2d",
+        input_border="#4a4a4a",
+        input_focus_border="#4fc3f7",
+        input_placeholder="#808080",
         # Toolbar
-        toolbar_background="#333333",
-        toolbar_border="#3c3c3c",
+        toolbar_background="#2d2d2d",
+        toolbar_border="#404040",
         menu_background="#2d2d2d",
-        menu_hover="#094771",
-        menu_separator="#3c3c3c",
+        menu_hover="#3d3d3d",
+        menu_separator="#404040",
         # Panel
         panel_background="#252526",
-        panel_header="#383838",
-        panel_border="#3c3c3c",
-        # Tree
+        panel_header="#2d2d2d",
+        panel_border="#404040",
+        # Tree - better contrast
         tree_background="#252526",
-        tree_item_hover="#2a2d2e",
-        tree_item_selected="#094771",
-        tree_item_selected_inactive="#3c3c3c",
+        tree_item_hover="#323232",
+        tree_item_selected="#37373d",
+        tree_item_selected_inactive="#2d2d2d",
         # Tabs
         tab_background="#2d2d2d",
         tab_active="#1e1e1e",
-        tab_hover="#3c3c3c",
-        tab_border="#3c3c3c",
+        tab_hover="#3d3d3d",
+        tab_border="#404040",
         # Status bar
         statusbar_background="#007acc",
         statusbar_foreground="#ffffff",
-        # Scrollbar
-        scrollbar_background="#1e1e1e",
-        scrollbar_handle="#424242",
-        scrollbar_handle_hover="#4f4f4f",
+        # Scrollbar - more visible
+        scrollbar_background="transparent",
+        scrollbar_handle="#5a5a5a",
+        scrollbar_handle_hover="#6a6a6a",
         # Schematic
         schematic_background="#1e1e1e",
-        schematic_grid="#3c3c3c",
-        schematic_wire="#64c864",
-        schematic_wire_preview="#6464ff",
-        schematic_component="#d4d4d4",
-        schematic_component_fill="#252526",
-        schematic_pin="#ff6464",
-        schematic_selection="#0078d4",
-        schematic_text="#d4d4d4",
+        schematic_grid="#404040",
+        schematic_wire="#4ec9b0",
+        schematic_wire_preview="#4fc3f7",
+        schematic_component="#e0e0e0",
+        schematic_component_fill="#2d2d2d",
+        schematic_pin="#ff8a80",
+        schematic_selection="#4fc3f7",
+        schematic_text="#e0e0e0",
         # Simulation
         sim_running="#4ec9b0",
-        sim_paused="#cca700",
-        sim_stopped="#6e6e6e",
+        sim_paused="#ffca28",
+        sim_stopped="#808080",
         sim_error="#f14c4c",
-        # Icons
-        icon_default="#d1d5db",
-        icon_hover="#f3f4f6",
+        # Icons - much brighter for visibility
+        icon_default="#d0d0d0",
+        icon_hover="#e8e8e8",
         icon_active="#ffffff",
-        icon_disabled="#6b7280",
-        icon_accent="#3b82f6",
+        icon_disabled="#707070",
+        icon_accent="#4fc3f7",
     ),
 )
 
@@ -348,16 +348,16 @@ MODERN_DARK_THEME = Theme(
         border="#30363d",
         border_focus="#58a6ff",
         divider="#21262d",
-        # Input
-        input_background="#0d1117",
-        input_border="#30363d",
+        # Input - visible borders
+        input_background="#161b22",
+        input_border="#3d444d",
         input_focus_border="#58a6ff",
         input_placeholder="#6e7681",
         # Toolbar
         toolbar_background="#161b22",
         toolbar_border="#30363d",
-        menu_background="#161b22",
-        menu_hover="#1f6feb33",
+        menu_background="#1c2128",
+        menu_hover="#2d333b",
         menu_separator="#30363d",
         # Panel
         panel_background="#0d1117",
@@ -679,6 +679,7 @@ QTreeView, QTreeWidget {{
     border: none;
     outline: none;
     padding: 4px;
+    selection-background-color: transparent;
 }}
 
 QTreeView::item, QTreeWidget::item {{
@@ -692,12 +693,19 @@ QTreeView::item:hover, QTreeWidget::item:hover {{
 }}
 
 QTreeView::item:selected, QTreeWidget::item:selected {{
-    background-color: {c.tree_item_selected};
+    background-color: {c.primary}20;
+    color: {c.foreground};
+    border-left: 3px solid {c.primary};
+}}
+
+QTreeView::item:selected:active, QTreeWidget::item:selected:active {{
+    background-color: {c.primary}25;
     color: {c.foreground};
 }}
 
 QTreeView::item:selected:!active, QTreeWidget::item:selected:!active {{
     background-color: {c.tree_item_selected_inactive};
+    border-left: 3px solid {c.border};
 }}
 
 QTreeView::branch {{
@@ -987,12 +995,30 @@ QLabel {{
 }}
 
 QLabel[heading="true"] {{
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 600;
 }}
 
 QLabel[muted="true"] {{
     color: {c.foreground_muted};
+}}
+
+QLabel#sectionTitle {{
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+}}
+
+QLabel#typeLabel {{
+    color: {c.foreground_muted};
+    font-size: 12px;
+    font-weight: 500;
+}}
+
+QLabel#noSelectionLabel {{
+    color: {c.foreground_muted};
+    font-size: 12px;
+    padding: 40px 20px;
 }}
 
 /* ===== Check Box ===== */

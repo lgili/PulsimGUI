@@ -32,8 +32,8 @@ class SettingsService:
 
     # Theme
     def get_theme(self) -> str:
-        """Get current theme (light, dark, system)."""
-        return self._settings.value("theme", "system")
+        """Get current theme name."""
+        return self._settings.value("theme", "light")
 
     def set_theme(self, theme: str) -> None:
         """Set the theme."""
