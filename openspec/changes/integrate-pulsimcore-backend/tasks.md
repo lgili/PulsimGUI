@@ -55,7 +55,7 @@
   - Show branch currents table
   - Show convergence info summary
 
-- [ ] 2.5 Add DC tests
+- [x] 2.5 Add DC tests
   - Test simple resistive circuit
   - Test circuit with diodes
   - Test convergence failure handling
