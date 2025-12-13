@@ -152,7 +152,7 @@
 
 ## 6. Convergence Diagnostics
 
-- [ ] 6.1 Create `ConvergenceDiagnosticsDialog`
+- [x] 6.1 Create `ConvergenceDiagnosticsDialog`
   - Summary tab with key metrics
   - Iteration history plot (residual vs iteration)
   - Problematic variables list
@@ -168,7 +168,7 @@
   - Map indices to node names
   - Sort by worst convergence
 
-- [ ] 6.4 Implement suggestion engine
+- [x] 6.4 Implement suggestion engine
   - "Increase max_iterations" if near limit
   - "Enable voltage limiting" if large steps
   - "Check for floating nodes" if singular matrix
@@ -179,7 +179,7 @@
   - Auto-open diagnostics on DC failure (optional)
   - Log diagnostics to output panel
 
-- [ ] 6.6 Add diagnostics tests
+- [x] 6.6 Add diagnostics tests
   - Test dialog with various failure types
   - Test suggestion logic
   - Test with convergence success (no diagnostics)
