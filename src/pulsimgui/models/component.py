@@ -92,17 +92,17 @@ def _default_scope_pins(channel_count: int) -> list[Pin]:
 def _default_mux_pins(input_count: int) -> list[Pin]:
     """Create default pins for mux blocks."""
 
-    pins = _generate_stacked_pins(input_count, -35, "IN")
-    pins.append(Pin(len(pins), "OUT", 35, 0))
+    pins = _generate_stacked_pins(input_count, -20, "IN")
+    pins.append(Pin(len(pins), "OUT", 20, 0))
     return pins
 
 
 def _default_demux_pins(output_count: int) -> list[Pin]:
     """Create default pins for demux blocks."""
 
-    pins = [Pin(0, "IN", -35, 0)]
+    pins = [Pin(0, "IN", -20, 0)]
     pins.extend(
-        _generate_stacked_pins(output_count, 35, "OUT", start_index=1)
+        _generate_stacked_pins(output_count, 20, "OUT", start_index=1)
     )
     return pins
 

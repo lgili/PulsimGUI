@@ -233,86 +233,86 @@ DARK_THEME = Theme(
     display_name="Dark",
     is_dark=True,
     colors=ThemeColors(
-        # Base colors
+        # Base colors - VS Code style
         background="#1e1e1e",
         background_alt="#252526",
-        foreground="#d4d4d4",
-        foreground_muted="#808080",
-        # Primary accent
-        primary="#0078d4",
-        primary_hover="#1c8ae6",
-        primary_pressed="#005a9e",
-        primary_foreground="#ffffff",
-        # Secondary
-        secondary="#5a5a5a",
-        secondary_hover="#6a6a6a",
+        foreground="#e0e0e0",
+        foreground_muted="#b0b0b0",  # Brighter for labels
+        # Primary accent - brighter blue
+        primary="#4fc3f7",
+        primary_hover="#29b6f6",
+        primary_pressed="#0288d1",
+        primary_foreground="#000000",
+        # Secondary - lighter for visibility
+        secondary="#4a4a4a",
+        secondary_hover="#5a5a5a",
         secondary_foreground="#ffffff",
         # Status colors
         success="#4ec9b0",
         success_background="#1e3a34",
         error="#f14c4c",
         error_background="#3a1e1e",
-        warning="#cca700",
+        warning="#ffca28",
         warning_background="#3a3a1e",
-        info="#3794ff",
+        info="#4fc3f7",
         info_background="#1e2a3a",
-        # Borders
-        border="#3c3c3c",
-        border_focus="#0078d4",
-        divider="#3c3c3c",
-        # Input
-        input_background="#3c3c3c",
-        input_border="#3c3c3c",
-        input_focus_border="#0078d4",
-        input_placeholder="#6e6e6e",
+        # Borders - slightly lighter
+        border="#4a4a4a",
+        border_focus="#4fc3f7",
+        divider="#404040",
+        # Input - more visible
+        input_background="#2d2d2d",
+        input_border="#4a4a4a",
+        input_focus_border="#4fc3f7",
+        input_placeholder="#808080",
         # Toolbar
-        toolbar_background="#333333",
-        toolbar_border="#3c3c3c",
+        toolbar_background="#2d2d2d",
+        toolbar_border="#404040",
         menu_background="#2d2d2d",
-        menu_hover="#094771",
-        menu_separator="#3c3c3c",
+        menu_hover="#3d3d3d",
+        menu_separator="#404040",
         # Panel
         panel_background="#252526",
-        panel_header="#383838",
-        panel_border="#3c3c3c",
-        # Tree
+        panel_header="#2d2d2d",
+        panel_border="#404040",
+        # Tree - better contrast
         tree_background="#252526",
-        tree_item_hover="#2a2d2e",
-        tree_item_selected="#094771",
-        tree_item_selected_inactive="#3c3c3c",
+        tree_item_hover="#323232",
+        tree_item_selected="#37373d",
+        tree_item_selected_inactive="#2d2d2d",
         # Tabs
         tab_background="#2d2d2d",
         tab_active="#1e1e1e",
-        tab_hover="#3c3c3c",
-        tab_border="#3c3c3c",
+        tab_hover="#3d3d3d",
+        tab_border="#404040",
         # Status bar
         statusbar_background="#007acc",
         statusbar_foreground="#ffffff",
-        # Scrollbar
-        scrollbar_background="#1e1e1e",
-        scrollbar_handle="#424242",
-        scrollbar_handle_hover="#4f4f4f",
+        # Scrollbar - more visible
+        scrollbar_background="transparent",
+        scrollbar_handle="#5a5a5a",
+        scrollbar_handle_hover="#6a6a6a",
         # Schematic
         schematic_background="#1e1e1e",
-        schematic_grid="#3c3c3c",
-        schematic_wire="#64c864",
-        schematic_wire_preview="#6464ff",
-        schematic_component="#d4d4d4",
-        schematic_component_fill="#252526",
-        schematic_pin="#ff6464",
-        schematic_selection="#0078d4",
-        schematic_text="#d4d4d4",
+        schematic_grid="#404040",
+        schematic_wire="#4ec9b0",
+        schematic_wire_preview="#4fc3f7",
+        schematic_component="#e0e0e0",
+        schematic_component_fill="#2d2d2d",
+        schematic_pin="#ff8a80",
+        schematic_selection="#4fc3f7",
+        schematic_text="#e0e0e0",
         # Simulation
         sim_running="#4ec9b0",
-        sim_paused="#cca700",
-        sim_stopped="#6e6e6e",
+        sim_paused="#ffca28",
+        sim_stopped="#808080",
         sim_error="#f14c4c",
-        # Icons
-        icon_default="#d1d5db",
-        icon_hover="#f3f4f6",
+        # Icons - much brighter for visibility
+        icon_default="#d0d0d0",
+        icon_hover="#e8e8e8",
         icon_active="#ffffff",
-        icon_disabled="#6b7280",
-        icon_accent="#3b82f6",
+        icon_disabled="#707070",
+        icon_accent="#4fc3f7",
     ),
 )
 
@@ -348,16 +348,16 @@ MODERN_DARK_THEME = Theme(
         border="#30363d",
         border_focus="#58a6ff",
         divider="#21262d",
-        # Input
-        input_background="#0d1117",
-        input_border="#30363d",
+        # Input - visible borders
+        input_background="#161b22",
+        input_border="#3d444d",
         input_focus_border="#58a6ff",
         input_placeholder="#6e7681",
         # Toolbar
         toolbar_background="#161b22",
         toolbar_border="#30363d",
-        menu_background="#161b22",
-        menu_hover="#1f6feb33",
+        menu_background="#1c2128",
+        menu_hover="#2d333b",
         menu_separator="#30363d",
         # Panel
         panel_background="#0d1117",
@@ -493,29 +493,37 @@ class ThemeService(QObject):
     def generate_stylesheet(self) -> str:
         """Generate Qt stylesheet for current theme."""
         c = self._current_theme.colors
+        is_dark = self._current_theme.is_dark
+
+        # Modern shadow/elevation colors
+        shadow_color = "rgba(0, 0, 0, 0.08)" if not is_dark else "rgba(0, 0, 0, 0.3)"
 
         return f"""
 /* ===== Base Application ===== */
 QMainWindow, QDialog {{
     background-color: {c.background};
     color: {c.foreground};
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
 QWidget {{
     background-color: transparent;
     color: {c.foreground};
+    font-size: 13px;
 }}
 
 /* ===== Menu Bar ===== */
 QMenuBar {{
     background-color: {c.toolbar_background};
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 2px;
+    padding: 4px 8px;
+    spacing: 4px;
 }}
 
 QMenuBar::item {{
-    padding: 6px 10px;
-    border-radius: 4px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QMenuBar::item:selected {{
@@ -525,13 +533,14 @@ QMenuBar::item:selected {{
 QMenu {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
-    border-radius: 6px;
-    padding: 4px;
+    border-radius: 8px;
+    padding: 6px;
 }}
 
 QMenu::item {{
-    padding: 8px 24px 8px 12px;
-    border-radius: 4px;
+    padding: 8px 32px 8px 12px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QMenu::item:selected {{
@@ -541,29 +550,34 @@ QMenu::item:selected {{
 QMenu::separator {{
     height: 1px;
     background-color: {c.menu_separator};
-    margin: 4px 8px;
+    margin: 6px 10px;
 }}
 
-/* ===== Toolbar ===== */
+QMenu::icon {{
+    padding-left: 8px;
+}}
+
+/* ===== Toolbar - Modern flat design ===== */
 QToolBar {{
     background-color: {c.toolbar_background};
     border: none;
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 4px;
-    spacing: 4px;
+    padding: 6px 12px;
+    spacing: 2px;
 }}
 
 QToolBar::separator {{
     width: 1px;
     background-color: {c.divider};
-    margin: 4px 8px;
+    margin: 6px 12px;
 }}
 
 QToolButton {{
     background-color: transparent;
     border: none;
-    border-radius: 4px;
-    padding: 6px;
+    border-radius: 8px;
+    padding: 8px;
+    margin: 2px;
 }}
 
 QToolButton:hover {{
@@ -571,7 +585,8 @@ QToolButton:hover {{
 }}
 
 QToolButton:pressed {{
-    background-color: {c.primary_pressed};
+    background-color: {c.primary};
+    color: {c.primary_foreground};
 }}
 
 QToolButton:checked {{
@@ -579,78 +594,98 @@ QToolButton:checked {{
     color: {c.primary_foreground};
 }}
 
-/* ===== Dock Widgets ===== */
+/* ===== Dock Widgets - Clean panel design ===== */
 QDockWidget {{
     font-weight: 600;
+    font-size: 12px;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
 }}
 
 QDockWidget::title {{
     background-color: {c.panel_header};
-    padding: 8px;
+    padding: 10px 12px;
     border-bottom: 1px solid {c.panel_border};
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 11px;
+    font-weight: 600;
+    color: {c.foreground_muted};
 }}
 
 QDockWidget::close-button, QDockWidget::float-button {{
     background: transparent;
     border: none;
-    padding: 2px;
+    border-radius: 4px;
+    padding: 4px;
 }}
 
-/* ===== Scroll Bars ===== */
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
+    background-color: {c.menu_hover};
+}}
+
+/* ===== Scroll Bars - Thin modern style ===== */
 QScrollBar:vertical {{
-    background-color: {c.scrollbar_background};
-    width: 12px;
+    background-color: transparent;
+    width: 10px;
     border: none;
+    margin: 2px;
 }}
 
 QScrollBar::handle:vertical {{
     background-color: {c.scrollbar_handle};
-    border-radius: 6px;
-    min-height: 30px;
-    margin: 2px;
+    border-radius: 4px;
+    min-height: 40px;
+    margin: 0px 2px;
 }}
 
 QScrollBar::handle:vertical:hover {{
     background-color: {c.scrollbar_handle_hover};
 }}
 
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
     height: 0;
 }}
 
 QScrollBar:horizontal {{
-    background-color: {c.scrollbar_background};
-    height: 12px;
+    background-color: transparent;
+    height: 10px;
     border: none;
+    margin: 2px;
 }}
 
 QScrollBar::handle:horizontal {{
     background-color: {c.scrollbar_handle};
-    border-radius: 6px;
-    min-width: 30px;
-    margin: 2px;
+    border-radius: 4px;
+    min-width: 40px;
+    margin: 2px 0px;
 }}
 
 QScrollBar::handle:horizontal:hover {{
     background-color: {c.scrollbar_handle_hover};
 }}
 
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
     width: 0;
 }}
 
-/* ===== Tree View ===== */
+/* ===== Tree View - Component library style ===== */
 QTreeView, QTreeWidget {{
     background-color: {c.tree_background};
     border: none;
     outline: none;
+    padding: 4px;
+    selection-background-color: transparent;
 }}
 
 QTreeView::item, QTreeWidget::item {{
-    padding: 6px 4px;
-    border-radius: 4px;
+    padding: 8px 8px;
+    border-radius: 6px;
+    margin: 1px 4px;
 }}
 
 QTreeView::item:hover, QTreeWidget::item:hover {{
@@ -658,15 +693,44 @@ QTreeView::item:hover, QTreeWidget::item:hover {{
 }}
 
 QTreeView::item:selected, QTreeWidget::item:selected {{
-    background-color: {c.tree_item_selected};
+    background-color: {c.primary}20;
+    color: {c.foreground};
+    border-left: 3px solid {c.primary};
+}}
+
+QTreeView::item:selected:active, QTreeWidget::item:selected:active {{
+    background-color: {c.primary}25;
+    color: {c.foreground};
 }}
 
 QTreeView::item:selected:!active, QTreeWidget::item:selected:!active {{
     background-color: {c.tree_item_selected_inactive};
+    border-left: 3px solid {c.border};
 }}
 
 QTreeView::branch {{
     background-color: transparent;
+}}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {{
+    border-image: none;
+}}
+
+QTreeView::branch:open:has-children:!has-siblings,
+QTreeView::branch:open:has-children:has-siblings {{
+    border-image: none;
+}}
+
+/* Header for tree view */
+QHeaderView::section {{
+    background-color: {c.panel_header};
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 1px solid {c.border};
+    font-weight: 600;
+    font-size: 11px;
+    color: {c.foreground_muted};
 }}
 
 /* ===== Tab Widget ===== */
@@ -692,14 +756,15 @@ QTabBar::tab:hover:!selected {{
     background-color: {c.tab_hover};
 }}
 
-/* ===== Buttons ===== */
+/* ===== Buttons - Modern rounded style ===== */
 QPushButton {{
     background-color: {c.secondary};
     color: {c.secondary_foreground};
     border: none;
-    border-radius: 4px;
-    padding: 8px 16px;
+    border-radius: 8px;
+    padding: 10px 20px;
     font-weight: 500;
+    font-size: 13px;
 }}
 
 QPushButton:hover {{
@@ -713,6 +778,7 @@ QPushButton:pressed {{
 QPushButton:disabled {{
     background-color: {c.border};
     color: {c.foreground_muted};
+    opacity: 0.6;
 }}
 
 QPushButton[primary="true"] {{
@@ -724,17 +790,26 @@ QPushButton[primary="true"]:hover {{
     background-color: {c.primary_hover};
 }}
 
-/* ===== Input Fields ===== */
-QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
+/* Small variant for dialogs */
+QPushButton[size="small"] {{
+    padding: 6px 12px;
+    font-size: 12px;
+}}
+
+/* ===== Input Fields - Clean modern inputs ===== */
+QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 4px;
-    padding: 6px 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
     selection-background-color: {c.primary};
+    selection-color: {c.primary_foreground};
+    font-size: 13px;
 }}
 
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     border-color: {c.input_focus_border};
+    border-width: 2px;
 }}
 
 QLineEdit:disabled {{
@@ -742,51 +817,117 @@ QLineEdit:disabled {{
     color: {c.foreground_muted};
 }}
 
-/* ===== Combo Box ===== */
+QLineEdit::placeholder {{
+    color: {c.input_placeholder};
+}}
+
+/* Spin boxes */
+QSpinBox, QDoubleSpinBox {{
+    background-color: {c.input_background};
+    border: 1px solid {c.input_border};
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 13px;
+}}
+
+QSpinBox:focus, QDoubleSpinBox:focus {{
+    border-color: {c.input_focus_border};
+    border-width: 2px;
+}}
+
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: right;
+    width: 20px;
+    border: none;
+    border-radius: 0 8px 0 0;
+}}
+
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: right;
+    width: 20px;
+    border: none;
+    border-radius: 0 0 8px 0;
+}}
+
+/* ===== Combo Box - Modern dropdown ===== */
 QComboBox {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 4px;
-    padding: 6px 10px;
-    min-width: 100px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-width: 120px;
+    font-size: 13px;
 }}
 
 QComboBox:focus {{
     border-color: {c.input_focus_border};
+    border-width: 2px;
+}}
+
+QComboBox:hover {{
+    border-color: {c.primary};
 }}
 
 QComboBox::drop-down {{
     border: none;
-    width: 24px;
+    width: 28px;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+}}
+
+QComboBox::down-arrow {{
+    width: 12px;
+    height: 12px;
 }}
 
 QComboBox QAbstractItemView {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
+    border-radius: 8px;
+    padding: 4px;
     selection-background-color: {c.menu_hover};
+    outline: none;
 }}
 
-/* ===== Group Box ===== */
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin: 2px;
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {c.menu_hover};
+}}
+
+/* ===== Group Box - Section headers ===== */
 QGroupBox {{
     font-weight: 600;
+    font-size: 12px;
     border: 1px solid {c.border};
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 12px;
+    border-radius: 10px;
+    margin-top: 16px;
+    padding: 16px 12px 12px 12px;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 8px;
+    padding: 4px 12px;
     color: {c.foreground};
+    background-color: {c.background};
+    border-radius: 4px;
+    left: 12px;
 }}
 
-/* ===== Status Bar ===== */
+/* ===== Status Bar - Accent bar ===== */
 QStatusBar {{
     background-color: {c.statusbar_background};
     color: {c.statusbar_foreground};
     border: none;
+    min-height: 28px;
+    padding: 0 8px;
 }}
 
 QStatusBar::item {{
@@ -795,7 +936,21 @@ QStatusBar::item {{
 
 QStatusBar QLabel {{
     color: {c.statusbar_foreground};
-    padding: 2px 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+}}
+
+QStatusBar QProgressBar {{
+    background-color: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 4px;
+    max-height: 6px;
+    min-height: 6px;
+}}
+
+QStatusBar QProgressBar::chunk {{
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 3px;
 }}
 
 /* ===== Splitter ===== */
@@ -840,12 +995,30 @@ QLabel {{
 }}
 
 QLabel[heading="true"] {{
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 600;
 }}
 
 QLabel[muted="true"] {{
     color: {c.foreground_muted};
+}}
+
+QLabel#sectionTitle {{
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+}}
+
+QLabel#typeLabel {{
+    color: {c.foreground_muted};
+    font-size: 12px;
+    font-weight: 500;
+}}
+
+QLabel#noSelectionLabel {{
+    color: {c.foreground_muted};
+    font-size: 12px;
+    padding: 40px 20px;
 }}
 
 /* ===== Check Box ===== */
