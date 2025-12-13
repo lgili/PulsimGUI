@@ -174,7 +174,7 @@
   - "Check for floating nodes" if singular matrix
   - "Try GMIN stepping" if DC fails
 
-- [ ] 6.5 Integrate with failure paths
+- [x] 6.5 Integrate with failure paths
   - Show "Diagnostics" button on simulation error
   - Auto-open diagnostics on DC failure (optional)
   - Log diagnostics to output panel

@@ -1,5 +1,9 @@
 """DC operating point results dialog."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
@@ -21,13 +25,22 @@ from pulsimgui.services.simulation_service import DCResult
 from pulsimgui.utils.si_prefix import format_si_value
 from pulsimgui.views.widgets import StatusBanner
 
+if TYPE_CHECKING:
+    from pulsimgui.services.backend_types import ConvergenceInfo
+
 
 class DCResultsDialog(QDialog):
     """Dialog for displaying DC operating point results."""
 
-    def __init__(self, result: DCResult, parent=None):
+    def __init__(
+        self,
+        result: DCResult,
+        convergence_info: "ConvergenceInfo | None" = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._result = result
+        self._convergence_info = convergence_info
 
         self.setWindowTitle("DC Operating Point Results")
         self.setMinimumSize(500, 400)
@@ -94,6 +107,30 @@ class DCResultsDialog(QDialog):
         export_btn = QPushButton("Export to CSV...")
         export_btn.clicked.connect(self._export_csv)
         button_layout.addWidget(export_btn)
+
+        # Diagnostics button (shown when convergence info is available)
+        if self._convergence_info is not None:
+            diagnostics_btn = QPushButton("Diagnostics...")
+            diagnostics_btn.setToolTip("View detailed convergence diagnostics")
+            diagnostics_btn.clicked.connect(self._show_diagnostics)
+
+            # Style differently for failed convergence
+            if not self._convergence_info.converged:
+                diagnostics_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #fef2f2;
+                        border: 1px solid #fca5a5;
+                        color: #991b1b;
+                        font-weight: 600;
+                        padding: 6px 12px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #fee2e2;
+                        border-color: #f87171;
+                    }
+                """)
+            button_layout.addWidget(diagnostics_btn)
 
         button_layout.addStretch()
 
@@ -203,3 +240,15 @@ class DCResultsDialog(QDialog):
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.critical(self, "Export Error", f"Failed to export: {e}")
+
+    def _show_diagnostics(self) -> None:
+        """Show the convergence diagnostics dialog."""
+        if self._convergence_info is None:
+            return
+
+        from pulsimgui.views.dialogs.convergence_diagnostics_dialog import (
+            ConvergenceDiagnosticsDialog,
+        )
+
+        dialog = ConvergenceDiagnosticsDialog(self._convergence_info, parent=self)
+        dialog.exec()
