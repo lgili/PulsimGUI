@@ -7,6 +7,7 @@ from PySide6.QtGui import (
     QColor,
     QBrush,
     QFont,
+    QFontMetricsF,
     QTransform,
     QRadialGradient,
     QLinearGradient,
@@ -16,12 +17,88 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsTextItem,
+    QGraphicsSimpleTextItem,
     QGraphicsDropShadowEffect,
     QStyleOptionGraphicsItem,
     QWidget,
 )
 
 from pulsimgui.models.component import Component, ComponentType
+
+
+class LabelWithBackground(QGraphicsItem):
+    """A text label with semi-transparent background."""
+
+    def __init__(self, text: str = "", parent: QGraphicsItem | None = None):
+        super().__init__(parent)
+        self._text = text
+        self._font = QFont()
+        self._font.setPointSize(9)
+        self._text_color = QColor(60, 60, 60)
+        self._bg_color = QColor(255, 255, 255, 180)  # Semi-transparent white
+        self._padding = 3.0
+        self._metrics = QFontMetricsF(self._font)
+
+    def setText(self, text: str) -> None:
+        """Set the label text."""
+        self.prepareGeometryChange()
+        self._text = text
+        self.update()
+
+    def text(self) -> str:
+        """Get the label text."""
+        return self._text
+
+    def setFont(self, font: QFont) -> None:
+        """Set the label font."""
+        self.prepareGeometryChange()
+        self._font = font
+        self._metrics = QFontMetricsF(self._font)
+        self.update()
+
+    def font(self) -> QFont:
+        """Get the label font."""
+        return self._font
+
+    def setTextColor(self, color: QColor) -> None:
+        """Set the text color."""
+        self._text_color = color
+        self.update()
+
+    def setBackgroundColor(self, color: QColor) -> None:
+        """Set the background color."""
+        self._bg_color = color
+        self.update()
+
+    def boundingRect(self) -> QRectF:
+        if not self._text:
+            return QRectF()
+        width = self._metrics.horizontalAdvance(self._text) + self._padding * 2
+        height = self._metrics.height() + self._padding * 2
+        return QRectF(0, 0, width, height)
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        if not self._text:
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.boundingRect()
+
+        # Draw semi-transparent background
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._bg_color)
+        painter.drawRoundedRect(rect, 2, 2)
+
+        # Draw text
+        painter.setPen(self._text_color)
+        painter.setFont(self._font)
+        text_rect = rect.adjusted(self._padding, self._padding, -self._padding, -self._padding)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self._text)
 
 
 class ComponentItem(QGraphicsItem):
@@ -57,6 +134,7 @@ class ComponentItem(QGraphicsItem):
         self._component = component
         self._dark_mode = False
         self._show_labels = True
+        self._show_value_labels = True  # Show component values (e.g., 10kΩ)
         self._show_dc_overlay = False
         self._dc_voltage: float | None = None
         self._dc_current: float | None = None
@@ -75,12 +153,15 @@ class ComponentItem(QGraphicsItem):
         # Apply rotation
         self.setRotation(component.rotation)
 
-        # Create labels as child items
-        self._name_label = QGraphicsTextItem(component.name, self)
-        self._name_label.setDefaultTextColor(self.LINE_COLOR)
+        # Create labels as child items with semi-transparent background
+        self._name_label = LabelWithBackground(component.name, self)
+        self._name_label.setTextColor(self.LINE_COLOR)
 
-        self._value_label = QGraphicsTextItem("", self)
-        self._value_label.setDefaultTextColor(QColor(100, 100, 100))
+        self._value_label = LabelWithBackground("", self)
+        self._value_label.setTextColor(QColor(80, 80, 80))
+        value_font = self._value_label.font()
+        value_font.setPointSize(8)
+        self._value_label.setFont(value_font)
 
         # Create DC overlay label
         self._dc_label = QGraphicsTextItem("", self)
@@ -102,7 +183,14 @@ class ComponentItem(QGraphicsItem):
         """Set dark mode colors."""
         self._dark_mode = dark
         color = self.LINE_COLOR_DARK if dark else self.LINE_COLOR
-        self._name_label.setDefaultTextColor(color)
+        self._name_label.setTextColor(color)
+        # Update value label colors for dark mode
+        value_color = QColor(180, 180, 180) if dark else QColor(80, 80, 80)
+        self._value_label.setTextColor(value_color)
+        # Update label backgrounds for dark mode
+        bg_color = QColor(40, 40, 40, 180) if dark else QColor(255, 255, 255, 180)
+        self._name_label.setBackgroundColor(bg_color)
+        self._value_label.setBackgroundColor(bg_color)
         dc_color = self.DC_OVERLAY_COLOR_DARK if dark else self.DC_OVERLAY_COLOR
         self._dc_label.setDefaultTextColor(dc_color)
         self.update()
@@ -118,7 +206,13 @@ class ComponentItem(QGraphicsItem):
         """Set label visibility."""
         self._show_labels = show
         self._name_label.setVisible(show)
-        self._value_label.setVisible(show)
+        self._value_label.setVisible(show and self._show_value_labels)
+
+    def set_show_value_labels(self, show: bool) -> None:
+        """Set value label visibility."""
+        self._show_value_labels = show
+        self._value_label.setVisible(self._show_labels and show)
+        self._update_labels()
 
     def set_show_dc_overlay(self, show: bool) -> None:
         """Set DC overlay visibility."""
@@ -285,15 +379,37 @@ class ComponentItem(QGraphicsItem):
 
     def _update_labels(self) -> None:
         """Update label positions and content."""
+        from pulsimgui.utils.si_prefix import format_component_value
+
         rect = self.boundingRect()
 
-        # Position name above component
-        self._name_label.setPos(rect.center().x() - 15, rect.top() - 20)
+        # Update name label
+        self._name_label.setText(self._component.name)
+        name_rect = self._name_label.boundingRect()
+        # Center name above component
+        name_x = rect.center().x() - name_rect.width() / 2
+        name_y = rect.top() - name_rect.height() - 2
+        self._name_label.setPos(name_x, name_y)
 
-        # Position value below component
-        value_text = self._get_value_text()
-        self._value_label.setPlainText(value_text)
-        self._value_label.setPos(rect.center().x() - 15, rect.bottom() + 2)
+        # Update value label using the helper function
+        if self._show_value_labels:
+            # Try to get value from _get_value_text() first (for specialized items)
+            value_text = self._get_value_text()
+            # If empty, use the generic format_component_value helper
+            if not value_text:
+                value_text = format_component_value(
+                    self._component.type.name,
+                    self._component.parameters
+                )
+            self._value_label.setText(value_text)
+            value_rect = self._value_label.boundingRect()
+            # Center value below component
+            value_x = rect.center().x() - value_rect.width() / 2
+            value_y = rect.bottom() + 2
+            self._value_label.setPos(value_x, value_y)
+            self._value_label.setVisible(self._show_labels and bool(value_text))
+        else:
+            self._value_label.setVisible(False)
 
     def _get_value_text(self) -> str:
         """Get the value text for display - override in subclasses."""
@@ -1251,30 +1367,671 @@ class SignalDemuxItem(ComponentItem):
         return f"1->{count}"
 
 
+# === NEW COMPONENTS ===
+
+class ZenerDiodeItem(ComponentItem):
+    """Graphics item for Zener diode - bent cathode style."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-28, -15, 56, 30)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-28, 0), QPointF(-10, 0))
+        painter.drawLine(QPointF(10, 0), QPointF(28, 0))
+
+        # Triangle (anode)
+        triangle = QPolygonF([
+            QPointF(-10, -12),
+            QPointF(-10, 12),
+            QPointF(8, 0),
+        ])
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(QColor(80, 80, 80))
+        painter.drawPolygon(triangle)
+
+        # Zener cathode (bent line)
+        painter.setPen(QPen(line_color, 2.5))
+        painter.drawLine(QPointF(8, -12), QPointF(8, 12))
+        # Bent ends
+        painter.drawLine(QPointF(8, -12), QPointF(4, -12))
+        painter.drawLine(QPointF(8, 12), QPointF(12, 12))
+
+    def _get_value_text(self) -> str:
+        vz = self._component.parameters.get("vz", 0)
+        return f"{vz:.1f}V"
+
+
+class LEDItem(ComponentItem):
+    """Graphics item for LED - diode with light arrows."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-28, -18, 56, 36)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        color = self._component.parameters.get("color", "red")
+        led_color = {"red": QColor(255, 60, 60), "green": QColor(60, 255, 60),
+                     "blue": QColor(60, 60, 255), "yellow": QColor(255, 255, 60),
+                     "white": QColor(255, 255, 255)}.get(color, QColor(255, 60, 60))
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-28, 0), QPointF(-10, 0))
+        painter.drawLine(QPointF(10, 0), QPointF(28, 0))
+
+        # Triangle (anode) with LED color
+        triangle = QPolygonF([
+            QPointF(-10, -10),
+            QPointF(-10, 10),
+            QPointF(6, 0),
+        ])
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(led_color)
+        painter.drawPolygon(triangle)
+
+        # Cathode bar
+        painter.setPen(QPen(line_color, 2.5))
+        painter.drawLine(QPointF(6, -10), QPointF(6, 10))
+
+        # Light emission arrows
+        painter.setPen(QPen(led_color, 1.5))
+        for dy in [-8, -2]:
+            painter.drawLine(QPointF(0, dy), QPointF(8, dy - 8))
+            # Arrow head
+            painter.drawLine(QPointF(8, dy - 8), QPointF(5, dy - 6))
+            painter.drawLine(QPointF(8, dy - 8), QPointF(6, dy - 5))
+
+
+class BJTItem(ComponentItem):
+    """Graphics item for BJT transistors (NPN and PNP)."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -28, 50, 56)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        is_npn = self._component.type == ComponentType.BJT_NPN
+
+        # Base terminal
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(-8, 0))
+
+        # Base vertical line
+        painter.setPen(QPen(line_color, 3))
+        painter.drawLine(QPointF(-8, -12), QPointF(-8, 12))
+
+        # Collector line
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-8, -8), QPointF(15, -20))
+        painter.drawLine(QPointF(15, -20), QPointF(15, -28))
+
+        # Emitter line
+        painter.drawLine(QPointF(-8, 8), QPointF(15, 20))
+        painter.drawLine(QPointF(15, 20), QPointF(15, 28))
+
+        # Arrow on emitter
+        arrow_color = QColor(50, 150, 50) if is_npn else QColor(180, 50, 50)
+        painter.setPen(QPen(arrow_color, 2))
+        painter.setBrush(arrow_color)
+
+        if is_npn:
+            # Arrow pointing outward
+            arrow = QPolygonF([
+                QPointF(12, 16),
+                QPointF(6, 12),
+                QPointF(8, 18),
+            ])
+        else:
+            # Arrow pointing inward
+            arrow = QPolygonF([
+                QPointF(-4, 6),
+                QPointF(2, 10),
+                QPointF(0, 4),
+            ])
+        painter.drawPolygon(arrow)
+
+
+class ThyristorItem(ComponentItem):
+    """Graphics item for thyristor (SCR)."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -25, 50, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Anode terminal (top)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(0, -25), QPointF(0, -10))
+
+        # Cathode terminal (bottom)
+        painter.drawLine(QPointF(0, 10), QPointF(0, 25))
+
+        # Gate terminal
+        painter.drawLine(QPointF(-25, 10), QPointF(-8, 10))
+        painter.drawLine(QPointF(-8, 10), QPointF(-8, 4))
+
+        # Triangle
+        triangle = QPolygonF([
+            QPointF(-10, -10),
+            QPointF(10, -10),
+            QPointF(0, 6),
+        ])
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(QColor(80, 80, 100))
+        painter.drawPolygon(triangle)
+
+        # Cathode bar
+        painter.setPen(QPen(line_color, 2.5))
+        painter.drawLine(QPointF(-10, 6), QPointF(10, 6))
+
+
+class TriacItem(ComponentItem):
+    """Graphics item for TRIAC."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -25, 50, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # MT1 terminal (top)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(0, -25), QPointF(0, -12))
+
+        # MT2 terminal (bottom)
+        painter.drawLine(QPointF(0, 12), QPointF(0, 25))
+
+        # Gate terminal
+        painter.drawLine(QPointF(-25, 10), QPointF(-10, 10))
+        painter.drawLine(QPointF(-10, 10), QPointF(-10, 0))
+
+        # Two triangles (bidirectional)
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(QColor(100, 80, 80))
+
+        # Upper triangle
+        tri1 = QPolygonF([
+            QPointF(-8, -12),
+            QPointF(8, -12),
+            QPointF(0, 0),
+        ])
+        painter.drawPolygon(tri1)
+
+        # Lower triangle
+        tri2 = QPolygonF([
+            QPointF(-8, 12),
+            QPointF(8, 12),
+            QPointF(0, 0),
+        ])
+        painter.drawPolygon(tri2)
+
+
+class OpAmpItem(ComponentItem):
+    """Graphics item for operational amplifier."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-40, -30, 80, 60)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Triangle body
+        triangle = QPolygonF([
+            QPointF(-25, -25),
+            QPointF(-25, 25),
+            QPointF(25, 0),
+        ])
+
+        gradient = QLinearGradient(QPointF(-25, -25), QPointF(-25, 25))
+        gradient.setColorAt(0, QColor(250, 250, 255))
+        gradient.setColorAt(1, QColor(230, 230, 240))
+
+        painter.setPen(QPen(line_color, 2))
+        painter.setBrush(gradient)
+        painter.drawPolygon(triangle)
+
+        # Input leads
+        painter.drawLine(QPointF(-40, -12), QPointF(-25, -12))  # IN+
+        painter.drawLine(QPointF(-40, 12), QPointF(-25, 12))   # IN-
+
+        # Output lead
+        painter.drawLine(QPointF(25, 0), QPointF(40, 0))
+
+        # Power leads
+        painter.drawLine(QPointF(0, -30), QPointF(0, -18))  # V+
+        painter.drawLine(QPointF(0, 18), QPointF(0, 30))    # V-
+
+        # + and - symbols at inputs
+        painter.setPen(QPen(QColor(0, 150, 0), 2))
+        painter.drawLine(QPointF(-22, -12), QPointF(-16, -12))
+        painter.drawLine(QPointF(-19, -15), QPointF(-19, -9))
+
+        painter.setPen(QPen(QColor(200, 0, 0), 2))
+        painter.drawLine(QPointF(-22, 12), QPointF(-16, 12))
+
+
+class ComparatorItem(OpAmpItem):
+    """Graphics item for comparator (similar to op-amp with indicator)."""
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        super()._draw_symbol(painter)
+
+        # Add output indicator (digital output symbol)
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        painter.setPen(QPen(line_color, 1.5))
+        painter.drawRect(QRectF(15, -4, 6, 8))
+
+
+class RelayItem(ComponentItem):
+    """Graphics item for relay."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-40, -25, 80, 50)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Coil (left side)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-40, -15), QPointF(-25, -15))
+        painter.drawLine(QPointF(-40, 15), QPointF(-25, 15))
+
+        # Coil rectangle
+        coil_rect = QRectF(-25, -12, 20, 24)
+        painter.setBrush(QColor(180, 140, 100))
+        painter.drawRect(coil_rect)
+
+        # Coil windings hint
+        painter.setPen(QPen(line_color, 1))
+        for y in range(-8, 12, 4):
+            painter.drawArc(QRectF(-20, y - 2, 10, 4), 90 * 16, 180 * 16)
+
+        # Dashed line (magnetic coupling)
+        painter.setPen(QPen(line_color, 1, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(0, -20), QPointF(0, 20))
+
+        # Switch contacts (right side)
+        painter.setPen(QPen(line_color, 2))
+
+        # COM
+        painter.drawLine(QPointF(40, 0), QPointF(20, 0))
+
+        # NO (normally open)
+        painter.drawLine(QPointF(40, -15), QPointF(25, -15))
+        painter.drawLine(QPointF(25, -15), QPointF(18, -5))  # Open arm
+
+        # NC (normally closed)
+        painter.drawLine(QPointF(40, 15), QPointF(25, 15))
+        painter.drawLine(QPointF(25, 15), QPointF(20, 5))  # Contact point
+
+        # Contact dots
+        painter.setBrush(QColor(200, 160, 60))
+        painter.drawEllipse(QPointF(20, 0), 3, 3)
+        painter.drawEllipse(QPointF(25, -15), 2, 2)
+        painter.drawEllipse(QPointF(25, 15), 2, 2)
+
+
+class FuseItem(ComponentItem):
+    """Graphics item for fuse."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -12, 50, 24)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
+        painter.drawLine(QPointF(15, 0), QPointF(25, 0))
+
+        # Fuse body (rectangle)
+        painter.setBrush(QColor(240, 240, 240))
+        painter.drawRect(QRectF(-15, -8, 30, 16))
+
+        # Fuse element (S-curve wire)
+        painter.setPen(QPen(QColor(180, 180, 180), 1.5))
+        path = QPainterPath()
+        path.moveTo(-12, 0)
+        path.cubicTo(-6, -5, 0, 5, 6, -3)
+        path.lineTo(12, 0)
+        painter.drawPath(path)
+
+    def _get_value_text(self) -> str:
+        rating = self._component.parameters.get("rating", 0)
+        return f"{rating}A"
+
+
+class CircuitBreakerItem(ComponentItem):
+    """Graphics item for circuit breaker."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-28, -15, 56, 30)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-28, 0), QPointF(-12, 0))
+        painter.drawLine(QPointF(12, 0), QPointF(28, 0))
+
+        # Contacts
+        painter.setBrush(QColor(200, 160, 60))
+        painter.drawEllipse(QPointF(-12, 0), 3, 3)
+        painter.drawEllipse(QPointF(12, 0), 3, 3)
+
+        # Breaker arm (open position)
+        painter.setPen(QPen(line_color, 3))
+        painter.drawLine(QPointF(-12, 0), QPointF(8, -12))
+
+        # Trip mechanism indicator
+        painter.setPen(QPen(QColor(200, 50, 50), 2))
+        painter.drawRect(QRectF(-4, -12, 8, 4))
+
+
+class SimpleBlockItem(BlockComponentItem):
+    """Generic simple block for signal processing components."""
+
+    def __init__(self, component: Component, parent: QGraphicsItem | None = None):
+        super().__init__(component, parent)
+        self._label = self._get_block_label()
+
+    def _get_block_label(self) -> str:
+        labels = {
+            ComponentType.INTEGRATOR: "∫",
+            ComponentType.DIFFERENTIATOR: "d/dt",
+            ComponentType.LIMITER: "⊏⊐",
+            ComponentType.RATE_LIMITER: "dY/dt",
+            ComponentType.HYSTERESIS: "⊂⊃",
+            ComponentType.LOOKUP_TABLE: "f(x)",
+            ComponentType.TRANSFER_FUNCTION: "H(s)",
+            ComponentType.DELAY_BLOCK: "T",
+            ComponentType.SAMPLE_HOLD: "S/H",
+            ComponentType.STATE_MACHINE: "FSM",
+        }
+        return labels.get(self._component.type, "?")
+
+    def block_label(self) -> str:
+        return self._label
+
+
+class IntegratorItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(100, 150, 200)
+
+
+class DifferentiatorItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(200, 150, 100)
+
+
+class LimiterItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(200, 100, 100)
+
+
+class RateLimiterItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(180, 120, 100)
+
+
+class HysteresisItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(150, 100, 180)
+
+
+class LookupTableItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(100, 180, 150)
+
+
+class TransferFunctionItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(180, 150, 200)
+
+
+class DelayBlockItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(150, 180, 100)
+
+
+class SampleHoldItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(200, 180, 100)
+
+
+class StateMachineItem(SimpleBlockItem):
+    ACCENT_COLOR = QColor(180, 100, 150)
+
+
+class VoltageProbeItem(ComponentItem):
+    """Graphics item for voltage probe."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -20, 50, 40)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Probe leads
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, -10), QPointF(-12, -10))
+        painter.drawLine(QPointF(-25, 10), QPointF(-12, 10))
+
+        # Voltmeter circle
+        painter.setBrush(QColor(255, 255, 240))
+        painter.drawEllipse(QPointF(0, 0), 15, 15)
+
+        # V symbol
+        painter.setPen(QPen(QColor(200, 50, 50), 2.5))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(QRectF(-10, -10, 20, 20), Qt.AlignmentFlag.AlignCenter, "V")
+
+
+class CurrentProbeItem(ComponentItem):
+    """Graphics item for current probe (clamp meter style)."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-25, -15, 50, 30)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Through wire
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-25, 0), QPointF(25, 0))
+
+        # Clamp circle
+        painter.setBrush(QColor(240, 255, 240))
+        painter.drawEllipse(QPointF(0, 0), 12, 12)
+
+        # A symbol
+        painter.setPen(QPen(QColor(50, 150, 50), 2.5))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        painter.setFont(font)
+        painter.drawText(QRectF(-8, -8, 16, 16), Qt.AlignmentFlag.AlignCenter, "A")
+
+        # Arrow indicating current direction
+        painter.setPen(QPen(QColor(50, 150, 50), 1.5))
+        painter.drawLine(QPointF(-20, -8), QPointF(-14, -8))
+        painter.drawLine(QPointF(-14, -8), QPointF(-16, -10))
+        painter.drawLine(QPointF(-14, -8), QPointF(-16, -6))
+
+
+class PowerProbeItem(ComponentItem):
+    """Graphics item for power probe."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-30, -22, 60, 44)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Voltage leads (left)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-30, -15), QPointF(-15, -15))
+        painter.drawLine(QPointF(-30, 15), QPointF(-15, 15))
+
+        # Current leads (right)
+        painter.drawLine(QPointF(15, -15), QPointF(30, -15))
+        painter.drawLine(QPointF(15, 15), QPointF(30, 15))
+
+        # Wattmeter body
+        painter.setBrush(QColor(255, 250, 240))
+        painter.drawRoundedRect(QRectF(-15, -18, 30, 36), 4, 4)
+
+        # W symbol
+        painter.setPen(QPen(QColor(200, 100, 50), 2.5))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(QRectF(-12, -12, 24, 24), Qt.AlignmentFlag.AlignCenter, "W")
+
+
+class SaturableInductorItem(InductorItem):
+    """Graphics item for saturable inductor."""
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        super()._draw_symbol(painter)
+
+        # Add saturation indicator (filled core)
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(60, 60, 65))
+        painter.drawRect(QRectF(-15, -3, 30, 6))
+
+
+class CoupledInductorItem(TransformerItem):
+    """Graphics item for coupled inductor (similar to transformer)."""
+
+    def _get_value_text(self) -> str:
+        k = self._component.parameters.get("coupling_coefficient", 0)
+        return f"k={k:.2f}"
+
+
+class SnubberRCItem(ComponentItem):
+    """Graphics item for RC snubber network."""
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(-30, -18, 60, 36)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        line_color = self.LINE_COLOR_DARK if self._dark_mode else self.LINE_COLOR
+
+        # Lead wires
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-30, 0), QPointF(-18, 0))
+        painter.drawLine(QPointF(18, 0), QPointF(30, 0))
+
+        # Resistor part (small rectangle)
+        painter.setBrush(QColor(210, 180, 140))
+        painter.drawRect(QRectF(-18, -6, 16, 12))
+
+        # Capacitor part (two plates)
+        painter.setPen(QPen(line_color, 2.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(4, -10), QPointF(4, 10))
+        painter.drawLine(QPointF(10, -10), QPointF(10, 10))
+
+        # Connection between R and C
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(QPointF(-2, 0), QPointF(4, 0))
+        painter.drawLine(QPointF(10, 0), QPointF(18, 0))
+
+    def _get_value_text(self) -> str:
+        from pulsimgui.utils.si_prefix import format_si_value
+        r = self._component.parameters.get("resistance", 0)
+        c = self._component.parameters.get("capacitance", 0)
+        return f"{format_si_value(r, 'Ω')} {format_si_value(c, 'F')}"
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
     item_classes = {
+        # Basic passive
         ComponentType.RESISTOR: ResistorItem,
         ComponentType.CAPACITOR: CapacitorItem,
         ComponentType.INDUCTOR: InductorItem,
+
+        # Sources
         ComponentType.VOLTAGE_SOURCE: VoltageSourceItem,
         ComponentType.CURRENT_SOURCE: CurrentSourceItem,
         ComponentType.GROUND: GroundItem,
+
+        # Diodes
         ComponentType.DIODE: DiodeItem,
+        ComponentType.ZENER_DIODE: ZenerDiodeItem,
+        ComponentType.LED: LEDItem,
+
+        # Transistors
         ComponentType.MOSFET_N: MOSFETItem,
         ComponentType.MOSFET_P: MOSFETItem,
         ComponentType.IGBT: IGBTItem,
+        ComponentType.BJT_NPN: BJTItem,
+        ComponentType.BJT_PNP: BJTItem,
+        ComponentType.THYRISTOR: ThyristorItem,
+        ComponentType.TRIAC: TriacItem,
+
+        # Switching
         ComponentType.SWITCH: SwitchItem,
+
+        # Transformer
         ComponentType.TRANSFORMER: TransformerItem,
+
+        # Analog
+        ComponentType.OP_AMP: OpAmpItem,
+        ComponentType.COMPARATOR: ComparatorItem,
+
+        # Protection
+        ComponentType.RELAY: RelayItem,
+        ComponentType.FUSE: FuseItem,
+        ComponentType.CIRCUIT_BREAKER: CircuitBreakerItem,
+
+        # Control blocks - basic
         ComponentType.PI_CONTROLLER: PIControllerItem,
         ComponentType.PID_CONTROLLER: PIDControllerItem,
         ComponentType.MATH_BLOCK: MathBlockItem,
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
+
+        # Control blocks - signal processing
+        ComponentType.INTEGRATOR: IntegratorItem,
+        ComponentType.DIFFERENTIATOR: DifferentiatorItem,
+        ComponentType.LIMITER: LimiterItem,
+        ComponentType.RATE_LIMITER: RateLimiterItem,
+        ComponentType.HYSTERESIS: HysteresisItem,
+
+        # Control blocks - advanced
+        ComponentType.LOOKUP_TABLE: LookupTableItem,
+        ComponentType.TRANSFER_FUNCTION: TransferFunctionItem,
+        ComponentType.DELAY_BLOCK: DelayBlockItem,
+        ComponentType.SAMPLE_HOLD: SampleHoldItem,
+        ComponentType.STATE_MACHINE: StateMachineItem,
+
+        # Measurement
+        ComponentType.VOLTAGE_PROBE: VoltageProbeItem,
+        ComponentType.CURRENT_PROBE: CurrentProbeItem,
+        ComponentType.POWER_PROBE: PowerProbeItem,
+
+        # Scopes
         ComponentType.ELECTRICAL_SCOPE: ElectricalScopeItem,
         ComponentType.THERMAL_SCOPE: ThermalScopeItem,
+
+        # Signal routing
         ComponentType.SIGNAL_MUX: SignalMuxItem,
         ComponentType.SIGNAL_DEMUX: SignalDemuxItem,
+
+        # Magnetic
+        ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,
+        ComponentType.COUPLED_INDUCTOR: CoupledInductorItem,
+
+        # Pre-configured networks
+        ComponentType.SNUBBER_RC: SnubberRCItem,
+
+        # Hierarchical
         ComponentType.SUBCIRCUIT: SubcircuitItem,
     }
 

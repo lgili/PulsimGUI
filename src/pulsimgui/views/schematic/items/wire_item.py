@@ -31,8 +31,8 @@ class WireItem(QGraphicsPathItem):
     HOVER_COLOR_DARK = QColor(110, 231, 183)
     SELECTED_COLOR = QColor(59, 130, 246)  # Blue to match component selection
     SELECTED_GLOW = QColor(59, 130, 246, 60)  # Semi-transparent for glow
-    JUNCTION_RADIUS = 4.5
-    JUNCTION_RADIUS_HOVER = 5.5
+    JUNCTION_RADIUS = 6.0
+    JUNCTION_RADIUS_HOVER = 7.0
 
     def __init__(self, wire: Wire, parent=None):
         super().__init__(parent)
@@ -156,16 +156,20 @@ class WireItem(QGraphicsPathItem):
         painter.setPen(main_pen)
         painter.drawPath(self.path())
 
-        # Draw junction dots
+        # Draw junction dots with shadow effect
         junction_radius = self.JUNCTION_RADIUS_HOVER if (is_hovered or is_selected) else self.JUNCTION_RADIUS
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.PenStyle.NoPen)
         for junction in self._wire.junctions:
-            painter.drawEllipse(
-                QPointF(junction[0], junction[1]),
-                junction_radius,
-                junction_radius,
-            )
+            jpt = QPointF(junction[0], junction[1])
+            # Draw subtle shadow/outline (darker color behind)
+            shadow_color = QColor(color)
+            shadow_color.setAlpha(80)
+            painter.setBrush(QBrush(shadow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(jpt, junction_radius + 2, junction_radius + 2)
+            # Draw main junction dot
+            painter.setBrush(QBrush(color))
+            painter.setPen(QPen(color.darker(120), 1.5))
+            painter.drawEllipse(jpt, junction_radius, junction_radius)
 
         # Draw endpoint dots for better visibility
         if is_hovered or is_selected:

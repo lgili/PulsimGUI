@@ -212,6 +212,7 @@ class SchematicView(QGraphicsView):
     subcircuit_open_requested = Signal(object)  # Component instance
     scope_open_requested = Signal(object)  # Component instance
     quick_add_component = Signal(object)  # ComponentType for keyboard shortcuts
+    scroll_changed = Signal()  # emitted when view scrolls
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -243,6 +244,9 @@ class SchematicView(QGraphicsView):
 
         # Alignment guides for component dragging
         self._alignment_guides: AlignmentGuidesItem | None = None
+
+        # Clipboard for copy/paste operations
+        self._clipboard_component_data: dict | None = None
 
         # Set up view
         self.setScene(scene or SchematicScene())
@@ -403,6 +407,11 @@ class SchematicView(QGraphicsView):
             # Normal wheel = scroll
             super().wheelEvent(event)
         self._position_alias_editor()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        """Handle scroll events and emit scroll_changed signal."""
+        super().scrollContentsBy(dx, dy)
+        self.scroll_changed.emit()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press for panning and wire drawing."""
@@ -576,7 +585,7 @@ class SchematicView(QGraphicsView):
         key = event.key()
         modifiers = event.modifiers()
 
-        # Zoom shortcuts
+        # Zoom and edit shortcuts with Ctrl modifier
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             if key == Qt.Key.Key_Plus or key == Qt.Key.Key_Equal:
                 self.zoom_in()
@@ -586,6 +595,28 @@ class SchematicView(QGraphicsView):
                 return
             elif key == Qt.Key.Key_0:
                 self.zoom_to_fit()
+                return
+            elif key == Qt.Key.Key_C:
+                # Copy selected component
+                self.copy_selected()
+                return
+            elif key == Qt.Key.Key_V:
+                # Paste component at cursor
+                self.paste_at_cursor()
+                return
+            elif key == Qt.Key.Key_X:
+                # Cut selected component
+                self.cut_selected()
+                return
+            elif key == Qt.Key.Key_D:
+                # Duplicate selected component
+                from pulsimgui.views.schematic.items import ComponentItem
+                scene = self.scene()
+                if scene:
+                    for item in scene.selectedItems():
+                        if isinstance(item, ComponentItem):
+                            self._duplicate_component(item)
+                            break
                 return
 
         # Tool shortcuts (without modifiers)
@@ -711,37 +742,82 @@ class SchematicView(QGraphicsView):
             menu = QMenu(self)
             menu.setStyleSheet(self._get_context_menu_style())
 
+            # Properties at top
             props_action = menu.addAction(
                 IconService.get_icon("sliders", icon_color), "Edit Properties..."
             )
-
-            rotate_menu = menu.addMenu(
-                IconService.get_icon("refresh", icon_color), "Rotate"
-            )
-            rotate_cw = rotate_menu.addAction("Rotate 90° CW")
-            rotate_cw.setShortcut("R")
-            rotate_ccw = rotate_menu.addAction("Rotate 90° CCW")
-            rotate_ccw.setShortcut("Shift+R")
+            props_action.setShortcut("Enter")
 
             menu.addSeparator()
 
-            copy_action = menu.addAction(
+            # Edit submenu
+            edit_menu = menu.addMenu(
+                IconService.get_icon("edit", icon_color), "Edit"
+            )
+            cut_action = edit_menu.addAction(
+                IconService.get_icon("scissors", icon_color), "Cut"
+            )
+            cut_action.setShortcut("Ctrl+X")
+            copy_action = edit_menu.addAction(
                 IconService.get_icon("copy", icon_color), "Copy"
             )
             copy_action.setShortcut("Ctrl+C")
-
-            delete_action = menu.addAction(
+            paste_action = edit_menu.addAction(
+                IconService.get_icon("clipboard", icon_color), "Paste"
+            )
+            paste_action.setShortcut("Ctrl+V")
+            edit_menu.addSeparator()
+            duplicate_action = edit_menu.addAction(
+                IconService.get_icon("copy", icon_color), "Duplicate"
+            )
+            duplicate_action.setShortcut("Ctrl+D")
+            edit_menu.addSeparator()
+            delete_action = edit_menu.addAction(
                 IconService.get_icon("trash", icon_color), "Delete"
             )
             delete_action.setShortcut("Del")
+
+            # Transform submenu
+            transform_menu = menu.addMenu(
+                IconService.get_icon("refresh", icon_color), "Transform"
+            )
+            rotate_cw = transform_menu.addAction(
+                IconService.get_icon("rotate-cw", icon_color), "Rotate 90° CW"
+            )
+            rotate_cw.setShortcut("R")
+            rotate_ccw = transform_menu.addAction(
+                IconService.get_icon("rotate-ccw", icon_color), "Rotate 90° CCW"
+            )
+            rotate_ccw.setShortcut("Shift+R")
+            transform_menu.addSeparator()
+            flip_h = transform_menu.addAction(
+                IconService.get_icon("flip-horizontal", icon_color), "Flip Horizontal"
+            )
+            flip_h.setShortcut("H")
+            flip_v = transform_menu.addAction(
+                IconService.get_icon("flip-vertical", icon_color), "Flip Vertical"
+            )
+            flip_v.setShortcut("V")
 
             chosen = menu.exec(event.globalPos())
             if chosen == rotate_cw:
                 self._rotate_component(item, 90)
             elif chosen == rotate_ccw:
                 self._rotate_component(item, -90)
+            elif chosen == flip_h:
+                self._flip_component(item, horizontal=True)
+            elif chosen == flip_v:
+                self._flip_component(item, horizontal=False)
             elif chosen == delete_action:
                 self._delete_component(item)
+            elif chosen == duplicate_action:
+                self._duplicate_component(item)
+            elif chosen == cut_action:
+                self._cut_component(item)
+            elif chosen == copy_action:
+                self._copy_component(item)
+            elif chosen == paste_action:
+                self._paste_component(QPointF(item.pos().x() + 40, item.pos().y() + 40))
             event.accept()
             return
 
@@ -805,6 +881,155 @@ class SchematicView(QGraphicsView):
         comp_item.component.rotation = new_rotation
         comp_item.setRotation(new_rotation)
         comp_item.update()
+
+    def _flip_component(self, comp_item, horizontal: bool = True) -> None:
+        """Flip a component horizontally or vertically."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(comp_item, ComponentItem):
+            return
+        if horizontal:
+            comp_item.component.mirrored_h = not comp_item.component.mirrored_h
+        else:
+            comp_item.component.mirrored_v = not comp_item.component.mirrored_v
+        comp_item.update()
+
+    def _duplicate_component(self, comp_item) -> None:
+        """Duplicate a component at a slight offset."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(comp_item, ComponentItem):
+            return
+        # Get original component data
+        orig = comp_item.component
+        # Create offset position
+        new_x = orig.x + 40
+        new_y = orig.y + 40
+        # Emit signal to create new component (handled by main window)
+        self.component_dropped.emit(orig.type.name, new_x, new_y)
+
+    def _copy_component(self, comp_item) -> None:
+        """Copy a component to clipboard with all its configuration."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(comp_item, ComponentItem):
+            return
+
+        # Serialize the component data
+        self._clipboard_component_data = comp_item.component.to_dict()
+
+    def _paste_component(self, position: QPointF | None = None) -> None:
+        """Paste a component from clipboard at the given position."""
+        from copy import deepcopy
+        from uuid import uuid4
+        from pulsimgui.models.component import Component
+        from pulsimgui.views.schematic.items import create_component_item
+
+        if self._clipboard_component_data is None:
+            return
+
+        scene = self.scene()
+        if scene is None:
+            return
+
+        # Make a deep copy of the clipboard data
+        data = deepcopy(self._clipboard_component_data)
+
+        # Generate new ID
+        data["id"] = str(uuid4())
+
+        # Generate new name (increment number suffix)
+        base_name = data["name"]
+        existing_names = set()
+        for item in scene.items():
+            from pulsimgui.views.schematic.items import ComponentItem
+            if isinstance(item, ComponentItem):
+                existing_names.add(item.component.name)
+
+        # Find unique name
+        new_name = base_name
+        counter = 1
+        while new_name in existing_names:
+            # Try to extract base and increment
+            import re
+            match = re.match(r"^(.+?)(\d+)$", base_name)
+            if match:
+                prefix = match.group(1)
+                num = int(match.group(2)) + counter
+                new_name = f"{prefix}{num}"
+            else:
+                new_name = f"{base_name}{counter}"
+            counter += 1
+
+        data["name"] = new_name
+
+        # Determine paste position
+        if position is not None:
+            # Snap position to grid
+            snapped = scene.snap_to_grid(position)
+            data["x"] = snapped.x()
+            data["y"] = snapped.y()
+        else:
+            # Offset from original position
+            data["x"] = data["x"] + 40
+            data["y"] = data["y"] + 40
+
+        # Create the component from the data
+        component = Component.from_dict(data)
+
+        # Create the graphics item
+        comp_item = create_component_item(component)
+        scene.addItem(comp_item)
+
+        # Select the new component
+        scene.clearSelection()
+        comp_item.setSelected(True)
+
+    def _cut_component(self, comp_item) -> None:
+        """Cut a component (copy to clipboard and delete)."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        if not isinstance(comp_item, ComponentItem):
+            return
+
+        # Copy first
+        self._copy_component(comp_item)
+
+        # Then delete
+        self._delete_component(comp_item)
+
+    def copy_selected(self) -> None:
+        """Copy selected component(s) to clipboard."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None:
+            return
+
+        selected = scene.selectedItems()
+        for item in selected:
+            if isinstance(item, ComponentItem):
+                self._copy_component(item)
+                break  # Only copy first selected component for now
+
+    def paste_at_cursor(self) -> None:
+        """Paste component at current cursor position."""
+        cursor_pos = self.mapToScene(self.mapFromGlobal(self.cursor().pos()))
+        self._paste_component(cursor_pos)
+
+    def cut_selected(self) -> None:
+        """Cut selected component(s) to clipboard."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None:
+            return
+
+        selected = scene.selectedItems()
+        for item in selected:
+            if isinstance(item, ComponentItem):
+                self._cut_component(item)
+                break  # Only cut first selected component for now
 
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
         if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:

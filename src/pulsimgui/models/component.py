@@ -10,27 +10,87 @@ from uuid import UUID, uuid4
 class ComponentType(Enum):
     """Types of circuit components."""
 
+    # Basic passive components
     RESISTOR = auto()
     CAPACITOR = auto()
     INDUCTOR = auto()
+
+    # Sources
     VOLTAGE_SOURCE = auto()
     CURRENT_SOURCE = auto()
     GROUND = auto()
+
+    # Semiconductors - diodes
     DIODE = auto()
+    ZENER_DIODE = auto()
+    LED = auto()
+
+    # Semiconductors - transistors
     MOSFET_N = auto()
     MOSFET_P = auto()
     IGBT = auto()
+    BJT_NPN = auto()
+    BJT_PNP = auto()
+    THYRISTOR = auto()
+    TRIAC = auto()
+
+    # Switching
     SWITCH = auto()
+
+    # Transformers
     TRANSFORMER = auto()
+
+    # Analog
+    OP_AMP = auto()
+    COMPARATOR = auto()
+
+    # Protection
+    RELAY = auto()
+    FUSE = auto()
+    CIRCUIT_BREAKER = auto()
+
+    # Control blocks - basic
     PI_CONTROLLER = auto()
     PID_CONTROLLER = auto()
     MATH_BLOCK = auto()
     PWM_GENERATOR = auto()
+
+    # Control blocks - signal processing
+    INTEGRATOR = auto()
+    DIFFERENTIATOR = auto()
+    LIMITER = auto()
+    RATE_LIMITER = auto()
+    HYSTERESIS = auto()
+
+    # Control blocks - advanced
+    LOOKUP_TABLE = auto()
+    TRANSFER_FUNCTION = auto()
+    DELAY_BLOCK = auto()
+    SAMPLE_HOLD = auto()
+    STATE_MACHINE = auto()
+
+    # Measurement
+    VOLTAGE_PROBE = auto()
+    CURRENT_PROBE = auto()
+    POWER_PROBE = auto()
+
+    # Scopes
     ELECTRICAL_SCOPE = auto()
     THERMAL_SCOPE = auto()
+
+    # Signal routing
     SIGNAL_MUX = auto()
     SIGNAL_DEMUX = auto()
-    SUBCIRCUIT = auto()  # Hierarchical subcircuit instance
+
+    # Magnetic
+    SATURABLE_INDUCTOR = auto()
+    COUPLED_INDUCTOR = auto()
+
+    # Pre-configured networks
+    SNUBBER_RC = auto()
+
+    # Hierarchical
+    SUBCIRCUIT = auto()
 
 
 @dataclass
@@ -115,23 +175,69 @@ def _scope_label_prefix(comp_type: ComponentType) -> str:
 
 # Default pin configurations for each component type
 DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
+    # Basic passive
     ComponentType.RESISTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
     ComponentType.CAPACITOR: [Pin(0, "+", -20, 0), Pin(1, "-", 20, 0)],
     ComponentType.INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
+
+    # Sources
     ComponentType.VOLTAGE_SOURCE: [Pin(0, "+", 0, -25), Pin(1, "-", 0, 25)],
     ComponentType.CURRENT_SOURCE: [Pin(0, "+", 0, -25), Pin(1, "-", 0, 25)],
     ComponentType.GROUND: [Pin(0, "gnd", 0, -10)],
+
+    # Diodes
     ComponentType.DIODE: [Pin(0, "A", -20, 0), Pin(1, "K", 20, 0)],
+    ComponentType.ZENER_DIODE: [Pin(0, "A", -20, 0), Pin(1, "K", 20, 0)],
+    ComponentType.LED: [Pin(0, "A", -20, 0), Pin(1, "K", 20, 0)],
+
+    # Transistors
     ComponentType.MOSFET_N: [Pin(0, "D", 20, -20), Pin(1, "G", -20, 0), Pin(2, "S", 20, 20)],
     ComponentType.MOSFET_P: [Pin(0, "D", 20, 20), Pin(1, "G", -20, 0), Pin(2, "S", 20, -20)],
     ComponentType.IGBT: [Pin(0, "C", 20, -20), Pin(1, "G", -20, 0), Pin(2, "E", 20, 20)],
+    ComponentType.BJT_NPN: [Pin(0, "C", 20, -20), Pin(1, "B", -20, 0), Pin(2, "E", 20, 20)],
+    ComponentType.BJT_PNP: [Pin(0, "C", 20, 20), Pin(1, "B", -20, 0), Pin(2, "E", 20, -20)],
+    ComponentType.THYRISTOR: [Pin(0, "A", 0, -20), Pin(1, "K", 0, 20), Pin(2, "G", -20, 10)],
+    ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 10)],
+
+    # Switching
     ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
+
+    # Transformer
     ComponentType.TRANSFORMER: [
         Pin(0, "P1", -30, -15),
         Pin(1, "P2", -30, 15),
         Pin(2, "S1", 30, -15),
         Pin(3, "S2", 30, 15),
     ],
+
+    # Analog
+    ComponentType.OP_AMP: [
+        Pin(0, "IN+", -35, -12),
+        Pin(1, "IN-", -35, 12),
+        Pin(2, "OUT", 35, 0),
+        Pin(3, "V+", 0, -25),
+        Pin(4, "V-", 0, 25),
+    ],
+    ComponentType.COMPARATOR: [
+        Pin(0, "IN+", -35, -12),
+        Pin(1, "IN-", -35, 12),
+        Pin(2, "OUT", 35, 0),
+        Pin(3, "V+", 0, -25),
+        Pin(4, "V-", 0, 25),
+    ],
+
+    # Protection
+    ComponentType.RELAY: [
+        Pin(0, "COIL+", -35, -15),
+        Pin(1, "COIL-", -35, 15),
+        Pin(2, "COM", 35, 0),
+        Pin(3, "NO", 35, -15),
+        Pin(4, "NC", 35, 15),
+    ],
+    ComponentType.FUSE: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
+    ComponentType.CIRCUIT_BREAKER: [Pin(0, "LINE", -20, 0), Pin(1, "LOAD", 20, 0)],
+
+    # Control blocks - basic
     ComponentType.PI_CONTROLLER: [
         Pin(0, "IN", -35, -12),
         Pin(1, "FB", -35, 12),
@@ -152,26 +258,125 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "CLK", -35, 12),
         Pin(2, "OUT", 35, 0),
     ],
+
+    # Control blocks - signal processing
+    ComponentType.INTEGRATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.DIFFERENTIATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.LIMITER: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.RATE_LIMITER: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.HYSTERESIS: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+
+    # Control blocks - advanced
+    ComponentType.LOOKUP_TABLE: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.TRANSFER_FUNCTION: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.DELAY_BLOCK: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.SAMPLE_HOLD: [
+        Pin(0, "IN", -35, -10),
+        Pin(1, "TRIG", -35, 10),
+        Pin(2, "OUT", 35, 0),
+    ],
+    ComponentType.STATE_MACHINE: [
+        Pin(0, "IN1", -35, -12),
+        Pin(1, "IN2", -35, 12),
+        Pin(2, "OUT", 35, 0),
+    ],
+
+    # Measurement
+    ComponentType.VOLTAGE_PROBE: [Pin(0, "+", -20, -10), Pin(1, "-", -20, 10)],
+    ComponentType.CURRENT_PROBE: [Pin(0, "IN", -20, 0), Pin(1, "OUT", 20, 0)],
+    ComponentType.POWER_PROBE: [
+        Pin(0, "V+", -25, -15),
+        Pin(1, "V-", -25, 15),
+        Pin(2, "I+", 25, -15),
+        Pin(3, "I-", 25, 15),
+    ],
+
+    # Scopes
     ComponentType.ELECTRICAL_SCOPE: _default_scope_pins(2),
     ComponentType.THERMAL_SCOPE: _default_scope_pins(2),
+
+    # Signal routing
     ComponentType.SIGNAL_MUX: _default_mux_pins(4),
     ComponentType.SIGNAL_DEMUX: _default_demux_pins(4),
+
+    # Magnetic
+    ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
+    ComponentType.COUPLED_INDUCTOR: [
+        Pin(0, "L1_1", -30, -15),
+        Pin(1, "L1_2", -30, 15),
+        Pin(2, "L2_1", 30, -15),
+        Pin(3, "L2_2", 30, 15),
+    ],
+
+    # Pre-configured networks
+    ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
 }
 
 # Default parameter templates for each component type
 DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
+    # Basic passive
     ComponentType.RESISTOR: {"resistance": 1000.0},
     ComponentType.CAPACITOR: {"capacitance": 1e-6, "initial_voltage": 0.0},
     ComponentType.INDUCTOR: {"inductance": 1e-3, "initial_current": 0.0},
+
+    # Sources
     ComponentType.VOLTAGE_SOURCE: {"waveform": {"type": "dc", "value": 5.0}},
     ComponentType.CURRENT_SOURCE: {"waveform": {"type": "dc", "value": 1.0}},
     ComponentType.GROUND: {},
+
+    # Diodes
     ComponentType.DIODE: {"is_": 1e-14, "n": 1.0, "rs": 0.0},
+    ComponentType.ZENER_DIODE: {"vz": 5.1, "iz_test": 0.02, "zz": 5.0, "is_": 1e-14},
+    ComponentType.LED: {"vf": 2.0, "color": "red", "wavelength": 620},
+
+    # Transistors
     ComponentType.MOSFET_N: {"vth": 2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
     ComponentType.MOSFET_P: {"vth": -2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
     ComponentType.IGBT: {"vth": 3.0, "vce_sat": 2.0},
+    ComponentType.BJT_NPN: {"beta": 100.0, "vbe_sat": 0.7, "vce_sat": 0.2, "is_": 1e-14},
+    ComponentType.BJT_PNP: {"beta": 100.0, "vbe_sat": -0.7, "vce_sat": -0.2, "is_": 1e-14},
+    ComponentType.THYRISTOR: {"vgt": 1.0, "igt": 0.03, "holding_current": 0.05, "vf": 1.5},
+    ComponentType.TRIAC: {"vgt": 1.5, "igt": 0.05, "holding_current": 0.05, "vf": 1.5},
+
+    # Switching
     ComponentType.SWITCH: {"ron": 0.001, "roff": 1e9, "initial_state": False},
+
+    # Transformer
     ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3},
+
+    # Analog
+    ComponentType.OP_AMP: {
+        "gain": 1e5,
+        "gbw": 1e6,
+        "slew_rate": 1e6,
+        "vos": 0.0,
+        "rail_to_rail": False,
+    },
+    ComponentType.COMPARATOR: {
+        "vos": 0.0,
+        "hysteresis": 0.0,
+        "response_time": 1e-6,
+    },
+
+    # Protection
+    ComponentType.RELAY: {
+        "coil_voltage": 12.0,
+        "coil_resistance": 400.0,
+        "contact_rating": 10.0,
+        "ron": 0.01,
+        "roff": 1e9,
+    },
+    ComponentType.FUSE: {
+        "rating": 1.0,
+        "blow_i2t": 1.0,
+    },
+    ComponentType.CIRCUIT_BREAKER: {
+        "trip_current": 10.0,
+        "trip_time": 0.01,
+        "ron": 0.001,
+    },
+
+    # Control blocks - basic
     ComponentType.PI_CONTROLLER: {
         "kp": 1.0,
         "ki": 100.0,
@@ -195,6 +400,70 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "carrier": "sawtooth",
         "amplitude": 1.0,
     },
+
+    # Control blocks - signal processing
+    ComponentType.INTEGRATOR: {
+        "gain": 1.0,
+        "initial_value": 0.0,
+        "output_min": -1e6,
+        "output_max": 1e6,
+    },
+    ComponentType.DIFFERENTIATOR: {
+        "gain": 1.0,
+        "filter_tau": 1e-6,
+    },
+    ComponentType.LIMITER: {
+        "lower_limit": -1.0,
+        "upper_limit": 1.0,
+    },
+    ComponentType.RATE_LIMITER: {
+        "rising_rate": 1e6,
+        "falling_rate": -1e6,
+    },
+    ComponentType.HYSTERESIS: {
+        "upper_threshold": 0.5,
+        "lower_threshold": -0.5,
+        "output_high": 1.0,
+        "output_low": 0.0,
+    },
+
+    # Control blocks - advanced
+    ComponentType.LOOKUP_TABLE: {
+        "table_x": [0.0, 0.5, 1.0],
+        "table_y": [0.0, 0.25, 1.0],
+        "interpolation": "linear",
+    },
+    ComponentType.TRANSFER_FUNCTION: {
+        "numerator": [1.0],
+        "denominator": [1.0, 1.0],
+    },
+    ComponentType.DELAY_BLOCK: {
+        "delay_time": 1e-3,
+    },
+    ComponentType.SAMPLE_HOLD: {
+        "sample_time": 1e-4,
+    },
+    ComponentType.STATE_MACHINE: {
+        "states": ["S0", "S1"],
+        "initial_state": "S0",
+        "transitions": [],
+    },
+
+    # Measurement
+    ComponentType.VOLTAGE_PROBE: {
+        "display_name": "V",
+        "scale": 1.0,
+    },
+    ComponentType.CURRENT_PROBE: {
+        "display_name": "I",
+        "scale": 1.0,
+    },
+    ComponentType.POWER_PROBE: {
+        "display_name": "P",
+        "scale": 1.0,
+    },
+
+    # Scopes
     ComponentType.ELECTRICAL_SCOPE: {
         "channel_count": 2,
         "channels": [
@@ -209,6 +478,8 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
             {"label": "T2", "overlay": False},
         ],
     },
+
+    # Signal routing
     ComponentType.SIGNAL_MUX: {
         "input_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
@@ -218,6 +489,25 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "output_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+    },
+
+    # Magnetic
+    ComponentType.SATURABLE_INDUCTOR: {
+        "inductance": 1e-3,
+        "saturation_current": 10.0,
+        "saturation_inductance": 1e-6,
+    },
+    ComponentType.COUPLED_INDUCTOR: {
+        "l1": 1e-3,
+        "l2": 1e-3,
+        "mutual_inductance": 0.9e-3,
+        "coupling_coefficient": 0.9,
+    },
+
+    # Pre-configured networks
+    ComponentType.SNUBBER_RC: {
+        "resistance": 100.0,
+        "capacitance": 100e-9,
     },
 }
 

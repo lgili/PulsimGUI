@@ -125,7 +125,6 @@ class MainWindow(QMainWindow):
         self._minimap.navigation_requested.connect(self._on_minimap_navigation)
         self._minimap.move(10, 10)  # Position in top-left corner
         self._minimap.raise_()
-        self._minimap.hide()  # Hidden by default
 
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
@@ -268,7 +267,7 @@ class MainWindow(QMainWindow):
 
         self.action_toggle_minimap = QAction("Show &Minimap", self)
         self.action_toggle_minimap.setCheckable(True)
-        self.action_toggle_minimap.setChecked(False)  # Hidden by default
+        self.action_toggle_minimap.setChecked(True)
         self.action_toggle_minimap.setShortcut(QKeySequence("M"))
         self.action_toggle_minimap.triggered.connect(self._on_toggle_minimap)
 
@@ -385,12 +384,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
-        # Theme menu hidden for now - focusing on polishing light theme first
-        # view_menu.addSeparator()
-        # theme_menu = view_menu.addMenu("&Theme")
-        # theme_menu.addAction(self.action_theme_light)
-        # theme_menu.addAction(self.action_theme_dark)
-        # theme_menu.addAction(self.action_theme_modern_dark)
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu("&Theme")
+        theme_menu.addAction(self.action_theme_light)
+        theme_menu.addAction(self.action_theme_dark)
+        theme_menu.addAction(self.action_theme_modern_dark)
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
@@ -537,8 +535,6 @@ class MainWindow(QMainWindow):
         )
         self._properties_panel = PropertiesPanel()
         self._properties_panel.property_changed.connect(self._on_property_changed)
-        self._properties_panel.flip_requested.connect(self._on_flip_from_panel)
-        self._properties_panel.rotate_requested.connect(self._on_rotate_from_panel)
         self.properties_dock.setWidget(self._properties_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
@@ -679,17 +675,11 @@ class MainWindow(QMainWindow):
         # Update component colors (dark mode affects line colors)
         self._schematic_scene.set_dark_mode(theme.is_dark)
 
-        # Update minimap colors
-        self._minimap.set_dark_mode(theme.is_dark)
-
-        # Update properties panel colors
-        self._properties_panel.set_dark_mode(theme.is_dark)
-
-        # Clear icon cache BEFORE updating icons
-        IconService.clear_cache()
-
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
+
+        # Clear icon cache when theme changes
+        IconService.clear_cache()
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -711,10 +701,7 @@ class MainWindow(QMainWindow):
         }
 
         for action, icon_name in icon_map.items():
-            action.setIcon(IconService.get_icon(icon_name, icon_color, 20))
-
-        # Update overflow button icon
-        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 20))
+            action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -1349,9 +1336,8 @@ class MainWindow(QMainWindow):
 
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
-        from pulsimgui.models.wire import Wire, WireSegment, WireConnection
-        from pulsimgui.views.schematic.items import WireItem, ComponentItem
-        from PySide6.QtCore import QPointF
+        from pulsimgui.models.wire import Wire, WireSegment
+        from pulsimgui.views.schematic.items import WireItem
 
         if not segments:
             return
@@ -1362,38 +1348,6 @@ class MainWindow(QMainWindow):
             for seg in segments
         ]
         wire = Wire(segments=wire_segments)
-
-        # Detect connections at wire endpoints
-        start_pt = QPointF(segments[0][0], segments[0][1])
-        end_pt = QPointF(segments[-1][2], segments[-1][3])
-
-        # Find connected components at start and end points
-        SNAP_TOLERANCE = 15.0
-        for item in self._schematic_scene.items():
-            if not isinstance(item, ComponentItem):
-                continue
-
-            component = item.component
-            for pin_index in range(len(component.pins)):
-                pin_pos = item.get_pin_position(pin_index)
-
-                # Check start connection
-                dist_start = ((start_pt.x() - pin_pos.x()) ** 2 +
-                              (start_pt.y() - pin_pos.y()) ** 2) ** 0.5
-                if dist_start < SNAP_TOLERANCE:
-                    wire.start_connection = WireConnection(
-                        component_id=component.id,
-                        pin_index=pin_index
-                    )
-
-                # Check end connection
-                dist_end = ((end_pt.x() - pin_pos.x()) ** 2 +
-                            (end_pt.y() - pin_pos.y()) ** 2) ** 0.5
-                if dist_end < SNAP_TOLERANCE:
-                    wire.end_connection = WireConnection(
-                        component_id=component.id,
-                        pin_index=pin_index
-                    )
 
         # Add to circuit
         self._current_circuit().add_wire(wire)
@@ -1495,49 +1449,6 @@ class MainWindow(QMainWindow):
 
         self._schematic_scene.update()
         self._refresh_scope_window_bindings()
-
-    def _on_flip_from_panel(self, axis: str) -> None:
-        """Handle flip request from properties panel."""
-        from pulsimgui.views.schematic.items import ComponentItem
-
-        edited_component = self._properties_panel._component
-        if edited_component is None:
-            return
-
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
-
-        # Find and update the corresponding component item in the scene
-        for item in self._schematic_scene.items():
-            if isinstance(item, ComponentItem) and item.component is edited_component:
-                item.update_transform()
-                item.update()
-                break
-
-        self._schematic_scene.update()
-
-    def _on_rotate_from_panel(self, degrees: int) -> None:
-        """Handle rotate request from properties panel."""
-        from pulsimgui.views.schematic.items import ComponentItem
-
-        edited_component = self._properties_panel._component
-        if edited_component is None:
-            return
-
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
-
-        # Find and update the corresponding component item in the scene
-        for item in self._schematic_scene.items():
-            if isinstance(item, ComponentItem) and item.component is edited_component:
-                item.setRotation(edited_component.rotation)
-                item.update_transform()
-                item.update()
-                break
-
-        self._schematic_scene.update()
 
     # ------------------------------------------------------------------
     # Scope window helpers
