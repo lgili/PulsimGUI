@@ -144,3 +144,77 @@ def split_si_value(value_str: str) -> Tuple[float, str]:
         return float(value_str), ""
 
     return float(match.group(1)), match.group(2) or ""
+
+
+# Primary parameter and unit mapping for each component type
+# Maps ComponentType name -> (parameter_name, unit)
+PRIMARY_PARAMETERS: dict[str, tuple[str, str]] = {
+    "RESISTOR": ("resistance", "Ω"),
+    "CAPACITOR": ("capacitance", "F"),
+    "INDUCTOR": ("inductance", "H"),
+    "VOLTAGE_SOURCE": ("voltage", "V"),
+    "CURRENT_SOURCE": ("current", "A"),
+    "DIODE": ("vf", "V"),
+    "ZENER_DIODE": ("vz", "V"),
+    "LED": ("vf", "V"),
+    "MOSFET_N": ("vth", "V"),
+    "MOSFET_P": ("vth", "V"),
+    "IGBT": ("vce_sat", "V"),
+    "BJT_NPN": ("beta", ""),
+    "BJT_PNP": ("beta", ""),
+    "THYRISTOR": ("vgt", "V"),
+    "TRIAC": ("vgt", "V"),
+    "TRANSFORMER": ("turns_ratio", ":1"),
+    "OP_AMP": ("gain", ""),
+    "COMPARATOR": ("vos", "V"),
+    "RELAY": ("coil_voltage", "V"),
+    "FUSE": ("rating", "A"),
+    "CIRCUIT_BREAKER": ("trip_current", "A"),
+    "PI_CONTROLLER": ("kp", ""),
+    "PID_CONTROLLER": ("kp", ""),
+    "PWM_GENERATOR": ("frequency", "Hz"),
+    "INTEGRATOR": ("gain", ""),
+    "DIFFERENTIATOR": ("gain", ""),
+    "LIMITER": ("max_value", ""),
+    "RATE_LIMITER": ("max_rate", ""),
+    "DELAY_BLOCK": ("delay", "s"),
+    "SATURABLE_INDUCTOR": ("inductance", "H"),
+    "COUPLED_INDUCTOR": ("coupling_coefficient", ""),
+    "SNUBBER_RC": ("resistance", "Ω"),
+}
+
+
+def format_component_value(component_type_name: str, parameters: dict) -> str:
+    """
+    Format a component's primary parameter value for display.
+
+    Args:
+        component_type_name: The component type name (e.g., "RESISTOR")
+        parameters: Dictionary of component parameters
+
+    Returns:
+        Formatted string with SI prefix and unit, or empty string if no primary parameter
+    """
+    if component_type_name not in PRIMARY_PARAMETERS:
+        return ""
+
+    param_name, unit = PRIMARY_PARAMETERS[component_type_name]
+    value = parameters.get(param_name)
+
+    if value is None:
+        return ""
+
+    # Special formatting for ratios
+    if unit == ":1":
+        return f"1:{value}"
+
+    # Special formatting for dimensionless values
+    if not unit:
+        if isinstance(value, float):
+            if value >= 1000 or value < 0.001:
+                return f"{value:.2g}"
+            return f"{value:g}"
+        return str(value)
+
+    # Standard SI formatting
+    return format_si_value(value, unit)

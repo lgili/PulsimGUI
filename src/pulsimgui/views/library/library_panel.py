@@ -37,22 +37,57 @@ COMPONENT_LIBRARY = {
     ],
     "Semiconductors": [
         {"type": ComponentType.DIODE, "name": "Diode", "shortcut": "D"},
+        {"type": ComponentType.ZENER_DIODE, "name": "Zener", "shortcut": "Z"},
+        {"type": ComponentType.LED, "name": "LED", "shortcut": ""},
         {"type": ComponentType.MOSFET_N, "name": "NMOS", "shortcut": "M"},
         {"type": ComponentType.MOSFET_P, "name": "PMOS", "shortcut": "Shift+M"},
+        {"type": ComponentType.BJT_NPN, "name": "NPN", "shortcut": "Q"},
+        {"type": ComponentType.BJT_PNP, "name": "PNP", "shortcut": "Shift+Q"},
         {"type": ComponentType.IGBT, "name": "IGBT", "shortcut": "B"},
+        {"type": ComponentType.THYRISTOR, "name": "SCR", "shortcut": ""},
+        {"type": ComponentType.TRIAC, "name": "TRIAC", "shortcut": ""},
         {"type": ComponentType.SWITCH, "name": "Switch", "shortcut": "S"},
+    ],
+    "Analog": [
+        {"type": ComponentType.OP_AMP, "name": "Op-Amp", "shortcut": "O"},
+        {"type": ComponentType.COMPARATOR, "name": "Comparator", "shortcut": ""},
+    ],
+    "Protection": [
+        {"type": ComponentType.FUSE, "name": "Fuse", "shortcut": "F"},
+        {"type": ComponentType.CIRCUIT_BREAKER, "name": "Breaker", "shortcut": ""},
+        {"type": ComponentType.RELAY, "name": "Relay", "shortcut": ""},
     ],
     "Control": [
         {"type": ComponentType.PI_CONTROLLER, "name": "PI", "shortcut": "Ctrl+P"},
         {"type": ComponentType.PID_CONTROLLER, "name": "PID", "shortcut": "Ctrl+Shift+P"},
         {"type": ComponentType.MATH_BLOCK, "name": "Math", "shortcut": "Ctrl+M"},
         {"type": ComponentType.PWM_GENERATOR, "name": "PWM", "shortcut": "Ctrl+W"},
+        {"type": ComponentType.INTEGRATOR, "name": "Integrator", "shortcut": ""},
+        {"type": ComponentType.DIFFERENTIATOR, "name": "d/dt", "shortcut": ""},
+        {"type": ComponentType.LIMITER, "name": "Limiter", "shortcut": ""},
+        {"type": ComponentType.RATE_LIMITER, "name": "Rate Lim.", "shortcut": ""},
+        {"type": ComponentType.HYSTERESIS, "name": "Hysteresis", "shortcut": ""},
+        {"type": ComponentType.LOOKUP_TABLE, "name": "Lookup", "shortcut": ""},
+        {"type": ComponentType.TRANSFER_FUNCTION, "name": "H(s)", "shortcut": ""},
+        {"type": ComponentType.DELAY_BLOCK, "name": "Delay", "shortcut": ""},
+        {"type": ComponentType.SAMPLE_HOLD, "name": "S/H", "shortcut": ""},
+        {"type": ComponentType.STATE_MACHINE, "name": "FSM", "shortcut": ""},
     ],
     "Measurement": [
+        {"type": ComponentType.VOLTAGE_PROBE, "name": "V Probe", "shortcut": ""},
+        {"type": ComponentType.CURRENT_PROBE, "name": "I Probe", "shortcut": ""},
+        {"type": ComponentType.POWER_PROBE, "name": "P Probe", "shortcut": ""},
         {"type": ComponentType.ELECTRICAL_SCOPE, "name": "Scope", "shortcut": "Ctrl+E"},
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal", "shortcut": "Ctrl+Shift+E"},
         {"type": ComponentType.SIGNAL_MUX, "name": "Mux", "shortcut": "Ctrl+Alt+M"},
         {"type": ComponentType.SIGNAL_DEMUX, "name": "Demux", "shortcut": "Ctrl+Alt+D"},
+    ],
+    "Magnetic": [
+        {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Ind.", "shortcut": ""},
+        {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled L", "shortcut": ""},
+    ],
+    "Networks": [
+        {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
     ],
 }
 
@@ -61,8 +96,12 @@ CATEGORY_COLORS = {
     "Passive": "#3b82f6",      # Blue
     "Sources": "#f59e0b",      # Amber
     "Semiconductors": "#10b981",  # Emerald
+    "Analog": "#06b6d4",       # Cyan
+    "Protection": "#ef4444",   # Red
     "Control": "#8b5cf6",      # Purple
     "Measurement": "#ec4899",  # Pink
+    "Magnetic": "#78716c",     # Stone
+    "Networks": "#84cc16",     # Lime
 }
 
 
@@ -131,6 +170,45 @@ def create_component_icon(comp_type: ComponentType, size: int = 48, color: str =
         _draw_mux_icon(painter)
     elif comp_type == ComponentType.SIGNAL_DEMUX:
         _draw_demux_icon(painter)
+    # New components
+    elif comp_type == ComponentType.ZENER_DIODE:
+        _draw_zener_icon(painter)
+    elif comp_type == ComponentType.LED:
+        _draw_led_icon(painter)
+    elif comp_type in (ComponentType.BJT_NPN, ComponentType.BJT_PNP):
+        _draw_bjt_icon(painter, comp_type == ComponentType.BJT_NPN)
+    elif comp_type == ComponentType.THYRISTOR:
+        _draw_thyristor_icon(painter)
+    elif comp_type == ComponentType.TRIAC:
+        _draw_triac_icon(painter)
+    elif comp_type == ComponentType.OP_AMP:
+        _draw_opamp_icon(painter)
+    elif comp_type == ComponentType.COMPARATOR:
+        _draw_comparator_icon(painter)
+    elif comp_type == ComponentType.FUSE:
+        _draw_fuse_icon(painter)
+    elif comp_type == ComponentType.CIRCUIT_BREAKER:
+        _draw_breaker_icon(painter)
+    elif comp_type == ComponentType.RELAY:
+        _draw_relay_icon(painter)
+    elif comp_type in (ComponentType.INTEGRATOR, ComponentType.DIFFERENTIATOR,
+                       ComponentType.LIMITER, ComponentType.RATE_LIMITER,
+                       ComponentType.HYSTERESIS, ComponentType.LOOKUP_TABLE,
+                       ComponentType.TRANSFER_FUNCTION, ComponentType.DELAY_BLOCK,
+                       ComponentType.SAMPLE_HOLD, ComponentType.STATE_MACHINE):
+        _draw_simple_block_icon(painter, comp_type)
+    elif comp_type == ComponentType.VOLTAGE_PROBE:
+        _draw_probe_icon(painter, "V", "#ef4444")
+    elif comp_type == ComponentType.CURRENT_PROBE:
+        _draw_probe_icon(painter, "A", "#22c55e")
+    elif comp_type == ComponentType.POWER_PROBE:
+        _draw_probe_icon(painter, "W", "#f59e0b")
+    elif comp_type == ComponentType.SATURABLE_INDUCTOR:
+        _draw_saturable_inductor_icon(painter)
+    elif comp_type == ComponentType.COUPLED_INDUCTOR:
+        _draw_coupled_inductor_icon(painter)
+    elif comp_type == ComponentType.SNUBBER_RC:
+        _draw_snubber_icon(painter)
     else:
         painter.drawRect(-15, -15, 30, 30)
 
@@ -453,6 +531,299 @@ def _draw_demux_icon(painter: QPainter) -> None:
     # Output lines
     for y in [-10, 0, 10]:
         painter.drawLine(QPointF(4, y), QPointF(20, y))
+
+
+# === NEW ICON FUNCTIONS ===
+
+def _draw_zener_icon(painter: QPainter) -> None:
+    """Draw Zener diode icon."""
+    _draw_diode_icon(painter)
+    # Add bent cathode ends
+    painter.setPen(QPen(QColor("#9ca3af"), 2))
+    painter.drawLine(QPointF(8, -12), QPointF(5, -12))
+    painter.drawLine(QPointF(8, 12), QPointF(11, 12))
+
+
+def _draw_led_icon(painter: QPainter) -> None:
+    """Draw LED icon."""
+    _draw_diode_icon(painter)
+    # Light emission arrows
+    painter.setPen(QPen(QColor("#ef4444"), 1.5))
+    painter.drawLine(QPointF(0, -10), QPointF(6, -16))
+    painter.drawLine(QPointF(6, -16), QPointF(4, -14))
+    painter.drawLine(QPointF(4, -10), QPointF(10, -16))
+    painter.drawLine(QPointF(10, -16), QPointF(8, -14))
+
+
+def _draw_bjt_icon(painter: QPainter, is_npn: bool) -> None:
+    """Draw BJT transistor icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Base vertical
+    painter.setPen(QPen(QColor("#374151"), 3))
+    painter.drawLine(QPointF(-6, -10), QPointF(-6, 10))
+
+    # Base terminal
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.drawLine(QPointF(-18, 0), QPointF(-6, 0))
+
+    # Collector
+    painter.drawLine(QPointF(-6, -6), QPointF(10, -14))
+    painter.drawLine(QPointF(10, -14), QPointF(10, -20))
+
+    # Emitter
+    painter.drawLine(QPointF(-6, 6), QPointF(10, 14))
+    painter.drawLine(QPointF(10, 14), QPointF(10, 20))
+
+    # Arrow
+    color = "#22c55e" if is_npn else "#ef4444"
+    painter.setPen(QPen(QColor(color), 2))
+    painter.setBrush(QColor(color))
+    if is_npn:
+        path = QPainterPath()
+        path.moveTo(8, 12)
+        path.lineTo(4, 8)
+        path.lineTo(6, 14)
+        path.closeSubpath()
+        painter.drawPath(path)
+    else:
+        path = QPainterPath()
+        path.moveTo(-4, 4)
+        path.lineTo(0, 8)
+        path.lineTo(-2, 2)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+
+def _draw_thyristor_icon(painter: QPainter) -> None:
+    """Draw thyristor (SCR) icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Terminals
+    painter.drawLine(QPointF(0, -20), QPointF(0, -8))
+    painter.drawLine(QPointF(0, 8), QPointF(0, 20))
+
+    # Gate
+    painter.drawLine(QPointF(-18, 8), QPointF(-6, 8))
+    painter.drawLine(QPointF(-6, 8), QPointF(-6, 4))
+
+    # Triangle
+    path = QPainterPath()
+    path.moveTo(-8, -8)
+    path.lineTo(8, -8)
+    path.lineTo(0, 6)
+    path.closeSubpath()
+    painter.setBrush(QColor("#6b7280"))
+    painter.drawPath(path)
+
+    # Cathode bar
+    painter.drawLine(QPointF(-8, 6), QPointF(8, 6))
+
+
+def _draw_triac_icon(painter: QPainter) -> None:
+    """Draw TRIAC icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Terminals
+    painter.drawLine(QPointF(0, -20), QPointF(0, -10))
+    painter.drawLine(QPointF(0, 10), QPointF(0, 20))
+
+    # Gate
+    painter.drawLine(QPointF(-18, 8), QPointF(-8, 8))
+    painter.drawLine(QPointF(-8, 8), QPointF(-8, 0))
+
+    # Two triangles
+    painter.setBrush(QColor("#6b7280"))
+    # Upper
+    path1 = QPainterPath()
+    path1.moveTo(-6, -10)
+    path1.lineTo(6, -10)
+    path1.lineTo(0, 0)
+    path1.closeSubpath()
+    painter.drawPath(path1)
+    # Lower
+    path2 = QPainterPath()
+    path2.moveTo(-6, 10)
+    path2.lineTo(6, 10)
+    path2.lineTo(0, 0)
+    path2.closeSubpath()
+    painter.drawPath(path2)
+
+
+def _draw_opamp_icon(painter: QPainter) -> None:
+    """Draw op-amp icon."""
+    # Triangle
+    path = QPainterPath()
+    path.moveTo(-16, -16)
+    path.lineTo(-16, 16)
+    path.lineTo(16, 0)
+    path.closeSubpath()
+
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#f8fafc"))
+    painter.drawPath(path)
+
+    # Input symbols
+    painter.setPen(QPen(QColor("#22c55e"), 2))
+    painter.drawLine(QPointF(-14, -8), QPointF(-10, -8))
+    painter.drawLine(QPointF(-12, -10), QPointF(-12, -6))
+
+    painter.setPen(QPen(QColor("#ef4444"), 2))
+    painter.drawLine(QPointF(-14, 8), QPointF(-10, 8))
+
+
+def _draw_comparator_icon(painter: QPainter) -> None:
+    """Draw comparator icon."""
+    _draw_opamp_icon(painter)
+    # Output indicator
+    painter.setPen(QPen(QColor("#374151"), 1.5))
+    painter.drawRect(QRectF(10, -3, 4, 6))
+
+
+def _draw_fuse_icon(painter: QPainter) -> None:
+    """Draw fuse icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#f8fafc"))
+    painter.drawRect(QRectF(-12, -8, 24, 16))
+
+    # Fuse element
+    painter.setPen(QPen(QColor("#9ca3af"), 1.5))
+    path = QPainterPath()
+    path.moveTo(-10, 0)
+    path.cubicTo(-4, -4, 0, 4, 6, -2)
+    path.lineTo(10, 0)
+    painter.drawPath(path)
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-20, 0), QPointF(-12, 0))
+    painter.drawLine(QPointF(12, 0), QPointF(20, 0))
+
+
+def _draw_breaker_icon(painter: QPainter) -> None:
+    """Draw circuit breaker icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Contacts
+    painter.setBrush(QColor("#fbbf24"))
+    painter.drawEllipse(QPointF(-10, 0), 3, 3)
+    painter.drawEllipse(QPointF(10, 0), 3, 3)
+
+    # Open arm
+    painter.setPen(QPen(QColor("#374151"), 3))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(-10, 0), QPointF(6, -10))
+
+    # Trip indicator
+    painter.setPen(QPen(QColor("#ef4444"), 2))
+    painter.drawRect(QRectF(-3, -12, 6, 4))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-20, 0), QPointF(-13, 0))
+    painter.drawLine(QPointF(13, 0), QPointF(20, 0))
+
+
+def _draw_relay_icon(painter: QPainter) -> None:
+    """Draw relay icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Coil rectangle
+    painter.setBrush(QColor("#d4c4a8"))
+    painter.drawRect(QRectF(-18, -10, 14, 20))
+
+    # Dashed coupling line
+    painter.setPen(QPen(QColor("#374151"), 1, Qt.PenStyle.DashLine))
+    painter.drawLine(QPointF(0, -14), QPointF(0, 14))
+
+    # Switch arm
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#fbbf24"))
+    painter.drawEllipse(QPointF(10, 0), 3, 3)
+    painter.drawLine(QPointF(10, 0), QPointF(16, -10))
+
+
+def _draw_simple_block_icon(painter: QPainter, comp_type: ComponentType) -> None:
+    """Draw simple block icon with label."""
+    labels = {
+        ComponentType.INTEGRATOR: "∫",
+        ComponentType.DIFFERENTIATOR: "d/dt",
+        ComponentType.LIMITER: "⊏⊐",
+        ComponentType.RATE_LIMITER: "↗",
+        ComponentType.HYSTERESIS: "⊂⊃",
+        ComponentType.LOOKUP_TABLE: "f(x)",
+        ComponentType.TRANSFER_FUNCTION: "H(s)",
+        ComponentType.DELAY_BLOCK: "T",
+        ComponentType.SAMPLE_HOLD: "S/H",
+        ComponentType.STATE_MACHINE: "FSM",
+    }
+    label = labels.get(comp_type, "?")
+
+    rect = QRectF(-16, -12, 32, 24)
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(rect, 4, 4)
+
+    # Accent stripe
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#8b5cf6"))
+    painter.drawRoundedRect(QRectF(-14, -8, 4, 16), 2, 2)
+
+    # Label
+    painter.setPen(QColor("#374151"))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(8)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+
+def _draw_probe_icon(painter: QPainter, symbol: str, color: str) -> None:
+    """Draw measurement probe icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#fffbeb"))
+    painter.drawEllipse(QPointF(0, 0), 14, 14)
+
+    painter.setPen(QPen(QColor(color), 2.5))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(12)
+    painter.setFont(font)
+    painter.drawText(QRectF(-10, -10, 20, 20), Qt.AlignmentFlag.AlignCenter, symbol)
+
+
+def _draw_saturable_inductor_icon(painter: QPainter) -> None:
+    """Draw saturable inductor icon."""
+    _draw_inductor_icon(painter)
+    # Filled core line
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#374151"))
+    painter.drawRect(QRectF(-12, -2, 24, 4))
+
+
+def _draw_coupled_inductor_icon(painter: QPainter) -> None:
+    """Draw coupled inductor icon."""
+    _draw_transformer_icon(painter)
+
+
+def _draw_snubber_icon(painter: QPainter) -> None:
+    """Draw RC snubber icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Resistor part
+    painter.setBrush(QColor("#d4c4a8"))
+    painter.drawRect(QRectF(-16, -6, 14, 12))
+
+    # Capacitor plates
+    painter.setPen(QPen(QColor("#374151"), 2.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(4, -10), QPointF(4, 10))
+    painter.drawLine(QPointF(10, -10), QPointF(10, 10))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-22, 0), QPointF(-16, 0))
+    painter.drawLine(QPointF(10, 0), QPointF(22, 0))
 
 
 class ComponentCard(QFrame):

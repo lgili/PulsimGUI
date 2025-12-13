@@ -119,3 +119,12 @@ class SettingsService:
             self._settings.setValue("backend/preference", identifier)
         else:
             self._settings.remove("backend/preference")
+
+    # Component value labels
+    def get_show_value_labels(self) -> bool:
+        """Get show value labels setting."""
+        return self._settings.value("show_value_labels", True, type=bool)
+
+    def set_show_value_labels(self, enabled: bool) -> None:
+        """Set show value labels setting."""
+        self._settings.setValue("show_value_labels", enabled)
