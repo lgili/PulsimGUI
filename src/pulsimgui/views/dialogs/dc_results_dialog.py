@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
+    QFormLayout,
     QTabWidget,
     QWidget,
     QTableWidget,
@@ -101,6 +102,11 @@ class DCResultsDialog(QDialog):
 
         self._tabs.addTab(power_widget, "Power Dissipation")
 
+        # Convergence info tab (when available)
+        if self._convergence_info is not None:
+            convergence_widget = self._create_convergence_tab()
+            self._tabs.addTab(convergence_widget, "Convergence")
+
         # Buttons
         button_layout = QHBoxLayout()
 
@@ -182,6 +188,85 @@ class DCResultsDialog(QDialog):
             }
         """)
         return table
+
+    def _create_convergence_tab(self) -> QWidget:
+        """Create the convergence info tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        if self._convergence_info is None:
+            return widget
+
+        info = self._convergence_info
+
+        # Key metrics group
+        metrics_group = QGroupBox("Solver Metrics")
+        metrics_layout = QFormLayout(metrics_group)
+
+        # Status
+        status_label = QLabel()
+        if info.converged:
+            status_label.setText("<span style='color: #16a34a; font-weight: 600;'>Converged</span>")
+        else:
+            status_label.setText("<span style='color: #dc2626; font-weight: 600;'>Did Not Converge</span>")
+        metrics_layout.addRow("Status:", status_label)
+
+        # Iterations
+        metrics_layout.addRow("Iterations:", QLabel(str(info.iterations)))
+
+        # Final residual
+        metrics_layout.addRow("Final Residual:", QLabel(f"{info.final_residual:.2e}"))
+
+        # Strategy
+        strategy_display = info.strategy_used.replace("_", " ").title()
+        metrics_layout.addRow("Strategy:", QLabel(strategy_display))
+
+        # Trend (if available)
+        if info.history:
+            trend = info.trend
+            trend_colors = {
+                "converging": "#16a34a",
+                "stalling": "#ca8a04",
+                "diverging": "#dc2626",
+                "unknown": "#6b7280",
+            }
+            color = trend_colors.get(trend, "#6b7280")
+            trend_label = QLabel(f"<span style='color: {color};'>{trend.title()}</span>")
+            metrics_layout.addRow("Trend:", trend_label)
+
+        layout.addWidget(metrics_group)
+
+        # Summary card
+        if info.converged:
+            summary_text = f"DC operating point found in {info.iterations} iterations."
+            summary_style = """
+                QLabel {
+                    background-color: #f0fdf4;
+                    border: 1px solid #86efac;
+                    border-radius: 6px;
+                    padding: 12px;
+                    color: #166534;
+                }
+            """
+        else:
+            summary_text = info.failure_reason or "Solver did not converge within iteration limit."
+            summary_style = """
+                QLabel {
+                    background-color: #fef2f2;
+                    border: 1px solid #fecaca;
+                    border-radius: 6px;
+                    padding: 12px;
+                    color: #991b1b;
+                }
+            """
+
+        summary_label = QLabel(summary_text)
+        summary_label.setWordWrap(True)
+        summary_label.setStyleSheet(summary_style)
+        layout.addWidget(summary_label)
+
+        layout.addStretch()
+        return widget
 
     def _populate_tables(self) -> None:
         """Populate all result tables."""
