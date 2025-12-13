@@ -11,6 +11,7 @@ from pulsimgui.views.dialogs.create_subcircuit_dialog import CreateSubcircuitDia
 from pulsimgui.views.dialogs.parameter_sweep_dialog import ParameterSweepDialog
 from pulsimgui.views.dialogs.parameter_sweep_results_dialog import ParameterSweepResultsDialog
 from pulsimgui.views.dialogs.thermal_viewer_dialog import ThermalViewerDialog
+from pulsimgui.views.dialogs.convergence_diagnostics_dialog import ConvergenceDiagnosticsDialog
 
 __all__ = [
     "PreferencesDialog",
@@ -25,4 +26,5 @@ __all__ = [
     "ParameterSweepDialog",
     "ParameterSweepResultsDialog",
     "ThermalViewerDialog",
+    "ConvergenceDiagnosticsDialog",
 ]
