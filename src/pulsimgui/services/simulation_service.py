@@ -19,6 +19,12 @@ from pulsimgui.services.backend_adapter import (
     BackendLoader,
     SimulationBackend,
 )
+from pulsimgui.services.backend_types import (
+    ACSettings,
+    DCSettings,
+    DCResult as BackendDCResult,
+    ACResult as BackendACResult,
+)
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -446,6 +452,7 @@ class SimulationService(QObject):
         self._sweep_worker: ParameterSweepWorker | None = None
         self._settings = SimulationSettings()
         self._last_result: SimulationResult | None = None
+        self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
         preferred_backend = None
         if settings_service is not None:
@@ -482,6 +489,22 @@ class SimulationService(QObject):
     def backend_info(self) -> BackendInfo:
         """Return metadata about the active simulation backend."""
         return self._backend.info
+
+    @property
+    def last_convergence_info(self):
+        """Return the last DC/transient convergence info for diagnostics."""
+        return self._last_convergence_info
+
+    def has_capability(self, name: str) -> bool:
+        """Check if the backend supports a specific capability.
+
+        Args:
+            name: Capability name (e.g., "dc", "ac", "thermal", "transient")
+
+        Returns:
+            True if the capability is supported.
+        """
+        return self._backend.has_capability(name)
 
     @property
     def available_backends(self) -> list[BackendInfo]:
@@ -547,8 +570,17 @@ class SimulationService(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
-    def run_dc_operating_point(self, circuit_data: dict) -> None:
-        """Run DC operating point analysis."""
+    def run_dc_operating_point(
+        self,
+        circuit_data: dict,
+        dc_settings: DCSettings | None = None,
+    ) -> None:
+        """Run DC operating point analysis.
+
+        Args:
+            circuit_data: Dictionary representation of the circuit.
+            dc_settings: DC analysis settings. If None, uses defaults.
+        """
         if not self._ensure_backend_ready():
             return
         if self.is_running:
@@ -558,27 +590,50 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(0, "Running DC analysis...")
 
-        # Placeholder DC analysis
-        # In real implementation, this would solve the DC equations
+        # Use defaults if no settings provided
+        if dc_settings is None:
+            dc_settings = DCSettings()
+
         result = DCResult()
 
         try:
-            # Simulate DC solution - placeholder
-            result.node_voltages = {
-                "V(out)": 5.0,
-                "V(in)": 10.0,
-                "V(gnd)": 0.0,
-            }
-            result.branch_currents = {
-                "I(R1)": 0.005,
-                "I(V1)": -0.005,
-            }
-            result.power_dissipation = {
-                "P(R1)": 0.025,
-            }
+            # Check if backend supports DC analysis
+            if self._backend.has_capability("dc"):
+                # Use real backend for DC analysis
+                backend_result: BackendDCResult = self._backend.run_dc(circuit_data, dc_settings)
 
-            self.progress.emit(100, "DC analysis complete")
-            self._set_state(SimulationState.COMPLETED)
+                # Convert backend result to local DCResult
+                result.node_voltages = backend_result.node_voltages.copy()
+                result.branch_currents = backend_result.branch_currents.copy()
+                result.power_dissipation = backend_result.power_dissipation.copy()
+                result.error_message = backend_result.error_message
+
+                # Store convergence info for potential diagnostics dialog
+                self._last_convergence_info = backend_result.convergence_info
+
+                if backend_result.error_message:
+                    self._set_state(SimulationState.ERROR)
+                    self.error.emit(backend_result.error_message)
+                else:
+                    self.progress.emit(100, "DC analysis complete")
+                    self._set_state(SimulationState.COMPLETED)
+            else:
+                # Fallback to placeholder
+                result.node_voltages = {
+                    "V(out)": 5.0,
+                    "V(in)": 10.0,
+                    "V(gnd)": 0.0,
+                }
+                result.branch_currents = {
+                    "I(R1)": 0.005,
+                    "I(V1)": -0.005,
+                }
+                result.power_dissipation = {
+                    "P(R1)": 0.025,
+                }
+                self.progress.emit(100, "DC analysis complete (placeholder)")
+                self._set_state(SimulationState.COMPLETED)
+
             self.dc_finished.emit(result)
 
         except Exception as e:
@@ -588,9 +643,22 @@ class SimulationService(QObject):
             self.dc_finished.emit(result)
 
     def run_ac_analysis(
-        self, circuit_data: dict, f_start: float, f_stop: float, points_per_decade: int = 10
+        self,
+        circuit_data: dict,
+        f_start: float,
+        f_stop: float,
+        points_per_decade: int = 10,
+        ac_settings: ACSettings | None = None,
     ) -> None:
-        """Run AC frequency sweep analysis."""
+        """Run AC frequency sweep analysis.
+
+        Args:
+            circuit_data: Dictionary representation of the circuit.
+            f_start: Start frequency (Hz).
+            f_stop: Stop frequency (Hz).
+            points_per_decade: Number of points per decade.
+            ac_settings: AC analysis settings. If None, uses parameters above.
+        """
         if not self._ensure_backend_ready():
             return
         if self.is_running:
@@ -600,37 +668,65 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(0, "Running AC analysis...")
 
+        # Build settings if not provided
+        if ac_settings is None:
+            ac_settings = ACSettings(
+                f_start=f_start,
+                f_stop=f_stop,
+                points_per_decade=points_per_decade,
+            )
+
         result = ACResult()
 
         try:
-            import math
+            # Check if backend supports AC analysis
+            if self._backend.has_capability("ac"):
+                # Use real backend for AC analysis
+                backend_result: BackendACResult = self._backend.run_ac(circuit_data, ac_settings)
 
-            # Generate frequency points (logarithmic)
-            decades = math.log10(f_stop / f_start)
-            num_points = int(decades * points_per_decade)
+                # Convert backend result to local ACResult
+                result.frequencies = backend_result.frequencies.copy()
+                result.magnitude = {k: list(v) for k, v in backend_result.magnitude.items()}
+                result.phase = {k: list(v) for k, v in backend_result.phase.items()}
+                result.error_message = backend_result.error_message
 
-            result.frequencies = []
-            result.magnitude = {"V(out)/V(in)": []}
-            result.phase = {"V(out)/V(in)": []}
+                if backend_result.error_message:
+                    self._set_state(SimulationState.ERROR)
+                    self.error.emit(backend_result.error_message)
+                else:
+                    self.progress.emit(100, "AC analysis complete")
+                    self._set_state(SimulationState.COMPLETED)
+            else:
+                # Fallback to placeholder
+                import math
 
-            for i in range(num_points + 1):
-                f = f_start * (10 ** (i * decades / num_points))
-                result.frequencies.append(f)
+                # Generate frequency points (logarithmic)
+                decades = math.log10(f_stop / f_start)
+                num_points = int(decades * points_per_decade)
 
-                # Placeholder: Generate dummy Bode plot data
-                # This simulates a simple RC low-pass filter response
-                fc = 1000  # cutoff frequency
-                mag_db = -10 * math.log10(1 + (f / fc) ** 2)
-                phase_deg = -math.degrees(math.atan(f / fc))
+                result.frequencies = []
+                result.magnitude = {"V(out)/V(in)": []}
+                result.phase = {"V(out)/V(in)": []}
 
-                result.magnitude["V(out)/V(in)"].append(mag_db)
-                result.phase["V(out)/V(in)"].append(phase_deg)
+                for i in range(num_points + 1):
+                    f = f_start * (10 ** (i * decades / num_points))
+                    result.frequencies.append(f)
 
-                progress = (i / num_points) * 100
-                self.progress.emit(progress, f"Frequency: {f:.1f}Hz")
+                    # Placeholder: Generate dummy Bode plot data
+                    # This simulates a simple RC low-pass filter response
+                    fc = 1000  # cutoff frequency
+                    mag_db = -10 * math.log10(1 + (f / fc) ** 2)
+                    phase_deg = -math.degrees(math.atan(f / fc))
 
-            self.progress.emit(100, "AC analysis complete")
-            self._set_state(SimulationState.COMPLETED)
+                    result.magnitude["V(out)/V(in)"].append(mag_db)
+                    result.phase["V(out)/V(in)"].append(phase_deg)
+
+                    progress = (i / num_points) * 100
+                    self.progress.emit(progress, f"Frequency: {f:.1f}Hz")
+
+                self.progress.emit(100, "AC analysis complete (placeholder)")
+                self._set_state(SimulationState.COMPLETED)
+
             self.ac_finished.emit(result)
 
         except Exception as e:
