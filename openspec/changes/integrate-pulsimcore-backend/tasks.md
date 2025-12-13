@@ -50,7 +50,7 @@
   - Call `backend.run_dc()` instead of placeholder
   - Emit proper signals with real results
 
-- [ ] 2.4 Update `DCResultsDialog` to display real data
+- [x] 2.4 Update `DCResultsDialog` to display real data
   - Show node voltages table
   - Show branch currents table
   - Show convergence info summary
