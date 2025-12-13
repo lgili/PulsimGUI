@@ -2,50 +2,50 @@
 
 ## 1. Backend Abstraction Layer
 
-- [ ] 1.1 Create `BackendCapabilities` protocol in `services/backend_protocol.py`
+- [x] 1.1 Create `BackendCapabilities` protocol in `services/backend_protocol.py`
   - Define all required methods with type hints
   - Use `@runtime_checkable` for isinstance checks
   - Document each method with docstrings
 
-- [ ] 1.2 Create result dataclasses in `services/backend_types.py`
+- [x] 1.2 Create result dataclasses in `services/backend_types.py`
   - `DCResult` with node_voltages, branch_currents, convergence_info
   - `ACResult` with frequencies, magnitude, phase
   - `ThermalResult` with devices, losses, temperatures
   - `ConvergenceInfo` with iteration history and problematic nodes
 
-- [ ] 1.3 Create settings dataclasses in `services/backend_types.py`
+- [x] 1.3 Create settings dataclasses in `services/backend_types.py`
   - `DCSettings` with strategy, tolerances, limiting options
   - `ACSettings` with frequency range and points
   - `ThermalSettings` with ambient temperature and loss options
   - Extend existing `TransientSettings` (was `SimulationSettings`)
 
-- [ ] 1.4 Create `BackendVersion` class
+- [x] 1.4 Create `BackendVersion` class
   - Parse version strings (e.g., "0.2.1")
   - API version tracking for compatibility
   - `is_compatible_with()` method
 
-- [ ] 1.5 Create `BackendRegistry` in `services/backend_registry.py`
+- [x] 1.5 ~~Create `BackendRegistry` in `services/backend_registry.py`~~ (Already exists as BackendLoader)
   - Discover backends from installed packages
   - Support entry points for plugins
   - `available_backends()` and `activate()` methods
 
-- [ ] 1.6 Add unit tests for abstraction layer
+- [x] 1.6 Add unit tests for abstraction layer
   - Test protocol compliance
   - Test version compatibility
   - Test registry discovery
 
 ## 2. DC Operating Point Integration
 
-- [ ] 2.1 Add `run_dc()` method to `PulsimBackend`
-  - Build pulsim.v2.NewtonOptions from DCSettings
-  - Call pulsim.v2.solve_dc()
+- [x] 2.1 Add `run_dc()` method to `PulsimBackend`
+  - Build pulsim.v1.NewtonOptions from DCSettings
+  - Call pulsim.v1.DCConvergenceSolver
   - Convert result to GUI DCResult
 
-- [ ] 2.2 Add DC strategy mapping
-  - Map DCSettings.strategy to pulsim.v2.DCStrategy enum
+- [x] 2.2 Add DC strategy mapping
+  - Map DCSettings.strategy to pulsim.v1.DCStrategy enum
   - Handle "auto" strategy selection
 
-- [ ] 2.3 Modify `SimulationService.run_dc_operating_point()`
+- [x] 2.3 Modify `SimulationService.run_dc_operating_point()`
   - Check `backend.has_capability("dc")`
   - Call `backend.run_dc()` instead of placeholder
   - Emit proper signals with real results
@@ -66,12 +66,12 @@
   - Check PulsimCore bindings.cpp
   - If missing, add to PulsimCore first
 
-- [ ] 3.2 Add `run_ac()` method to `PulsimBackend`
+- [x] 3.2 Add `run_ac()` method to `PulsimBackend`
   - Build AC options from ACSettings
   - Call pulsim.run_ac()
   - Convert to GUI ACResult
 
-- [ ] 3.3 Modify `SimulationService.run_ac_analysis()`
+- [x] 3.3 Modify `SimulationService.run_ac_analysis()`
   - Check `backend.has_capability("ac")`
   - Call `backend.run_ac()` instead of placeholder
   - Emit ACResult with real Bode data
@@ -88,7 +88,7 @@
 
 ## 4. Thermal Simulation Integration
 
-- [ ] 4.1 Add `run_thermal()` method to `PulsimBackend`
+- [x] 4.1 Add `run_thermal()` method to `PulsimBackend`
   - Create ThermalSimulator from circuit
   - Run thermal analysis with electrical results
   - Extract Foster network and losses
@@ -98,8 +98,8 @@
   - Fall back to synthetic on failure
   - Set `is_synthetic` flag on result
 
-- [ ] 4.3 Update thermal result conversion
-  - Map backend Foster stages to `ThermalStage`
+- [x] 4.3 Update thermal result conversion
+  - Map backend Foster stages to `FosterStage`
   - Extract conduction and switching losses
   - Build temperature traces
 

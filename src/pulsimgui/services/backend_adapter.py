@@ -14,6 +14,24 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
+from pulsimgui.services.backend_types import (
+    ACResult,
+    ACSettings,
+    BackendVersion,
+    ConvergenceInfo,
+    DCResult,
+    DCSettings,
+    IterationRecord,
+    MIN_BACKEND_API,
+    ProblematicVariable,
+    ThermalDeviceResult,
+    ThermalResult,
+    ThermalSettings,
+    TransientResult,
+    TransientSettings,
+    FosterStage,
+    LossBreakdown,
+)
 
 
 @dataclass
@@ -57,9 +75,22 @@ class BackendCallbacks:
 
 
 class SimulationBackend(Protocol):
-    """Protocol describing the minimal backend surface used by the GUI."""
+    """Protocol describing the full backend interface used by the GUI.
+
+    All simulation backends must implement this protocol. The protocol supports
+    feature detection via `has_capability()` for graceful degradation.
+    """
 
     info: BackendInfo
+
+    @property
+    def capabilities(self) -> set[str]:
+        """Return set of supported capability names."""
+        ...
+
+    def has_capability(self, name: str) -> bool:
+        """Check if a specific capability is supported."""
+        ...
 
     def run_transient(
         self,
@@ -67,6 +98,31 @@ class SimulationBackend(Protocol):
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        ...
+
+    def run_dc(
+        self,
+        circuit_data: dict,
+        settings: DCSettings,
+    ) -> DCResult:
+        """Run DC operating point analysis."""
+        ...
+
+    def run_ac(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> ACResult:
+        """Run AC frequency-domain analysis."""
+        ...
+
+    def run_thermal(
+        self,
+        circuit_data: dict,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult:
+        """Run thermal simulation."""
         ...
 
     def request_pause(self, run_id: int | None = None) -> None:
@@ -80,17 +136,26 @@ class SimulationBackend(Protocol):
 
 
 class PlaceholderBackend(SimulationBackend):
-    """Fallback backend that reuses the GUI's synthetic waveforms."""
+    """Fallback backend that generates synthetic data for demo mode."""
 
     def __init__(self, info: BackendInfo | None = None) -> None:
         self.info = info or BackendInfo(
             identifier="placeholder",
-            name="placeholder",
+            name="Demo backend",
             version="0.0",
             status="placeholder",
-            capabilities={"transient"},
-            message="Running in demo mode; install pulsit backend to enable real simulations.",
+            capabilities={"transient", "dc", "ac", "thermal"},
+            message="Running in demo mode; install pulsim backend to enable real simulations.",
         )
+
+    @property
+    def capabilities(self) -> set[str]:
+        """Return supported capabilities (all for demo)."""
+        return self.info.capabilities
+
+    def has_capability(self, name: str) -> bool:
+        """Check if capability is supported."""
+        return name in self.capabilities
 
     def run_transient(
         self,
@@ -154,6 +219,162 @@ class PlaceholderBackend(SimulationBackend):
             "I(R1)": v_out / 1000.0,
         }
 
+    def run_dc(
+        self,
+        circuit_data: dict,
+        settings: DCSettings,
+    ) -> DCResult:
+        """Generate synthetic DC operating point results."""
+        # Generate deterministic synthetic data based on circuit
+        node_voltages = {
+            "V(in)": 12.0,
+            "V(out)": 5.0,
+            "V(gate)": 10.0,
+        }
+        branch_currents = {
+            "I(Vin)": -0.5,
+            "I(R1)": 0.005,
+            "I(M1)": 0.5,
+        }
+        power_dissipation = {
+            "R1": 0.025,
+            "M1": 3.5,
+        }
+        convergence_info = ConvergenceInfo(
+            converged=True,
+            iterations=5,
+            final_residual=1e-12,
+            strategy_used="placeholder",
+        )
+        return DCResult(
+            node_voltages=node_voltages,
+            branch_currents=branch_currents,
+            power_dissipation=power_dissipation,
+            convergence_info=convergence_info,
+        )
+
+    def run_ac(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> ACResult:
+        """Generate synthetic AC analysis results."""
+        import numpy as np
+
+        # Generate frequency points
+        num_decades = max(1, int(math.log10(settings.f_stop / max(settings.f_start, 1))))
+        num_points = num_decades * settings.points_per_decade
+        frequencies = list(np.logspace(
+            math.log10(settings.f_start),
+            math.log10(settings.f_stop),
+            num_points,
+        ))
+
+        # Generate synthetic Bode plot (simple low-pass filter response)
+        fc = 1000.0  # Corner frequency
+        magnitude: dict[str, list[float]] = {}
+        phase: dict[str, list[float]] = {}
+
+        for node in settings.output_nodes or ["V(out)"]:
+            mag_values = []
+            phase_values = []
+            for f in frequencies:
+                # Simple first-order low-pass response
+                ratio = f / fc
+                mag_db = -10 * math.log10(1 + ratio**2)
+                phase_deg = -math.degrees(math.atan(ratio))
+                mag_values.append(mag_db)
+                phase_values.append(phase_deg)
+            magnitude[node] = mag_values
+            phase[node] = phase_values
+
+        return ACResult(
+            frequencies=frequencies,
+            magnitude=magnitude,
+            phase=phase,
+        )
+
+    def run_thermal(
+        self,
+        circuit_data: dict,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult:
+        """Generate synthetic thermal simulation results."""
+        # Use electrical result time base or generate one
+        if electrical_result.time:
+            time = electrical_result.time
+        else:
+            time = [i * 1e-6 for i in range(1001)]
+
+        # Generate synthetic device thermal data
+        devices = []
+
+        # MOSFET M1
+        m1_temps = []
+        for i, t in enumerate(time):
+            # Exponential rise to steady state
+            tau = 0.1e-3  # Thermal time constant
+            steady_state = settings.ambient_temperature + 50.0
+            temp = settings.ambient_temperature + (steady_state - settings.ambient_temperature) * (
+                1 - math.exp(-t / tau)
+            )
+            m1_temps.append(temp)
+
+        devices.append(ThermalDeviceResult(
+            name="M1",
+            junction_temperature=m1_temps,
+            peak_temperature=max(m1_temps),
+            steady_state_temperature=m1_temps[-1] if m1_temps else settings.ambient_temperature,
+            losses=LossBreakdown(
+                conduction=2.5,
+                switching_on=0.3,
+                switching_off=0.4,
+                reverse_recovery=0.0,
+            ),
+            foster_stages=[
+                FosterStage(resistance=0.5, capacitance=0.001),
+                FosterStage(resistance=1.0, capacitance=0.01),
+                FosterStage(resistance=2.0, capacitance=0.1),
+            ],
+            thermal_limit=150.0,
+        ))
+
+        # Diode D1
+        d1_temps = []
+        for i, t in enumerate(time):
+            tau = 0.05e-3
+            steady_state = settings.ambient_temperature + 30.0
+            temp = settings.ambient_temperature + (steady_state - settings.ambient_temperature) * (
+                1 - math.exp(-t / tau)
+            )
+            d1_temps.append(temp)
+
+        devices.append(ThermalDeviceResult(
+            name="D1",
+            junction_temperature=d1_temps,
+            peak_temperature=max(d1_temps),
+            steady_state_temperature=d1_temps[-1] if d1_temps else settings.ambient_temperature,
+            losses=LossBreakdown(
+                conduction=0.8,
+                switching_on=0.0,
+                switching_off=0.0,
+                reverse_recovery=0.15,
+            ),
+            foster_stages=[
+                FosterStage(resistance=1.0, capacitance=0.002),
+                FosterStage(resistance=2.0, capacitance=0.02),
+            ],
+            thermal_limit=175.0,
+        ))
+
+        return ThermalResult(
+            time=time,
+            devices=devices,
+            ambient_temperature=settings.ambient_temperature,
+            is_synthetic=True,
+        )
+
     def request_pause(self, run_id: int | None = None) -> None:  # pragma: no cover - trivial
         """Placeholder backend executes entirely within GUI thread control."""
 
@@ -173,6 +394,36 @@ class PulsimBackend(SimulationBackend):
         self._converter = CircuitConverter(module)
         self._controllers: dict[int, Any] = {}
         self._lock = threading.Lock()
+        self._cached_capabilities: set[str] | None = None
+
+    @property
+    def capabilities(self) -> set[str]:
+        """Return set of supported capability names."""
+        if self._cached_capabilities is not None:
+            return self._cached_capabilities
+
+        caps = {"transient"}
+
+        # Check for DC analysis (v2 solver)
+        if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
+            caps.add("dc")
+        elif hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
+            caps.add("dc")
+
+        # Check for AC analysis
+        if hasattr(self._module, "run_ac") or hasattr(self._module, "ACAnalysis"):
+            caps.add("ac")
+
+        # Check for thermal simulation
+        if hasattr(self._module, "ThermalSimulator"):
+            caps.add("thermal")
+
+        self._cached_capabilities = caps
+        return caps
+
+    def has_capability(self, name: str) -> bool:
+        """Check if a specific capability is supported."""
+        return name in self.capabilities
 
     def run_transient(
         self,
@@ -216,6 +467,361 @@ class PulsimBackend(SimulationBackend):
             self._unregister_controller(run_id)
 
         return result
+
+    def run_dc(
+        self,
+        circuit_data: dict,
+        settings: DCSettings,
+    ) -> DCResult:
+        """Run DC operating point analysis using PulsimCore solver."""
+        if not self.has_capability("dc"):
+            return DCResult(
+                error_message="DC analysis not supported by this backend version",
+                convergence_info=ConvergenceInfo(converged=False, failure_reason="Not supported"),
+            )
+
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            return DCResult(
+                error_message=str(exc),
+                convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
+            )
+
+        try:
+            # Build Newton options from DCSettings
+            newton_opts = self._build_dc_options(settings)
+
+            # Try v1 namespace first (DCConvergenceSolver)
+            if hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
+                return self._run_dc_v1(circuit, settings, newton_opts)
+
+            # Try v2 namespace
+            if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
+                native_result = self._module.v2.solve_dc(circuit, newton_opts)
+                return self._convert_dc_result(native_result, circuit)
+
+            return DCResult(
+                error_message="No DC solver available in backend",
+                convergence_info=ConvergenceInfo(converged=False, failure_reason="No solver"),
+            )
+
+        except Exception as exc:
+            return DCResult(
+                error_message=str(exc),
+                convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
+            )
+
+    def _run_dc_v1(self, circuit: Any, settings: DCSettings, newton_opts: Any) -> DCResult:
+        """Run DC analysis using v1 DCConvergenceSolver."""
+        v1 = self._module.v1
+
+        # Map strategy string to enum if available
+        strategy = self._map_dc_strategy(settings.strategy)
+
+        # Create DC convergence solver
+        solver = v1.DCConvergenceSolver(circuit, newton_opts)
+
+        # Run analysis with appropriate strategy
+        if settings.strategy == "gmin" and hasattr(solver, "solve_with_gmin"):
+            native_result = solver.solve_with_gmin(settings.gmin_initial, settings.gmin_final)
+        elif settings.strategy == "source" and hasattr(solver, "solve_with_source_stepping"):
+            native_result = solver.solve_with_source_stepping(settings.source_steps)
+        elif settings.strategy == "pseudo" and hasattr(solver, "solve_with_pseudo_transient"):
+            native_result = solver.solve_with_pseudo_transient()
+        else:
+            # Auto or direct strategy
+            native_result = solver.solve()
+
+        return self._convert_dc_result(native_result, circuit)
+
+    def _build_dc_options(self, settings: DCSettings) -> Any:
+        """Build PulsimCore Newton options from DCSettings."""
+        # Try v1 NewtonOptions first
+        if hasattr(self._module, "v1") and hasattr(self._module.v1, "NewtonOptions"):
+            opts = self._module.v1.NewtonOptions()
+        elif hasattr(self._module, "v2") and hasattr(self._module.v2, "NewtonOptions"):
+            opts = self._module.v2.NewtonOptions()
+        else:
+            # Fallback to generic options
+            opts = type("NewtonOptions", (), {})()
+
+        if hasattr(opts, "max_iterations"):
+            opts.max_iterations = settings.max_iterations
+        if hasattr(opts, "tolerance"):
+            opts.tolerance = settings.tolerance
+        if hasattr(opts, "enable_limiting"):
+            opts.enable_limiting = settings.enable_limiting
+        if hasattr(opts, "max_voltage_step"):
+            opts.max_voltage_step = settings.max_voltage_step
+
+        return opts
+
+    def _map_dc_strategy(self, strategy: str) -> Any:
+        """Map strategy string to PulsimCore enum."""
+        if hasattr(self._module, "v1") and hasattr(self._module.v1, "DCStrategy"):
+            strategy_map = {
+                "auto": self._module.v1.DCStrategy.Auto,
+                "direct": self._module.v1.DCStrategy.Direct,
+                "gmin": self._module.v1.DCStrategy.GminStepping,
+                "source": self._module.v1.DCStrategy.SourceStepping,
+                "pseudo": self._module.v1.DCStrategy.PseudoTransient,
+            }
+            return strategy_map.get(strategy.lower(), self._module.v1.DCStrategy.Auto)
+        return strategy
+
+    def _convert_dc_result(self, native_result: Any, circuit: Any) -> DCResult:
+        """Convert PulsimCore DC result to GUI DCResult."""
+        node_voltages: dict[str, float] = {}
+        branch_currents: dict[str, float] = {}
+        power_dissipation: dict[str, float] = {}
+
+        # Extract solution vector
+        solution = getattr(native_result, "solution", None)
+        if solution is not None:
+            # Map node indices to names
+            node_names = []
+            if hasattr(circuit, "node_names"):
+                node_names = list(circuit.node_names())
+            elif hasattr(circuit, "get_node_names"):
+                node_names = list(circuit.get_node_names())
+
+            for i, name in enumerate(node_names):
+                if i < len(solution):
+                    node_voltages[f"V({name})"] = float(solution[i])
+
+        # Extract branch currents if available
+        if hasattr(native_result, "branch_currents"):
+            for name, current in native_result.branch_currents.items():
+                branch_currents[f"I({name})"] = float(current)
+
+        # Build convergence info
+        convergence_info = self._build_convergence_info(native_result)
+
+        # Determine error message
+        error_message = ""
+        if not convergence_info.converged:
+            error_message = getattr(
+                native_result,
+                "error_message",
+                convergence_info.failure_reason or "DC analysis failed to converge",
+            )
+
+        return DCResult(
+            node_voltages=node_voltages,
+            branch_currents=branch_currents,
+            power_dissipation=power_dissipation,
+            convergence_info=convergence_info,
+            error_message=error_message,
+        )
+
+    def _build_convergence_info(self, native_result: Any) -> ConvergenceInfo:
+        """Build ConvergenceInfo from native result."""
+        converged = getattr(native_result, "converged", False)
+        if not converged and hasattr(native_result, "success"):
+            converged = native_result.success()
+
+        iterations = getattr(native_result, "iterations", 0)
+        final_residual = getattr(native_result, "final_residual", 0.0)
+        strategy_used = getattr(native_result, "strategy_used", "newton")
+
+        # Extract iteration history if available
+        history: list[IterationRecord] = []
+        if hasattr(native_result, "history"):
+            for i, record in enumerate(native_result.history):
+                history.append(IterationRecord(
+                    iteration=i,
+                    residual_norm=getattr(record, "residual_norm", 0.0),
+                    voltage_error=getattr(record, "voltage_error", 0.0),
+                    current_error=getattr(record, "current_error", 0.0),
+                    damping_factor=getattr(record, "damping_factor", 1.0),
+                    step_norm=getattr(record, "step_norm", 0.0),
+                ))
+
+        # Extract problematic variables if available
+        problematic_variables: list[ProblematicVariable] = []
+        if hasattr(native_result, "problematic_nodes"):
+            for node in native_result.problematic_nodes:
+                problematic_variables.append(ProblematicVariable(
+                    index=getattr(node, "index", 0),
+                    name=getattr(node, "name", "unknown"),
+                    value=getattr(node, "value", 0.0),
+                    change=getattr(node, "change", 0.0),
+                    tolerance=getattr(node, "tolerance", 1e-9),
+                    normalized_error=getattr(node, "normalized_error", 0.0),
+                    is_voltage=getattr(node, "is_voltage", True),
+                ))
+
+        failure_reason = ""
+        if not converged:
+            failure_reason = getattr(native_result, "failure_reason", "")
+            if not failure_reason:
+                failure_reason = getattr(native_result, "error_message", "Convergence failed")
+
+        return ConvergenceInfo(
+            converged=converged,
+            iterations=iterations,
+            final_residual=final_residual,
+            strategy_used=str(strategy_used),
+            history=history,
+            problematic_variables=problematic_variables,
+            failure_reason=failure_reason,
+        )
+
+    def run_ac(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> ACResult:
+        """Run AC frequency-domain analysis using PulsimCore."""
+        if not self.has_capability("ac"):
+            return ACResult(
+                error_message="AC analysis not supported by this backend version",
+            )
+
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            return ACResult(error_message=str(exc))
+
+        try:
+            # Build AC options
+            ac_opts = self._build_ac_options(settings)
+
+            # Try different AC analysis APIs
+            if hasattr(self._module, "run_ac"):
+                native_result = self._module.run_ac(circuit, ac_opts)
+            elif hasattr(self._module, "ACAnalysis"):
+                analyzer = self._module.ACAnalysis(circuit)
+                native_result = analyzer.run(ac_opts)
+            else:
+                return ACResult(error_message="No AC analysis API available")
+
+            return self._convert_ac_result(native_result, settings)
+
+        except Exception as exc:
+            return ACResult(error_message=str(exc))
+
+    def _build_ac_options(self, settings: ACSettings) -> Any:
+        """Build PulsimCore AC options from ACSettings."""
+        if hasattr(self._module, "ACOptions"):
+            opts = self._module.ACOptions()
+        else:
+            opts = type("ACOptions", (), {})()
+
+        if hasattr(opts, "f_start"):
+            opts.f_start = settings.f_start
+        if hasattr(opts, "f_stop"):
+            opts.f_stop = settings.f_stop
+        if hasattr(opts, "points_per_decade"):
+            opts.points_per_decade = settings.points_per_decade
+        if hasattr(opts, "input_source"):
+            opts.input_source = settings.input_source
+
+        return opts
+
+    def _convert_ac_result(self, native_result: Any, settings: ACSettings) -> ACResult:
+        """Convert PulsimCore AC result to GUI ACResult."""
+        frequencies = list(getattr(native_result, "frequencies", []))
+        magnitude: dict[str, list[float]] = {}
+        phase: dict[str, list[float]] = {}
+
+        # Extract magnitude and phase data
+        if hasattr(native_result, "magnitude"):
+            for name, values in native_result.magnitude.items():
+                magnitude[name] = list(values)
+        if hasattr(native_result, "phase"):
+            for name, values in native_result.phase.items():
+                phase[name] = list(values)
+
+        return ACResult(
+            frequencies=frequencies,
+            magnitude=magnitude,
+            phase=phase,
+        )
+
+    def run_thermal(
+        self,
+        circuit_data: dict,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult:
+        """Run thermal simulation using PulsimCore ThermalSimulator."""
+        if not self.has_capability("thermal"):
+            return ThermalResult(
+                error_message="Thermal simulation not supported by this backend version",
+                is_synthetic=True,
+            )
+
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            return ThermalResult(error_message=str(exc), is_synthetic=True)
+
+        try:
+            # Create thermal simulator
+            thermal_sim = self._module.ThermalSimulator(circuit)
+
+            # Configure settings
+            if hasattr(thermal_sim, "set_ambient_temperature"):
+                thermal_sim.set_ambient_temperature(settings.ambient_temperature)
+            if hasattr(thermal_sim, "include_switching_losses"):
+                thermal_sim.include_switching_losses = settings.include_switching_losses
+            if hasattr(thermal_sim, "include_conduction_losses"):
+                thermal_sim.include_conduction_losses = settings.include_conduction_losses
+
+            # Run thermal analysis with electrical results
+            native_result = thermal_sim.run(electrical_result.time, electrical_result.signals)
+
+            return self._convert_thermal_result(native_result, settings)
+
+        except Exception as exc:
+            return ThermalResult(error_message=str(exc), is_synthetic=True)
+
+    def _convert_thermal_result(self, native_result: Any, settings: ThermalSettings) -> ThermalResult:
+        """Convert PulsimCore thermal result to GUI ThermalResult."""
+        time = list(getattr(native_result, "time", []))
+        devices: list[ThermalDeviceResult] = []
+
+        if hasattr(native_result, "devices"):
+            for dev in native_result.devices:
+                # Extract Foster stages
+                foster_stages: list[FosterStage] = []
+                if hasattr(dev, "foster_network"):
+                    for stage in dev.foster_network:
+                        foster_stages.append(FosterStage(
+                            resistance=getattr(stage, "r", 0.0),
+                            capacitance=getattr(stage, "c", 0.0),
+                        ))
+
+                # Extract losses
+                losses = LossBreakdown()
+                if hasattr(dev, "losses"):
+                    loss_data = dev.losses
+                    losses = LossBreakdown(
+                        conduction=getattr(loss_data, "conduction", 0.0),
+                        switching_on=getattr(loss_data, "switching_on", 0.0),
+                        switching_off=getattr(loss_data, "switching_off", 0.0),
+                        reverse_recovery=getattr(loss_data, "reverse_recovery", 0.0),
+                    )
+
+                junction_temp = list(getattr(dev, "junction_temperature", []))
+                devices.append(ThermalDeviceResult(
+                    name=getattr(dev, "name", "unknown"),
+                    junction_temperature=junction_temp,
+                    peak_temperature=max(junction_temp) if junction_temp else settings.ambient_temperature,
+                    steady_state_temperature=junction_temp[-1] if junction_temp else settings.ambient_temperature,
+                    losses=losses,
+                    foster_stages=foster_stages,
+                    thermal_limit=getattr(dev, "thermal_limit", None),
+                ))
+
+        return ThermalResult(
+            time=time,
+            devices=devices,
+            ambient_temperature=settings.ambient_temperature,
+            is_synthetic=False,
+        )
 
     def request_pause(self, run_id: int | None = None) -> None:
         controller = self._controller_for(run_id)
@@ -420,7 +1026,7 @@ class BackendLoader:
             name="Demo backend",
             version="0.0",
             status=status,
-            capabilities={"transient"},
+            capabilities={"transient", "dc", "ac", "thermal"},
             message=message,
         )
         return BackendLoader._BackendCandidate(info=info, factory=lambda: PlaceholderBackend(info))
@@ -438,8 +1044,21 @@ class BackendLoader:
 
         location = Path(getattr(module, "__file__", "")).resolve().parent.as_posix()
         capabilities = {"transient"}
+
+        # Check for DC analysis capability
+        if hasattr(module, "v2") and hasattr(module.v2, "solve_dc"):
+            capabilities.add("dc")
+        elif hasattr(module, "v1") and hasattr(module.v1, "DCConvergenceSolver"):
+            capabilities.add("dc")
+
+        # Check for AC analysis capability
+        if hasattr(module, "run_ac") or hasattr(module, "ACAnalysis"):
+            capabilities.add("ac")
+
+        # Check for thermal simulation capability
         if hasattr(module, "ThermalSimulator"):
             capabilities.add("thermal")
+
         info = BackendInfo(
             identifier="pulsim",
             name="Pulsim",
@@ -505,4 +1124,15 @@ __all__ = [
     "PlaceholderBackend",
     "PulsimBackend",
     "SimulationBackend",
+    # Re-export types from backend_types for convenience
+    "ACResult",
+    "ACSettings",
+    "DCResult",
+    "DCSettings",
+    "ThermalResult",
+    "ThermalSettings",
+    "TransientResult",
+    "TransientSettings",
+    "ConvergenceInfo",
+    "BackendVersion",
 ]
