@@ -1767,18 +1767,17 @@ class MainWindow(QMainWindow):
 
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""
+        # Get convergence info from simulation service (for diagnostics)
+        convergence_info = self._simulation_service.last_convergence_info
+
         if result.is_valid:
             # Update schematic with DC values and show overlay
             self._schematic_scene.set_dc_results(result)
             self.action_toggle_dc_overlay.setChecked(True)
 
-            # Show results dialog
-            dialog = DCResultsDialog(result, self)
-            dialog.exec()
-        else:
-            QMessageBox.warning(
-                self, "DC Analysis Error", f"DC analysis failed:\n{result.error_message}"
-            )
+        # Show results dialog with convergence info for diagnostics
+        dialog = DCResultsDialog(result, convergence_info=convergence_info, parent=self)
+        dialog.exec()
 
     def _on_ac_finished(self, result) -> None:
         """Handle AC analysis completion."""
