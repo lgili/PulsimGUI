@@ -128,3 +128,38 @@ class SettingsService:
     def set_show_value_labels(self, enabled: bool) -> None:
         """Set show value labels setting."""
         self._settings.setValue("show_value_labels", enabled)
+
+    # Simulation settings
+    def get_simulation_settings(self) -> dict:
+        """Get saved simulation settings."""
+        return {
+            "t_stop": float(self._settings.value("simulation/t_stop", 1e-3)),
+            "t_step": float(self._settings.value("simulation/t_step", 1e-6)),
+            "solver": self._settings.value("simulation/solver", "auto"),
+            "max_step": float(self._settings.value("simulation/max_step", 1e-6)),
+            "rel_tol": float(self._settings.value("simulation/rel_tol", 1e-4)),
+            "abs_tol": float(self._settings.value("simulation/abs_tol", 1e-6)),
+            "output_points": int(self._settings.value("simulation/output_points", 10000)),
+        }
+
+    def set_simulation_settings(self, settings: dict) -> None:
+        """Save simulation settings."""
+        for key, value in settings.items():
+            self._settings.setValue(f"simulation/{key}", value)
+
+    # Solver settings (Newton solver, DC strategies)
+    def get_solver_settings(self) -> dict:
+        """Get saved solver settings."""
+        return {
+            "max_newton_iterations": int(self._settings.value("solver/max_newton_iterations", 50)),
+            "enable_voltage_limiting": self._settings.value("solver/enable_voltage_limiting", True, type=bool),
+            "max_voltage_step": float(self._settings.value("solver/max_voltage_step", 5.0)),
+            "dc_strategy": self._settings.value("solver/dc_strategy", "auto"),
+            "gmin_initial": float(self._settings.value("solver/gmin_initial", 1e-3)),
+            "gmin_final": float(self._settings.value("solver/gmin_final", 1e-12)),
+        }
+
+    def set_solver_settings(self, settings: dict) -> None:
+        """Save solver settings."""
+        for key, value in settings.items():
+            self._settings.setValue(f"solver/{key}", value)

@@ -467,6 +467,26 @@ class SimulationService(QObject):
         preferred_backend = None
         if settings_service is not None:
             preferred_backend = settings_service.get_backend_preference()
+
+            # Load persisted simulation settings
+            sim_settings = settings_service.get_simulation_settings()
+            self._settings.t_stop = sim_settings.get("t_stop", self._settings.t_stop)
+            self._settings.t_step = sim_settings.get("t_step", self._settings.t_step)
+            self._settings.solver = sim_settings.get("solver", self._settings.solver)
+            self._settings.max_step = sim_settings.get("max_step", self._settings.max_step)
+            self._settings.rel_tol = sim_settings.get("rel_tol", self._settings.rel_tol)
+            self._settings.abs_tol = sim_settings.get("abs_tol", self._settings.abs_tol)
+            self._settings.output_points = sim_settings.get("output_points", self._settings.output_points)
+
+            # Load persisted solver settings
+            solver_settings = settings_service.get_solver_settings()
+            self._settings.max_newton_iterations = solver_settings.get("max_newton_iterations", self._settings.max_newton_iterations)
+            self._settings.enable_voltage_limiting = solver_settings.get("enable_voltage_limiting", self._settings.enable_voltage_limiting)
+            self._settings.max_voltage_step = solver_settings.get("max_voltage_step", self._settings.max_voltage_step)
+            self._settings.dc_strategy = solver_settings.get("dc_strategy", self._settings.dc_strategy)
+            self._settings.gmin_initial = solver_settings.get("gmin_initial", self._settings.gmin_initial)
+            self._settings.gmin_final = solver_settings.get("gmin_final", self._settings.gmin_final)
+
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
 

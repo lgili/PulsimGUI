@@ -140,7 +140,7 @@
   - Build DCSettings from SimulationSettings
   - Map to pulsim.v1.NewtonOptions
 
-- [ ] 5.5 Persist solver settings
+- [x] 5.5 Persist solver settings
   - Save to project file
   - Save to user preferences
   - Restore on dialog open
