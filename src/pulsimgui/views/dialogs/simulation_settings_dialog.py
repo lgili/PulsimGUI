@@ -164,12 +164,12 @@ class SimulationSettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
 
         # Solver selection group
-        solver_group = QGroupBox("Solver Selection")
+        solver_group = QGroupBox("Integration Method")
         solver_layout = QFormLayout(solver_group)
 
         self._solver_combo = QComboBox()
         self._solver_combo.addItems(["Auto", "RK4 (Fixed Step)", "RK45 (Adaptive)", "BDF (Stiff)"])
-        solver_layout.addRow("Solver:", self._solver_combo)
+        solver_layout.addRow("Method:", self._solver_combo)
 
         # Solver description
         self._solver_desc = QLabel("")
@@ -179,6 +179,80 @@ class SimulationSettingsDialog(QDialog):
         self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
 
         layout.addWidget(solver_group)
+
+        # Newton solver settings group
+        newton_group = QGroupBox("Newton Solver")
+        newton_layout = QFormLayout(newton_group)
+
+        self._max_iterations_spin = QSpinBox()
+        self._max_iterations_spin.setRange(10, 500)
+        self._max_iterations_spin.setValue(50)
+        self._max_iterations_spin.setToolTip("Maximum Newton iterations per timestep")
+        newton_layout.addRow("Max iterations:", self._max_iterations_spin)
+
+        self._voltage_limiting_check = QCheckBox("Enable voltage limiting")
+        self._voltage_limiting_check.setChecked(True)
+        self._voltage_limiting_check.setToolTip("Limit voltage changes to prevent divergence")
+        newton_layout.addRow(self._voltage_limiting_check)
+
+        self._max_voltage_step_spin = QDoubleSpinBox()
+        self._max_voltage_step_spin.setRange(0.1, 100.0)
+        self._max_voltage_step_spin.setValue(5.0)
+        self._max_voltage_step_spin.setSuffix(" V")
+        self._max_voltage_step_spin.setToolTip("Maximum voltage change per iteration")
+        newton_layout.addRow("Max voltage step:", self._max_voltage_step_spin)
+
+        self._voltage_limiting_check.toggled.connect(self._max_voltage_step_spin.setEnabled)
+
+        layout.addWidget(newton_group)
+
+        # DC Strategy group
+        dc_group = QGroupBox("DC Operating Point Strategy")
+        dc_layout = QFormLayout(dc_group)
+
+        self._dc_strategy_combo = QComboBox()
+        self._dc_strategy_combo.addItems([
+            "Auto",
+            "Direct Newton",
+            "GMIN Stepping",
+            "Source Stepping",
+            "Pseudo-Transient",
+        ])
+        self._dc_strategy_combo.setToolTip("Strategy for finding DC operating point")
+        dc_layout.addRow("Strategy:", self._dc_strategy_combo)
+
+        # DC strategy description
+        self._dc_strategy_desc = QLabel("")
+        self._dc_strategy_desc.setWordWrap(True)
+        self._dc_strategy_desc.setStyleSheet("color: gray; font-size: 11px;")
+        dc_layout.addRow(self._dc_strategy_desc)
+        self._dc_strategy_combo.currentIndexChanged.connect(self._update_dc_strategy_description)
+
+        # GMIN parameters (shown only when GMIN strategy selected)
+        self._gmin_widget = QWidget()
+        gmin_layout = QFormLayout(self._gmin_widget)
+        gmin_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._gmin_initial_spin = QDoubleSpinBox()
+        self._gmin_initial_spin.setDecimals(6)
+        self._gmin_initial_spin.setRange(1e-6, 1.0)
+        self._gmin_initial_spin.setValue(1e-3)
+        self._gmin_initial_spin.setToolTip("Initial GMIN conductance value")
+        gmin_layout.addRow("GMIN initial:", self._gmin_initial_spin)
+
+        self._gmin_final_spin = QDoubleSpinBox()
+        self._gmin_final_spin.setDecimals(15)
+        self._gmin_final_spin.setRange(1e-15, 1e-6)
+        self._gmin_final_spin.setValue(1e-12)
+        self._gmin_final_spin.setToolTip("Final GMIN conductance value")
+        gmin_layout.addRow("GMIN final:", self._gmin_final_spin)
+
+        dc_layout.addRow(self._gmin_widget)
+        self._gmin_widget.setVisible(False)
+
+        self._dc_strategy_combo.currentIndexChanged.connect(self._on_dc_strategy_changed)
+
+        layout.addWidget(dc_group)
 
         # Tolerances group
         tol_group = QGroupBox("Tolerances")
@@ -205,6 +279,24 @@ class SimulationSettingsDialog(QDialog):
 
         layout.addStretch()
         return widget
+
+    def _update_dc_strategy_description(self) -> None:
+        """Update DC strategy description based on selection."""
+        descriptions = [
+            "Automatically select the best strategy based on circuit complexity.",
+            "Direct Newton-Raphson iteration. Fast for simple circuits.",
+            "Gradually reduce GMIN conductance. Good for circuits with semiconductor junctions.",
+            "Gradually ramp voltage/current sources. Helps with strongly nonlinear circuits.",
+            "Use time-stepping to find DC point. Best for very difficult circuits.",
+        ]
+        idx = self._dc_strategy_combo.currentIndex()
+        self._dc_strategy_desc.setText(descriptions[idx] if idx < len(descriptions) else "")
+
+    def _on_dc_strategy_changed(self, index: int) -> None:
+        """Show/hide GMIN parameters based on strategy."""
+        # GMIN Stepping is index 2
+        self._gmin_widget.setVisible(index == 2)
+        self._update_dc_strategy_description()
 
     def _create_output_tab(self) -> QWidget:
         """Create output settings tab."""
@@ -265,9 +357,23 @@ class SimulationSettingsDialog(QDialog):
         self._rel_tol_spin.setValue(self._settings.rel_tol)
         self._abs_tol_spin.setValue(self._settings.abs_tol)
 
+        # Newton solver settings
+        self._max_iterations_spin.setValue(self._settings.max_newton_iterations)
+        self._voltage_limiting_check.setChecked(self._settings.enable_voltage_limiting)
+        self._max_voltage_step_spin.setValue(self._settings.max_voltage_step)
+        self._max_voltage_step_spin.setEnabled(self._settings.enable_voltage_limiting)
+
+        # DC strategy settings
+        dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
+        self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(self._settings.dc_strategy, 0))
+        self._gmin_initial_spin.setValue(self._settings.gmin_initial)
+        self._gmin_final_spin.setValue(self._settings.gmin_final)
+
         self._output_points_spin.setValue(self._settings.output_points)
 
         self._update_solver_description()
+        self._update_dc_strategy_description()
+        self._on_dc_strategy_changed(self._dc_strategy_combo.currentIndex())
         self._update_effective_step()
 
     def _on_accept(self) -> None:
@@ -282,6 +388,17 @@ class SimulationSettingsDialog(QDialog):
         self._settings.max_step = self._max_step_edit.value
         self._settings.rel_tol = self._rel_tol_spin.value()
         self._settings.abs_tol = self._abs_tol_spin.value()
+
+        # Newton solver settings
+        self._settings.max_newton_iterations = self._max_iterations_spin.value()
+        self._settings.enable_voltage_limiting = self._voltage_limiting_check.isChecked()
+        self._settings.max_voltage_step = self._max_voltage_step_spin.value()
+
+        # DC strategy settings
+        dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
+        self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
+        self._settings.gmin_initial = self._gmin_initial_spin.value()
+        self._settings.gmin_final = self._gmin_final_spin.value()
 
         self._settings.output_points = self._output_points_spin.value()
 

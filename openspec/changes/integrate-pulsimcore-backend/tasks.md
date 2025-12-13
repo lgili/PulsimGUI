@@ -115,29 +115,30 @@
 
 ## 5. Solver Options UI
 
-- [ ] 5.1 Extend `SimulationSettings` dataclass
-  - Add `integration_method: str`
+- [x] 5.1 Extend `SimulationSettings` dataclass
   - Add `dc_strategy: str`
   - Add `max_newton_iterations: int`
-  - Add `enable_limiting: bool`
-  - Add `voltage_tolerance: float`
-  - Add `current_tolerance: float`
+  - Add `enable_voltage_limiting: bool`
+  - Add `max_voltage_step: float`
+  - Add `gmin_initial: float`
+  - Add `gmin_final: float`
 
-- [ ] 5.2 Add Solver tab to `SimulationSettingsDialog`
-  - Integration method dropdown (Euler, Trapezoidal, BDF2)
+- [x] 5.2 Add Solver tab to `SimulationSettingsDialog`
+  - Integration method dropdown (Auto, RK4, RK45, BDF)
   - Newton iterations spinbox
-  - Voltage/current limiting checkbox
+  - Voltage limiting checkbox
+  - Max voltage step field
   - Tolerance fields
 
-- [ ] 5.3 Add DC Strategy section to Solver tab
+- [x] 5.3 Add DC Strategy section to Solver tab
   - Strategy dropdown (Auto, Direct, GMIN, Source, Pseudo)
   - GMIN parameters (initial, final) when GMIN selected
-  - Collapsible advanced options
+  - Description text for each strategy
 
-- [ ] 5.4 Wire solver options to backend
+- [x] 5.4 Wire solver options to backend
   - Pass options through to `PulsimBackend`
-  - Map to pulsim.v2.NewtonOptions
-  - Map to pulsim.SimulationOptions
+  - Build DCSettings from SimulationSettings
+  - Map to pulsim.v1.NewtonOptions
 
 - [ ] 5.5 Persist solver settings
   - Save to project file

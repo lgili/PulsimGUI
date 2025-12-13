@@ -57,6 +57,16 @@ class SimulationSettings:
     rel_tol: float = 1e-4
     abs_tol: float = 1e-6
 
+    # Newton solver settings
+    max_newton_iterations: int = 50
+    enable_voltage_limiting: bool = True
+    max_voltage_step: float = 5.0
+
+    # DC analysis settings
+    dc_strategy: str = "auto"  # auto, direct, gmin, source, pseudo
+    gmin_initial: float = 1e-3
+    gmin_final: float = 1e-12
+
     # Output settings
     output_points: int = 10000
 
@@ -579,7 +589,7 @@ class SimulationService(QObject):
 
         Args:
             circuit_data: Dictionary representation of the circuit.
-            dc_settings: DC analysis settings. If None, uses defaults.
+            dc_settings: DC analysis settings. If None, builds from SimulationSettings.
         """
         if not self._ensure_backend_ready():
             return
@@ -590,9 +600,16 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(0, "Running DC analysis...")
 
-        # Use defaults if no settings provided
+        # Build DC settings from SimulationSettings if not provided
         if dc_settings is None:
-            dc_settings = DCSettings()
+            dc_settings = DCSettings(
+                strategy=self._settings.dc_strategy,
+                max_iterations=self._settings.max_newton_iterations,
+                enable_limiting=self._settings.enable_voltage_limiting,
+                max_voltage_step=self._settings.max_voltage_step,
+                gmin_initial=self._settings.gmin_initial,
+                gmin_final=self._settings.gmin_final,
+            )
 
         result = DCResult()
 
