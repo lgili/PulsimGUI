@@ -1651,7 +1651,29 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dialog.exec():
-            self._simulation_service.settings = dialog.get_settings()
+            new_settings = dialog.get_settings()
+            self._simulation_service.settings = new_settings
+
+            # Persist solver settings to user preferences
+            self._settings.set_solver_settings({
+                "max_newton_iterations": new_settings.max_newton_iterations,
+                "enable_voltage_limiting": new_settings.enable_voltage_limiting,
+                "max_voltage_step": new_settings.max_voltage_step,
+                "dc_strategy": new_settings.dc_strategy,
+                "gmin_initial": new_settings.gmin_initial,
+                "gmin_final": new_settings.gmin_final,
+            })
+
+            # Persist simulation settings to user preferences
+            self._settings.set_simulation_settings({
+                "t_stop": new_settings.t_stop,
+                "t_step": new_settings.t_step,
+                "solver": new_settings.solver,
+                "max_step": new_settings.max_step,
+                "rel_tol": new_settings.rel_tol,
+                "abs_tol": new_settings.abs_tol,
+                "output_points": new_settings.output_points,
+            })
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
