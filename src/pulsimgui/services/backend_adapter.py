@@ -404,8 +404,10 @@ class PulsimBackend(SimulationBackend):
 
         caps = {"transient"}
 
-        # Check for DC analysis (v2 solver)
-        if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
+        # Check for DC analysis (top-level or v1/v2 solver)
+        if hasattr(self._module, "dc_operating_point") or hasattr(self._module, "solve_dc"):
+            caps.add("dc")
+        elif hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
             caps.add("dc")
         elif hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
             caps.add("dc")
@@ -439,32 +441,56 @@ class PulsimBackend(SimulationBackend):
             result.error_message = str(exc)
             return result
 
-        options = self._build_options(settings)
-        simulator = self._module.Simulator(circuit, options)
-        controller = self._module.SimulationController()
-        run_id = threading.get_ident()
-        self._register_controller(run_id, controller)
-
         callbacks.progress(0.0, "Starting Pulsim simulation...")
 
         try:
-            progress_callback = self._progress_dispatcher(callbacks, controller)
-            sim_result = simulator.run_transient_with_progress(
-                callback=None,
-                event_callback=None,
-                control=controller,
-                progress_callback=progress_callback,
-                min_interval_ms=50,
-                min_steps=200,
-            )
-            callbacks.progress(95.0, "Collecting waveform data...")
-            self._populate_backend_result(result, sim_result)
-            if not result.error_message:
-                callbacks.progress(100.0, "Simulation complete")
-        except Exception as exc:  # pragma: no cover - backend failure path
+            # Build Newton options
+            newton_opts = self._module.NewtonOptions()
+            newton_opts.max_iterations = settings.max_newton_iterations
+            newton_opts.enable_limiting = settings.enable_voltage_limiting
+            newton_opts.max_voltage_step = settings.max_voltage_step
+
+            # Compute timestep
+            dt = self._compute_time_step(settings)
+
+            # Get initial state from DC operating point if available
+            x0 = None
+            if hasattr(self._module, "dc_operating_point"):
+                try:
+                    dc_config = self._module.DCConvergenceConfig()
+                    dc_result = self._module.dc_operating_point(circuit, dc_config)
+                    if dc_result.success:
+                        x0 = dc_result.newton_result.solution
+                except Exception:
+                    pass  # Fall back to zero initial state
+
+            callbacks.progress(10.0, "Running transient simulation...")
+
+            # Run transient simulation
+            if x0 is not None:
+                times, states, success, message = self._module.run_transient(
+                    circuit, settings.t_start, settings.t_stop, dt, x0, newton_opts
+                )
+            else:
+                times, states, success, message = self._module.run_transient(
+                    circuit, settings.t_start, settings.t_stop, dt, newton_opts
+                )
+
+            callbacks.progress(90.0, "Collecting waveform data...")
+
+            # Populate result
+            result.time = list(times)
+            node_names = circuit.node_names()
+            for i, name in enumerate(node_names):
+                result.signals[f"V({name})"] = [float(state[i]) for state in states]
+
+            if not success:
+                result.error_message = message
+
+            callbacks.progress(100.0, "Simulation complete")
+
+        except Exception as exc:
             result.error_message = str(exc)
-        finally:
-            self._unregister_controller(run_id)
 
         return result
 
@@ -489,17 +515,26 @@ class PulsimBackend(SimulationBackend):
             )
 
         try:
-            # Build Newton options from DCSettings
-            newton_opts = self._build_dc_options(settings)
+            # Try top-level dc_operating_point first (preferred)
+            if hasattr(self._module, "dc_operating_point"):
+                return self._run_dc_top_level(circuit, settings)
 
-            # Try v1 namespace first (DCConvergenceSolver)
+            # Try top-level solve_dc
+            if hasattr(self._module, "solve_dc"):
+                newton_opts = self._build_dc_options(settings)
+                native_result = self._module.solve_dc(circuit, newton_opts)
+                return self._convert_newton_result(native_result, circuit)
+
+            # Try v1 namespace (DCConvergenceSolver)
             if hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
+                newton_opts = self._build_dc_options(settings)
                 return self._run_dc_v1(circuit, settings, newton_opts)
 
             # Try v2 namespace
             if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
+                newton_opts = self._build_dc_options(settings)
                 native_result = self._module.v2.solve_dc(circuit, newton_opts)
-                return self._convert_dc_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit)
 
             return DCResult(
                 error_message="No DC solver available in backend",
@@ -511,6 +546,34 @@ class PulsimBackend(SimulationBackend):
                 error_message=str(exc),
                 convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
             )
+
+    def _run_dc_top_level(self, circuit: Any, settings: DCSettings) -> DCResult:
+        """Run DC analysis using top-level dc_operating_point function."""
+        # Build DCConvergenceConfig
+        config = self._module.DCConvergenceConfig()
+
+        # Map strategy
+        if settings.strategy == "gmin":
+            if hasattr(self._module, "DCStrategy"):
+                config.strategy = self._module.DCStrategy.GminStepping
+        elif settings.strategy == "source":
+            if hasattr(self._module, "DCStrategy"):
+                config.strategy = self._module.DCStrategy.SourceStepping
+        elif settings.strategy == "pseudo":
+            if hasattr(self._module, "DCStrategy"):
+                config.strategy = self._module.DCStrategy.PseudoTransient
+
+        # Set Newton options
+        if hasattr(config, "newton_options"):
+            config.newton_options.max_iterations = settings.max_iterations
+            config.newton_options.enable_limiting = settings.enable_limiting
+            config.newton_options.max_voltage_step = settings.max_voltage_step
+
+        # Run DC analysis
+        dc_result = self._module.dc_operating_point(circuit, config)
+
+        # Convert to DCResult
+        return self._convert_dc_analysis_result(dc_result, circuit)
 
     def _run_dc_v1(self, circuit: Any, settings: DCSettings, newton_opts: Any) -> DCResult:
         """Run DC analysis using v1 DCConvergenceSolver."""
@@ -537,8 +600,10 @@ class PulsimBackend(SimulationBackend):
 
     def _build_dc_options(self, settings: DCSettings) -> Any:
         """Build PulsimCore Newton options from DCSettings."""
-        # Try v1 NewtonOptions first
-        if hasattr(self._module, "v1") and hasattr(self._module.v1, "NewtonOptions"):
+        # Try top-level NewtonOptions first
+        if hasattr(self._module, "NewtonOptions"):
+            opts = self._module.NewtonOptions()
+        elif hasattr(self._module, "v1") and hasattr(self._module.v1, "NewtonOptions"):
             opts = self._module.v1.NewtonOptions()
         elif hasattr(self._module, "v2") and hasattr(self._module.v2, "NewtonOptions"):
             opts = self._module.v2.NewtonOptions()
@@ -556,6 +621,71 @@ class PulsimBackend(SimulationBackend):
             opts.max_voltage_step = settings.max_voltage_step
 
         return opts
+
+    def _convert_dc_analysis_result(self, dc_result: Any, circuit: Any) -> DCResult:
+        """Convert PulsimCore DCAnalysisResult to GUI DCResult."""
+        node_voltages: dict[str, float] = {}
+        branch_currents: dict[str, float] = {}
+        power_dissipation: dict[str, float] = {}
+
+        # Extract solution from newton_result
+        newton_result = getattr(dc_result, "newton_result", None)
+        solution = getattr(newton_result, "solution", None) if newton_result else None
+
+        if solution is not None:
+            node_names = list(circuit.node_names()) if hasattr(circuit, "node_names") else []
+            for i, name in enumerate(node_names):
+                if i < len(solution):
+                    node_voltages[f"V({name})"] = float(solution[i])
+
+        # Build convergence info from DCAnalysisResult
+        converged = getattr(dc_result, "success", False)
+        iterations = 0
+        final_residual = 0.0
+        strategy_used = "auto"
+
+        if newton_result:
+            iterations = getattr(newton_result, "iterations", 0)
+            final_residual = getattr(newton_result, "final_residual", 0.0)
+
+        # Extract history if available
+        history: list[IterationRecord] = []
+        if newton_result and hasattr(newton_result, "history"):
+            for record in newton_result.history:
+                history.append(IterationRecord(
+                    iteration=getattr(record, "iteration", len(history)),
+                    residual_norm=getattr(record, "residual_norm", 0.0),
+                    voltage_error=getattr(record, "max_voltage_error", 0.0),
+                    current_error=getattr(record, "max_current_error", 0.0),
+                    damping_factor=getattr(record, "damping", 1.0),
+                ))
+
+        failure_reason = ""
+        error_message = ""
+        if not converged:
+            failure_reason = getattr(dc_result, "message", "DC analysis failed")
+            error_message = failure_reason
+
+        convergence_info = ConvergenceInfo(
+            converged=converged,
+            iterations=iterations,
+            final_residual=final_residual,
+            strategy_used=strategy_used,
+            history=history,
+            failure_reason=failure_reason,
+        )
+
+        return DCResult(
+            node_voltages=node_voltages,
+            branch_currents=branch_currents,
+            power_dissipation=power_dissipation,
+            convergence_info=convergence_info,
+            error_message=error_message,
+        )
+
+    def _convert_newton_result(self, native_result: Any, circuit: Any) -> DCResult:
+        """Convert PulsimCore NewtonResult to GUI DCResult."""
+        return self._convert_dc_result(native_result, circuit)
 
     def _map_dc_strategy(self, strategy: str) -> Any:
         """Map strategy string to PulsimCore enum."""
@@ -709,12 +839,28 @@ class PulsimBackend(SimulationBackend):
         else:
             opts = type("ACOptions", (), {})()
 
-        if hasattr(opts, "f_start"):
+        # New bindings use fstart, fstop, npoints (not f_start, f_stop, points_per_decade)
+        if hasattr(opts, "fstart"):
+            opts.fstart = settings.f_start
+        elif hasattr(opts, "f_start"):
             opts.f_start = settings.f_start
-        if hasattr(opts, "f_stop"):
+
+        if hasattr(opts, "fstop"):
+            opts.fstop = settings.f_stop
+        elif hasattr(opts, "f_stop"):
             opts.f_stop = settings.f_stop
-        if hasattr(opts, "points_per_decade"):
+
+        if hasattr(opts, "npoints"):
+            # Calculate total points based on points_per_decade
+            decades = math.log10(settings.f_stop / max(settings.f_start, 0.001))
+            opts.npoints = max(1, int(decades * settings.points_per_decade))
+        elif hasattr(opts, "points_per_decade"):
             opts.points_per_decade = settings.points_per_decade
+
+        # Set sweep type to Decade if available
+        if hasattr(opts, "sweep_type") and hasattr(self._module, "FrequencySweepType"):
+            opts.sweep_type = self._module.FrequencySweepType.Decade
+
         if hasattr(opts, "input_source"):
             opts.input_source = settings.input_source
 
@@ -726,18 +872,44 @@ class PulsimBackend(SimulationBackend):
         magnitude: dict[str, list[float]] = {}
         phase: dict[str, list[float]] = {}
 
-        # Extract magnitude and phase data
-        if hasattr(native_result, "magnitude"):
-            for name, values in native_result.magnitude.items():
-                magnitude[name] = list(values)
-        if hasattr(native_result, "phase"):
-            for name, values in native_result.phase.items():
-                phase[name] = list(values)
+        # New bindings have signal_names and use accessor methods
+        signal_names = list(getattr(native_result, "signal_names", []))
+
+        if signal_names and hasattr(native_result, "magnitude_db"):
+            # New-style ACResult with accessor methods
+            num_freqs = native_result.num_frequencies()
+            for j, name in enumerate(signal_names):
+                mag_values = []
+                phase_values = []
+                for i in range(num_freqs):
+                    mag_values.append(native_result.magnitude_db(i, j))
+                    phase_values.append(native_result.phase_deg(i, j))
+                magnitude[name] = mag_values
+                phase[name] = phase_values
+        else:
+            # Old-style with dict attributes (not methods)
+            mag_attr = getattr(native_result, "magnitude", None)
+            if mag_attr is not None and not callable(mag_attr):
+                for name, values in mag_attr.items():
+                    magnitude[name] = list(values)
+            phase_attr = getattr(native_result, "phase", None)
+            if phase_attr is not None and not callable(phase_attr):
+                for name, values in phase_attr.items():
+                    phase[name] = list(values)
+
+        # Check error status
+        error_message = ""
+        if hasattr(native_result, "status"):
+            status = native_result.status
+            status_name = str(status).split(".")[-1] if hasattr(status, "name") else str(status)
+            if "Success" not in status_name:
+                error_message = getattr(native_result, "error_message", f"AC analysis failed: {status_name}")
 
         return ACResult(
             frequencies=frequencies,
             magnitude=magnitude,
             phase=phase,
+            error_message=error_message,
         )
 
     def run_thermal(
@@ -905,25 +1077,6 @@ class PulsimBackend(SimulationBackend):
                     )
             except Exception:  # pragma: no cover - best-effort cast
                 backend_result.statistics["status"] = status_value
-
-    def _build_options(self, settings: "SimulationSettings") -> Any:
-        opts = self._module.SimulationOptions()
-        opts.tstart = settings.t_start
-        opts.tstop = settings.t_stop
-        opts.dt = self._compute_time_step(settings)
-        if hasattr(opts, "dtmax"):
-            opts.dtmax = settings.max_step
-        elif hasattr(opts, "max_step"):
-            opts.max_step = settings.max_step
-        if hasattr(opts, "abstol"):
-            opts.abstol = settings.abs_tol
-        if hasattr(opts, "reltol"):
-            opts.reltol = settings.rel_tol
-        if hasattr(opts, "progress_min_interval_ms"):
-            opts.progress_min_interval_ms = 50
-        if hasattr(opts, "progress_min_steps"):
-            opts.progress_min_steps = 200
-        return opts
 
     def _compute_time_step(self, settings: "SimulationSettings") -> float:
         if settings.t_step > 0:

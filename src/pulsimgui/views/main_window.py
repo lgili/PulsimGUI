@@ -1440,9 +1440,7 @@ class MainWindow(QMainWindow):
                     item.setPos(edited_component.x, edited_component.y)
                 elif name == "rotation":
                     item.setRotation(edited_component.rotation)
-                # Update name label
-                item._name_label.setPlainText(edited_component.name)
-                # Update labels for parameter changes (value text)
+                # Update labels for parameter changes (name and value text)
                 item._update_labels()
                 item.update()
                 break
