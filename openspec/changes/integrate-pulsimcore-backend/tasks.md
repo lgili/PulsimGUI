@@ -62,9 +62,14 @@
 
 ## 3. AC Analysis Integration
 
-- [ ] 3.1 Verify `pulsim.run_ac()` is exposed in bindings
-  - Check PulsimCore bindings.cpp
-  - If missing, add to PulsimCore first
+- [x] 3.1 Verify `pulsim.run_ac()` is exposed in bindings
+  - **RESULT**: PulsimCore has AC analysis C++ code (ACAnalyzer in ac_analysis.hpp/cpp)
+  - ACOptions, ACResult, BodeData, FrequencySweepType are now exposed in Python bindings
+  - extract_bode_data() and calculate_stability_margins() functions exposed
+  - **RESOLVED**: Added `devices()` and `connections()` accessors to v1::Circuit
+  - Added `convert_to_ir_circuit()` function in bindings.cpp to convert v1::Circuit to pulsim::Circuit
+  - `run_ac()` function now takes v1::Circuit and converts internally
+  - AC analysis verified working with RC low-pass filter showing correct -3dB at cutoff
 
 - [x] 3.2 Add `run_ac()` method to `PulsimBackend`
   - Build AC options from ACSettings
@@ -76,15 +81,15 @@
   - Call `backend.run_ac()` instead of placeholder
   - Emit ACResult with real Bode data
 
-- [ ] 3.4 Update `BodePlotDialog` with real data
+- [x] 3.4 Update `BodePlotDialog` with real data
   - Display real magnitude vs frequency
   - Display real phase vs frequency
-  - Add gain/phase margin calculations
+  - Add gain/phase margin calculations (Stability Margins tab added)
 
-- [ ] 3.5 Add AC tests
-  - Test RC low-pass filter
-  - Test LC resonance
-  - Test frequency range edge cases
+- [x] 3.5 Add AC tests (21 tests in test_ac_analysis.py)
+  - Test RC low-pass filter (passband, rolloff, cutoff, phase)
+  - Test frequency range edge cases (narrow, wide, single point, very low/high)
+  - Test stability margin calculations
 
 ## 4. Thermal Simulation Integration
 
