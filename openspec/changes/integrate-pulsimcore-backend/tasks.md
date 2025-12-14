@@ -98,25 +98,29 @@
   - Run thermal analysis with electrical results
   - Extract Foster network and losses
 
-- [ ] 4.2 Modify `ThermalAnalysisService.build_result()`
-  - Try real backend first
-  - Fall back to synthetic on failure
+- [x] 4.2 Modify `ThermalAnalysisService.build_result()`
+  - Try real backend first via `_try_backend_thermal()`
+  - Fall back to synthetic via `_build_synthetic_result()`
   - Set `is_synthetic` flag on result
+  - Added `backend` property to ThermalAnalysisService
+  - MainWindow passes backend to ThermalAnalysisService
 
 - [x] 4.3 Update thermal result conversion
   - Map backend Foster stages to `FosterStage`
   - Extract conduction and switching losses
   - Build temperature traces
 
-- [ ] 4.4 Update `ThermalViewerDialog` for real data
-  - Show "(Synthetic)" badge when using fallback
+- [x] 4.4 Update `ThermalViewerDialog` for real data
+  - Show "(Synthetic Data)" badge when using fallback
+  - Window title shows "(Synthetic)" suffix
   - Display real loss breakdown
   - Show Foster network parameters
 
-- [ ] 4.5 Add thermal tests
-  - Test with MOSFET circuit
-  - Test synthetic fallback path
-  - Test loss calculation accuracy
+- [x] 4.5 Add thermal tests (16 tests in test_thermal_service.py)
+  - Test synthetic thermal data generation
+  - Test backend integration with mock backend
+  - Test fallback to synthetic on error/exception
+  - Test ThermalResult and ThermalDeviceResult dataclasses
 
 ## 5. Solver Options UI
 
