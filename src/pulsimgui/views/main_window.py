@@ -76,7 +76,10 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
-        self._thermal_service = ThermalAnalysisService(parent=self)
+        self._thermal_service = ThermalAnalysisService(
+            backend=self._simulation_service.backend,
+            parent=self,
+        )
         self._scope_windows: dict[str, ScopeWindow] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
@@ -617,6 +620,8 @@ class MainWindow(QMainWindow):
     def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
         """Apply backend changes and optionally notify the user."""
         self._update_backend_status(info)
+        # Update thermal service with new backend
+        self._thermal_service.backend = self._simulation_service.backend
         if not notify:
             return
         warning = self._simulation_service.backend_issue_message

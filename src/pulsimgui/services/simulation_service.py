@@ -521,6 +521,11 @@ class SimulationService(QObject):
         return self._backend.info
 
     @property
+    def backend(self):
+        """Return the active simulation backend for direct access."""
+        return self._backend
+
+    @property
     def last_convergence_info(self):
         """Return the last DC/transient convergence info for diagnostics."""
         return self._last_convergence_info
