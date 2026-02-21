@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from importlib import import_module, metadata
 from pathlib import Path
+import math
 import threading
+import time
 from typing import Any, Callable, Protocol, TYPE_CHECKING
 
-import math
+import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
@@ -45,6 +47,10 @@ class BackendInfo:
     location: str | None = None
     capabilities: set[str] = field(default_factory=set)
     message: str = ""
+    parsed_version: BackendVersion | None = None
+    is_compatible: bool = True
+    compatibility_warning: str = ""
+    unavailable_features: list[str] = field(default_factory=list)
 
     def label(self) -> str:
         """Return a human-readable label for UI badges."""
@@ -52,6 +58,28 @@ class BackendInfo:
         if self.status not in {"available", "detected"}:
             parts.append(f"[{self.status}]")
         return " ".join(filter(None, parts))
+
+    def check_compatibility(self) -> None:
+        """Check version compatibility and update status fields."""
+        if self.parsed_version is None:
+            try:
+                self.parsed_version = BackendVersion.from_string(self.version)
+            except ValueError:
+                self.is_compatible = False
+                self.compatibility_warning = f"Unable to parse version: {self.version}"
+                return
+
+        if not self.parsed_version.is_compatible_with(MIN_BACKEND_API):
+            self.is_compatible = False
+            self.compatibility_warning = (
+                f"Backend version {self.version} is older than minimum required "
+                f"({MIN_BACKEND_API.major}.{MIN_BACKEND_API.minor}.{MIN_BACKEND_API.patch}). "
+                "Some features may not work correctly."
+            )
+
+        # Determine unavailable features based on capabilities
+        all_features = {"dc", "ac", "thermal", "transient"}
+        self.unavailable_features = sorted(all_features - self.capabilities)
 
 
 @dataclass
@@ -444,54 +472,337 @@ class PulsimBackend(SimulationBackend):
         callbacks.progress(0.0, "Starting Pulsim simulation...")
 
         try:
-            # Build Newton options
-            newton_opts = self._module.NewtonOptions()
-            newton_opts.max_iterations = settings.max_newton_iterations
-            newton_opts.enable_limiting = settings.enable_voltage_limiting
-            newton_opts.max_voltage_step = settings.max_voltage_step
-
-            # Compute timestep
             dt = self._compute_time_step(settings)
+            newton_opts = self._build_newton_options(settings, circuit)
+            linear_solver = self._build_linear_solver_config()
+            x0 = self._build_initial_state(circuit, settings)
 
-            # Get initial state from DC operating point if available
-            x0 = None
-            if hasattr(self._module, "dc_operating_point"):
-                try:
-                    dc_config = self._module.DCConvergenceConfig()
-                    dc_result = self._module.dc_operating_point(circuit, dc_config)
-                    if dc_result.success:
-                        x0 = dc_result.newton_result.solution
-                except Exception:
-                    pass  # Fall back to zero initial state
+            # Initialize result containers
+            node_names = list(circuit.node_names())
+            result.time = []
+            for name in node_names:
+                result.signals[f"V({name})"] = []
 
-            callbacks.progress(10.0, "Running transient simulation...")
-
-            # Run transient simulation
-            if x0 is not None:
-                times, states, success, message = self._module.run_transient(
-                    circuit, settings.t_start, settings.t_stop, dt, x0, newton_opts
-                )
-            else:
-                times, states, success, message = self._module.run_transient(
-                    circuit, settings.t_start, settings.t_stop, dt, newton_opts
+            if hasattr(self._module, "run_transient_shared"):
+                return self._run_transient_shared(
+                    circuit, settings, callbacks, result,
+                    node_names, dt, x0, newton_opts, linear_solver,
                 )
 
-            callbacks.progress(90.0, "Collecting waveform data...")
+            if hasattr(self._module, "run_transient_streaming"):
+                return self._run_transient_streaming(
+                    circuit, settings, callbacks, result,
+                    node_names, dt, x0, newton_opts, linear_solver,
+                )
 
-            # Populate result
-            result.time = list(times)
-            node_names = circuit.node_names()
-            for i, name in enumerate(node_names):
-                result.signals[f"V({name})"] = [float(state[i]) for state in states]
-
-            if not success:
-                result.error_message = message
-
-            callbacks.progress(100.0, "Simulation complete")
+            return self._run_transient_chunked(
+                circuit, settings, callbacks, result,
+                node_names, dt, x0, newton_opts, linear_solver,
+            )
 
         except Exception as exc:
             result.error_message = str(exc)
 
+        return result
+
+    def _run_transient_streaming(
+        self,
+        circuit: Any,
+        settings: "SimulationSettings",
+        callbacks: BackendCallbacks,
+        result: BackendRunResult,
+        node_names: list[str],
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any,
+    ) -> BackendRunResult:
+        """Run transient simulation using streaming API with real-time callbacks."""
+        # Track last sent index for incremental updates
+        last_sent_index = 0
+
+        def data_callback(t: float, state_dict: dict) -> None:
+            """Called by C++ backend for progress - we ignore the data here.
+
+            The actual data comes from the final returned arrays which have
+            full resolution. We just use this callback to trigger UI updates.
+            """
+            nonlocal last_sent_index
+            # Just trigger a progress update - actual data comes at the end
+            # Send a dummy point to trigger waveform update
+            callbacks.data_point(t, state_dict)
+
+        def progress_callback(percent: float, message: str) -> None:
+            """Called by C++ backend for progress updates."""
+            # Map backend progress (0-100) to our range (5-95)
+            mapped_progress = 5.0 + (percent / 100.0) * 90.0
+            callbacks.progress(mapped_progress, message)
+
+        def cancel_check() -> bool:
+            """Called by C++ backend to check cancellation."""
+            return callbacks.check_cancelled()
+
+        callbacks.progress(5.0, "Running simulation...")
+
+        # Use fewer callbacks (50) to reduce GIL overhead
+        # The returned data will have full resolution
+        total_steps = int((settings.t_stop - settings.t_start) / dt)
+        emit_interval = max(1, total_steps // 50)
+
+        # Call streaming API
+        if x0 is not None:
+            times, states, success, message = self._module.run_transient_streaming(
+                circuit,
+                settings.t_start,
+                settings.t_stop,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+                data_callback,
+                progress_callback,
+                cancel_check,
+                emit_interval,
+            )
+        else:
+            times, states, success, message = self._module.run_transient_streaming(
+                circuit,
+                settings.t_start,
+                settings.t_stop,
+                dt,
+                newton_opts,
+                linear_solver,
+                data_callback,
+                progress_callback,
+                cancel_check,
+                emit_interval,
+            )
+
+        if not success:
+            result.error_message = message
+            return result
+
+        # Build final result from complete simulation data
+        for t, state in zip(times, states):
+            result.time.append(float(t))
+            for i, name in enumerate(node_names):
+                result.signals[f"V({name})"].append(float(state[i]))
+
+        callbacks.progress(95.0, "Finalizing results...")
+
+        # Final data point
+        if result.time:
+            final_sample = {name: values[-1] for name, values in result.signals.items()}
+            callbacks.data_point(result.time[-1], final_sample)
+
+        callbacks.progress(100.0, "Simulation complete")
+        return result
+
+    def _run_transient_shared(
+        self,
+        circuit: Any,
+        settings: "SimulationSettings",
+        callbacks: BackendCallbacks,
+        result: BackendRunResult,
+        node_names: list[str],
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any,
+    ) -> BackendRunResult:
+        """Run transient simulation using shared memory for zero-copy real-time display.
+
+        This is the fastest method for real-time waveform display:
+        - C++ writes directly to pre-allocated numpy arrays
+        - Python polls the status buffer at 60 FPS
+        - No GIL contention during simulation
+        """
+        callbacks.progress(5.0, "Preparing shared memory buffers...")
+
+        # Calculate buffer size (add 20% margin for safety)
+        total_steps = int((settings.t_stop - settings.t_start) / dt)
+        buffer_size = int(total_steps * 1.2) + 100
+        num_nodes = len(node_names)
+
+        # Pre-allocate numpy arrays (shared memory buffers)
+        time_buffer = np.zeros(buffer_size, dtype=np.float64)
+        states_buffer = np.zeros((buffer_size, num_nodes), dtype=np.float64)
+        status_buffer = np.zeros(3, dtype=np.int64)
+        # status_buffer[0] = current_index (steps completed)
+        # status_buffer[1] = status (0=running, 1=completed, 2=error, 3=cancelled)
+        # status_buffer[2] = error_code
+
+        # Get initial state
+        if x0 is None:
+            x0 = np.zeros(num_nodes)
+
+        # Variables for the simulation thread
+        sim_success = [True]
+        sim_message = [""]
+
+        def run_simulation() -> None:
+            """Run simulation in background thread."""
+            try:
+                success, message = self._module.run_transient_shared(
+                    circuit,
+                    settings.t_start,
+                    settings.t_stop,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                    time_buffer,
+                    states_buffer,
+                    status_buffer,
+                    callbacks.check_cancelled,
+                    1000,  # Check cancellation every 1000 steps
+                )
+                sim_success[0] = success
+                sim_message[0] = message
+            except Exception as exc:
+                sim_success[0] = False
+                sim_message[0] = str(exc)
+                status_buffer[1] = 2  # error
+
+        # Start simulation in background thread
+        callbacks.progress(10.0, "Starting simulation...")
+        sim_thread = threading.Thread(target=run_simulation, daemon=True)
+        sim_thread.start()
+
+        # Poll status buffer at 60 FPS and update UI
+        poll_interval = 1.0 / 60.0  # 16.67ms
+        last_index = 0
+
+        while status_buffer[1] == 0:  # While running
+            # Check for pause
+            callbacks.wait_if_paused()
+
+            # Get current progress
+            current_index = int(status_buffer[0])
+
+            if current_index > last_index:
+                # Calculate progress percentage
+                progress = 10.0 + (current_index / total_steps) * 85.0
+                progress = min(95.0, progress)
+
+                # Get current time value for message
+                if current_index > 0 and current_index < buffer_size:
+                    current_time = time_buffer[current_index - 1]
+                    callbacks.progress(progress, f"Simulating: t={current_time*1e6:.1f}µs")
+
+                # Send numpy array views directly to UI (zero-copy!)
+                # Using _np suffix to indicate numpy arrays
+                streaming_data = {
+                    "_time_np": time_buffer[:current_index],
+                    "_signals_np": {
+                        f"V({name})": states_buffer[:current_index, i]
+                        for i, name in enumerate(node_names)
+                    },
+                    "_current_index": current_index,
+                }
+                last_sample = {
+                    f"V({name})": float(states_buffer[current_index - 1, i])
+                    for i, name in enumerate(node_names)
+                }
+                last_sample["_full_data"] = streaming_data
+                callbacks.data_point(float(time_buffer[current_index - 1]), last_sample)
+
+                last_index = current_index
+
+            time.sleep(poll_interval)
+
+        # Wait for simulation thread to finish
+        sim_thread.join(timeout=5.0)
+
+        # Check final status
+        final_status = int(status_buffer[1])
+        final_index = int(status_buffer[0])
+
+        if final_status == 3:  # Cancelled
+            result.error_message = "Simulation cancelled"
+            return result
+
+        if final_status == 2 or not sim_success[0]:  # Error
+            result.error_message = sim_message[0] or "Simulation failed"
+            return result
+
+        callbacks.progress(95.0, "Finalizing results...")
+
+        # Copy final data to result (full resolution)
+        result.time = time_buffer[:final_index].tolist()
+        for i, name in enumerate(node_names):
+            result.signals[f"V({name})"] = states_buffer[:final_index, i].tolist()
+
+        # Send final complete data
+        if result.time:
+            final_sample = {name: values[-1] for name, values in result.signals.items()}
+            callbacks.data_point(result.time[-1], final_sample)
+
+        callbacks.progress(100.0, "Simulation complete")
+        return result
+
+    def _run_transient_chunked(
+        self,
+        circuit: Any,
+        settings: "SimulationSettings",
+        callbacks: BackendCallbacks,
+        result: BackendRunResult,
+        node_names: list[str],
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any,
+    ) -> BackendRunResult:
+        """Optimized chunked simulation - run full sim then send data for animation."""
+        # Signal that we're starting (progress=-1 means indeterminate mode)
+        callbacks.progress(-1.0, "Simulating circuit...")
+
+        # Run the entire simulation at once (fast!)
+        if x0 is not None:
+            times, states, success, message = self._module.run_transient(
+                circuit, settings.t_start, settings.t_stop, dt, x0, newton_opts, linear_solver
+            )
+        else:
+            times, states, success, message = self._module.run_transient(
+                circuit, settings.t_start, settings.t_stop, dt, newton_opts, linear_solver
+            )
+
+        if not success:
+            result.error_message = message
+            return result
+
+        callbacks.progress(60.0, "Processing results...")
+
+        # Convert to numpy arrays for efficient transfer
+        total_points = len(times)
+        time_array = np.array([float(t) for t in times], dtype=np.float64)
+
+        callbacks.progress(70.0, f"Converting {total_points:,} data points...")
+
+        signal_arrays = {}
+        for i, name in enumerate(node_names):
+            signal_arrays[f"V({name})"] = np.array(
+                [float(state[i]) for state in states if i < len(state)],
+                dtype=np.float64
+            )
+
+        callbacks.progress(80.0, "Preparing waveform display...")
+
+        # Store in result for final return
+        result.time = time_array.tolist()
+        result.signals = {name: arr.tolist() for name, arr in signal_arrays.items()}
+
+        callbacks.progress(90.0, "Starting animation...")
+
+        # Send complete data with animation flag - viewer will animate it
+        callbacks.data_point(float(time_array[-1]) if len(time_array) > 0 else 0, {
+            "_animate": True,  # Tell viewer to animate the display
+            "_time_array": time_array,
+            "_signal_arrays": signal_arrays,
+            "_total_points": total_points,
+        })
+
+        callbacks.progress(100.0, "Complete")
         return result
 
     def run_dc(
@@ -559,15 +870,14 @@ class PulsimBackend(SimulationBackend):
         elif settings.strategy == "source":
             if hasattr(self._module, "DCStrategy"):
                 config.strategy = self._module.DCStrategy.SourceStepping
+                if hasattr(config, "source_config"):
+                    config.source_config.max_steps = settings.source_steps
         elif settings.strategy == "pseudo":
             if hasattr(self._module, "DCStrategy"):
                 config.strategy = self._module.DCStrategy.PseudoTransient
-
-        # Set Newton options
-        if hasattr(config, "newton_options"):
-            config.newton_options.max_iterations = settings.max_iterations
-            config.newton_options.enable_limiting = settings.enable_limiting
-            config.newton_options.max_voltage_step = settings.max_voltage_step
+        if settings.strategy == "gmin" and hasattr(config, "gmin_config"):
+            config.gmin_config.initial_gmin = settings.gmin_initial
+            config.gmin_config.final_gmin = settings.gmin_final
 
         # Run DC analysis
         dc_result = self._module.dc_operating_point(circuit, config)
@@ -648,17 +958,41 @@ class PulsimBackend(SimulationBackend):
             iterations = getattr(newton_result, "iterations", 0)
             final_residual = getattr(newton_result, "final_residual", 0.0)
 
-        # Extract history if available
+        # Extract history if available (handles pulsim.v2.ConvergenceHistory)
         history: list[IterationRecord] = []
         if newton_result and hasattr(newton_result, "history"):
-            for record in newton_result.history:
+            for i, record in enumerate(newton_result.history):
                 history.append(IterationRecord(
-                    iteration=getattr(record, "iteration", len(history)),
+                    iteration=getattr(record, "iteration", i),
                     residual_norm=getattr(record, "residual_norm", 0.0),
-                    voltage_error=getattr(record, "max_voltage_error", 0.0),
-                    current_error=getattr(record, "max_current_error", 0.0),
-                    damping_factor=getattr(record, "damping", 1.0),
+                    voltage_error=getattr(record, "max_voltage_error", getattr(record, "voltage_error", 0.0)),
+                    current_error=getattr(record, "max_current_error", getattr(record, "current_error", 0.0)),
+                    damping_factor=getattr(record, "damping", getattr(record, "damping_factor", 1.0)),
+                    step_norm=getattr(record, "step_norm", 0.0),
                 ))
+
+        # Extract problematic variables (handles pulsim.v2.PerVariableConvergence)
+        problematic_variables: list[ProblematicVariable] = []
+        problematic_nodes = getattr(newton_result, "problematic_nodes", None) if newton_result else None
+        if problematic_nodes is None:
+            problematic_nodes = getattr(dc_result, "problematic_variables", [])
+        for node in problematic_nodes:
+            # Map index to node name if name not provided
+            index = getattr(node, "index", 0)
+            name = getattr(node, "name", None)
+            if name is None and node_names and index < len(node_names):
+                name = f"V({node_names[index]})"
+            elif name is None:
+                name = f"node_{index}"
+            problematic_variables.append(ProblematicVariable(
+                index=index,
+                name=name,
+                value=getattr(node, "value", 0.0),
+                change=getattr(node, "change", 0.0),
+                tolerance=getattr(node, "tolerance", 1e-9),
+                normalized_error=getattr(node, "normalized_error", 0.0),
+                is_voltage=getattr(node, "is_voltage", True),
+            ))
 
         failure_reason = ""
         error_message = ""
@@ -672,6 +1006,7 @@ class PulsimBackend(SimulationBackend):
             final_residual=final_residual,
             strategy_used=strategy_used,
             history=history,
+            problematic_variables=problematic_variables,
             failure_reason=failure_reason,
         )
 
@@ -725,8 +1060,8 @@ class PulsimBackend(SimulationBackend):
             for name, current in native_result.branch_currents.items():
                 branch_currents[f"I({name})"] = float(current)
 
-        # Build convergence info
-        convergence_info = self._build_convergence_info(native_result)
+        # Build convergence info with circuit for node name mapping
+        convergence_info = self._build_convergence_info(native_result, circuit)
 
         # Determine error message
         error_message = ""
@@ -745,8 +1080,16 @@ class PulsimBackend(SimulationBackend):
             error_message=error_message,
         )
 
-    def _build_convergence_info(self, native_result: Any) -> ConvergenceInfo:
-        """Build ConvergenceInfo from native result."""
+    def _build_convergence_info(self, native_result: Any, circuit: Any = None) -> ConvergenceInfo:
+        """Build ConvergenceInfo from native result.
+
+        Args:
+            native_result: Native backend result object with convergence data.
+            circuit: Optional circuit for mapping node indices to names.
+
+        Returns:
+            ConvergenceInfo with extracted diagnostics.
+        """
         converged = getattr(native_result, "converged", False)
         if not converged and hasattr(native_result, "success"):
             converged = native_result.success()
@@ -755,32 +1098,53 @@ class PulsimBackend(SimulationBackend):
         final_residual = getattr(native_result, "final_residual", 0.0)
         strategy_used = getattr(native_result, "strategy_used", "newton")
 
-        # Extract iteration history if available
+        # Extract iteration history if available (handles pulsim.v2.ConvergenceHistory)
         history: list[IterationRecord] = []
         if hasattr(native_result, "history"):
             for i, record in enumerate(native_result.history):
                 history.append(IterationRecord(
-                    iteration=i,
+                    iteration=getattr(record, "iteration", i),
                     residual_norm=getattr(record, "residual_norm", 0.0),
-                    voltage_error=getattr(record, "voltage_error", 0.0),
-                    current_error=getattr(record, "current_error", 0.0),
-                    damping_factor=getattr(record, "damping_factor", 1.0),
+                    voltage_error=getattr(record, "voltage_error", getattr(record, "max_voltage_error", 0.0)),
+                    current_error=getattr(record, "current_error", getattr(record, "max_current_error", 0.0)),
+                    damping_factor=getattr(record, "damping_factor", getattr(record, "damping", 1.0)),
                     step_norm=getattr(record, "step_norm", 0.0),
                 ))
 
-        # Extract problematic variables if available
+        # Get node names for index mapping
+        node_names: list[str] = []
+        if circuit is not None:
+            if hasattr(circuit, "node_names"):
+                node_names = list(circuit.node_names())
+            elif hasattr(circuit, "get_node_names"):
+                node_names = list(circuit.get_node_names())
+
+        # Extract problematic variables (handles pulsim.v2.PerVariableConvergence)
         problematic_variables: list[ProblematicVariable] = []
-        if hasattr(native_result, "problematic_nodes"):
-            for node in native_result.problematic_nodes:
-                problematic_variables.append(ProblematicVariable(
-                    index=getattr(node, "index", 0),
-                    name=getattr(node, "name", "unknown"),
-                    value=getattr(node, "value", 0.0),
-                    change=getattr(node, "change", 0.0),
-                    tolerance=getattr(node, "tolerance", 1e-9),
-                    normalized_error=getattr(node, "normalized_error", 0.0),
-                    is_voltage=getattr(node, "is_voltage", True),
-                ))
+        # Try different attribute names for compatibility
+        problematic_nodes = getattr(native_result, "problematic_nodes", None)
+        if problematic_nodes is None:
+            problematic_nodes = getattr(native_result, "problematic_variables", [])
+        for node in problematic_nodes:
+            # Map index to node name if name not provided
+            index = getattr(node, "index", 0)
+            name = getattr(node, "name", None)
+            if name is None and node_names and index < len(node_names):
+                name = f"V({node_names[index]})"
+            elif name is None:
+                name = f"node_{index}"
+            problematic_variables.append(ProblematicVariable(
+                index=index,
+                name=name,
+                value=getattr(node, "value", 0.0),
+                change=getattr(node, "change", 0.0),
+                tolerance=getattr(node, "tolerance", 1e-9),
+                normalized_error=getattr(node, "normalized_error", 0.0),
+                is_voltage=getattr(node, "is_voltage", True),
+            ))
+
+        # Sort problematic variables by worst convergence
+        problematic_variables.sort(key=lambda v: v.normalized_error, reverse=True)
 
         failure_reason = ""
         if not converged:
@@ -1085,6 +1449,66 @@ class PulsimBackend(SimulationBackend):
         points = max(settings.output_points, 1)
         return duration / points
 
+    def _build_newton_options(self, settings: "SimulationSettings", circuit: Any) -> Any:
+        """Build NewtonOptions for the new kernel API."""
+        opts = self._module.NewtonOptions()
+        opts.max_iterations = settings.max_newton_iterations
+        opts.enable_limiting = settings.enable_voltage_limiting
+        opts.max_voltage_step = settings.max_voltage_step
+
+        if hasattr(self._module, "Tolerances"):
+            tolerances = self._module.Tolerances.defaults()
+            tolerances.voltage_abstol = settings.abs_tol
+            tolerances.voltage_reltol = settings.rel_tol
+            tolerances.current_abstol = settings.abs_tol
+            tolerances.current_reltol = settings.rel_tol
+            opts.tolerances = tolerances
+
+        if hasattr(circuit, "num_nodes"):
+            opts.num_nodes = circuit.num_nodes()
+        if hasattr(circuit, "num_branches"):
+            opts.num_branches = circuit.num_branches()
+
+        return opts
+
+    def _build_linear_solver_config(self) -> Any:
+        """Build LinearSolverStackConfig for the new kernel API."""
+        config = self._module.LinearSolverStackConfig.defaults()
+        if hasattr(self._module, "LinearSolverKind"):
+            config.order = [
+                self._module.LinearSolverKind.KLU,
+                self._module.LinearSolverKind.GMRES,
+            ]
+        config.allow_fallback = True
+        config.auto_select = True
+        return config
+
+    def _build_initial_state(self, circuit: Any, settings: "SimulationSettings") -> Any:
+        """Compute initial state, preferring DC operating point when available."""
+        if hasattr(self._module, "dc_operating_point"):
+            try:
+                config = self._module.DCConvergenceConfig()
+                if settings.dc_strategy == "gmin" and hasattr(self._module, "DCStrategy"):
+                    config.strategy = self._module.DCStrategy.GminStepping
+                    config.gmin_config.initial_gmin = settings.gmin_initial
+                    config.gmin_config.final_gmin = settings.gmin_final
+                elif settings.dc_strategy == "source" and hasattr(self._module, "DCStrategy"):
+                    config.strategy = self._module.DCStrategy.SourceStepping
+                    config.source_config.max_steps = 10
+                elif settings.dc_strategy == "pseudo" and hasattr(self._module, "DCStrategy"):
+                    config.strategy = self._module.DCStrategy.PseudoTransient
+                dc_result = self._module.dc_operating_point(circuit, config)
+                if getattr(dc_result, "success", False):
+                    newton_result = getattr(dc_result, "newton_result", None)
+                    if newton_result is not None:
+                        return newton_result.solution
+            except Exception:
+                pass
+
+        if hasattr(circuit, "initial_state"):
+            return circuit.initial_state()
+        return None
+
 
 class BackendLoader:
     """Detect and initialize the best available backend implementation."""
@@ -1198,8 +1622,10 @@ class BackendLoader:
         location = Path(getattr(module, "__file__", "")).resolve().parent.as_posix()
         capabilities = {"transient"}
 
-        # Check for DC analysis capability
-        if hasattr(module, "v2") and hasattr(module.v2, "solve_dc"):
+        # Check for DC analysis capability (multiple possible APIs)
+        if hasattr(module, "dc_operating_point") or hasattr(module, "solve_dc"):
+            capabilities.add("dc")
+        elif hasattr(module, "v2") and hasattr(module.v2, "solve_dc"):
             capabilities.add("dc")
         elif hasattr(module, "v1") and hasattr(module.v1, "DCConvergenceSolver"):
             capabilities.add("dc")
@@ -1212,6 +1638,13 @@ class BackendLoader:
         if hasattr(module, "ThermalSimulator"):
             capabilities.add("thermal")
 
+        # Parse version for compatibility checking
+        parsed_version = None
+        try:
+            parsed_version = BackendVersion.from_string(version)
+        except ValueError:
+            pass  # Will be handled in check_compatibility
+
         info = BackendInfo(
             identifier="pulsim",
             name="Pulsim",
@@ -1220,7 +1653,16 @@ class BackendLoader:
             location=location,
             capabilities=capabilities,
             message="Using native Pulsim backend",
+            parsed_version=parsed_version,
         )
+
+        # Check version compatibility
+        info.check_compatibility()
+
+        # Update message if there's a compatibility warning
+        if info.compatibility_warning:
+            info.message = info.compatibility_warning
+
         candidate = BackendLoader._BackendCandidate(
             info=info,
             factory=lambda: PulsimBackend(module, info),
@@ -1235,8 +1677,10 @@ class BackendLoader:
 
         if hasattr(entry_points, "select"):
             entries = entry_points.select(group="pulsimgui.backends")
-        else:  # pragma: no cover - legacy importlib.metadata API
+        elif hasattr(entry_points, "get"):  # pragma: no cover - legacy importlib.metadata API
             entries = entry_points.get("pulsimgui.backends", [])  # type: ignore[attr-defined]
+        else:  # pragma: no cover - mock or unexpected return type
+            return []
 
         candidates: list[BackendLoader._BackendCandidate] = []
         for entry in entries:

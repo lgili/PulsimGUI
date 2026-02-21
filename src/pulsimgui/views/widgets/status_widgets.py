@@ -32,8 +32,10 @@ class IconLabel(QWidget):
         self._update_icon()
         layout.addWidget(self._icon_label)
 
-        # Text label
+        # Text label - single line, no wrap, with elision
         self._text_label = QLabel(text)
+        self._text_label.setWordWrap(False)
+        self._text_label.setMaximumWidth(250)  # Limit width to prevent overflow
         layout.addWidget(self._text_label)
 
     def _update_icon(self) -> None:

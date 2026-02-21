@@ -76,10 +76,7 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
-        self._thermal_service = ThermalAnalysisService(
-            backend=self._simulation_service.backend,
-            parent=self,
-        )
+        self._thermal_service = ThermalAnalysisService(parent=self)
         self._scope_windows: dict[str, ScopeWindow] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
@@ -620,8 +617,6 @@ class MainWindow(QMainWindow):
     def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
         """Apply backend changes and optionally notify the user."""
         self._update_backend_status(info)
-        # Update thermal service with new backend
-        self._thermal_service.backend = self._simulation_service.backend
         if not notify:
             return
         warning = self._simulation_service.backend_issue_message
@@ -1445,7 +1440,9 @@ class MainWindow(QMainWindow):
                     item.setPos(edited_component.x, edited_component.y)
                 elif name == "rotation":
                     item.setRotation(edited_component.rotation)
-                # Update labels for parameter changes (name and value text)
+                # Update name label
+                item._name_label.setPlainText(edited_component.name)
+                # Update labels for parameter changes (value text)
                 item._update_labels()
                 item.update()
                 break
@@ -1654,29 +1651,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dialog.exec():
-            new_settings = dialog.get_settings()
-            self._simulation_service.settings = new_settings
-
-            # Persist solver settings to user preferences
-            self._settings.set_solver_settings({
-                "max_newton_iterations": new_settings.max_newton_iterations,
-                "enable_voltage_limiting": new_settings.enable_voltage_limiting,
-                "max_voltage_step": new_settings.max_voltage_step,
-                "dc_strategy": new_settings.dc_strategy,
-                "gmin_initial": new_settings.gmin_initial,
-                "gmin_final": new_settings.gmin_final,
-            })
-
-            # Persist simulation settings to user preferences
-            self._settings.set_simulation_settings({
-                "t_stop": new_settings.t_stop,
-                "t_step": new_settings.t_step,
-                "solver": new_settings.solver,
-                "max_step": new_settings.max_step,
-                "rel_tol": new_settings.rel_tol,
-                "abs_tol": new_settings.abs_tol,
-                "output_points": new_settings.output_points,
-            })
+            self._simulation_service.settings = dialog.get_settings()
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
@@ -1792,17 +1767,18 @@ class MainWindow(QMainWindow):
 
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""
-        # Get convergence info from simulation service (for diagnostics)
-        convergence_info = self._simulation_service.last_convergence_info
-
         if result.is_valid:
             # Update schematic with DC values and show overlay
             self._schematic_scene.set_dc_results(result)
             self.action_toggle_dc_overlay.setChecked(True)
 
-        # Show results dialog with convergence info for diagnostics
-        dialog = DCResultsDialog(result, convergence_info=convergence_info, parent=self)
-        dialog.exec()
+            # Show results dialog
+            dialog = DCResultsDialog(result, self)
+            dialog.exec()
+        else:
+            QMessageBox.warning(
+                self, "DC Analysis Error", f"DC analysis failed:\n{result.error_message}"
+            )
 
     def _on_ac_finished(self, result) -> None:
         """Handle AC analysis completion."""

@@ -26,7 +26,8 @@ from pulsimgui.services.simulation_service import SimulationResult
 
 
 # Maximum points to display before decimation kicks in
-MAX_DISPLAY_POINTS = 5000
+# Higher = better resolution but slower updates
+MAX_DISPLAY_POINTS = 10000
 
 
 # Color palette for traces (distinguishable colors)
@@ -490,9 +491,10 @@ class WaveformViewer(QWidget):
 
         # Update timer for batching streaming updates
         self._update_timer = QTimer()
-        self._update_timer.setInterval(50)  # 20 Hz update rate
+        self._update_timer.setInterval(16)  # 60 Hz update rate for smooth animation
         self._update_timer.timeout.connect(self._flush_streaming_data)
         self._pending_updates = False
+        self._last_displayed_index = 0  # Track how much data we've shown
 
         # Configure pyqtgraph
         pg.setConfigOptions(antialias=True)
@@ -655,6 +657,9 @@ class WaveformViewer(QWidget):
 
             # Mark first signal as visible in list
             self._signal_list_panel.set_signal_visible(first_signal, True)
+
+            # Auto-range to fit new data (ensures time axis updates)
+            self._auto_range()
         else:
             self._signal_list_panel.clear()
 
@@ -675,18 +680,63 @@ class WaveformViewer(QWidget):
         time = np.array(self._result.time)
         values = np.array(self._result.signals[signal_name])
 
+        # Decimate if too many points to prevent GUI freeze
+        if len(time) > MAX_DISPLAY_POINTS:
+            time, values = self._decimate_for_display(time, values)
+
         # Get color from signal list panel if available, otherwise use default
         color = self._signal_list_panel.get_signal_color(signal_name)
         if color is None:
             color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
             self._color_index += 1
 
-        pen = pg.mkPen(color=color, width=2)
-        trace = self._plot_widget.plot(time, values, pen=pen, name=signal_name)
+        # Use optimized pen (width=1 is fastest)
+        pen = pg.mkPen(color=color, width=1)
+        trace = self._plot_widget.plot(
+            time, values, pen=pen, name=signal_name,
+            skipFiniteCheck=True,  # Skip NaN/Inf check (faster)
+        )
         self._traces[signal_name] = trace
 
         # Update statistics
         self._update_statistics(signal_name)
+
+    def _decimate_for_display(
+        self, time: np.ndarray, values: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decimate data for efficient display using min-max bucketing.
+
+        Preserves peaks and visual features while reducing point count.
+        """
+        n_points = len(time)
+        if n_points <= MAX_DISPLAY_POINTS:
+            return time, values
+
+        # Calculate bucket size
+        n_buckets = MAX_DISPLAY_POINTS // 2  # Each bucket contributes 2 points (min, max)
+        bucket_size = n_points // n_buckets
+
+        decimated_time = []
+        decimated_values = []
+
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
+            bucket_values = values[start:end]
+
+            if len(bucket_values) > 0:
+                min_idx = start + np.argmin(bucket_values)
+                max_idx = start + np.argmax(bucket_values)
+
+                # Add min and max in time order
+                if min_idx <= max_idx:
+                    decimated_time.extend([time[min_idx], time[max_idx]])
+                    decimated_values.extend([values[min_idx], values[max_idx]])
+                else:
+                    decimated_time.extend([time[max_idx], time[min_idx]])
+                    decimated_values.extend([values[max_idx], values[min_idx]])
+
+        return np.array(decimated_time), np.array(decimated_values)
 
     def remove_trace(self, signal_name: str) -> None:
         """Remove a trace from the plot."""
@@ -942,8 +992,10 @@ class WaveformViewer(QWidget):
     def start_streaming(self) -> None:
         """Start streaming mode - prepares viewer for real-time data."""
         self._streaming = True
-        self._streaming_time.clear()
-        self._streaming_signals.clear()
+        self._streaming_time = []
+        self._streaming_signals = {}
+        self._last_displayed_index = 0
+        self._y_range_set = False  # Reset Y auto-range flag
 
         # Clear existing streaming traces
         for trace in self._streaming_traces.values():
@@ -979,88 +1031,254 @@ class WaveformViewer(QWidget):
             self._flush_streaming_data()
 
     def add_data_point(self, time: float, signals: dict[str, float]) -> None:
-        """Add a single data point during streaming.
+        """Add data point(s) during streaming.
+
+        Supports multiple modes:
+        1. Animated display: _animate + _time_array + _signal_arrays (smoothest)
+        2. Incremental chunks: _chunk_time + _chunk_signals
+        3. Full data replacement: _full_data with _time/_signals
+        4. Single point: individual time + signal values
 
         Args:
             time: The time value for this data point
-            signals: Dictionary mapping signal names to their values
+            signals: Dictionary with data in one of the supported formats
         """
         if not self._streaming:
             self.start_streaming()
 
-        # Add time point
+        # Mode 0: Animated display (simulation complete, animate progressively)
+        if "_animate" in signals:
+            self._start_animated_display(
+                signals.get("_time_array"),
+                signals.get("_signal_arrays", {}),
+                signals.get("_total_points", 0),
+            )
+            return
+
+        # Mode 1: Chunk data (can be replace or append)
+        if "_chunk_time" in signals:
+            chunk_time = signals["_chunk_time"]
+            chunk_signals = signals.get("_chunk_signals", {})
+            replace_mode = signals.get("_replace", False)
+
+            if replace_mode:
+                # Replace all data (for animated playback)
+                self._streaming_time = list(chunk_time)
+                self._streaming_signals = {
+                    name: list(values) for name, values in chunk_signals.items()
+                }
+            else:
+                # Append mode (incremental streaming)
+                if not isinstance(self._streaming_time, list):
+                    self._streaming_time = []
+                if not self._streaming_signals:
+                    self._streaming_signals = {}
+
+                self._streaming_time.extend(chunk_time)
+                for name, values in chunk_signals.items():
+                    if name not in self._streaming_signals:
+                        self._streaming_signals[name] = []
+                    self._streaming_signals[name].extend(values)
+
+            self._pending_updates = True
+            return
+
+        # Mode 2: Complete signal (simulation finished)
+        if "_complete" in signals:
+            # Just mark for final update
+            self._pending_updates = True
+            return
+
+        # Mode 3: Full data replacement (numpy arrays)
+        if "_full_data" in signals:
+            full_data = signals["_full_data"]
+            if "_time_np" in full_data:
+                self._streaming_time = list(full_data["_time_np"])
+                self._streaming_signals = {
+                    k: list(v) for k, v in full_data.get("_signals_np", {}).items()
+                }
+            elif "_time" in full_data:
+                self._streaming_time = full_data.get("_time", [])
+                self._streaming_signals = full_data.get("_signals", {})
+            self._pending_updates = True
+            return
+
+        # Mode 4: Legacy single point
+        if not isinstance(self._streaming_time, list):
+            self._streaming_time = []
+
         self._streaming_time.append(time)
-
-        # Add signal values
         for name, value in signals.items():
-            if name not in self._streaming_signals:
-                self._streaming_signals[name] = []
-            self._streaming_signals[name].append(value)
+            if not name.startswith("_"):
+                if name not in self._streaming_signals:
+                    self._streaming_signals[name] = []
+                self._streaming_signals[name].append(value)
 
-        # Mark that we have pending updates
         self._pending_updates = True
 
+    def _start_animated_display(
+        self,
+        time_array: np.ndarray | None,
+        signal_arrays: dict[str, np.ndarray],
+        total_points: int,
+    ) -> None:
+        """Start animated display of complete simulation data.
+
+        Uses QTimer for smooth 60 FPS animation without blocking the UI.
+
+        Args:
+            time_array: Complete time data as numpy array
+            signal_arrays: Complete signal data as numpy arrays
+            total_points: Total number of data points
+        """
+        if time_array is None or len(time_array) == 0:
+            return
+
+        # Store the complete data for animation
+        self._anim_time = time_array
+        self._anim_signals = signal_arrays
+        self._anim_total_points = total_points
+        self._anim_current_index = 0
+
+        # Calculate animation parameters (~4 second animation at 60 FPS)
+        animation_duration = 4.0  # seconds (slower, more satisfying animation)
+        fps = 60
+        total_frames = int(animation_duration * fps)
+        self._anim_points_per_frame = max(1, total_points // total_frames)
+        self._anim_frame_count = 0
+
+        # Create traces for each signal (if not already present)
+        for name in signal_arrays.keys():
+            if name not in self._streaming_traces:
+                color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+                self._color_index += 1
+                pen = pg.mkPen(color=color, width=1)
+                # Start with empty data
+                trace = self._plot_widget.plot(
+                    [], [], pen=pen, name=name,
+                    skipFiniteCheck=True,
+                )
+                self._streaming_traces[name] = trace
+
+        # Set up animation timer (separate from regular update timer)
+        if not hasattr(self, '_anim_timer'):
+            self._anim_timer = QTimer()
+            self._anim_timer.timeout.connect(self._animate_frame)
+
+        self._anim_timer.start(16)  # 60 FPS
+
+    def _animate_frame(self) -> None:
+        """Render one frame of the animation."""
+        if not hasattr(self, '_anim_time') or self._anim_time is None:
+            if hasattr(self, '_anim_timer'):
+                self._anim_timer.stop()
+            return
+
+        # Calculate how much data to show this frame
+        self._anim_current_index = min(
+            self._anim_current_index + self._anim_points_per_frame,
+            self._anim_total_points
+        )
+
+        # Get current slice of data
+        end_idx = self._anim_current_index
+        time_slice = self._anim_time[:end_idx]
+
+        # Update each trace with current data slice
+        for name, full_values in self._anim_signals.items():
+            if name in self._streaming_traces:
+                values_slice = full_values[:end_idx]
+                self._streaming_traces[name].setData(time_slice, values_slice)
+
+        # Update X range to show waveform growing
+        if len(time_slice) > 0:
+            t_start = float(time_slice[0])
+            t_current = float(time_slice[-1])
+            t_range = t_current - t_start
+            if t_range > 0:
+                t_end = t_current + t_range * 0.1
+                self._recording_zoom = False
+                self._plot_widget.setXRange(t_start, t_end, padding=0)
+                self._recording_zoom = True
+
+        # Auto-range Y only on first frame
+        if self._anim_frame_count == 0:
+            self._plot_widget.enableAutoRange(axis='y')
+
+        self._anim_frame_count += 1
+
+        # Check if animation is complete
+        if self._anim_current_index >= self._anim_total_points:
+            self._anim_timer.stop()
+            # Store final data for result display
+            self._streaming_time = self._anim_time.tolist()
+            self._streaming_signals = {
+                name: values.tolist() for name, values in self._anim_signals.items()
+            }
+            # Clean up animation data
+            self._anim_time = None
+            self._anim_signals = None
+
     def _flush_streaming_data(self) -> None:
-        """Flush buffered streaming data to the plot."""
-        if not self._pending_updates or not self._streaming_time:
+        """Flush buffered streaming data to the plot.
+
+        Optimized for high-performance real-time display.
+        PyQtGraph handles downsampling automatically with autoDownsample=True.
+        """
+        if not self._pending_updates:
+            return
+
+        time_data = self._streaming_time
+        if not time_data or len(time_data) == 0:
             return
 
         self._pending_updates = False
 
-        # Decimate data if needed
-        time_data, signals_data = self._decimate_data(
-            self._streaming_time, self._streaming_signals
-        )
-
-        time_array = np.array(time_data)
+        # Convert to numpy array once (much faster for pyqtgraph)
+        time_array = np.asarray(time_data, dtype=np.float64)
 
         # Update or create traces for each signal
-        for name, values in signals_data.items():
-            values_array = np.array(values)
+        for name, values in self._streaming_signals.items():
+            values_array = np.asarray(values, dtype=np.float64)
 
             if name in self._streaming_traces:
-                # Update existing trace
+                # Fast update - just set new data
                 self._streaming_traces[name].setData(time_array, values_array)
             else:
-                # Create new trace
+                # Create new trace (only happens once per signal)
                 color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
                 self._color_index += 1
-                pen = pg.mkPen(color=color, width=2)
+                pen = pg.mkPen(color=color, width=1)
                 trace = self._plot_widget.plot(
-                    time_array, values_array, pen=pen, name=name
+                    time_array, values_array, pen=pen, name=name,
+                    skipFiniteCheck=True,
                 )
                 self._streaming_traces[name] = trace
 
-        # Handle auto-scroll
-        if self._auto_scroll and len(time_data) > 0:
-            current_time = time_data[-1]
+        # Set view to show waveform growing from start
+        if len(time_array) > 0:
+            t_start = float(time_array[0])
+            t_current = float(time_array[-1])
+            t_range = t_current - t_start
 
-            # Calculate window size based on data
-            if len(time_data) > 1:
-                # Use 10% of total time as window, minimum scroll_window
-                total_time = time_data[-1] - time_data[0]
-                window = max(self._scroll_window, total_time * 0.1)
-            else:
-                window = self._scroll_window
+            if t_range > 0:
+                t_end = t_current + t_range * 0.1
+                self._recording_zoom = False
+                self._plot_widget.setXRange(t_start, t_end, padding=0)
+                self._recording_zoom = True
 
-            # Set X range to show recent data
-            x_min = max(0, current_time - window)
-            x_max = current_time + window * 0.1  # Small padding on right
-
-            self._recording_zoom = False
-            self._plot_widget.setXRange(x_min, x_max, padding=0)
-            self._recording_zoom = True
-
-            # Auto-scale Y axis
-            self._plot_widget.enableAutoRange(axis='y')
+            # Only auto-range Y on first update (expensive operation)
+            if not hasattr(self, '_y_range_set') or not self._y_range_set:
+                self._plot_widget.enableAutoRange(axis='y')
+                self._y_range_set = True
 
     def _decimate_data(
         self, time_data: list[float], signals_data: dict[str, list[float]]
     ) -> tuple[list[float], dict[str, list[float]]]:
         """Decimate data if it exceeds MAX_DISPLAY_POINTS.
 
-        Uses LTTB (Largest Triangle Three Buckets) algorithm for efficient
-        downsampling while preserving visual features.
+        Uses min-max bucketing to preserve peaks and visual features,
+        which is critical for accurate waveform display.
 
         Args:
             time_data: List of time values
@@ -1074,36 +1292,139 @@ class WaveformViewer(QWidget):
         if n_points <= MAX_DISPLAY_POINTS:
             return time_data, signals_data
 
-        # Calculate decimation factor
-        target_points = MAX_DISPLAY_POINTS
-        step = n_points / target_points
+        # Use min-max decimation: each bucket produces 2 points (min and max)
+        # This preserves peaks which is essential for waveforms
+        n_buckets = MAX_DISPLAY_POINTS // 2
+        bucket_size = max(1, n_points // n_buckets)
 
-        # Use simple min-max decimation for each bucket
-        # This preserves peaks which is important for waveforms
-        decimated_time = []
-        decimated_signals = {name: [] for name in signals_data}
+        decimated_time: list[float] = []
+        decimated_signals: dict[str, list[float]] = {name: [] for name in signals_data}
 
-        bucket_start = 0
-        while bucket_start < n_points:
-            bucket_end = min(int(bucket_start + step), n_points)
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
 
-            if bucket_end <= bucket_start:
-                bucket_end = bucket_start + 1
+            if start >= n_points:
+                break
 
-            # For time, use the middle of the bucket
-            mid_idx = (bucket_start + bucket_end) // 2
-            if mid_idx < len(time_data):
-                decimated_time.append(time_data[mid_idx])
+            # Get bucket slice
+            bucket_time = time_data[start:end]
+            if not bucket_time:
+                continue
 
-                # For each signal, find min and max in bucket
+            # For the first signal, find min/max indices to determine order
+            first_signal = next(iter(signals_data.values()), None)
+            if first_signal:
+                bucket_vals = first_signal[start:end]
+                if bucket_vals:
+                    local_min_idx = min(range(len(bucket_vals)), key=lambda x: bucket_vals[x])
+                    local_max_idx = max(range(len(bucket_vals)), key=lambda x: bucket_vals[x])
+
+                    # Add points in time order
+                    if local_min_idx <= local_max_idx:
+                        idx1, idx2 = local_min_idx, local_max_idx
+                    else:
+                        idx1, idx2 = local_max_idx, local_min_idx
+
+                    # Add time points
+                    decimated_time.append(bucket_time[idx1])
+                    if idx1 != idx2:
+                        decimated_time.append(bucket_time[idx2])
+
+                    # Add all signal values at these indices
+                    for name, values in signals_data.items():
+                        bucket_vals = values[start:end]
+                        if len(bucket_vals) > idx1:
+                            decimated_signals[name].append(bucket_vals[idx1])
+                        if idx1 != idx2 and len(bucket_vals) > idx2:
+                            decimated_signals[name].append(bucket_vals[idx2])
+
+        return decimated_time, decimated_signals
+
+    def _decimate_data_numpy(
+        self, time_data: np.ndarray, signals_data: dict[str, np.ndarray]
+    ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        """Decimate numpy array data using efficient vectorized operations.
+
+        Uses LTTB-like min-max bucketing optimized for numpy arrays.
+        Much faster than the list-based version for large datasets.
+
+        Args:
+            time_data: Numpy array of time values
+            signals_data: Dictionary of signal numpy arrays
+
+        Returns:
+            Tuple of (decimated_time, decimated_signals)
+        """
+        n_points = len(time_data)
+
+        if n_points <= MAX_DISPLAY_POINTS:
+            return time_data, signals_data
+
+        # Use min-max decimation with numpy vectorized operations
+        n_buckets = MAX_DISPLAY_POINTS // 2
+        bucket_size = n_points // n_buckets
+
+        # Get the first signal for determining min/max indices
+        first_signal_name = next(iter(signals_data.keys()), None)
+        if first_signal_name is None:
+            return time_data, signals_data
+
+        first_signal = signals_data[first_signal_name]
+        if not isinstance(first_signal, np.ndarray):
+            first_signal = np.array(first_signal)
+
+        # Pre-allocate output arrays (2 points per bucket)
+        max_output_size = n_buckets * 2
+        decimated_time = np.zeros(max_output_size)
+        decimated_signals = {name: np.zeros(max_output_size) for name in signals_data}
+
+        output_idx = 0
+
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
+
+            if start >= n_points:
+                break
+
+            # Get bucket slice
+            bucket_signal = first_signal[start:end]
+            if len(bucket_signal) == 0:
+                continue
+
+            # Find min and max indices within bucket
+            local_min_idx = np.argmin(bucket_signal)
+            local_max_idx = np.argmax(bucket_signal)
+
+            # Add points in time order
+            if local_min_idx <= local_max_idx:
+                idx1, idx2 = local_min_idx, local_max_idx
+            else:
+                idx1, idx2 = local_max_idx, local_min_idx
+
+            # Add time points
+            decimated_time[output_idx] = time_data[start + idx1]
+            for name, values in signals_data.items():
+                if isinstance(values, np.ndarray):
+                    decimated_signals[name][output_idx] = values[start + idx1]
+                else:
+                    decimated_signals[name][output_idx] = values[start + idx1]
+            output_idx += 1
+
+            # Add second point if different
+            if idx1 != idx2:
+                decimated_time[output_idx] = time_data[start + idx2]
                 for name, values in signals_data.items():
-                    bucket_values = values[bucket_start:bucket_end]
-                    if bucket_values:
-                        # Use value at mid point (simple but effective)
-                        if mid_idx < len(values):
-                            decimated_signals[name].append(values[mid_idx])
+                    if isinstance(values, np.ndarray):
+                        decimated_signals[name][output_idx] = values[start + idx2]
+                    else:
+                        decimated_signals[name][output_idx] = values[start + idx2]
+                output_idx += 1
 
-            bucket_start = bucket_end
+        # Trim to actual size
+        decimated_time = decimated_time[:output_idx]
+        decimated_signals = {name: arr[:output_idx] for name, arr in decimated_signals.items()}
 
         return decimated_time, decimated_signals
 

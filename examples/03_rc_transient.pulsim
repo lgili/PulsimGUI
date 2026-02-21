@@ -1,0 +1,223 @@
+{
+  "version": "1.0",
+  "name": "RC Transient",
+  "created": "2025-12-14T15:49:20.201948",
+  "modified": "2025-12-14T15:49:20.201948",
+  "active_circuit": "main",
+  "simulation_settings": {
+    "tstop": 0.005,
+    "dt": 1e-06,
+    "tstart": 0.0,
+    "abstol": 1e-12,
+    "reltol": 0.001,
+    "max_iterations": 50
+  },
+  "circuits": {
+    "main": {
+      "name": "main",
+      "components": [
+        {
+          "id": "43a38f90-08ca-4ac7-b8ed-245ca2b95897",
+          "type": "VOLTAGE_SOURCE",
+          "name": "V1",
+          "x": 100,
+          "y": 200,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "pulse",
+              "v1": 0.0,
+              "v2": 5.0,
+              "delay": 0.0,
+              "rise_time": 1e-09,
+              "fall_time": 1e-09,
+              "pulse_width": 0.01,
+              "period": 0.02
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0,
+              "y": -30
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0,
+              "y": 30
+            }
+          ]
+        },
+        {
+          "id": "9315adcb-e248-4e04-b858-5cd21e96009a",
+          "type": "RESISTOR",
+          "name": "R1",
+          "x": 200,
+          "y": 100,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 1000.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 30,
+              "y": 0
+            }
+          ]
+        },
+        {
+          "id": "be5351c2-6237-4b3b-9ffc-7894a6218b49",
+          "type": "CAPACITOR",
+          "name": "C1",
+          "x": 350,
+          "y": 200,
+          "rotation": 90,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "capacitance": 1e-06
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -20,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 20,
+              "y": 0
+            }
+          ]
+        },
+        {
+          "id": "f5fdb32d-c0ce-420a-81c4-b7c378d7d94f",
+          "type": "GROUND",
+          "name": "GND1",
+          "x": 100,
+          "y": 350,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
+          ]
+        }
+      ],
+      "wires": [
+        {
+          "id": "1238808c-56cc-4044-86ba-21b295f2b7b3",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 170,
+              "x2": 100,
+              "y2": 100
+            },
+            {
+              "x1": 100,
+              "y1": 100,
+              "x2": 170,
+              "y2": 100
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "VIN",
+          "alias": ""
+        },
+        {
+          "id": "21a43d17-53ec-4f1c-83bb-1307f5d8e924",
+          "segments": [
+            {
+              "x1": 230,
+              "y1": 100,
+              "x2": 350,
+              "y2": 100
+            },
+            {
+              "x1": 350,
+              "y1": 100,
+              "x2": 350,
+              "y2": 180
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "OUT",
+          "alias": ""
+        },
+        {
+          "id": "16cfc271-3fbb-4c01-96a0-52e86ad8e004",
+          "segments": [
+            {
+              "x1": 350,
+              "y1": 220,
+              "x2": 350,
+              "y2": 300
+            },
+            {
+              "x1": 350,
+              "y1": 300,
+              "x2": 100,
+              "y2": 300
+            },
+            {
+              "x1": 100,
+              "y1": 300,
+              "x2": 100,
+              "y2": 230
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "378bb2dd-cb5e-4e77-9600-30b95a8c4542",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 300,
+              "x2": 100,
+              "y2": 340
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        }
+      ]
+    }
+  },
+  "subcircuits": [],
+  "scope_windows": {}
+}

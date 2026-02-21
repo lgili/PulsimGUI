@@ -244,6 +244,10 @@ class SimulationWorker(QThread):
 
         try:
             self._thread_ident = threading.get_ident()
+
+            # Emit initial progress immediately so user sees feedback
+            self.progress.emit(0, "Starting simulation...")
+
             callbacks = BackendCallbacks(
                 progress=lambda value, message: self.progress.emit(value, message),
                 data_point=lambda t, data: self.data_point.emit(t, data),
@@ -595,6 +599,9 @@ class SimulationService(QObject):
             return
 
         self._set_state(SimulationState.RUNNING)
+
+        # Emit immediate feedback so UI shows activity right away
+        self.progress.emit(-1, "Starting simulation...")
 
         # Create and start worker thread
         self._worker = SimulationWorker(self._backend, circuit_data, self._settings)

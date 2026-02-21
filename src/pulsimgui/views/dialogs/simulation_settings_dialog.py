@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QLabel,
     QCheckBox,
+    QScrollArea,
 )
 
 from pulsimgui.services.backend_adapter import BackendInfo
@@ -38,7 +39,7 @@ class SimulationSettingsDialog(QDialog):
         self._backend_warning = backend_warning
 
         self.setWindowTitle("Simulation Settings")
-        self.setMinimumSize(450, 400)
+        self.setMinimumSize(500, 600)
 
         self._setup_ui()
         self._load_settings()
@@ -108,8 +109,29 @@ class SimulationSettingsDialog(QDialog):
         self._backend_version_label.setText(info.version or "-")
         status = info.message or info.status or "available"
         self._backend_status_label.setText(status)
-        capabilities = ", ".join(sorted(info.capabilities)) if info.capabilities else "-"
-        self._backend_capabilities_label.setText(capabilities)
+
+        # Show capabilities with unavailable features highlighted
+        if info.capabilities:
+            cap_parts = []
+            for cap in sorted(info.capabilities):
+                cap_parts.append(cap)
+            capabilities_text = ", ".join(cap_parts)
+            if hasattr(info, "unavailable_features") and info.unavailable_features:
+                unavailable = ", ".join(info.unavailable_features)
+                capabilities_text += f" (unavailable: {unavailable})"
+            self._backend_capabilities_label.setText(capabilities_text)
+        else:
+            self._backend_capabilities_label.setText("-")
+
+        # Show compatibility warning if present
+        if hasattr(info, "compatibility_warning") and info.compatibility_warning:
+            self._backend_warning_label.setText(info.compatibility_warning)
+            self._backend_warning_label.setVisible(True)
+        elif self._backend_warning:
+            self._backend_warning_label.setText(self._backend_warning)
+            self._backend_warning_label.setVisible(True)
+        else:
+            self._backend_warning_label.setVisible(False)
 
     def _create_transient_tab(self) -> QWidget:
         """Create transient simulation settings tab."""
@@ -160,8 +182,14 @@ class SimulationSettingsDialog(QDialog):
 
     def _create_solver_tab(self) -> QWidget:
         """Create solver settings tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        # Use scroll area to ensure all controls are accessible
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
+        layout.setContentsMargins(0, 0, 10, 0)  # Right margin for scrollbar
 
         # Solver selection group
         solver_group = QGroupBox("Integration Method")
@@ -278,7 +306,8 @@ class SimulationSettingsDialog(QDialog):
         layout.addWidget(tol_group)
 
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(scroll_content)
+        return scroll_area
 
     def _update_dc_strategy_description(self) -> None:
         """Update DC strategy description based on selection."""
