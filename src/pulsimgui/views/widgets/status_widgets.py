@@ -5,6 +5,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
 
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import Theme
 
 
 class IconLabel(QWidget):
@@ -40,8 +41,7 @@ class IconLabel(QWidget):
 
     def _update_icon(self) -> None:
         """Update the icon with current color."""
-        color = "#d1d5db" if self._dark_mode else self._icon_color
-        icon = IconService.get_icon(self._icon_name, color)
+        icon = IconService.get_icon(self._icon_name, self._icon_color)
         if not icon.isNull():
             pixmap = icon.pixmap(14, 14)
             self._icon_label.setPixmap(pixmap)
@@ -69,6 +69,11 @@ class IconLabel(QWidget):
         self._dark_mode = dark
         self._update_icon()
 
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme-aware colors for generic icon/text labels."""
+        self._text_label.setStyleSheet(f"color: {theme.colors.statusbar_foreground};")
+        self.setDarkMode(theme.is_dark)
+
     def setMinimumWidth(self, width: int) -> None:
         """Set minimum width for text label."""
         self._text_label.setMinimumWidth(width - 22)  # Account for icon and spacing
@@ -84,6 +89,8 @@ class CoordinateWidget(QWidget):
         self._x = 0.0
         self._y = 0.0
         self._editing = False
+        self._icon_color = "#0078D4"
+        self._focus_border_color = "#93c5fd"
 
         self._setup_ui()
 
@@ -98,7 +105,7 @@ class CoordinateWidget(QWidget):
         # Icon
         self._icon_label = QLabel()
         self._icon_label.setFixedSize(14, 14)
-        icon = IconService.get_icon("crosshairs", "#0078D4")
+        icon = IconService.get_icon("crosshairs", self._icon_color)
         if not icon.isNull():
             self._icon_label.setPixmap(icon.pixmap(14, 14))
         layout.addWidget(self._icon_label)
@@ -137,13 +144,13 @@ class CoordinateWidget(QWidget):
         layout.addWidget(self._stack)
 
         # Apply styling
-        self.setStyleSheet("""
-            QLineEdit {
-                border: 1px solid #93c5fd;
+        self.setStyleSheet(f"""
+            QLineEdit {{
+                border: 1px solid {self._focus_border_color};
                 border-radius: 3px;
                 padding: 1px 4px;
                 font-size: 11px;
-            }
+            }}
         """)
 
     def _start_editing(self, event) -> None:
@@ -181,17 +188,43 @@ class CoordinateWidget(QWidget):
             self._editing = False
         super().focusOutEvent(event)
 
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors to coordinate editor visuals."""
+        self._icon_color = theme.colors.primary
+        self._focus_border_color = theme.colors.input_focus_border
+        icon = IconService.get_icon("crosshairs", self._icon_color)
+        if not icon.isNull():
+            self._icon_label.setPixmap(icon.pixmap(14, 14))
+        self._display_label.setStyleSheet(f"color: {theme.colors.statusbar_foreground};")
+        self.setStyleSheet(f"""
+            QLineEdit {{
+                border: 1px solid {self._focus_border_color};
+                border-radius: 3px;
+                padding: 1px 4px;
+                font-size: 11px;
+                color: {theme.colors.foreground};
+                background-color: {theme.colors.input_background};
+            }}
+        """)
+
 
 class ZoomWidget(IconLabel):
     """Widget showing current zoom level."""
 
     def __init__(self, parent=None):
         super().__init__("zoom", "100%", "#0078D4", parent)
+        self._zoom_color = "#0078D4"
         self.setToolTip("Current zoom level")
 
     def setZoom(self, percent: float) -> None:
         """Set zoom percentage."""
         self.setText(f"{percent:.0f}%")
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors to zoom widget."""
+        self._zoom_color = theme.colors.primary
+        self.setIconColor(self._zoom_color)
+        super().apply_theme(theme)
 
 
 class SelectionWidget(IconLabel):
@@ -199,17 +232,23 @@ class SelectionWidget(IconLabel):
 
     def __init__(self, parent=None):
         super().__init__("cursor", "", "#666666", parent)
+        self._selection_color = "#0078D4"
         self.setToolTip("Number of selected items")
 
     def setCount(self, count: int) -> None:
         """Set selection count."""
         if count > 0:
             self.setText(f"{count} selected")
-            self.setIconColor("#0078D4")
+            self.setIconColor(self._selection_color)
             self.show()
         else:
             self.setText("")
             self.hide()
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors to selection widget."""
+        self._selection_color = theme.colors.primary
+        super().apply_theme(theme)
 
 
 class ModifiedWidget(IconLabel):
@@ -218,6 +257,8 @@ class ModifiedWidget(IconLabel):
     def __init__(self, parent=None):
         super().__init__("saved", "", "#22c55e", parent)
         self._is_modified = False
+        self._saved_color = "#22c55e"
+        self._modified_color = "#f59e0b"
         self.setToolTip("Document status")
 
     def setModified(self, modified: bool) -> None:
@@ -225,15 +266,22 @@ class ModifiedWidget(IconLabel):
         self._is_modified = modified
         if modified:
             self.setIcon("modified")
-            self.setIconColor("#f59e0b")  # Orange/amber
+            self.setIconColor(self._modified_color)
             self.setText("Modified")
             self.setToolTip("Document has unsaved changes")
         else:
             self.setIcon("saved")
-            self.setIconColor("#22c55e")  # Green
+            self.setIconColor(self._saved_color)
             self.setText("")
             self.setToolTip("Document saved")
         self.setVisible(modified)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors to modified widget."""
+        self._saved_color = theme.colors.success
+        self._modified_color = theme.colors.warning
+        super().apply_theme(theme)
+        self.setModified(self._is_modified)
 
 
 class SimulationStatusWidget(IconLabel):
@@ -241,22 +289,26 @@ class SimulationStatusWidget(IconLabel):
 
     def __init__(self, parent=None):
         super().__init__("sim-ready", "Ready", "#666666", parent)
+        self._error_color = "#ef4444"
+        self._running_color = "#0078D4"
+        self._complete_color = "#22c55e"
+        self._idle_color = "#666666"
         self.setToolTip("Simulation status")
 
     def setStatus(self, status: str, is_running: bool = False, is_error: bool = False) -> None:
         """Set simulation status."""
         if is_error:
             self.setIcon("sim-error")
-            self.setIconColor("#ef4444")  # Red
+            self.setIconColor(self._error_color)
         elif is_running:
             self.setIcon("play")
-            self.setIconColor("#0078D4")  # Blue
+            self.setIconColor(self._running_color)
         elif status.lower() in ("complete", "done", "finished"):
             self.setIcon("sim-done")
-            self.setIconColor("#22c55e")  # Green
+            self.setIconColor(self._complete_color)
         else:
             self.setIcon("sim-ready")
-            self.setIconColor("#666666")  # Gray
+            self.setIconColor(self._idle_color)
 
         self.setText(status)
 
@@ -264,6 +316,14 @@ class SimulationStatusWidget(IconLabel):
         """Override to keep status colors."""
         self._dark_mode = dark
         # Don't update icon - keep status-specific colors
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors while preserving status semantics."""
+        self._error_color = theme.colors.error
+        self._running_color = theme.colors.primary
+        self._complete_color = theme.colors.success
+        self._idle_color = theme.colors.foreground_muted
+        self._text_label.setStyleSheet(f"color: {theme.colors.statusbar_foreground};")
 
 
 class StatusBanner(QWidget):

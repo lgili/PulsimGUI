@@ -1,7 +1,6 @@
 """Theme management service with customizable color schemes."""
 
 from dataclasses import dataclass, field, asdict
-from enum import Enum
 from pathlib import Path
 import json
 
@@ -107,6 +106,23 @@ class ThemeColors:
     icon_active: str = "#ffffff"
     icon_disabled: str = "#9ca3af"
     icon_accent: str = "#2563eb"
+
+    # Context menus and custom overlays
+    context_icon: str = "#374151"
+    overlay_pin_highlight: str = "#22c55e"
+    overlay_alignment_guides: str = "#ef4444"
+    overlay_drop_preview_fill: str = "#2563eb44"
+    overlay_drop_preview_border: str = "#2563ebcc"
+    overlay_minimap_viewport_fill: str = "#2563eb33"
+    overlay_minimap_viewport_border: str = "#2563ebcc"
+
+    # Plot surfaces (pyqtgraph-backed views)
+    plot_background: str = "#ffffff"
+    plot_grid: str = "#d1d5db"
+    plot_axis: str = "#374151"
+    plot_text: str = "#374151"
+    plot_legend_background: str = "#ffffff"
+    plot_legend_border: str = "#e5e7eb"
 
 
 @dataclass
@@ -225,6 +241,21 @@ LIGHT_THEME = Theme(
         sim_paused="#d97706",
         sim_stopped="#6b7280",
         sim_error="#dc2626",
+        # Context and overlays
+        context_icon="#374151",
+        overlay_pin_highlight="#16a34a",
+        overlay_alignment_guides="#dc2626",
+        overlay_drop_preview_fill="#2563eb33",
+        overlay_drop_preview_border="#2563ebcc",
+        overlay_minimap_viewport_fill="#2563eb33",
+        overlay_minimap_viewport_border="#2563ebcc",
+        # Plot surfaces
+        plot_background="#ffffff",
+        plot_grid="#d1d5db",
+        plot_axis="#374151",
+        plot_text="#374151",
+        plot_legend_background="#ffffff",
+        plot_legend_border="#e5e7eb",
     ),
 )
 
@@ -313,6 +344,21 @@ DARK_THEME = Theme(
         icon_active="#ffffff",
         icon_disabled="#707070",
         icon_accent="#4fc3f7",
+        # Context and overlays
+        context_icon="#e8e8e8",
+        overlay_pin_highlight="#4ec9b0",
+        overlay_alignment_guides="#ff8a80",
+        overlay_drop_preview_fill="#4fc3f744",
+        overlay_drop_preview_border="#4fc3f7cc",
+        overlay_minimap_viewport_fill="#4fc3f744",
+        overlay_minimap_viewport_border="#4fc3f7cc",
+        # Plot surfaces
+        plot_background="#1e1e1e",
+        plot_grid="#4a4a4a",
+        plot_axis="#d0d0d0",
+        plot_text="#e8e8e8",
+        plot_legend_background="#252526",
+        plot_legend_border="#404040",
     ),
 )
 
@@ -401,6 +447,21 @@ MODERN_DARK_THEME = Theme(
         icon_active="#ffffff",
         icon_disabled="#6e7681",
         icon_accent="#58a6ff",
+        # Context and overlays
+        context_icon="#c9d1d9",
+        overlay_pin_highlight="#3fb950",
+        overlay_alignment_guides="#f85149",
+        overlay_drop_preview_fill="#58a6ff44",
+        overlay_drop_preview_border="#58a6ffcc",
+        overlay_minimap_viewport_fill="#58a6ff44",
+        overlay_minimap_viewport_border="#58a6ffcc",
+        # Plot surfaces
+        plot_background="#0d1117",
+        plot_grid="#30363d",
+        plot_axis="#8b949e",
+        plot_text="#c9d1d9",
+        plot_legend_background="#161b22",
+        plot_legend_border="#30363d",
     ),
 )
 
@@ -490,13 +551,55 @@ class ThemeService(QObject):
         except Exception:
             return False
 
+    @staticmethod
+    def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+        """Convert a hex-like color string to RGB tuple with safe fallback."""
+        value = QColor(color)
+        if not value.isValid():
+            return (255, 0, 255)
+        return (value.red(), value.green(), value.blue())
+
+    def get_trace_palette(self, theme: Theme | None = None) -> list[tuple[int, int, int]]:
+        """Return a theme-aware trace palette for waveform/thermal plots."""
+        active = theme or self._current_theme
+        c = active.colors
+        if active.is_dark:
+            colors = [
+                c.primary,
+                c.success,
+                c.warning,
+                c.error,
+                c.info,
+                "#c084fc",
+                "#fb7185",
+                "#fbbf24",
+                "#34d399",
+                "#93c5fd",
+            ]
+        else:
+            colors = [
+                c.primary,
+                c.success,
+                c.warning,
+                c.error,
+                c.info,
+                "#7c3aed",
+                "#db2777",
+                "#0d9488",
+                "#4f46e5",
+                "#ca8a04",
+            ]
+        return [self._hex_to_rgb(color) for color in colors]
+
+    def get_cursor_palette(self, theme: Theme | None = None) -> list[tuple[int, int, int]]:
+        """Return two high-contrast cursor colors for the active theme."""
+        active = theme or self._current_theme
+        c = active.colors
+        return [self._hex_to_rgb(c.error), self._hex_to_rgb(c.primary)]
+
     def generate_stylesheet(self) -> str:
         """Generate Qt stylesheet for current theme."""
         c = self._current_theme.colors
-        is_dark = self._current_theme.is_dark
-
-        # Modern shadow/elevation colors
-        shadow_color = "rgba(0, 0, 0, 0.08)" if not is_dark else "rgba(0, 0, 0, 0.3)"
 
         return f"""
 /* ===== Base Application ===== */

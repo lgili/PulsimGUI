@@ -3,11 +3,12 @@
 from enum import Enum, auto
 
 from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush
+from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
 
 from pulsimgui.models.component import ComponentType
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.schematic.scene import SchematicScene
 from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
@@ -310,6 +311,17 @@ class SchematicView(QGraphicsView):
         # Don't set background brush - let scene's drawBackground handle it
         if isinstance(self.scene(), SchematicScene):
             self.scene().set_dark_mode(dark)
+        # Background is cached; force invalidation so theme changes repaint immediately.
+        self.resetCachedContent()
+        self.viewport().update()
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme colors for canvas overlays and dark-mode rendering."""
+        self.set_dark_mode(theme.is_dark)
+        PinHighlightItem.PIN_GLOW_COLOR = QColor(theme.colors.overlay_pin_highlight)
+        AlignmentGuidesItem.GUIDE_COLOR = QColor(theme.colors.overlay_alignment_guides)
+        ComponentDropPreviewItem.PREVIEW_COLOR = QColor(theme.colors.overlay_drop_preview_fill)
+        ComponentDropPreviewItem.PREVIEW_BORDER = QColor(theme.colors.overlay_drop_preview_border)
 
     def zoom_in(self) -> None:
         """Zoom in by one step."""
@@ -704,11 +716,10 @@ class SchematicView(QGraphicsView):
         from pulsimgui.views.schematic.items import ComponentItem
 
         item = self.itemAt(event.pos())
-        icon_color = "#374151"
+        icon_color = self.palette().color(QPalette.ColorRole.Text).name()
 
         if isinstance(item, WireItem):
             menu = QMenu(self)
-            menu.setStyleSheet(self._get_context_menu_style())
 
             rename_action = menu.addAction(
                 IconService.get_icon("edit", icon_color), "Rename Signal..."
@@ -740,7 +751,6 @@ class SchematicView(QGraphicsView):
 
         elif isinstance(item, ComponentItem):
             menu = QMenu(self)
-            menu.setStyleSheet(self._get_context_menu_style())
 
             # Properties at top
             props_action = menu.addAction(
@@ -822,32 +832,6 @@ class SchematicView(QGraphicsView):
             return
 
         super().contextMenuEvent(event)
-
-    def _get_context_menu_style(self) -> str:
-        """Get stylesheet for context menus."""
-        return """
-            QMenu {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 24px 6px 8px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #f3f4f6;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #e5e7eb;
-                margin: 4px 8px;
-            }
-            QMenu::icon {
-                padding-left: 8px;
-            }
-        """
 
     def _delete_wire(self, wire_item: WireItem) -> None:
         """Delete a wire from the scene and circuit."""

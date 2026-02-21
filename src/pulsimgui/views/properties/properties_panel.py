@@ -4,7 +4,7 @@ from functools import partial
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDoubleValidator
+from PySide6.QtGui import QDoubleValidator, QColor, QPalette
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -38,6 +38,12 @@ from pulsimgui.models.component import (
 )
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import (
+    ThemeService,
+    Theme,
+    LIGHT_THEME,
+    DARK_THEME,
+)
 
 
 class SectionHeader(QWidget):
@@ -47,23 +53,38 @@ class SectionHeader(QWidget):
         super().__init__(parent)
         self._icon_name = icon_name
         self._icon_color = icon_color
+        self._color_bar: QFrame | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 8, 0, 4)
         layout.setSpacing(8)
 
         # Color bar
-        color_bar = QFrame()
-        color_bar.setFixedSize(3, 18)
-        color_bar.setStyleSheet(f"background-color: {icon_color}; border-radius: 1px;")
-        layout.addWidget(color_bar)
+        self._color_bar = QFrame()
+        self._color_bar.setFixedSize(3, 18)
+        layout.addWidget(self._color_bar)
 
         # Title
         self._title_label = QLabel(title)
-        self._title_label.setStyleSheet("font-weight: 600; font-size: 12px;")
         layout.addWidget(self._title_label)
 
         layout.addStretch()
+        self.apply_theme(None, icon_color)
+
+    def apply_theme(self, theme: Theme | None, accent_color: str | None = None) -> None:
+        """Apply theme to section header visuals."""
+        if accent_color is not None:
+            self._icon_color = accent_color
+        if self._color_bar is not None:
+            self._color_bar.setStyleSheet(
+                f"background-color: {self._icon_color}; border-radius: 1px;"
+            )
+        if theme is None:
+            self._title_label.setStyleSheet("font-weight: 600; font-size: 12px;")
+            return
+        self._title_label.setStyleSheet(
+            f"font-weight: 600; font-size: 12px; color: {theme.colors.foreground};"
+        )
 
 
 class AutoSelectLineEdit(QLineEdit):
@@ -85,6 +106,9 @@ class SIValueWidget(QWidget):
         super().__init__(parent)
         self._unit = unit
         self._value = 0.0
+        self._theme: Theme | None = None
+        self._invalid = False
+        self._unit_label: QLabel | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -99,9 +123,9 @@ class SIValueWidget(QWidget):
 
         if unit:
             self._unit_label = QLabel(unit)
-            self._unit_label.setStyleSheet("color: #6b7280; font-size: 11px;")
             self._unit_label.setMinimumWidth(20)
             layout.addWidget(self._unit_label)
+        self._apply_validation_style()
 
     @property
     def value(self) -> float:
@@ -136,14 +160,17 @@ class SIValueWidget(QWidget):
         """Validate input and update style."""
         text = self._edit.text().strip()
         if not text:
-            self._edit.setStyleSheet("")
+            self._invalid = False
+            self._apply_validation_style()
             return
 
         try:
             parse_si_value(text)
-            self._edit.setStyleSheet("")
+            self._invalid = False
+            self._apply_validation_style()
         except ValueError:
-            self._edit.setStyleSheet("border: 1px solid #ef4444;")
+            self._invalid = True
+            self._apply_validation_style()
 
     def _on_return_pressed(self) -> None:
         """Handle Enter key press - update value immediately."""
@@ -167,6 +194,31 @@ class SIValueWidget(QWidget):
                 self.value_changed.emit(self._value)
         except ValueError:
             self._edit.setText(self._format_value(self._value))
+
+    def _apply_validation_style(self) -> None:
+        """Apply current input style, respecting theme and validation state."""
+        if self._theme is None:
+            if self._invalid:
+                self._edit.setStyleSheet("border: 1px solid #ef4444;")
+            else:
+                self._edit.setStyleSheet("")
+            if self._unit_label is not None:
+                self._unit_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+            return
+
+        c = self._theme.colors
+        border = c.error if self._invalid else c.input_border
+        self._edit.setStyleSheet(
+            f"border: 1px solid {border}; border-radius: 4px; "
+            f"padding: 2px 6px; background-color: {c.input_background}; color: {c.foreground};"
+        )
+        if self._unit_label is not None:
+            self._unit_label.setStyleSheet(f"color: {c.foreground_muted}; font-size: 11px;")
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme-aware visuals."""
+        self._theme = theme
+        self._apply_validation_style()
 
 
 class WaveformEditorDialog(QDialog):
@@ -345,6 +397,8 @@ class IconButton(QPushButton):
         super().__init__(parent)
         self._icon_name = icon_name
         self._icon_color = "#6b7280"
+        self._theme: Theme | None = None
+        self._active = False
 
         self.setFixedSize(size, size)
         self.setToolTip(tooltip)
@@ -357,36 +411,75 @@ class IconButton(QPushButton):
         self.setIcon(icon)
 
     def _update_style(self):
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #e5e7eb;
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: #f3f4f6;
-                border-color: #d1d5db;
-            }
-            QPushButton:pressed {
-                background-color: #e5e7eb;
-            }
-        """)
+        if self._theme is None:
+            if self._active:
+                self.setStyleSheet("""
+                    QPushButton {
+                        background-color: #dbeafe;
+                        border: 1px solid #3b82f6;
+                        border-radius: 6px;
+                    }
+                    QPushButton:hover {
+                        background-color: #bfdbfe;
+                    }
+                """)
+            else:
+                self.setStyleSheet("""
+                    QPushButton {
+                        background-color: transparent;
+                        border: 1px solid #e5e7eb;
+                        border-radius: 6px;
+                    }
+                    QPushButton:hover {
+                        background-color: #f3f4f6;
+                        border-color: #d1d5db;
+                    }
+                    QPushButton:pressed {
+                        background-color: #e5e7eb;
+                    }
+                """)
+            return
+
+        c = self._theme.colors
+        if self._active:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {c.tree_item_selected};
+                    border: 1px solid {c.primary};
+                    border-radius: 6px;
+                }}
+                QPushButton:hover {{
+                    background-color: {c.menu_hover};
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    border: 1px solid {c.panel_border};
+                    border-radius: 6px;
+                }}
+                QPushButton:hover {{
+                    background-color: {c.menu_hover};
+                    border-color: {c.border};
+                }}
+                QPushButton:pressed {{
+                    background-color: {c.tree_item_selected_inactive};
+                }}
+            """)
 
     def set_active(self, active: bool):
         """Set button active state."""
-        if active:
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #dbeafe;
-                    border: 1px solid #3b82f6;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #bfdbfe;
-                }
-            """)
-        else:
-            self._update_style()
+        self._active = active
+        self._update_style()
+
+    def apply_theme(self, theme: Theme, icon_color: str | None = None) -> None:
+        """Apply themed icon and button surface colors."""
+        self._theme = theme
+        if icon_color is not None:
+            self._icon_color = icon_color
+        self._update_icon()
+        self._update_style()
 
 
 class PropertiesPanel(QWidget):
@@ -397,9 +490,13 @@ class PropertiesPanel(QWidget):
     flip_requested = Signal(str)  # "h" or "v"
     rotate_requested = Signal(int)  # degrees
 
-    def __init__(self, parent=None):
+    def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("PropertiesPanelRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
+        self._theme_service = theme_service
+        self._theme: Theme | None = None
         self._component: Component | None = None
         self._components: list[Component] = []
         self._widgets: dict[str, QWidget] = {}
@@ -407,8 +504,17 @@ class PropertiesPanel(QWidget):
         self._mux_channel_layout = None
         self._demux_channel_layout = None
         self._dark_mode = False
+        self._info_header: SectionHeader | None = None
+        self._params_header: SectionHeader | None = None
+        self._pos_header: SectionHeader | None = None
+        self._transform_label: QLabel | None = None
 
         self._setup_ui()
+        if self._theme_service is not None:
+            self._theme_service.theme_changed.connect(self.apply_theme)
+            self.apply_theme(self._theme_service.current_theme)
+        else:
+            self.apply_theme(LIGHT_THEME)
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
@@ -422,8 +528,8 @@ class PropertiesPanel(QWidget):
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(8)
 
-        info_header = SectionHeader("info", "Component", "#3b82f6")
-        info_layout.addWidget(info_header)
+        self._info_header = SectionHeader("info", "Component", "#3b82f6")
+        info_layout.addWidget(self._info_header)
 
         # Type and name
         form = QWidget()
@@ -433,7 +539,6 @@ class PropertiesPanel(QWidget):
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self._type_label = QLabel("-")
-        self._type_label.setStyleSheet("color: #6b7280; font-weight: 500;")
         form_layout.addRow("Type:", self._type_label)
 
         self._name_edit = AutoSelectLineEdit()
@@ -450,7 +555,8 @@ class PropertiesPanel(QWidget):
         transform_layout.setContentsMargins(0, 4, 0, 0)
         transform_layout.setSpacing(6)
 
-        transform_layout.addWidget(QLabel("Transform:"))
+        self._transform_label = QLabel("Transform:")
+        transform_layout.addWidget(self._transform_label)
 
         self._rotate_ccw_btn = IconButton("rotate-ccw", "Rotate Left (R)")
         self._rotate_ccw_btn.clicked.connect(lambda: self._on_rotate(-90))
@@ -510,8 +616,8 @@ class PropertiesPanel(QWidget):
         pos_layout.setContentsMargins(0, 0, 0, 0)
         pos_layout.setSpacing(8)
 
-        pos_header = SectionHeader("move", "Position", "#f59e0b")
-        pos_layout.addWidget(pos_header)
+        self._pos_header = SectionHeader("move", "Position", "#f59e0b")
+        pos_layout.addWidget(self._pos_header)
 
         pos_form = QWidget()
         pos_form_layout = QHBoxLayout(pos_form)
@@ -542,7 +648,6 @@ class PropertiesPanel(QWidget):
         # No selection label
         self._no_selection_label = QLabel("No component selected")
         self._no_selection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._no_selection_label.setStyleSheet("color: #9ca3af; padding: 40px;")
         layout.addWidget(self._no_selection_label)
 
         # Initially hide everything except no selection label
@@ -599,6 +704,8 @@ class PropertiesPanel(QWidget):
 
         # Create parameter widgets
         self._create_param_widgets()
+        if self._theme is not None:
+            self.apply_theme(self._theme)
 
     def _clear_params(self) -> None:
         """Clear all parameter widgets."""
@@ -650,6 +757,8 @@ class PropertiesPanel(QWidget):
             unit = self._get_unit_for_param(name)
             widget = SIValueWidget(unit)
             widget.value = value
+            if self._theme is not None:
+                widget.apply_theme(self._theme)
             widget.value_changed.connect(lambda v: self._on_param_changed(name, v))
             return widget
 
@@ -679,14 +788,7 @@ class PropertiesPanel(QWidget):
         # Waveform type label
         wf_type = waveform.get("type", "dc").upper()
         type_label = QLabel(wf_type)
-        type_label.setStyleSheet("""
-            background-color: #dbeafe;
-            color: #1e40af;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 500;
-            font-size: 11px;
-        """)
+        type_label.setObjectName("WaveformTypeBadge")
         layout.addWidget(type_label)
 
         # Value preview
@@ -704,32 +806,16 @@ class PropertiesPanel(QWidget):
         else:
             preview = QLabel("...")
 
-        preview.setStyleSheet("color: #6b7280;")
+        preview.setObjectName("WaveformPreviewLabel")
         layout.addWidget(preview)
 
         layout.addStretch()
 
         # Edit button
         edit_btn = QPushButton("Edit")
+        edit_btn.setObjectName("WaveformEditButton")
         edit_btn.setFixedWidth(50)
         edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 11px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #2563eb;
-            }
-            QPushButton:pressed {
-                background-color: #1d4ed8;
-            }
-        """)
         edit_btn.clicked.connect(lambda: self._on_edit_waveform(name, waveform))
         layout.addWidget(edit_btn)
 
@@ -773,7 +859,7 @@ class PropertiesPanel(QWidget):
 
             idx_label = QLabel(f"{idx + 1}:")
             idx_label.setFixedWidth(20)
-            idx_label.setStyleSheet("color: #9ca3af;")
+            idx_label.setObjectName("ChannelIndexLabel")
             row_layout.addWidget(idx_label)
 
             label_edit = AutoSelectLineEdit(channel.get("label", ""))
@@ -869,7 +955,7 @@ class PropertiesPanel(QWidget):
 
             idx_label = QLabel(f"{idx + 1}:")
             idx_label.setFixedWidth(20)
-            idx_label.setStyleSheet("color: #9ca3af;")
+            idx_label.setObjectName("ChannelIndexLabel")
             row_layout.addWidget(idx_label)
 
             edit = AutoSelectLineEdit(label)
@@ -899,7 +985,7 @@ class PropertiesPanel(QWidget):
 
             idx_label = QLabel(f"{idx + 1}:")
             idx_label.setFixedWidth(20)
-            idx_label.setStyleSheet("color: #9ca3af;")
+            idx_label.setObjectName("ChannelIndexLabel")
             row_layout.addWidget(idx_label)
 
             edit = AutoSelectLineEdit(label)
@@ -1031,6 +1117,104 @@ class PropertiesPanel(QWidget):
             # Refresh the display
             self._update_display()
 
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to the properties panel."""
+        self._theme = theme
+        c = theme.colors
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(c.panel_background))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+
+        self.setStyleSheet(f"""
+            QWidget#PropertiesPanelRoot {{
+                background-color: {c.panel_background};
+            }}
+            QLabel {{
+                color: {c.foreground};
+            }}
+            QLabel#ChannelIndexLabel {{
+                color: {c.foreground_muted};
+            }}
+            QLabel#WaveformTypeBadge {{
+                background-color: {c.tree_item_selected};
+                color: {c.primary};
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-weight: 500;
+                font-size: 11px;
+            }}
+            QLabel#WaveformPreviewLabel {{
+                color: {c.foreground_muted};
+            }}
+            QPushButton#WaveformEditButton {{
+                background-color: {c.primary};
+                color: {c.primary_foreground};
+                border: none;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+                font-weight: 500;
+            }}
+            QPushButton#WaveformEditButton:hover {{
+                background-color: {c.primary_hover};
+            }}
+            QPushButton#WaveformEditButton:pressed {{
+                background-color: {c.primary_pressed};
+            }}
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit {{
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+                border-radius: 4px;
+                padding: 4px 6px;
+                color: {c.foreground};
+                selection-background-color: {c.primary};
+                selection-color: {c.primary_foreground};
+            }}
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus {{
+                border: 1px solid {c.input_focus_border};
+            }}
+            QCheckBox {{
+                color: {c.foreground};
+                spacing: 6px;
+            }}
+            QScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QFormLayout QLabel {{
+                color: {c.foreground_muted};
+            }}
+        """)
+
+        self._type_label.setStyleSheet(f"color: {c.foreground_muted}; font-weight: 500;")
+        self._no_selection_label.setStyleSheet(f"color: {c.foreground_muted}; padding: 40px;")
+        if self._transform_label is not None:
+            self._transform_label.setStyleSheet(f"color: {c.foreground_muted};")
+
+        if self._info_header is not None:
+            self._info_header.apply_theme(theme, accent_color=c.primary)
+        if self._params_header is not None:
+            self._params_header.apply_theme(theme, accent_color=c.success)
+        if self._pos_header is not None:
+            self._pos_header.apply_theme(theme, accent_color=c.warning)
+
+        button_icon = c.icon_default
+        self._rotate_ccw_btn.apply_theme(theme, icon_color=button_icon)
+        self._rotate_cw_btn.apply_theme(theme, icon_color=button_icon)
+        self._flip_h_btn.apply_theme(theme, icon_color=button_icon)
+        self._flip_v_btn.apply_theme(theme, icon_color=button_icon)
+        self._flip_h_btn.set_active(bool(self._component and self._component.mirrored_h))
+        self._flip_v_btn.set_active(bool(self._component and self._component.mirrored_v))
+
+        for widget in self._widgets.values():
+            if isinstance(widget, SIValueWidget):
+                widget.apply_theme(theme)
+
     def set_dark_mode(self, dark: bool) -> None:
         """Set dark mode and update colors accordingly."""
         self._dark_mode = dark
+        if self._theme_service is not None:
+            self.apply_theme(self._theme_service.current_theme)
+            return
+        self.apply_theme(DARK_THEME if dark else LIGHT_THEME)

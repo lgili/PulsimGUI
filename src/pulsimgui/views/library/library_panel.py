@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.models.component import ComponentType
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import ThemeService, Theme
 
 
 # Component metadata for library display
@@ -834,11 +835,16 @@ class ComponentCard(QFrame):
 
     def __init__(self, comp_type: ComponentType, name: str, shortcut: str, parent=None):
         super().__init__(parent)
+        self.setObjectName("ComponentCard")
         self._comp_type = comp_type
         self._name = name
         self._shortcut = shortcut
         self._hovered = False
         self._icon_color = "#374151"
+        self._theme: Theme | None = None
+        self._hover_fill = "rgba(59, 130, 246, 0.1)"
+        self._hover_border = "rgba(59, 130, 246, 0.3)"
+        self._name_color = "#374151"
 
         self.setFixedSize(72, 80)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -875,16 +881,16 @@ class ComponentCard(QFrame):
 
     def _update_style(self):
         if self._hovered:
-            self.setStyleSheet("""
-                ComponentCard {
-                    background-color: rgba(59, 130, 246, 0.1);
-                    border: 1px solid rgba(59, 130, 246, 0.3);
+            self.setStyleSheet(f"""
+                QFrame#ComponentCard {{
+                    background-color: {self._hover_fill};
+                    border: 1px solid {self._hover_border};
                     border-radius: 8px;
-                }
+                }}
             """)
         else:
             self.setStyleSheet("""
-                ComponentCard {
+                QFrame#ComponentCard {
                     background-color: transparent;
                     border: 1px solid transparent;
                     border-radius: 8px;
@@ -894,6 +900,24 @@ class ComponentCard(QFrame):
     def set_icon_color(self, color: str):
         self._icon_color = color
         self._update_icon()
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme-aware card visuals."""
+        self._theme = theme
+        c = theme.colors
+        selected = QColor(c.tree_item_selected)
+        primary = QColor(c.primary)
+        hover_alpha = 72 if theme.is_dark else 48
+        border_alpha = 170 if theme.is_dark else 110
+        self._hover_fill = (
+            f"rgba({selected.red()}, {selected.green()}, {selected.blue()}, {hover_alpha})"
+        )
+        self._hover_border = (
+            f"rgba({primary.red()}, {primary.green()}, {primary.blue()}, {border_alpha})"
+        )
+        self._name_color = c.foreground
+        self._name_label.setStyleSheet(f"color: {self._name_color};")
+        self._update_style()
 
     def enterEvent(self, event):
         self._hovered = True
@@ -962,6 +986,8 @@ class CategorySection(QWidget):
         self._expanded = True
         self._cards: list[ComponentCard] = []
         self._icon_color = "#374151"
+        self._header: QWidget | None = None
+        self._color_bar: QFrame | None = None
 
         self._setup_ui()
 
@@ -971,16 +997,15 @@ class CategorySection(QWidget):
         layout.setSpacing(4)
 
         # Header
-        header = QWidget()
-        header_layout = QHBoxLayout(header)
+        self._header = QWidget()
+        header_layout = QHBoxLayout(self._header)
         header_layout.setContentsMargins(8, 4, 8, 4)
         header_layout.setSpacing(8)
 
         # Color indicator
-        color_bar = QFrame()
-        color_bar.setFixedSize(4, 20)
-        color_bar.setStyleSheet(f"background-color: {self._color}; border-radius: 2px;")
-        header_layout.addWidget(color_bar)
+        self._color_bar = QFrame()
+        self._color_bar.setFixedSize(4, 20)
+        header_layout.addWidget(self._color_bar)
 
         # Category name
         self._title_label = QLabel(self._name)
@@ -992,7 +1017,7 @@ class CategorySection(QWidget):
 
         header_layout.addStretch()
 
-        layout.addWidget(header)
+        layout.addWidget(self._header)
 
         # Grid container
         self._grid_container = QWidget()
@@ -1002,6 +1027,7 @@ class CategorySection(QWidget):
         self._grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         layout.addWidget(self._grid_container)
+        self._refresh_header_style()
 
     def add_component(self, comp_type: ComponentType, name: str, shortcut: str):
         card = ComponentCard(comp_type, name, shortcut)
@@ -1020,6 +1046,31 @@ class CategorySection(QWidget):
         self._icon_color = color
         for card in self._cards:
             card.set_icon_color(color)
+
+    def _refresh_header_style(self, theme: Theme | None = None) -> None:
+        """Apply styles to section header and color accent bar."""
+        if self._color_bar is not None:
+            self._color_bar.setStyleSheet(
+                f"background-color: {self._color}; border-radius: 2px;"
+            )
+        if theme is None or self._header is None:
+            self._title_label.setStyleSheet("")
+            return
+
+        c = theme.colors
+        self._header.setStyleSheet(
+            f"background-color: {c.panel_header}; border-radius: 6px;"
+        )
+        self._title_label.setStyleSheet(f"color: {c.foreground};")
+
+    def apply_theme(self, theme: Theme, accent_color: str, icon_color: str) -> None:
+        """Apply theme to section and nested component cards."""
+        self._color = accent_color
+        self._icon_color = icon_color
+        self._refresh_header_style(theme)
+        for card in self._cards:
+            card.set_icon_color(icon_color)
+            card.apply_theme(theme)
 
     def filter_components(self, search_text: str) -> bool:
         """Filter components by search text. Returns True if any visible."""
@@ -1042,21 +1093,26 @@ class LibraryPanel(QWidget):
     component_selected = Signal(ComponentType)
     component_double_clicked = Signal(ComponentType)
 
-    def __init__(self, theme_service=None, parent=None):
+    def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("LibraryPanelRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self._theme_service = theme_service
+        self._theme: Theme | None = None
         self._icon_color = "#374151"
         self._sections: list[CategorySection] = []
         self._recent: list[ComponentType] = []
         self._max_recent = 5
+        self._scroll: QScrollArea | None = None
+        self._search_action = None
 
         self._setup_ui()
         self._populate_components()
 
         if self._theme_service:
             self._theme_service.theme_changed.connect(self._on_theme_changed)
-            self._update_colors_from_theme()
+            self.apply_theme(self._theme_service.current_theme)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1069,7 +1125,9 @@ class LibraryPanel(QWidget):
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         search_icon = IconService.get_icon("search", "#9ca3af", 16)
-        self._search_edit.addAction(search_icon, QLineEdit.ActionPosition.LeadingPosition)
+        self._search_action = self._search_edit.addAction(
+            search_icon, QLineEdit.ActionPosition.LeadingPosition
+        )
         layout.addWidget(self._search_edit)
 
         # Scroll area for categories
@@ -1079,6 +1137,8 @@ class LibraryPanel(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._content = QWidget()
+        self._content.setObjectName("LibraryContentRoot")
+        self._content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         self._content_layout.setSpacing(0)
@@ -1086,6 +1146,7 @@ class LibraryPanel(QWidget):
 
         scroll.setWidget(self._content)
         layout.addWidget(scroll)
+        self._scroll = scroll
 
     def _populate_components(self):
         for category, components in COMPONENT_LIBRARY.items():
@@ -1118,12 +1179,56 @@ class LibraryPanel(QWidget):
         self._recent.insert(0, comp_type)
         self._recent = self._recent[:self._max_recent]
 
-    def _on_theme_changed(self, theme):
-        self._update_colors_from_theme()
+    @staticmethod
+    def _category_color_for_theme(category: str, theme: Theme) -> str:
+        """Normalize category accent brightness for active theme."""
+        base = QColor(CATEGORY_COLORS.get(category, "#6b7280"))
+        return base.lighter(135).name() if theme.is_dark else base.darker(105).name()
 
-    def _update_colors_from_theme(self):
-        if self._theme_service:
-            theme = self._theme_service.current_theme
-            self._icon_color = theme.colors.foreground_muted
-            for section in self._sections:
-                section.set_icon_color(self._icon_color)
+    def _on_theme_changed(self, theme: Theme) -> None:
+        self.apply_theme(theme)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to library panel and all category sections."""
+        self._theme = theme
+        c = theme.colors
+        self._icon_color = c.foreground_muted
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(c.panel_background))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+
+        if self._search_action is not None:
+            self._search_action.setIcon(IconService.get_icon("search", c.input_placeholder, 16))
+        if self._scroll is not None:
+            self._scroll.viewport().setStyleSheet(f"background-color: {c.panel_background};")
+
+        self.setStyleSheet(f"""
+            QWidget#LibraryPanelRoot {{
+                background-color: {c.panel_background};
+            }}
+            QWidget#LibraryContentRoot {{
+                background-color: {c.panel_background};
+            }}
+            QLineEdit {{
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+                border-radius: 6px;
+                padding: 6px 8px;
+                color: {c.foreground};
+            }}
+            QLineEdit:focus {{
+                border-color: {c.input_focus_border};
+            }}
+            QScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QWidget {{
+                color: {c.foreground};
+            }}
+        """)
+
+        for section in self._sections:
+            accent = self._category_color_for_theme(section._name, theme)
+            section.apply_theme(theme, accent_color=accent, icon_color=self._icon_color)
