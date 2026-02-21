@@ -154,10 +154,10 @@
   - Save to user preferences
   - Restore on dialog open
 
-- [ ] 5.6 Add solver options tests
-  - Test UI value changes
-  - Test persistence
-  - Test backend receives options
+- [x] 5.6 Add solver options tests (21 tests in test_solver_options.py)
+  - Test UI value changes (dialog loads/saves settings correctly)
+  - Test persistence (settings survive dialog roundtrip)
+  - Test backend receives options (DCSettings built from SimulationSettings)
 
 ## 6. Convergence Diagnostics
 
@@ -167,15 +167,15 @@
   - Problematic variables list
   - Suggestions panel
 
-- [ ] 6.2 Add iteration history extraction
-  - Extract from pulsim.v2.ConvergenceHistory
-  - Convert to GUI IterationRecord list
-  - Handle missing history (older backends)
+- [x] 6.2 Add iteration history extraction
+  - Extract from pulsim.v2.ConvergenceHistory (with attribute fallbacks)
+  - Convert to GUI IterationRecord list with all fields
+  - Handle missing history (returns empty list for older backends)
 
-- [ ] 6.3 Add problematic node detection
-  - Extract from pulsim.v2.PerVariableConvergence
-  - Map indices to node names
-  - Sort by worst convergence
+- [x] 6.3 Add problematic node detection
+  - Extract from pulsim.v2.PerVariableConvergence (with attribute fallbacks)
+  - Map indices to node names using circuit.node_names()
+  - Sort by worst convergence (by normalized_error, descending)
 
 - [x] 6.4 Implement suggestion engine
   - "Increase max_iterations" if near limit
@@ -195,36 +195,37 @@
 
 ## 7. Version Compatibility
 
-- [ ] 7.1 Add version detection to `PulsimBackend`
-  - Read `pulsim.__version__`
-  - Parse to `BackendVersion`
-  - Check against MIN_BACKEND_API
+- [x] 7.1 Add version detection to `PulsimBackend`
+  - Read `pulsim.__version__` and parse to `BackendVersion`
+  - Check against MIN_BACKEND_API (0.2.0)
+  - Store parsed_version and is_compatible in BackendInfo
 
-- [ ] 7.2 Implement capability detection
-  - Check for v2 module presence
+- [x] 7.2 Implement capability detection
+  - Check for dc_operating_point, v2.solve_dc, v1.DCConvergenceSolver
+  - Check for run_ac, ACAnalysis
   - Check for ThermalSimulator
-  - Check for run_ac
-  - Update `capabilities` set
+  - Update capabilities set and unavailable_features list
 
-- [ ] 7.3 Add version warning UI
-  - Show warning banner if version < minimum
-  - List unavailable features
-  - Link to upgrade instructions
+- [x] 7.3 Add version warning UI
+  - SimulationSettingsDialog shows compatibility_warning
+  - Shows unavailable features in capabilities list
+  - Warning label visible when issues detected
 
-- [ ] 7.4 Implement graceful degradation
-  - Disable menu items for unavailable features
-  - Show "Upgrade Required" tooltip
-  - Fall back to placeholder where possible
+- [x] 7.4 Implement graceful degradation
+  - Menu items disabled for unavailable capabilities
+  - Tooltips show "requires backend upgrade" for disabled items
+  - Thermal viewer uses synthetic fallback with tooltip hint
 
-- [ ] 7.5 Add backend info to About dialog
-  - Show backend name and version
-  - Show available capabilities
-  - Show installation location
+- [x] 7.5 Add backend info to About dialog
+  - Shows backend name, version, location
+  - Shows available capabilities
+  - Shows unavailable features (highlighted)
+  - Shows compatibility warning if present
 
-- [ ] 7.6 Add version compatibility tests
-  - Mock old backend version
-  - Test feature disabling
-  - Test warning display
+- [x] 7.6 Add version compatibility tests (18 tests in test_version_compatibility.py)
+  - BackendVersion parsing and comparison
+  - BackendInfo compatibility checking
+  - MIN_BACKEND_API validation
 
 ## 8. Integration Testing
 

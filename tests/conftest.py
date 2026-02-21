@@ -1,7 +1,9 @@
 """Pytest configuration and fixtures."""
 
+import time
 import pytest
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication
 
 
 @pytest.fixture(scope="session")
@@ -11,6 +13,33 @@ def qapp():
     if app is None:
         app = QApplication([])
     yield app
+
+
+class SimpleQtBot:
+    """Simple Qt bot for signal waiting without full pytest-qt dependency."""
+
+    def __init__(self, app: QApplication):
+        self._app = app
+
+    def waitUntil(self, callback, timeout: int = 5000) -> None:
+        """Wait until callback returns True or timeout is reached."""
+        deadline = time.time() + timeout / 1000.0
+        while time.time() < deadline:
+            QCoreApplication.processEvents()
+            if callback():
+                return
+            time.sleep(0.01)
+        raise TimeoutError(f"Condition not met within {timeout}ms")
+
+    def addWidget(self, widget) -> None:
+        """Track a widget (no-op for basic implementation)."""
+        pass
+
+
+@pytest.fixture
+def qtbot(qapp):
+    """Provide a simple Qt bot for signal waiting."""
+    return SimpleQtBot(qapp)
 
 
 @pytest.fixture

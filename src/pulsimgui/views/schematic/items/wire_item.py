@@ -18,6 +18,7 @@ class WireItem(QGraphicsPathItem):
     Features:
     - Orthogonal (right-angle) routing
     - Junction dots where wires connect
+    - Connection indicators at component pins
     - Selection highlighting with glow
     - Hover effects
     """
@@ -33,6 +34,8 @@ class WireItem(QGraphicsPathItem):
     SELECTED_GLOW = QColor(59, 130, 246, 60)  # Semi-transparent for glow
     JUNCTION_RADIUS = 6.0
     JUNCTION_RADIUS_HOVER = 7.0
+    CONNECTION_RADIUS = 5.0  # Connection indicator circles
+    CONNECTION_RADIUS_HOVER = 6.5
 
     def __init__(self, wire: Wire, parent=None):
         super().__init__(parent)
@@ -40,6 +43,9 @@ class WireItem(QGraphicsPathItem):
         self._wire = wire
         self._dark_mode = False
         self._hovered = False
+
+        # Connected endpoints - positions where wire connects to component pins
+        self._connected_endpoints: set[tuple[float, float]] = set()
 
         # Segment dragging state
         self._dragging_segment: int | None = None  # Index of segment being dragged
@@ -64,6 +70,25 @@ class WireItem(QGraphicsPathItem):
     def set_dark_mode(self, dark: bool) -> None:
         """Set dark mode colors."""
         self._dark_mode = dark
+        self.update()
+
+    def set_connected_endpoints(self, endpoints: set[tuple[float, float]]) -> None:
+        """Set the positions where this wire connects to component pins.
+
+        These positions will be marked with a small circle to indicate
+        a valid connection.
+        """
+        self._connected_endpoints = endpoints
+        self.update()
+
+    def add_connected_endpoint(self, x: float, y: float) -> None:
+        """Add a single connected endpoint position."""
+        self._connected_endpoints.add((x, y))
+        self.update()
+
+    def clear_connected_endpoints(self) -> None:
+        """Clear all connected endpoint indicators."""
+        self._connected_endpoints.clear()
         self.update()
 
     def _rebuild_path(self) -> None:
@@ -95,6 +120,27 @@ class WireItem(QGraphicsPathItem):
         self._hovered = False
         self.update()
         super().hoverLeaveEvent(event)
+
+    def boundingRect(self) -> QRectF:
+        """Return bounding rect that includes connection indicators and junctions.
+
+        The default QGraphicsPathItem bounding rect only covers the path itself.
+        We need to expand it to include the circles drawn at connection points
+        and junctions, plus the glow effects.
+        """
+        base_rect = super().boundingRect()
+        if base_rect.isEmpty():
+            return base_rect
+
+        # Calculate maximum radius we might draw (connection indicator + shadow)
+        max_radius = max(
+            self.CONNECTION_RADIUS_HOVER + 2,  # Connection + shadow
+            self.JUNCTION_RADIUS_HOVER + 2,     # Junction + shadow
+            self.LINE_WIDTH_HOVER + 6           # Selection glow
+        )
+
+        # Expand rect to include circles and glows
+        return base_rect.adjusted(-max_radius, -max_radius, max_radius, max_radius)
 
     def shape(self) -> QPainterPath:
         """Return a wider shape for easier selection."""
@@ -171,6 +217,9 @@ class WireItem(QGraphicsPathItem):
             painter.setPen(QPen(color.darker(120), 1.5))
             painter.drawEllipse(jpt, junction_radius, junction_radius)
 
+        # Draw connection indicators at wire-to-pin connections (always visible)
+        self._draw_connection_indicators(painter, color, is_hovered or is_selected)
+
         # Draw endpoint dots for better visibility
         if is_hovered or is_selected:
             self._draw_endpoints(painter, color)
@@ -194,6 +243,42 @@ class WireItem(QGraphicsPathItem):
         radius = 3.0
         painter.drawEllipse(start, radius, radius)
         painter.drawEllipse(end, radius, radius)
+
+    def _draw_connection_indicators(
+        self, painter: QPainter, color: QColor, is_highlighted: bool
+    ) -> None:
+        """Draw connection indicator circles at points where wire connects to component pins.
+
+        These indicators help users see when a wire is actually connected to a component
+        versus just passing near it. Uses a distinctive white center with colored ring
+        style for maximum visibility.
+        """
+        if not self._connected_endpoints:
+            return
+
+        radius = self.CONNECTION_RADIUS_HOVER if is_highlighted else self.CONNECTION_RADIUS
+
+        for endpoint in self._connected_endpoints:
+            pt = QPointF(endpoint[0], endpoint[1])
+
+            # Draw outer glow/shadow for depth
+            glow_color = QColor(color)
+            glow_color.setAlpha(80)
+            painter.setBrush(QBrush(glow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(pt, radius + 3, radius + 3)
+
+            # Draw colored ring (the main visible element)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(color, 2.5))
+            painter.drawEllipse(pt, radius, radius)
+
+            # Draw white/bright center dot for contrast
+            inner_radius = max(2.0, radius - 2.5)
+            center_color = QColor(255, 255, 255) if not self._dark_mode else QColor(240, 240, 240)
+            painter.setBrush(QBrush(center_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(pt, inner_radius, inner_radius)
 
     def add_junction(self, x: float, y: float) -> None:
         """Add a junction point to the wire."""

@@ -1,0 +1,319 @@
+{
+  "version": "1.0",
+  "name": "MOSFET Switch",
+  "created": "2025-12-14T15:49:20.202718",
+  "modified": "2025-12-14T15:49:20.202718",
+  "active_circuit": "main",
+  "simulation_settings": {
+    "tstop": 0.005,
+    "dt": 1e-06,
+    "tstart": 0.0,
+    "abstol": 1e-12,
+    "reltol": 0.001,
+    "max_iterations": 50
+  },
+  "circuits": {
+    "main": {
+      "name": "main",
+      "components": [
+        {
+          "id": "ba41fa86-8537-4c45-8b37-0fbb0e0b142d",
+          "type": "VOLTAGE_SOURCE",
+          "name": "Vdd",
+          "x": 100,
+          "y": 100,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 12.0
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0,
+              "y": -30
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0,
+              "y": 30
+            }
+          ]
+        },
+        {
+          "id": "6473a958-3395-48da-95a0-a6e6eb8a387b",
+          "type": "VOLTAGE_SOURCE",
+          "name": "Vgate",
+          "x": 100,
+          "y": 350,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 10.0
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0,
+              "y": -30
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0,
+              "y": 30
+            }
+          ]
+        },
+        {
+          "id": "85ad0264-7a1f-44b9-ac7b-0e85cbdee4c8",
+          "type": "RESISTOR",
+          "name": "R_load",
+          "x": 250,
+          "y": 50,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 10.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 30,
+              "y": 0
+            }
+          ]
+        },
+        {
+          "id": "27f0c6fd-0ea0-46be-b0ca-d59326764c94",
+          "type": "MOSFET_N",
+          "name": "M1",
+          "x": 350,
+          "y": 200,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "vth": 2.0,
+            "kp": 0.5,
+            "rds_on": 0.1
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "D",
+              "x": 0,
+              "y": -30
+            },
+            {
+              "index": 1,
+              "name": "G",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 2,
+              "name": "S",
+              "x": 0,
+              "y": 30
+            }
+          ]
+        },
+        {
+          "id": "fc1bf37b-0507-4a8a-b4bd-5627e65d8e44",
+          "type": "GROUND",
+          "name": "GND1",
+          "x": 100,
+          "y": 200,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
+          ]
+        },
+        {
+          "id": "427e7258-f3ad-405f-b922-afdee3f0a4b5",
+          "type": "GROUND",
+          "name": "GND2",
+          "x": 100,
+          "y": 450,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
+          ]
+        },
+        {
+          "id": "9a280702-667b-480f-8508-7c38d58bb048",
+          "type": "GROUND",
+          "name": "GND3",
+          "x": 350,
+          "y": 300,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
+          ]
+        }
+      ],
+      "wires": [
+        {
+          "id": "d4db3323-1c1a-415e-9ef4-46d61754e078",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 70,
+              "x2": 100,
+              "y2": 50
+            },
+            {
+              "x1": 100,
+              "y1": 50,
+              "x2": 220,
+              "y2": 50
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "VDD",
+          "alias": ""
+        },
+        {
+          "id": "9c17bf79-2f18-46fa-93ff-090254b2912d",
+          "segments": [
+            {
+              "x1": 280,
+              "y1": 50,
+              "x2": 350,
+              "y2": 50
+            },
+            {
+              "x1": 350,
+              "y1": 50,
+              "x2": 350,
+              "y2": 170
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "DRAIN",
+          "alias": ""
+        },
+        {
+          "id": "04191f62-d6d4-4763-8860-180703593073",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 130,
+              "x2": 100,
+              "y2": 190
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "974be6e7-1230-49a7-b87c-90ee0feae8fb",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 320,
+              "x2": 100,
+              "y2": 200
+            },
+            {
+              "x1": 100,
+              "y1": 200,
+              "x2": 320,
+              "y2": 200
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "GATE",
+          "alias": ""
+        },
+        {
+          "id": "0a2c6a1b-45ee-4b8c-841b-dea8af87a537",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 380,
+              "x2": 100,
+              "y2": 440
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "4b824518-5acf-416a-9acf-1f5e092f37fc",
+          "segments": [
+            {
+              "x1": 350,
+              "y1": 230,
+              "x2": 350,
+              "y2": 290
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        }
+      ]
+    }
+  },
+  "subcircuits": [],
+  "scope_windows": {}
+}
