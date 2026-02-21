@@ -78,14 +78,8 @@ class SchematicScene(QGraphicsScene):
         self.update()
 
     def set_dark_mode(self, dark: bool) -> None:
-        """Set dark mode for grid colors and update all components."""
+        """Set dark-mode-dependent rendering behavior for scene items."""
         self._dark_mode = dark
-        if dark:
-            self._background_color = QColor(30, 30, 30)
-            self._grid_color = QColor(60, 60, 60)
-        else:
-            self._background_color = QColor(255, 255, 255)
-            self._grid_color = QColor(180, 180, 180)
 
         # Update all component items
         from pulsimgui.views.schematic.items import ComponentItem, WireItem

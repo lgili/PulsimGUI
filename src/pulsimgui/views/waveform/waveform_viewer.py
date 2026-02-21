@@ -3,7 +3,7 @@
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
-from PySide6.QtGui import QDrag, QColor
+from PySide6.QtGui import QDrag, QColor, QPalette
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.services.simulation_service import SimulationResult
+from pulsimgui.services.theme_service import ThemeService, Theme
 
 
 # Maximum points to display before decimation kicks in
@@ -82,20 +83,40 @@ class DraggableCursor(pg.InfiniteLine):
         """Get the text item for adding to plot."""
         return self._text
 
+    def set_color(self, color: tuple[int, int, int]) -> None:
+        """Update cursor line/text colors for active theme changes."""
+        self._color = color
+        self.setPen(pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine))
+        self._text.setColor(color)
+
 
 class MeasurementsPanel(QFrame):
     """Panel displaying cursor measurements and signal statistics."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("MeasurementsPanelRoot")
         self.setFrameStyle(QFrame.Shape.NoFrame)
+        self._value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
+        self._muted_labels: list[QLabel] = []
+        self._accent_labels: dict[QLabel, str] = {}
+        self._separator: QFrame | None = None
         self._setup_ui()
         self._apply_styles()
 
-    def _apply_styles(self) -> None:
+    @staticmethod
+    def _to_hex(color: tuple[int, int, int]) -> str:
+        return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+
+    def _apply_styles(
+        self,
+        theme: Theme | None = None,
+        cursor_colors: tuple[str, str] | None = None,
+    ) -> None:
         """Apply modern styling."""
-        self.setStyleSheet("""
-            MeasurementsPanel {
+        if theme is None:
+            self.setStyleSheet("""
+            QFrame#MeasurementsPanelRoot {
                 background-color: #f9fafb;
                 border-radius: 8px;
             }
@@ -115,7 +136,69 @@ class MeasurementsPanel(QFrame):
                 padding: 0 6px;
                 background-color: #ffffff;
             }
-        """)
+            """)
+            muted_color = "#6b7280"
+            accent_colors = {
+                "cursor_1": "#dc2626",
+                "cursor_2": "#2563eb",
+                "delta": "#059669",
+                "frequency": "#7c3aed",
+                "stat_min": "#0891b2",
+                "stat_max": "#dc2626",
+                "stat_mean": "#374151",
+                "stat_rms": "#7c3aed",
+                "stat_pkpk": "#059669",
+            }
+            separator_color = "#e5e7eb"
+        else:
+            c = theme.colors
+            self.setStyleSheet(f"""
+                QFrame#MeasurementsPanelRoot {{
+                    background-color: {c.panel_background};
+                    border-radius: 8px;
+                }}
+                QGroupBox {{
+                    font-weight: 600;
+                    font-size: 11px;
+                    color: {c.foreground};
+                    border: 1px solid {c.panel_border};
+                    border-radius: 6px;
+                    margin-top: 12px;
+                    padding-top: 8px;
+                    background-color: {c.background};
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 6px;
+                    background-color: {c.background};
+                }}
+            """)
+            muted_color = c.foreground_muted
+            cursor_1 = cursor_colors[0] if cursor_colors is not None else c.error
+            cursor_2 = cursor_colors[1] if cursor_colors is not None else c.primary
+            accent_colors = {
+                "cursor_1": cursor_1,
+                "cursor_2": cursor_2,
+                "delta": c.success,
+                "frequency": c.info,
+                "stat_min": c.info,
+                "stat_max": c.error,
+                "stat_mean": c.foreground,
+                "stat_rms": c.primary,
+                "stat_pkpk": c.success,
+            }
+            separator_color = c.divider
+
+        for label in self._muted_labels:
+            label.setStyleSheet(f"color: {muted_color}; font-size: 10px;")
+
+        for label, accent_role in self._accent_labels.items():
+            accent = accent_colors.get(accent_role, accent_colors["stat_mean"])
+            label.setStyleSheet(f"{self._value_style_base} color: {accent};")
+
+        if self._separator is not None:
+            self._separator.setStyleSheet(f"background-color: {separator_color};")
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
@@ -129,66 +212,63 @@ class MeasurementsPanel(QFrame):
         cursor_layout.setContentsMargins(10, 16, 10, 10)
         cursor_layout.setSpacing(6)
 
-        label_style = "color: #6b7280; font-size: 10px;"
-        value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
-
         # Cursor 1
         c1_label = QLabel("C1 Time")
-        c1_label.setStyleSheet(label_style)
+        self._muted_labels.append(c1_label)
         cursor_layout.addWidget(c1_label, 0, 0)
         self._c1_time = QLabel("---")
-        self._c1_time.setStyleSheet(f"{value_style_base} color: #dc2626;")
+        self._accent_labels[self._c1_time] = "cursor_1"
         cursor_layout.addWidget(self._c1_time, 0, 1)
 
         c1v_label = QLabel("C1 Value")
-        c1v_label.setStyleSheet(label_style)
+        self._muted_labels.append(c1v_label)
         cursor_layout.addWidget(c1v_label, 1, 0)
         self._c1_value = QLabel("---")
-        self._c1_value.setStyleSheet(f"{value_style_base} color: #dc2626;")
+        self._accent_labels[self._c1_value] = "cursor_1"
         cursor_layout.addWidget(self._c1_value, 1, 1)
 
         # Cursor 2
         c2_label = QLabel("C2 Time")
-        c2_label.setStyleSheet(label_style)
+        self._muted_labels.append(c2_label)
         cursor_layout.addWidget(c2_label, 2, 0)
         self._c2_time = QLabel("---")
-        self._c2_time.setStyleSheet(f"{value_style_base} color: #2563eb;")
+        self._accent_labels[self._c2_time] = "cursor_2"
         cursor_layout.addWidget(self._c2_time, 2, 1)
 
         c2v_label = QLabel("C2 Value")
-        c2v_label.setStyleSheet(label_style)
+        self._muted_labels.append(c2v_label)
         cursor_layout.addWidget(c2v_label, 3, 0)
         self._c2_value = QLabel("---")
-        self._c2_value.setStyleSheet(f"{value_style_base} color: #2563eb;")
+        self._accent_labels[self._c2_value] = "cursor_2"
         cursor_layout.addWidget(self._c2_value, 3, 1)
 
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e5e7eb;")
         sep.setFixedHeight(1)
+        self._separator = sep
         cursor_layout.addWidget(sep, 4, 0, 1, 2)
 
         # Delta measurements
         dt_label = QLabel("Delta T")
-        dt_label.setStyleSheet(label_style)
+        self._muted_labels.append(dt_label)
         cursor_layout.addWidget(dt_label, 5, 0)
         self._delta_t = QLabel("---")
-        self._delta_t.setStyleSheet(f"{value_style_base} color: #059669;")
+        self._accent_labels[self._delta_t] = "delta"
         cursor_layout.addWidget(self._delta_t, 5, 1)
 
         dv_label = QLabel("Delta V")
-        dv_label.setStyleSheet(label_style)
+        self._muted_labels.append(dv_label)
         cursor_layout.addWidget(dv_label, 6, 0)
         self._delta_v = QLabel("---")
-        self._delta_v.setStyleSheet(f"{value_style_base} color: #059669;")
+        self._accent_labels[self._delta_v] = "delta"
         cursor_layout.addWidget(self._delta_v, 6, 1)
 
         freq_label = QLabel("Frequency")
-        freq_label.setStyleSheet(label_style)
+        self._muted_labels.append(freq_label)
         cursor_layout.addWidget(freq_label, 7, 0)
         self._frequency = QLabel("---")
-        self._frequency.setStyleSheet(f"{value_style_base} color: #7c3aed;")
+        self._accent_labels[self._frequency] = "frequency"
         cursor_layout.addWidget(self._frequency, 7, 1)
 
         layout.addWidget(cursor_group)
@@ -200,19 +280,19 @@ class MeasurementsPanel(QFrame):
         stats_layout.setSpacing(6)
 
         stat_labels = [
-            ("Min", "_min_value", "#0891b2"),
-            ("Max", "_max_value", "#dc2626"),
-            ("Mean", "_mean_value", "#374151"),
-            ("RMS", "_rms_value", "#7c3aed"),
-            ("Pk-Pk", "_pkpk_value", "#059669"),
+            ("Min", "_min_value", "stat_min"),
+            ("Max", "_max_value", "stat_max"),
+            ("Mean", "_mean_value", "stat_mean"),
+            ("RMS", "_rms_value", "stat_rms"),
+            ("Pk-Pk", "_pkpk_value", "stat_pkpk"),
         ]
 
-        for row, (name, attr, color) in enumerate(stat_labels):
+        for row, (name, attr, accent_role) in enumerate(stat_labels):
             label = QLabel(name)
-            label.setStyleSheet(label_style)
+            self._muted_labels.append(label)
             stats_layout.addWidget(label, row, 0)
             value_label = QLabel("---")
-            value_label.setStyleSheet(f"{value_style_base} color: {color};")
+            self._accent_labels[value_label] = accent_role
             stats_layout.addWidget(value_label, row, 1)
             setattr(self, attr, value_label)
 
@@ -273,6 +353,16 @@ class MeasurementsPanel(QFrame):
         self._mean_value.setText("---")
         self._rms_value.setText("---")
         self._pkpk_value.setText("---")
+
+    def apply_theme(self, theme: Theme, cursor_palette: list[tuple[int, int, int]] | None = None) -> None:
+        """Apply theme colors to measurement surfaces and readouts."""
+        cursor_colors = None
+        if cursor_palette is not None and len(cursor_palette) >= 2:
+            cursor_colors = (
+                self._to_hex(cursor_palette[0]),
+                self._to_hex(cursor_palette[1]),
+            )
+        self._apply_styles(theme, cursor_colors=cursor_colors)
 
 
 class SignalListItem(QListWidgetItem):
@@ -339,10 +429,12 @@ class SignalListPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("SignalListPanelRoot")
         self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
 
         self._signal_items: dict[str, SignalListItem] = {}
         self._color_index = 0
+        self._trace_palette = TRACE_COLORS.copy()
 
         self._setup_ui()
 
@@ -353,9 +445,9 @@ class SignalListPanel(QFrame):
         layout.setSpacing(5)
 
         # Header
-        header = QLabel("Signals")
-        header.setStyleSheet("font-weight: bold;")
-        layout.addWidget(header)
+        self._header_label = QLabel("Signals")
+        self._header_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._header_label)
 
         # Signal list
         self._list_widget = QListWidget()
@@ -389,12 +481,40 @@ class SignalListPanel(QFrame):
         self._color_index = 0
 
         for name in signal_names:
-            color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+            color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
 
             item = SignalListItem(name, color)
             self._list_widget.addItem(item)
             self._signal_items[name] = item
+
+    def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
+        """Update signal color palette and refresh existing list colors."""
+        self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
+        for index, item in enumerate(self._signal_items.values()):
+            item.color = self._trace_palette[index % len(self._trace_palette)]
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme to the signal list panel surfaces."""
+        c = theme.colors
+        self.setStyleSheet(f"""
+            QFrame#SignalListPanelRoot {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
+                border-radius: 8px;
+            }}
+            QListWidget {{
+                background-color: {c.background};
+                border: 1px solid {c.panel_border};
+                border-radius: 6px;
+                color: {c.foreground};
+            }}
+            QListWidget::item:selected {{
+                background-color: {c.tree_item_selected};
+                color: {c.foreground};
+            }}
+        """)
+        self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
 
     def get_signal_color(self, signal_name: str) -> tuple | None:
         """Get the color assigned to a signal."""
@@ -463,12 +583,18 @@ class SignalListPanel(QFrame):
 class WaveformViewer(QWidget):
     """Widget for displaying simulation waveforms using PyQtGraph."""
 
-    def __init__(self, parent=None):
+    def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("WaveformViewerRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
+        self._theme_service = theme_service
+        self._theme: Theme | None = None
         self._result: SimulationResult | None = None
         self._traces: dict[str, pg.PlotDataItem] = {}
         self._color_index = 0
+        self._trace_palette = TRACE_COLORS.copy()
+        self._cursor_palette = CURSOR_COLORS.copy()
 
         # Cursors
         self._cursor1: DraggableCursor | None = None
@@ -500,6 +626,9 @@ class WaveformViewer(QWidget):
         pg.setConfigOptions(antialias=True)
 
         self._setup_ui()
+        if self._theme_service is not None:
+            self._theme_service.theme_changed.connect(self.apply_theme)
+            self.apply_theme(self._theme_service.current_theme)
 
     def _setup_ui(self) -> None:
         """Set up the widget UI."""
@@ -520,10 +649,6 @@ class WaveformViewer(QWidget):
         self._plot_widget.setLabel("bottom", "Time", units="s")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self._plot_widget.setBackground("w")
-        self._plot_widget.getAxis("left").setPen("k")
-        self._plot_widget.getAxis("bottom").setPen("k")
-        self._plot_widget.getAxis("left").setTextPen("k")
-        self._plot_widget.getAxis("bottom").setTextPen("k")
 
         # Configure view box for mouse interactions
         view_box = self._plot_widget.getViewBox()
@@ -534,7 +659,7 @@ class WaveformViewer(QWidget):
 
         # Add legend
         self._legend = self._plot_widget.addLegend(offset=(10, 10))
-        self._legend.setLabelTextColor("k")
+        self._legend.setLabelTextColor("#111827")
 
         plot_layout.addWidget(self._plot_widget)
 
@@ -632,6 +757,60 @@ class WaveformViewer(QWidget):
 
         layout.addWidget(splitter)
 
+    @staticmethod
+    def _rgb_to_hex(color: tuple[int, int, int]) -> str:
+        """Convert RGB tuple to hex string."""
+        return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to plot surfaces and side panels."""
+        self._theme = theme
+        c = theme.colors
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(c.background))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+        if self._theme_service is not None:
+            self._trace_palette = self._theme_service.get_trace_palette(theme)
+            self._cursor_palette = self._theme_service.get_cursor_palette(theme)
+
+        self._plot_widget.setBackground(c.plot_background)
+        plot_item = self._plot_widget.getPlotItem()
+        for axis_name in ("left", "bottom"):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen(c.plot_axis))
+            axis.setTickPen(pg.mkPen(c.plot_axis))
+            axis.setTextPen(pg.mkPen(c.plot_text))
+        self._legend.setLabelTextColor(c.plot_text)
+        self._legend.setBrush(pg.mkBrush(c.plot_legend_background))
+        self._legend.setPen(pg.mkPen(c.plot_legend_border))
+
+        self._signal_list_panel.set_trace_palette(self._trace_palette)
+        self._signal_list_panel.apply_theme(theme)
+        self._measurements_panel.apply_theme(theme, cursor_palette=self._cursor_palette)
+
+        self.setStyleSheet(f"""
+            QWidget#WaveformViewerRoot {{
+                background-color: {c.background};
+            }}
+            QFrame {{
+                color: {c.foreground};
+            }}
+        """)
+
+        for index, trace in enumerate(self._traces.values()):
+            color = self._trace_palette[index % len(self._trace_palette)]
+            trace.setPen(pg.mkPen(color=color, width=1))
+
+        for index, trace in enumerate(self._streaming_traces.values()):
+            color = self._trace_palette[index % len(self._trace_palette)]
+            trace.setPen(pg.mkPen(color=color, width=1))
+
+        if self._cursor1 is not None:
+            self._cursor1.set_color(self._cursor_palette[0])
+        if self._cursor2 is not None:
+            self._cursor2.set_color(self._cursor_palette[1])
+
     def set_result(self, result: SimulationResult) -> None:
         """Set the simulation result to display."""
         self._result = result
@@ -687,7 +866,7 @@ class WaveformViewer(QWidget):
         # Get color from signal list panel if available, otherwise use default
         color = self._signal_list_panel.get_signal_color(signal_name)
         if color is None:
-            color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+            color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
 
         # Use optimized pen (width=1 is fastest)
@@ -800,13 +979,13 @@ class WaveformViewer(QWidget):
         c2_pos = t_min + t_range * 0.67
 
         # Create cursor 1
-        self._cursor1 = DraggableCursor(c1_pos, CURSOR_COLORS[0], "C1")
+        self._cursor1 = DraggableCursor(c1_pos, self._cursor_palette[0], "C1")
         self._plot_widget.addItem(self._cursor1)
         self._plot_widget.addItem(self._cursor1.get_text_item())
         self._cursor1.cursor_moved.connect(self._on_cursor_moved)
 
         # Create cursor 2
-        self._cursor2 = DraggableCursor(c2_pos, CURSOR_COLORS[1], "C2")
+        self._cursor2 = DraggableCursor(c2_pos, self._cursor_palette[1], "C2")
         self._plot_widget.addItem(self._cursor2)
         self._plot_widget.addItem(self._cursor2.get_text_item())
         self._cursor2.cursor_moved.connect(self._on_cursor_moved)
@@ -1150,7 +1329,7 @@ class WaveformViewer(QWidget):
         # Create traces for each signal (if not already present)
         for name in signal_arrays.keys():
             if name not in self._streaming_traces:
-                color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
                 pen = pg.mkPen(color=color, width=1)
                 # Start with empty data
@@ -1246,7 +1425,7 @@ class WaveformViewer(QWidget):
                 self._streaming_traces[name].setData(time_array, values_array)
             else:
                 # Create new trace (only happens once per signal)
-                color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
                 pen = pg.mkPen(color=color, width=1)
                 trace = self._plot_widget.plot(

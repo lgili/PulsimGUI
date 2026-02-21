@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -12,14 +11,21 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.services.thermal_service import ThermalResult
+from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.views.thermal import ThermalViewerWidget
 
 
 class ThermalViewerDialog(QDialog):
     """Modal dialog that hosts the thermal viewer."""
 
-    def __init__(self, result: ThermalResult | None, parent=None):
+    def __init__(
+        self,
+        result: ThermalResult | None,
+        theme_service: ThemeService | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
+        self._theme_service = theme_service
         self.setWindowTitle("Thermal Viewer")
         self.resize(900, 600)
 
@@ -28,20 +34,15 @@ class ThermalViewerDialog(QDialog):
         header_layout.setContentsMargins(0, 0, 0, 0)
 
         self._title_label = QLabel("Thermal Analysis Results")
-        self._title_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         header_layout.addWidget(self._title_label)
 
         self._synthetic_badge = QLabel("(Synthetic Data)")
-        self._synthetic_badge.setStyleSheet(
-            "color: #FFA500; font-weight: bold; padding: 2px 8px; "
-            "border: 1px solid #FFA500; border-radius: 4px;"
-        )
         self._synthetic_badge.setVisible(False)
         header_layout.addWidget(self._synthetic_badge)
 
         header_layout.addStretch()
 
-        self._viewer = ThermalViewerWidget(self)
+        self._viewer = ThermalViewerWidget(theme_service=theme_service, parent=self)
         self._update_display(result)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -53,6 +54,19 @@ class ThermalViewerDialog(QDialog):
         layout.addLayout(header_layout)
         layout.addWidget(self._viewer)
         layout.addWidget(buttons)
+
+        if self._theme_service is not None:
+            self._theme_service.theme_changed.connect(self.apply_theme)
+            self.apply_theme(self._theme_service.current_theme)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to dialog-specific header elements."""
+        c = theme.colors
+        self._title_label.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {c.foreground};")
+        self._synthetic_badge.setStyleSheet(
+            f"color: {c.warning}; font-weight: 600; padding: 2px 8px; "
+            f"border: 1px solid {c.warning}; border-radius: 4px;"
+        )
 
     def _update_display(self, result: ThermalResult | None) -> None:
         """Update the viewer and synthetic badge visibility."""

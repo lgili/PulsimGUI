@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
-        from PySide6.QtWidgets import QToolButton
+        from PySide6.QtWidgets import QToolButton, QSizePolicy
 
         self._toolbar = QToolBar("Main Toolbar")
         self._toolbar.setObjectName("MainToolbar")
@@ -436,18 +436,21 @@ class MainWindow(QMainWindow):
         self._toolbar.addAction(self.action_zoom_fit)
         self._toolbar.addSeparator()
 
-        # Simulation actions
+        # Simulation actions (high-frequency workflow group)
         self._toolbar.addAction(self.action_run)
+        self._toolbar.addAction(self.action_pause)
         self._toolbar.addAction(self.action_stop)
+        self._toolbar.addAction(self.action_dc_op)
+        self._toolbar.addAction(self.action_ac)
 
         # Add flexible spacer
         spacer = QWidget()
-        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toolbar.addWidget(spacer)
 
         # Overflow menu button for additional actions
         self._overflow_btn = QToolButton()
-        self._overflow_btn.setIcon(IconService.get_icon("menu", "#374151"))
+        self._overflow_btn.setIcon(IconService.get_icon("menu", self._theme_service.current_theme.colors.icon_default))
         self._overflow_btn.setToolTip("More actions")
         self._overflow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._overflow_btn.setAutoRaise(True)
@@ -455,10 +458,10 @@ class MainWindow(QMainWindow):
         overflow_menu = QMenu(self._overflow_btn)
         overflow_menu.addAction(self.action_toggle_grid)
         overflow_menu.addAction(self.action_toggle_dc_overlay)
+        overflow_menu.addAction(self.action_toggle_minimap)
         overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_dc_op)
-        overflow_menu.addAction(self.action_ac)
         overflow_menu.addAction(self.action_parameter_sweep)
+        overflow_menu.addAction(self.action_thermal_viewer)
         overflow_menu.addSeparator()
         overflow_menu.addAction(self.action_sim_settings)
         overflow_menu.addAction(self.action_preferences)
@@ -533,7 +536,7 @@ class MainWindow(QMainWindow):
         self.properties_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self._properties_panel = PropertiesPanel()
+        self._properties_panel = PropertiesPanel(theme_service=self._theme_service)
         self._properties_panel.property_changed.connect(self._on_property_changed)
         self.properties_dock.setWidget(self._properties_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
@@ -544,7 +547,7 @@ class MainWindow(QMainWindow):
         self.waveform_dock.setAllowedAreas(
             Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
-        self._waveform_viewer = WaveformViewer()
+        self._waveform_viewer = WaveformViewer(theme_service=self._theme_service)
         self.waveform_dock.setWidget(self._waveform_viewer)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.waveform_dock)
 
@@ -672,14 +675,24 @@ class MainWindow(QMainWindow):
         self._schematic_scene.set_background_color(bg_color)
         self._schematic_scene.set_grid_color(grid_color)
 
-        # Update component colors (dark mode affects line colors)
+        # Update component and overlay colors
         self._schematic_scene.set_dark_mode(theme.is_dark)
+        self._schematic_view.apply_theme(theme)
+        self._library_panel.apply_theme(theme)
+        self._minimap.apply_theme(theme)
+        self._properties_panel.apply_theme(theme)
+        self._waveform_viewer.apply_theme(theme)
+        self._coord_widget.apply_theme(theme)
+        self._zoom_widget.apply_theme(theme)
+        self._selection_widget.apply_theme(theme)
+        self._sim_status_widget.apply_theme(theme)
+        self._modified_widget.apply_theme(theme)
+
+        # Clear icon cache before assigning theme-specific icons
+        IconService.clear_cache()
 
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
-
-        # Clear icon cache when theme changes
-        IconService.clear_cache()
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -697,11 +710,15 @@ class MainWindow(QMainWindow):
             self.action_zoom_out: "zoom-out",
             self.action_zoom_fit: "maximize",
             self.action_run: "play",
+            self.action_pause: "pause",
             self.action_stop: "square",
+            self.action_dc_op: "activity",
+            self.action_ac: "zap",
         }
 
         for action, icon_name in icon_map.items():
             action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
+        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 16))
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -1696,7 +1713,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = ThermalViewerDialog(result, self)
+        dialog = ThermalViewerDialog(result, theme_service=self._theme_service, parent=self)
         dialog.exec()
 
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
