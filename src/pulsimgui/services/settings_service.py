@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
+from pulsimgui.services.backend_runtime_service import DEFAULT_BACKEND_TARGET_VERSION
+
 
 class SettingsService:
     """Service for managing application settings."""
@@ -119,6 +121,24 @@ class SettingsService:
             self._settings.setValue("backend/preference", identifier)
         else:
             self._settings.remove("backend/preference")
+
+    # Backend runtime provisioning settings
+    def get_backend_runtime_settings(self) -> dict:
+        """Return backend runtime provisioning preferences."""
+        raw_target = self._settings.value("backend/runtime_target_version", "")
+        return {
+            "target_version": str(raw_target or DEFAULT_BACKEND_TARGET_VERSION),
+            "source": self._settings.value("backend/runtime_source", "pypi"),
+            "local_path": self._settings.value("backend/runtime_local_path", ""),
+            "auto_sync": self._settings.value("backend/runtime_auto_sync", False, type=bool),
+        }
+
+    def set_backend_runtime_settings(self, settings: dict) -> None:
+        """Persist backend runtime provisioning preferences."""
+        self._settings.setValue("backend/runtime_target_version", settings.get("target_version", ""))
+        self._settings.setValue("backend/runtime_source", settings.get("source", "pypi"))
+        self._settings.setValue("backend/runtime_local_path", settings.get("local_path", ""))
+        self._settings.setValue("backend/runtime_auto_sync", bool(settings.get("auto_sync", False)))
 
     # Component value labels
     def get_show_value_labels(self) -> bool:

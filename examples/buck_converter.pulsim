@@ -37,20 +37,24 @@
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"waveform": {"type": "pulse", "v1": 0, "v2": 15, "delay": 0, "rise_time": 1e-8, "fall_time": 1e-8, "pulse_width": 4.17e-6, "period": 1e-5}},
+          "parameters": {"waveform": {"type": "pulse", "v1": 12, "v2": 0, "delay": 0, "rise_time": 1e-8, "fall_time": 1e-8, "pulse_width": 4.17e-6, "period": 1e-5}},
           "pins": []
         },
         {
           "id": "00000000-0001-0000-0000-000000000003",
-          "type": "MOSFET_N",
+          "type": "MOSFET_P",
           "name": "M1",
           "x": 350,
           "y": 200,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {},
-          "pins": []
+          "parameters": {"vth": 2.0, "kp": 5.0, "g_off": 1e-6},
+          "pins": [
+            {"index": 0, "name": "D", "x": 20, "y": -20},
+            {"index": 1, "name": "G", "x": -20, "y": 0},
+            {"index": 2, "name": "S", "x": 20, "y": 20}
+          ]
         },
         {
           "id": "00000000-0001-0000-0000-000000000004",

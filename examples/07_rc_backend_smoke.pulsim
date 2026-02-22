@@ -1,23 +1,23 @@
 {
   "version": "1.0",
-  "name": "RC Low-Pass Filter",
-  "created": "2026-02-21T19:20:37.026525",
-  "modified": "2026-02-21T19:20:37.026751",
+  "name": "RC Backend Smoke",
+  "created": "2026-02-21T00:00:00",
+  "modified": "2026-02-21T00:00:00",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.02,
+    "tstop": 0.005,
     "dt": 1e-06,
     "tstart": 0.0,
     "abstol": 1e-12,
     "reltol": 0.001,
-    "max_iterations": 100
+    "max_iterations": 50
   },
   "circuits": {
     "main": {
       "name": "main",
       "components": [
         {
-          "id": "10000000-0000-0000-0000-000000000001",
+          "id": "6fcb8db2-4b34-4eab-8eb8-a9b0b51c381b",
           "type": "VOLTAGE_SOURCE",
           "name": "V1",
           "x": 100.0,
@@ -30,7 +30,7 @@
               "type": "pulse",
               "v1": 0.0,
               "v2": 5.0,
-              "delay": 0.001,
+              "delay": 0.0,
               "rise_time": 1e-09,
               "fall_time": 1e-09,
               "pulse_width": 0.01,
@@ -53,10 +53,10 @@
           ]
         },
         {
-          "id": "10000000-0000-0000-0000-000000000002",
+          "id": "f72af745-a6f3-4d55-9d58-988fca6ca31b",
           "type": "RESISTOR",
           "name": "R1",
-          "x": 250.0,
+          "x": 220.0,
           "y": 175.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -80,12 +80,12 @@
           ]
         },
         {
-          "id": "10000000-0000-0000-0000-000000000003",
+          "id": "3e7d5930-49e6-4e7f-91fd-8f42ca5001c7",
           "type": "CAPACITOR",
           "name": "C1",
-          "x": 350.0,
-          "y": 200.0,
-          "rotation": 90,
+          "x": 320.0,
+          "y": 175.0,
+          "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
@@ -108,11 +108,11 @@
           ]
         },
         {
-          "id": "10000000-0000-0000-0000-000000000004",
+          "id": "69d10012-90cc-4558-a8f5-2425f52f3549",
           "type": "GROUND",
           "name": "GND1",
           "x": 100.0,
-          "y": 235.0,
+          "y": 330.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -129,69 +129,73 @@
       ],
       "wires": [
         {
-          "id": "10000000-0000-0000-0000-000000000101",
+          "id": "57d82334-1d8d-4602-a51a-df8e386634f8",
           "segments": [
             {
-              "x1": 100,
-              "y1": 175,
-              "x2": 220,
-              "y2": 175
+              "x1": 100.0,
+              "y1": 175.0,
+              "x2": 190.0,
+              "y2": 175.0
             }
           ],
           "start_connection": null,
           "end_connection": null,
           "junctions": [],
-          "node_name": "in",
-          "alias": "in"
+          "node_name": "VIN",
+          "alias": "VIN"
         },
         {
-          "id": "10000000-0000-0000-0000-000000000102",
+          "id": "4ff9d51f-6e56-431c-a5ef-257728c18466",
           "segments": [
             {
-              "x1": 280,
-              "y1": 175,
-              "x2": 350,
-              "y2": 175
-            },
-            {
-              "x1": 350,
-              "y1": 175,
-              "x2": 350,
-              "y2": 180
+              "x1": 250.0,
+              "y1": 175.0,
+              "x2": 300.0,
+              "y2": 175.0
             }
           ],
           "start_connection": null,
           "end_connection": null,
           "junctions": [],
-          "node_name": "out",
-          "alias": "out"
+          "node_name": "OUT",
+          "alias": "OUT"
         },
         {
-          "id": "10000000-0000-0000-0000-000000000103",
+          "id": "c288ded4-a087-46d1-b7d2-8f2ef2fcb74b",
           "segments": [
             {
-              "x1": 350,
-              "y1": 220,
-              "x2": 350,
-              "y2": 260
-            },
-            {
-              "x1": 350,
-              "y1": 260,
-              "x2": 100,
-              "y2": 260
-            },
-            {
-              "x1": 100,
-              "y1": 260,
-              "x2": 100,
-              "y2": 225
+              "x1": 100.0,
+              "y1": 225.0,
+              "x2": 100.0,
+              "y2": 320.0
             }
           ],
           "start_connection": null,
           "end_connection": null,
           "junctions": [],
-          "node_name": "gnd",
+          "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "247126a2-2987-4dbb-8546-168a68f12126",
+          "segments": [
+            {
+              "x1": 340.0,
+              "y1": 175.0,
+              "x2": 340.0,
+              "y2": 320.0
+            },
+            {
+              "x1": 340.0,
+              "y1": 320.0,
+              "x2": 100.0,
+              "y2": 320.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
           "alias": ""
         }
       ]

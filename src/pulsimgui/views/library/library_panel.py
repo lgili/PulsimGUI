@@ -16,9 +16,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QApplication,
     QSizePolicy,
+    QStyleOptionGraphicsItem,
 )
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import ThemeService, Theme
 
@@ -106,8 +107,25 @@ CATEGORY_COLORS = {
 }
 
 
-def create_component_icon(comp_type: ComponentType, size: int = 48, color: str = "#374151") -> QPixmap:
-    """Create a modern icon for component cards."""
+def _infer_dark_mode_from_color(color: str) -> bool:
+    """Infer dark-mode rendering intent from icon tone."""
+    value = QColor(color)
+    if not value.isValid():
+        return False
+    luminance = (0.2126 * value.red()) + (0.7152 * value.green()) + (0.0722 * value.blue())
+    return luminance > 140
+
+
+def create_component_icon(
+    comp_type: ComponentType,
+    size: int = 48,
+    color: str = "#374151",
+    dark_mode: bool | None = None,
+) -> QPixmap:
+    """Render a component icon using the same drawing engine as schematic items."""
+    from pulsimgui.views.schematic.items import create_component_item
+
+    dark_mode = _infer_dark_mode_from_color(color) if dark_mode is None else dark_mode
     dpr = 2.0
     app = QApplication.instance()
     if app:
@@ -121,97 +139,22 @@ def create_component_icon(comp_type: ComponentType, size: int = 48, color: str =
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-    # Draw the component symbol
-    pen = QPen(QColor(color), 2.5)
-    pen.setCosmetic(True)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
+    component = Component(type=comp_type, name="")
+    item = create_component_item(component)
+    item.set_show_labels(False)
+    item.set_show_value_labels(False)
+    item.set_dark_mode(dark_mode)
 
-    scale = size / 70.0
+    rect = item.boundingRect().adjusted(-4, -4, 4, 4)
+    draw_size = max(size - 4, 1)
+    scale = min(draw_size / max(rect.width(), 1), draw_size / max(rect.height(), 1))
+
     painter.translate(size / 2.0, size / 2.0)
     painter.scale(scale, scale)
-
-    # Draw based on component type
-    if comp_type == ComponentType.RESISTOR:
-        _draw_resistor_icon(painter)
-    elif comp_type == ComponentType.CAPACITOR:
-        _draw_capacitor_icon(painter)
-    elif comp_type == ComponentType.INDUCTOR:
-        _draw_inductor_icon(painter)
-    elif comp_type == ComponentType.TRANSFORMER:
-        _draw_transformer_icon(painter)
-    elif comp_type == ComponentType.VOLTAGE_SOURCE:
-        _draw_voltage_source_icon(painter)
-    elif comp_type == ComponentType.CURRENT_SOURCE:
-        _draw_current_source_icon(painter)
-    elif comp_type == ComponentType.GROUND:
-        _draw_ground_icon(painter)
-    elif comp_type == ComponentType.DIODE:
-        _draw_diode_icon(painter)
-    elif comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
-        _draw_mosfet_icon(painter, comp_type == ComponentType.MOSFET_N)
-    elif comp_type == ComponentType.IGBT:
-        _draw_igbt_icon(painter)
-    elif comp_type == ComponentType.SWITCH:
-        _draw_switch_icon(painter)
-    elif comp_type == ComponentType.PI_CONTROLLER:
-        _draw_control_block_icon(painter, "PI", "#8b5cf6")
-    elif comp_type == ComponentType.PID_CONTROLLER:
-        _draw_control_block_icon(painter, "PID", "#8b5cf6")
-    elif comp_type == ComponentType.MATH_BLOCK:
-        _draw_control_block_icon(painter, "Σ", "#8b5cf6")
-    elif comp_type == ComponentType.PWM_GENERATOR:
-        _draw_pwm_icon(painter)
-    elif comp_type == ComponentType.ELECTRICAL_SCOPE:
-        _draw_scope_icon(painter)
-    elif comp_type == ComponentType.THERMAL_SCOPE:
-        _draw_thermal_scope_icon(painter)
-    elif comp_type == ComponentType.SIGNAL_MUX:
-        _draw_mux_icon(painter)
-    elif comp_type == ComponentType.SIGNAL_DEMUX:
-        _draw_demux_icon(painter)
-    # New components
-    elif comp_type == ComponentType.ZENER_DIODE:
-        _draw_zener_icon(painter)
-    elif comp_type == ComponentType.LED:
-        _draw_led_icon(painter)
-    elif comp_type in (ComponentType.BJT_NPN, ComponentType.BJT_PNP):
-        _draw_bjt_icon(painter, comp_type == ComponentType.BJT_NPN)
-    elif comp_type == ComponentType.THYRISTOR:
-        _draw_thyristor_icon(painter)
-    elif comp_type == ComponentType.TRIAC:
-        _draw_triac_icon(painter)
-    elif comp_type == ComponentType.OP_AMP:
-        _draw_opamp_icon(painter)
-    elif comp_type == ComponentType.COMPARATOR:
-        _draw_comparator_icon(painter)
-    elif comp_type == ComponentType.FUSE:
-        _draw_fuse_icon(painter)
-    elif comp_type == ComponentType.CIRCUIT_BREAKER:
-        _draw_breaker_icon(painter)
-    elif comp_type == ComponentType.RELAY:
-        _draw_relay_icon(painter)
-    elif comp_type in (ComponentType.INTEGRATOR, ComponentType.DIFFERENTIATOR,
-                       ComponentType.LIMITER, ComponentType.RATE_LIMITER,
-                       ComponentType.HYSTERESIS, ComponentType.LOOKUP_TABLE,
-                       ComponentType.TRANSFER_FUNCTION, ComponentType.DELAY_BLOCK,
-                       ComponentType.SAMPLE_HOLD, ComponentType.STATE_MACHINE):
-        _draw_simple_block_icon(painter, comp_type)
-    elif comp_type == ComponentType.VOLTAGE_PROBE:
-        _draw_probe_icon(painter, "V", "#ef4444")
-    elif comp_type == ComponentType.CURRENT_PROBE:
-        _draw_probe_icon(painter, "A", "#22c55e")
-    elif comp_type == ComponentType.POWER_PROBE:
-        _draw_probe_icon(painter, "W", "#f59e0b")
-    elif comp_type == ComponentType.SATURABLE_INDUCTOR:
-        _draw_saturable_inductor_icon(painter)
-    elif comp_type == ComponentType.COUPLED_INDUCTOR:
-        _draw_coupled_inductor_icon(painter)
-    elif comp_type == ComponentType.SNUBBER_RC:
-        _draw_snubber_icon(painter)
-    else:
-        painter.drawRect(-15, -15, 30, 30)
+    painter.translate(-rect.center())
+    item.paint(painter, QStyleOptionGraphicsItem(), None)
 
     painter.end()
     return pixmap
@@ -841,6 +784,7 @@ class ComponentCard(QFrame):
         self._shortcut = shortcut
         self._hovered = False
         self._icon_color = "#374151"
+        self._icon_dark_mode = False
         self._theme: Theme | None = None
         self._hover_fill = "rgba(59, 130, 246, 0.1)"
         self._hover_border = "rgba(59, 130, 246, 0.3)"
@@ -876,7 +820,12 @@ class ComponentCard(QFrame):
         layout.addWidget(self._name_label)
 
     def _update_icon(self):
-        pixmap = create_component_icon(self._comp_type, 48, self._icon_color)
+        pixmap = create_component_icon(
+            self._comp_type,
+            48,
+            self._icon_color,
+            dark_mode=self._icon_dark_mode,
+        )
         self._icon_label.setPixmap(pixmap)
 
     def _update_style(self):
@@ -901,9 +850,15 @@ class ComponentCard(QFrame):
         self._icon_color = color
         self._update_icon()
 
+    def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        """Set icon rendering mode to match active UI theme."""
+        self._icon_dark_mode = dark_mode
+        self._update_icon()
+
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme-aware card visuals."""
         self._theme = theme
+        self._icon_dark_mode = theme.is_dark
         c = theme.colors
         selected = QColor(c.tree_item_selected)
         primary = QColor(c.primary)
@@ -917,6 +872,7 @@ class ComponentCard(QFrame):
         )
         self._name_color = c.foreground
         self._name_label.setStyleSheet(f"color: {self._name_color};")
+        self._update_icon()
         self._update_style()
 
     def enterEvent(self, event):
@@ -966,7 +922,12 @@ class ComponentCard(QFrame):
         drag.setMimeData(mime_data)
 
         # Create drag pixmap
-        pixmap = create_component_icon(self._comp_type, 48, self._icon_color)
+        pixmap = create_component_icon(
+            self._comp_type,
+            48,
+            self._icon_color,
+            dark_mode=self._icon_dark_mode,
+        )
         drag.setPixmap(pixmap)
         drag.setHotSpot(pixmap.rect().center())
 
@@ -986,6 +947,7 @@ class CategorySection(QWidget):
         self._expanded = True
         self._cards: list[ComponentCard] = []
         self._icon_color = "#374151"
+        self._icon_dark_mode = False
         self._header: QWidget | None = None
         self._color_bar: QFrame | None = None
 
@@ -1032,6 +994,7 @@ class CategorySection(QWidget):
     def add_component(self, comp_type: ComponentType, name: str, shortcut: str):
         card = ComponentCard(comp_type, name, shortcut)
         card.set_icon_color(self._icon_color)
+        card.set_icon_theme_mode(self._icon_dark_mode)
         card.clicked.connect(self.component_clicked.emit)
         card.double_clicked.connect(self.component_double_clicked.emit)
 
@@ -1046,6 +1009,11 @@ class CategorySection(QWidget):
         self._icon_color = color
         for card in self._cards:
             card.set_icon_color(color)
+
+    def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        self._icon_dark_mode = dark_mode
+        for card in self._cards:
+            card.set_icon_theme_mode(dark_mode)
 
     def _refresh_header_style(self, theme: Theme | None = None) -> None:
         """Apply styles to section header and color accent bar."""
@@ -1067,8 +1035,10 @@ class CategorySection(QWidget):
         """Apply theme to section and nested component cards."""
         self._color = accent_color
         self._icon_color = icon_color
+        self._icon_dark_mode = theme.is_dark
         self._refresh_header_style(theme)
         for card in self._cards:
+            card.set_icon_theme_mode(theme.is_dark)
             card.set_icon_color(icon_color)
             card.apply_theme(theme)
 

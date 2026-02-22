@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.schematic.scene import SchematicScene
@@ -108,69 +108,58 @@ class AlignmentGuidesItem(QGraphicsItem):
 
 
 class ComponentDropPreviewItem(QGraphicsItem):
-    """Semi-transparent preview showing where component will be placed during drag."""
+    """Semi-transparent preview showing component symbol during drag."""
 
-    PREVIEW_COLOR = QColor(0, 120, 215, 80)  # Semi-transparent blue
+    PREVIEW_COLOR = QColor(0, 120, 215, 80)  # Accent for placement hints
     PREVIEW_BORDER = QColor(0, 120, 215, 180)
     PREVIEW_LINE_WIDTH = 1.5
+    DARK_MODE = False
 
     def __init__(self, comp_type: ComponentType, parent=None):
         super().__init__(parent)
         self._comp_type = comp_type
-        self._bounds = self._get_bounds_for_type(comp_type)
+        from pulsimgui.views.schematic.items import create_component_item
+
+        self._preview_item = create_component_item(Component(type=comp_type, name=""))
+        self._preview_item.set_show_labels(False)
+        self._preview_item.set_show_value_labels(False)
+        self._preview_item.set_dark_mode(self.DARK_MODE)
+        self._bounds = self._preview_item.boundingRect()
         self.setZValue(1000)  # Always on top
 
-    def _get_bounds_for_type(self, comp_type: ComponentType) -> QRectF:
-        """Get approximate bounding rect for component type."""
-        # These match the boundingRect() methods in component_item.py
-        bounds_map = {
-            ComponentType.RESISTOR: QRectF(-35, -15, 70, 30),
-            ComponentType.CAPACITOR: QRectF(-25, -20, 50, 40),
-            ComponentType.INDUCTOR: QRectF(-35, -15, 70, 30),
-            ComponentType.VOLTAGE_SOURCE: QRectF(-20, -30, 40, 60),
-            ComponentType.CURRENT_SOURCE: QRectF(-20, -30, 40, 60),
-            ComponentType.GROUND: QRectF(-15, -15, 30, 25),
-            ComponentType.DIODE: QRectF(-25, -15, 50, 30),
-            ComponentType.MOSFET_N: QRectF(-25, -25, 50, 50),
-            ComponentType.MOSFET_P: QRectF(-25, -25, 50, 50),
-            ComponentType.IGBT: QRectF(-25, -25, 50, 50),
-            ComponentType.SWITCH: QRectF(-25, -15, 50, 30),
-            ComponentType.TRANSFORMER: QRectF(-35, -25, 70, 50),
-            ComponentType.PI_CONTROLLER: QRectF(-40, -25, 80, 50),
-            ComponentType.PID_CONTROLLER: QRectF(-40, -25, 80, 50),
-            ComponentType.MATH_BLOCK: QRectF(-40, -25, 80, 50),
-            ComponentType.PWM_GENERATOR: QRectF(-40, -25, 80, 50),
-            ComponentType.ELECTRICAL_SCOPE: QRectF(-45, -30, 90, 60),
-            ComponentType.THERMAL_SCOPE: QRectF(-45, -30, 90, 60),
-            ComponentType.SIGNAL_MUX: QRectF(-45, -35, 90, 70),
-            ComponentType.SIGNAL_DEMUX: QRectF(-45, -35, 90, 70),
-            ComponentType.SUBCIRCUIT: QRectF(-60, -40, 120, 80),
-        }
-        return bounds_map.get(comp_type, QRectF(-40, -30, 80, 60))
+    def set_dark_mode(self, dark: bool) -> None:
+        self._preview_item.set_dark_mode(dark)
+        self.update()
 
     def boundingRect(self) -> QRectF:
-        # Slightly larger for glow effect
-        return self._bounds.adjusted(-5, -5, 5, 5)
+        return self._bounds.adjusted(-6, -6, 6, 6)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Draw outer glow
+        # Draw a light glow around the component bounds for placement feedback.
         glow_color = QColor(self.PREVIEW_BORDER)
-        glow_color.setAlpha(30)
+        glow_color.setAlpha(26)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(glow_color))
         painter.drawRoundedRect(self._bounds.adjusted(-4, -4, 4, 4), 6, 6)
 
-        # Draw fill
-        painter.setBrush(QBrush(self.PREVIEW_COLOR))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(self._bounds, 4, 4)
+        # Draw the exact same symbol language as schematic/library, semi-transparent.
+        painter.save()
+        painter.setOpacity(0.72)
+        self._preview_item.paint(painter, option, widget)
+        painter.restore()
 
-        # Draw border
+        # Draw an alignment frame so preview remains readable over dense wires.
         painter.setPen(QPen(self.PREVIEW_BORDER, self.PREVIEW_LINE_WIDTH, Qt.PenStyle.DashLine))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(self._bounds, 4, 4)
+        painter.drawRoundedRect(self._bounds.adjusted(-2, -2, 2, 2), 4, 4)
+
+        center_color = QColor(self.PREVIEW_COLOR)
+        center_color.setAlpha(140)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(center_color)
+        painter.drawEllipse(QPointF(0, 0), 2.5, 2.5)
 
         # Draw crosshairs at center to show exact placement point
         painter.setPen(QPen(self.PREVIEW_BORDER, 1))
@@ -311,6 +300,9 @@ class SchematicView(QGraphicsView):
         # Don't set background brush - let scene's drawBackground handle it
         if isinstance(self.scene(), SchematicScene):
             self.scene().set_dark_mode(dark)
+        ComponentDropPreviewItem.DARK_MODE = dark
+        if self._drop_preview is not None:
+            self._drop_preview.set_dark_mode(dark)
         # Background is cached; force invalidation so theme changes repaint immediately.
         self.resetCachedContent()
         self.viewport().update()
@@ -322,6 +314,8 @@ class SchematicView(QGraphicsView):
         AlignmentGuidesItem.GUIDE_COLOR = QColor(theme.colors.overlay_alignment_guides)
         ComponentDropPreviewItem.PREVIEW_COLOR = QColor(theme.colors.overlay_drop_preview_fill)
         ComponentDropPreviewItem.PREVIEW_BORDER = QColor(theme.colors.overlay_drop_preview_border)
+        if self._drop_preview is not None:
+            self._drop_preview.update()
 
     def zoom_in(self) -> None:
         """Zoom in by one step."""

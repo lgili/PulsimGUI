@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 from pulsimgui.models.component import ComponentType
 
@@ -35,12 +35,18 @@ class CircuitConverter:
         circuit = self._sl.Circuit()
         node_cache: dict[str, int] = {}
         positions_to_apply = []
+        resolved_components: list[tuple[dict, ComponentType, str, list[str]]] = []
 
         for component in components:
             comp_type = self._component_type(component.get("type"))
             nodes = self._resolve_nodes(component, node_map, alias_map)
             name = self._component_name(component, comp_type)
+            resolved_components.append((component, comp_type, name, nodes))
 
+        # Some Pulsim versions expect all non-ground nodes to exist before devices are added.
+        self._predeclare_nodes(circuit, resolved_components, node_cache)
+
+        for component, comp_type, name, nodes in resolved_components:
             if comp_type == ComponentType.GROUND:
                 continue
 
@@ -103,14 +109,48 @@ class CircuitConverter:
             return "0"
         return node
 
+    def _declare_node(self, circuit: Any, normalized: str) -> int:
+        if hasattr(circuit, "add_node"):
+            return circuit.add_node(normalized)
+        if hasattr(circuit, "get_node"):
+            idx = circuit.get_node(normalized)
+            if idx in (-1, None):
+                raise CircuitConversionError(
+                    "Backend Circuit API does not support creating new nodes dynamically."
+                )
+            return idx
+        raise CircuitConversionError(
+            "Backend Circuit API is missing both 'add_node' and 'get_node'."
+        )
+
+    def _predeclare_nodes(
+        self,
+        circuit: Any,
+        components: list[tuple[dict, ComponentType, str, list[str]]],
+        cache: dict[str, int],
+    ) -> None:
+        for _component, comp_type, _name, nodes in components:
+            if comp_type == ComponentType.GROUND:
+                continue
+            for node in nodes:
+                normalized = self._node_name(node)
+                if normalized == "0" or normalized in cache:
+                    continue
+                cache[normalized] = self._declare_node(circuit, normalized)
+
     def _node_index(self, circuit: Any, name: str, cache: dict[str, int]) -> int:
         """Resolve a node name into a Circuit node index, caching as needed."""
         normalized = self._node_name(name)
         if normalized == "0":
-            return circuit.ground()
+            ground = getattr(circuit, "ground", None)
+            if callable(ground):
+                return int(ground())
+            if isinstance(ground, int):
+                return int(ground)
+            raise CircuitConversionError("Backend Circuit API does not expose a ground node.")
         if normalized in cache:
             return cache[normalized]
-        idx = circuit.add_node(normalized)
+        idx = self._declare_node(circuit, normalized)
         cache[normalized] = idx
         return idx
 

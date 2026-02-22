@@ -473,6 +473,11 @@ class PulsimBackend(SimulationBackend):
 
         try:
             dt = self._compute_time_step(settings)
+            if hasattr(circuit, "set_timestep"):
+                try:
+                    circuit.set_timestep(dt)
+                except Exception:
+                    pass
             newton_opts = self._build_newton_options(settings, circuit)
             linear_solver = self._build_linear_solver_config()
             x0 = self._build_initial_state(circuit, settings)
@@ -490,10 +495,42 @@ class PulsimBackend(SimulationBackend):
                 )
 
             if hasattr(self._module, "run_transient_streaming"):
-                return self._run_transient_streaming(
+                streaming_result = self._run_transient_streaming(
                     circuit, settings, callbacks, result,
                     node_names, dt, x0, newton_opts, linear_solver,
                 )
+                if not streaming_result.error_message:
+                    return streaming_result
+                if "cancel" in streaming_result.error_message.lower():
+                    return streaming_result
+                if hasattr(self._module, "run_transient"):
+                    callbacks.progress(
+                        5.0,
+                        "Streaming transient failed; retrying in compatibility mode...",
+                    )
+                    fallback_result = self._run_transient_chunked(
+                        circuit,
+                        settings,
+                        callbacks,
+                        result,
+                        node_names,
+                        dt,
+                        x0,
+                        newton_opts,
+                        linear_solver,
+                    )
+                    if not fallback_result.error_message:
+                        fallback_result.statistics["fallback_mode"] = "chunked"
+                        fallback_result.statistics["streaming_error"] = (
+                            streaming_result.error_message
+                        )
+                        return fallback_result
+                    fallback_result.error_message = (
+                        f"{streaming_result.error_message} | Fallback error: "
+                        f"{fallback_result.error_message}"
+                    )
+                    return fallback_result
+                return streaming_result
 
             return self._run_transient_chunked(
                 circuit, settings, callbacks, result,
@@ -515,7 +552,7 @@ class PulsimBackend(SimulationBackend):
         dt: float,
         x0: Any,
         newton_opts: Any,
-        linear_solver: Any,
+        linear_solver: Any | None,
     ) -> BackendRunResult:
         """Run transient simulation using streaming API with real-time callbacks."""
         # Track last sent index for incremental updates
@@ -549,34 +586,16 @@ class PulsimBackend(SimulationBackend):
         total_steps = int((settings.t_stop - settings.t_start) / dt)
         emit_interval = max(1, total_steps // 50)
 
-        # Call streaming API
-        if x0 is not None:
-            times, states, success, message = self._module.run_transient_streaming(
-                circuit,
-                settings.t_start,
-                settings.t_stop,
-                dt,
-                x0,
-                newton_opts,
-                linear_solver,
-                data_callback,
-                progress_callback,
-                cancel_check,
-                emit_interval,
-            )
-        else:
-            times, states, success, message = self._module.run_transient_streaming(
-                circuit,
-                settings.t_start,
-                settings.t_stop,
-                dt,
-                newton_opts,
-                linear_solver,
-                data_callback,
-                progress_callback,
-                cancel_check,
-                emit_interval,
-            )
+        transient_args = self._compose_transient_args(
+            circuit=circuit,
+            settings=settings,
+            dt=dt,
+            x0=x0,
+            newton_opts=newton_opts,
+            linear_solver=linear_solver,
+        )
+        transient_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
+        times, states, success, message = self._module.run_transient_streaming(*transient_args)
 
         if not success:
             result.error_message = message
@@ -608,7 +627,7 @@ class PulsimBackend(SimulationBackend):
         dt: float,
         x0: Any,
         newton_opts: Any,
-        linear_solver: Any,
+        linear_solver: Any | None,
     ) -> BackendRunResult:
         """Run transient simulation using shared memory for zero-copy real-time display.
 
@@ -643,20 +662,24 @@ class PulsimBackend(SimulationBackend):
         def run_simulation() -> None:
             """Run simulation in background thread."""
             try:
-                success, message = self._module.run_transient_shared(
-                    circuit,
-                    settings.t_start,
-                    settings.t_stop,
-                    dt,
-                    x0,
-                    newton_opts,
-                    linear_solver,
-                    time_buffer,
-                    states_buffer,
-                    status_buffer,
-                    callbacks.check_cancelled,
-                    1000,  # Check cancellation every 1000 steps
+                transient_args = self._compose_transient_args(
+                    circuit=circuit,
+                    settings=settings,
+                    dt=dt,
+                    x0=x0,
+                    newton_opts=newton_opts,
+                    linear_solver=linear_solver,
                 )
+                transient_args.extend(
+                    [
+                        time_buffer,
+                        states_buffer,
+                        status_buffer,
+                        callbacks.check_cancelled,
+                        1000,  # Check cancellation every 1000 steps
+                    ]
+                )
+                success, message = self._module.run_transient_shared(*transient_args)
                 sim_success[0] = success
                 sim_message[0] = message
             except Exception as exc:
@@ -751,21 +774,21 @@ class PulsimBackend(SimulationBackend):
         dt: float,
         x0: Any,
         newton_opts: Any,
-        linear_solver: Any,
+        linear_solver: Any | None,
     ) -> BackendRunResult:
         """Optimized chunked simulation - run full sim then send data for animation."""
         # Signal that we're starting (progress=-1 means indeterminate mode)
         callbacks.progress(-1.0, "Simulating circuit...")
 
-        # Run the entire simulation at once (fast!)
-        if x0 is not None:
-            times, states, success, message = self._module.run_transient(
-                circuit, settings.t_start, settings.t_stop, dt, x0, newton_opts, linear_solver
-            )
-        else:
-            times, states, success, message = self._module.run_transient(
-                circuit, settings.t_start, settings.t_stop, dt, newton_opts, linear_solver
-            )
+        transient_args = self._compose_transient_args(
+            circuit=circuit,
+            settings=settings,
+            dt=dt,
+            x0=x0,
+            newton_opts=newton_opts,
+            linear_solver=linear_solver,
+        )
+        times, states, success, message = self._module.run_transient(*transient_args)
 
         if not success:
             result.error_message = message
@@ -1443,15 +1466,48 @@ class PulsimBackend(SimulationBackend):
                 backend_result.statistics["status"] = status_value
 
     def _compute_time_step(self, settings: "SimulationSettings") -> float:
+        duration = settings.t_stop - settings.t_start
+        if duration <= 0:
+            raise ValueError("Simulation stop time must be greater than start time.")
+
         if settings.t_step > 0:
-            return settings.t_step
-        duration = max(settings.t_stop - settings.t_start, 1e-12)
-        points = max(settings.output_points, 1)
-        return duration / points
+            dt = settings.t_step
+        else:
+            points = max(settings.output_points, 1)
+            dt = duration / points
+
+        if settings.max_step > 0:
+            dt = min(dt, settings.max_step)
+
+        if dt <= 0:
+            raise ValueError("Simulation timestep must be greater than zero.")
+        return dt
+
+    def _compose_transient_args(
+        self,
+        *,
+        circuit: Any,
+        settings: "SimulationSettings",
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any | None,
+    ) -> list[Any]:
+        """Compose positional args for transient API across Pulsim versions."""
+        args: list[Any] = [circuit, settings.t_start, settings.t_stop, dt]
+        if x0 is not None:
+            args.append(x0)
+        args.append(newton_opts)
+        if linear_solver is not None:
+            args.append(linear_solver)
+        return args
 
     def _build_newton_options(self, settings: "SimulationSettings", circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
-        opts = self._module.NewtonOptions()
+        if hasattr(self._module, "NewtonOptions"):
+            opts = self._module.NewtonOptions()
+        else:  # pragma: no cover - defensive fallback for older adapters
+            opts = type("NewtonOptions", (), {})()
         opts.max_iterations = settings.max_newton_iterations
         opts.enable_limiting = settings.enable_voltage_limiting
         opts.max_voltage_step = settings.max_voltage_step
@@ -1471,16 +1527,27 @@ class PulsimBackend(SimulationBackend):
 
         return opts
 
-    def _build_linear_solver_config(self) -> Any:
-        """Build LinearSolverStackConfig for the new kernel API."""
-        config = self._module.LinearSolverStackConfig.defaults()
-        if hasattr(self._module, "LinearSolverKind"):
-            config.order = [
-                self._module.LinearSolverKind.KLU,
-                self._module.LinearSolverKind.GMRES,
-            ]
-        config.allow_fallback = True
-        config.auto_select = True
+    def _build_linear_solver_config(self) -> Any | None:
+        """Build optional linear-solver configuration when API supports it."""
+        stack_cls = getattr(self._module, "LinearSolverStackConfig", None)
+        if stack_cls is None:
+            return None
+
+        config = stack_cls.defaults() if hasattr(stack_cls, "defaults") else stack_cls()
+
+        linear_solver_kind = getattr(self._module, "LinearSolverKind", None)
+        if linear_solver_kind is not None and hasattr(config, "order"):
+            preferred_order: list[Any] = []
+            for name in ("KLU", "GMRES"):
+                if hasattr(linear_solver_kind, name):
+                    preferred_order.append(getattr(linear_solver_kind, name))
+            if preferred_order:
+                config.order = preferred_order
+
+        if hasattr(config, "allow_fallback"):
+            config.allow_fallback = True
+        if hasattr(config, "auto_select"):
+            config.auto_select = True
         return config
 
     def _build_initial_state(self, circuit: Any, settings: "SimulationSettings") -> Any:

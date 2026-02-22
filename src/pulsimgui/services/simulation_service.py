@@ -9,9 +9,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Signal, QMutex, QThread, QWaitCondition
+from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
@@ -19,11 +19,20 @@ from pulsimgui.services.backend_adapter import (
     BackendLoader,
     SimulationBackend,
 )
+from pulsimgui.services.backend_runtime_service import (
+    BackendInstallResult,
+    BackendRuntimeConfig,
+    BackendRuntimeService,
+)
+from pulsimgui.services.backend_types import (
+    ACResult as BackendACResult,
+)
 from pulsimgui.services.backend_types import (
     ACSettings,
     DCSettings,
+)
+from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
-    ACResult as BackendACResult,
 )
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
@@ -458,7 +467,7 @@ class SimulationService(QObject):
     error = Signal(str)
     backend_changed = Signal(BackendInfo)
 
-    def __init__(self, settings_service: "SettingsService" | None = None, parent=None):
+    def __init__(self, settings_service: SettingsService | None = None, parent=None):
         super().__init__(parent)
 
         self._state = SimulationState.IDLE
@@ -468,6 +477,9 @@ class SimulationService(QObject):
         self._last_result: SimulationResult | None = None
         self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
+        self._runtime_service = BackendRuntimeService()
+        self._runtime_config = BackendRuntimeConfig()
+        self._runtime_issue: str | None = None
         preferred_backend = None
         if settings_service is not None:
             preferred_backend = settings_service.get_backend_preference()
@@ -491,6 +503,19 @@ class SimulationService(QObject):
             self._settings.gmin_initial = solver_settings.get("gmin_initial", self._settings.gmin_initial)
             self._settings.gmin_final = solver_settings.get("gmin_final", self._settings.gmin_final)
 
+            # Load backend runtime settings
+            runtime_settings = settings_service.get_backend_runtime_settings()
+            self._runtime_config = BackendRuntimeConfig.from_dict(runtime_settings)
+
+        if self._runtime_config.auto_sync:
+            sync_result = self._runtime_service.ensure_target_version(self._runtime_config, force=False)
+            if sync_result.success:
+                self._runtime_issue = None
+                if sync_result.changed:
+                    self._runtime_service.invalidate_backend_import_cache()
+            else:
+                self._runtime_issue = sync_result.message
+
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
 
@@ -508,6 +533,7 @@ class SimulationService(QObject):
     def settings(self, value: SimulationSettings) -> None:
         """Set simulation settings."""
         self._settings = value
+        self._persist_simulation_settings()
 
     @property
     def last_result(self) -> SimulationResult | None:
@@ -528,6 +554,11 @@ class SimulationService(QObject):
     def backend(self):
         """Return the active simulation backend for direct access."""
         return self._backend
+
+    @property
+    def backend_runtime_config(self) -> BackendRuntimeConfig:
+        """Return backend runtime provisioning settings."""
+        return self._runtime_config
 
     @property
     def last_convergence_info(self):
@@ -562,6 +593,10 @@ class SimulationService(QObject):
         """Human-friendly description when the backend cannot be used."""
         if self.is_backend_ready:
             return None
+
+        if self._runtime_issue:
+            return self._runtime_issue
+
         info = self._backend.info
         detail = (info.message or "").strip()
         if detail:
@@ -581,6 +616,79 @@ class SimulationService(QObject):
             self._settings_service.set_backend_preference(identifier)
         self.backend_changed.emit(info)
         return info
+
+    def update_backend_runtime_config(self, config: BackendRuntimeConfig) -> None:
+        """Persist and apply backend runtime configuration."""
+        self._runtime_config = config
+        if self._settings_service is not None:
+            self._settings_service.set_backend_runtime_settings(config.to_dict())
+
+    def install_backend_runtime(
+        self,
+        config: BackendRuntimeConfig | None = None,
+        *,
+        force: bool = True,
+    ) -> BackendInstallResult:
+        """Install or synchronize backend runtime according to configuration."""
+        if self.is_running:
+            return BackendInstallResult(
+                success=False,
+                message="Cannot install backend while a simulation is running.",
+            )
+
+        effective_config = config or self._runtime_config
+        if config is not None:
+            self.update_backend_runtime_config(config)
+
+        result = self._runtime_service.ensure_target_version(effective_config, force=force)
+        if not result.success:
+            self._runtime_issue = result.message
+            return result
+
+        self._runtime_issue = None
+        if result.changed:
+            self._runtime_service.invalidate_backend_import_cache()
+
+        self._reload_backend_loader(emit_signal=True)
+        return result
+
+    def _reload_backend_loader(self, *, emit_signal: bool) -> None:
+        preferred_backend = None
+        if self._settings_service is not None:
+            preferred_backend = self._settings_service.get_backend_preference()
+        elif self._backend_loader.active_backend_id:
+            preferred_backend = self._backend_loader.active_backend_id
+
+        self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
+        self._backend = self._backend_loader.backend
+        if emit_signal:
+            self.backend_changed.emit(self._backend.info)
+
+    def _persist_simulation_settings(self) -> None:
+        """Persist simulation and solver settings when available."""
+        if self._settings_service is None:
+            return
+        self._settings_service.set_simulation_settings(
+            {
+                "t_stop": self._settings.t_stop,
+                "t_step": self._settings.t_step,
+                "solver": self._settings.solver,
+                "max_step": self._settings.max_step,
+                "rel_tol": self._settings.rel_tol,
+                "abs_tol": self._settings.abs_tol,
+                "output_points": self._settings.output_points,
+            }
+        )
+        self._settings_service.set_solver_settings(
+            {
+                "max_newton_iterations": self._settings.max_newton_iterations,
+                "enable_voltage_limiting": self._settings.enable_voltage_limiting,
+                "max_voltage_step": self._settings.max_voltage_step,
+                "dc_strategy": self._settings.dc_strategy,
+                "gmin_initial": self._settings.gmin_initial,
+                "gmin_final": self._settings.gmin_final,
+            }
+        )
 
     def _ensure_backend_ready(self) -> bool:
         """Emit a user-facing error if no backend is currently usable."""
