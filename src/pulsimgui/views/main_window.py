@@ -1,5 +1,6 @@
 """Main application window."""
 
+from copy import deepcopy
 from pathlib import Path
 from uuid import UUID
 
@@ -53,6 +54,7 @@ from pulsimgui.views.dialogs import (
     ParameterSweepDialog,
     ParameterSweepResultsDialog,
     ThermalViewerDialog,
+    ComponentPropertiesDialog,
 )
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
@@ -135,6 +137,9 @@ class MainWindow(QMainWindow):
         self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
         self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
         self._schematic_view.scope_open_requested.connect(self._on_scope_open_requested)
+        self._schematic_view.component_properties_requested.connect(
+            self._on_component_properties_requested
+        )
         self._schematic_view.wire_alias_changed.connect(self._on_wire_alias_changed)
         self._schematic_view.quick_add_component.connect(self._on_quick_add_component)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
@@ -550,6 +555,8 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        # Component properties are edited in a modal popup flow.
+        self.properties_dock.hide()
 
         # Waveform Viewer (bottom)
         self.waveform_dock = QDockWidget("Waveform Viewer", self)
@@ -563,7 +570,6 @@ class MainWindow(QMainWindow):
 
         # Add toggle actions to panels menu
         self.panels_menu.addAction(self.library_dock.toggleViewAction())
-        self.panels_menu.addAction(self.properties_dock.toggleViewAction())
         self.panels_menu.addAction(self.waveform_dock.toggleViewAction())
 
     def _connect_signals(self) -> None:
@@ -657,6 +663,8 @@ class MainWindow(QMainWindow):
         state = self._settings.get_window_state()
         if state:
             self.restoreState(state)
+        # Keep the old side properties panel hidden; editing is modal.
+        self.properties_dock.hide()
 
     def _apply_theme(self) -> None:
         """Apply the current theme from settings."""
@@ -1400,6 +1408,69 @@ class MainWindow(QMainWindow):
         if component is None:
             return
         self._open_scope_window(component)
+
+    def _on_component_properties_requested(self, component) -> None:
+        """Open modal component properties editor and apply on confirmation."""
+        if component is None:
+            return
+
+        dialog = ComponentPropertiesDialog(
+            component=component,
+            theme_service=self._theme_service,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        if not self._apply_component_properties(component, dialog.edited_component):
+            return
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+        self.statusBar().showMessage("Component properties updated", 2000)
+
+    def _apply_component_properties(self, target, edited) -> bool:
+        """Apply edited component state to target component and refresh scene item."""
+        has_changes = (
+            target.name != edited.name
+            or target.rotation != edited.rotation
+            or target.mirrored_h != edited.mirrored_h
+            or target.mirrored_v != edited.mirrored_v
+            or target.parameters != edited.parameters
+            or target.pins != edited.pins
+        )
+        if not has_changes:
+            return False
+
+        target.name = edited.name
+        target.rotation = edited.rotation % 360
+        target.mirrored_h = bool(edited.mirrored_h)
+        target.mirrored_v = bool(edited.mirrored_v)
+        target.parameters = deepcopy(edited.parameters)
+        target.pins = deepcopy(edited.pins)
+
+        item = self._find_component_item(target)
+        if item is not None:
+            item.setRotation(target.rotation)
+            item.update_transform()
+            item._name_label.setText(target.name)
+            item._update_labels()
+            self._schematic_scene.update_connected_wires(item)
+            item.update()
+
+        self._schematic_scene.update()
+        self._refresh_scope_window_bindings()
+        return True
+
+    def _find_component_item(self, component):
+        """Find scene item corresponding to a component model instance."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        for item in self._schematic_scene.items():
+            if isinstance(item, ComponentItem) and item.component is component:
+                return item
+        return None
 
     def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
         """Persist window state whenever a scope window closes."""

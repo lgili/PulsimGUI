@@ -504,6 +504,9 @@ class PropertiesPanel(QWidget):
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
+        self._main_layout: QVBoxLayout | None = None
+        self._show_position_controls = False
+        self._compact_mode = False
         self._dark_mode = False
         self._info_header: SectionHeader | None = None
         self._params_header: SectionHeader | None = None
@@ -523,6 +526,7 @@ class PropertiesPanel(QWidget):
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
+        self._main_layout = layout
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
@@ -722,7 +726,7 @@ class PropertiesPanel(QWidget):
         self._no_selection_label.hide()
         self._info_container.show()
         self._params_container.show()
-        self._pos_container.show()
+        self._pos_container.setVisible(self._show_position_controls)
 
         # Update component info
         type_name = self._component.type.name.replace("_", " ").title()
@@ -1144,6 +1148,34 @@ class PropertiesPanel(QWidget):
             else:
                 self._component.y = value
             self.property_changed.emit(f"position_{axis}", value)
+
+    def set_show_position_controls(self, show: bool) -> None:
+        """Show or hide position controls section."""
+        self._show_position_controls = show
+        self._pos_container.setVisible(bool(show and self._component is not None))
+
+    def set_compact_mode(self, compact: bool) -> None:
+        """Enable compact layout (used by modal popup editor)."""
+        self._compact_mode = compact
+        if self._main_layout is None:
+            return
+
+        if compact:
+            self._scroll.setMinimumHeight(190)
+            self._scroll.setMaximumHeight(310)
+            self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            self._params_container.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+            )
+            self._main_layout.setStretchFactor(self._params_container, 0)
+        else:
+            self._scroll.setMinimumHeight(270)
+            self._scroll.setMaximumHeight(16777215)
+            self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+            self._params_container.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+            )
+            self._main_layout.setStretchFactor(self._params_container, 1)
 
     def _on_rotate(self, degrees: int) -> None:
         """Handle rotation button click."""
