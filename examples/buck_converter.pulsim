@@ -6,10 +6,10 @@
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.002,
-    "dt": 1e-7,
+    "dt": 1e-07,
     "tstart": 0,
     "abstol": 1e-12,
-    "reltol": 1e-3,
+    "reltol": 0.001,
     "max_iterations": 100
   },
   "circuits": {
@@ -25,7 +25,12 @@
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"waveform": {"type": "dc", "value": 12}},
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 12
+            }
+          },
           "pins": []
         },
         {
@@ -37,7 +42,18 @@
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"waveform": {"type": "pulse", "v1": 12, "v2": 0, "delay": 0, "rise_time": 1e-8, "fall_time": 1e-8, "pulse_width": 4.17e-6, "period": 1e-5}},
+          "parameters": {
+            "waveform": {
+              "type": "pulse",
+              "v1": 12,
+              "v2": 0,
+              "delay": 0,
+              "rise_time": 1e-08,
+              "fall_time": 1e-08,
+              "pulse_width": 4.17e-06,
+              "period": 1e-05
+            }
+          },
           "pins": []
         },
         {
@@ -49,11 +65,30 @@
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"vth": 2.0, "kp": 5.0, "g_off": 1e-6},
+          "parameters": {
+            "vth": 2.0,
+            "kp": 5.0,
+            "g_off": 1e-06
+          },
           "pins": [
-            {"index": 0, "name": "D", "x": 20, "y": -20},
-            {"index": 1, "name": "G", "x": -20, "y": 0},
-            {"index": 2, "name": "S", "x": 20, "y": 20}
+            {
+              "index": 0,
+              "name": "D",
+              "x": 20,
+              "y": -20
+            },
+            {
+              "index": 1,
+              "name": "G",
+              "x": -20,
+              "y": 0
+            },
+            {
+              "index": 2,
+              "name": "S",
+              "x": 20,
+              "y": 20
+            }
           ]
         },
         {
@@ -77,7 +112,10 @@
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"inductance": 100e-6, "initial_current": 0},
+          "parameters": {
+            "inductance": 0.0001,
+            "initial_current": 0
+          },
           "pins": []
         },
         {
@@ -89,7 +127,10 @@
           "rotation": 90,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"capacitance": 100e-6, "initial_voltage": 0},
+          "parameters": {
+            "capacitance": 0.0001,
+            "initial_voltage": 0
+          },
           "pins": []
         },
         {
@@ -101,7 +142,9 @@
           "rotation": 90,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {"resistance": 10},
+          "parameters": {
+            "resistance": 10
+          },
           "pins": []
         },
         {
@@ -115,62 +158,252 @@
           "mirrored_v": false,
           "parameters": {},
           "pins": []
+        },
+        {
+          "id": "df8b2c72-e802-4499-9c1f-e4bcbef98e24",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope1",
+          "x": 840.0,
+          "y": 229.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "CH1",
+                "overlay": true
+              },
+              {
+                "label": "CH2",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40,
+              "y": -9
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40,
+              "y": 9
+            }
+          ]
         }
       ],
       "wires": [
         {
           "id": "00000000-0001-0000-0000-000000000101",
           "segments": [
-            {"x1": 100, "y1": 175, "x2": 370, "y2": 175},
-            {"x1": 370, "y1": 175, "x2": 370, "y2": 180}
+            {
+              "x1": 100,
+              "y1": 175,
+              "x2": 370,
+              "y2": 175
+            },
+            {
+              "x1": 370,
+              "y1": 175,
+              "x2": 370,
+              "y2": 180
+            }
           ],
-          "start_connection": null, "end_connection": null, "junctions": [],
-          "node_name": "vin", "alias": "Vin"
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "vin",
+          "alias": "Vin"
         },
         {
           "id": "00000000-0001-0000-0000-000000000102",
           "segments": [
-            {"x1": 200, "y1": 325, "x2": 200, "y2": 200},
-            {"x1": 200, "y1": 200, "x2": 330, "y2": 200}
+            {
+              "x1": 200,
+              "y1": 325,
+              "x2": 200,
+              "y2": 200
+            },
+            {
+              "x1": 200,
+              "y1": 200,
+              "x2": 330,
+              "y2": 200
+            }
           ],
-          "start_connection": null, "end_connection": null, "junctions": [],
-          "node_name": "gate", "alias": "gate"
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "gate",
+          "alias": "gate"
         },
         {
           "id": "00000000-0001-0000-0000-000000000103",
           "segments": [
-            {"x1": 370, "y1": 220, "x2": 370, "y2": 280},
-            {"x1": 370, "y1": 220, "x2": 470, "y2": 220}
+            {
+              "x1": 370,
+              "y1": 220,
+              "x2": 370,
+              "y2": 280
+            },
+            {
+              "x1": 370,
+              "y1": 220,
+              "x2": 470,
+              "y2": 220
+            }
           ],
-          "start_connection": null, "end_connection": null, "junctions": [[370, 220]],
-          "node_name": "sw", "alias": "SW"
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [
+            [
+              370,
+              220
+            ]
+          ],
+          "node_name": "sw",
+          "alias": "SW"
         },
         {
           "id": "00000000-0001-0000-0000-000000000104",
           "segments": [
-            {"x1": 530, "y1": 220, "x2": 600, "y2": 220},
-            {"x1": 600, "y1": 220, "x2": 600, "y2": 280},
-            {"x1": 600, "y1": 220, "x2": 700, "y2": 220},
-            {"x1": 700, "y1": 220, "x2": 700, "y2": 270}
+            {
+              "x1": 530,
+              "y1": 220,
+              "x2": 600,
+              "y2": 220
+            },
+            {
+              "x1": 600,
+              "y1": 220,
+              "x2": 600,
+              "y2": 280
+            },
+            {
+              "x1": 600,
+              "y1": 220,
+              "x2": 700,
+              "y2": 220
+            },
+            {
+              "x1": 700,
+              "y1": 220,
+              "x2": 700,
+              "y2": 270
+            }
           ],
-          "start_connection": null, "end_connection": null, "junctions": [[600, 220]],
-          "node_name": "vout", "alias": "Vout"
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [
+            [
+              600,
+              220
+            ]
+          ],
+          "node_name": "vout",
+          "alias": "Vout"
         },
         {
           "id": "00000000-0001-0000-0000-000000000105",
           "segments": [
-            {"x1": 100, "y1": 225, "x2": 100, "y2": 450},
-            {"x1": 100, "y1": 450, "x2": 200, "y2": 450},
-            {"x1": 200, "y1": 375, "x2": 200, "y2": 450},
-            {"x1": 200, "y1": 450, "x2": 370, "y2": 450},
-            {"x1": 370, "y1": 320, "x2": 370, "y2": 450},
-            {"x1": 370, "y1": 450, "x2": 600, "y2": 450},
-            {"x1": 600, "y1": 320, "x2": 600, "y2": 450},
-            {"x1": 600, "y1": 450, "x2": 700, "y2": 450},
-            {"x1": 700, "y1": 330, "x2": 700, "y2": 450}
+            {
+              "x1": 100,
+              "y1": 225,
+              "x2": 100,
+              "y2": 450
+            },
+            {
+              "x1": 100,
+              "y1": 450,
+              "x2": 200,
+              "y2": 450
+            },
+            {
+              "x1": 200,
+              "y1": 375,
+              "x2": 200,
+              "y2": 450
+            },
+            {
+              "x1": 200,
+              "y1": 450,
+              "x2": 370,
+              "y2": 450
+            },
+            {
+              "x1": 370,
+              "y1": 320,
+              "x2": 370,
+              "y2": 450
+            },
+            {
+              "x1": 370,
+              "y1": 450,
+              "x2": 600,
+              "y2": 450
+            },
+            {
+              "x1": 600,
+              "y1": 320,
+              "x2": 600,
+              "y2": 450
+            },
+            {
+              "x1": 600,
+              "y1": 450,
+              "x2": 700,
+              "y2": 450
+            },
+            {
+              "x1": 700,
+              "y1": 330,
+              "x2": 700,
+              "y2": 450
+            }
           ],
-          "start_connection": null, "end_connection": null, "junctions": [[100, 450], [200, 450], [370, 450], [600, 450]],
-          "node_name": "gnd", "alias": ""
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [
+            [
+              100,
+              450
+            ],
+            [
+              200,
+              450
+            ],
+            [
+              370,
+              450
+            ],
+            [
+              600,
+              450
+            ]
+          ],
+          "node_name": "gnd",
+          "alias": ""
+        },
+        {
+          "id": "49c883e7-d59c-4f79-adc6-e8e551a73f39",
+          "segments": [
+            {
+              "x1": 700.0,
+              "y1": 220.0,
+              "x2": 800.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "vout",
+          "alias": "Vout"
         }
       ]
     }

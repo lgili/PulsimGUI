@@ -1489,7 +1489,13 @@ class MainWindow(QMainWindow):
         comp_id = str(component.id)
         window = self._scope_windows.get(comp_id)
         if window is None:
-            window = ScopeWindow(comp_id, component.name, component.type, self)
+            window = ScopeWindow(
+                comp_id,
+                component.name,
+                component.type,
+                theme_service=self._theme_service,
+                parent=self,
+            )
             window.closed.connect(self._on_scope_window_closed)
             self._scope_windows[comp_id] = window
 
@@ -1762,21 +1768,14 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_data_point(self, time: float, signals: dict) -> None:
         """Handle streaming data point during simulation."""
-        # Make waveform dock visible if not already
-        if not self.waveform_dock.isVisible():
-            self.waveform_dock.setVisible(True)
-
-        # Add data point to waveform viewer for real-time display
+        # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
-            # Finalize streaming and show complete results in waveform viewer
+            # Finalize streaming in the dock viewer without forcing it open.
             self._waveform_viewer.finalize_streaming(result)
-
-            # Make waveform dock visible
-            self.waveform_dock.setVisible(True)
 
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "

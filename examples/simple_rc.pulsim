@@ -6,10 +6,10 @@
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.01,
-    "dt": 1e-6,
+    "dt": 1e-06,
     "tstart": 0,
     "abstol": 1e-12,
-    "reltol": 1e-3,
+    "reltol": 0.001,
     "max_iterations": 50
   },
   "circuits": {
@@ -59,7 +59,7 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "capacitance": 1e-6
+            "capacitance": 1e-06
           },
           "pins": []
         },
@@ -74,13 +74,55 @@
           "mirrored_v": false,
           "parameters": {},
           "pins": []
+        },
+        {
+          "id": "3602e54a-ef72-41ad-9442-69ce30f2a8e0",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope1",
+          "x": 490.0,
+          "y": 184.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "CH1",
+                "overlay": true
+              },
+              {
+                "label": "CH2",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40,
+              "y": -9
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40,
+              "y": 9
+            }
+          ]
         }
       ],
       "wires": [
         {
           "id": "00000000-0000-0000-0000-000000000010",
           "segments": [
-            {"x1": 100, "y1": 175, "x2": 220, "y2": 175}
+            {
+              "x1": 100,
+              "y1": 175,
+              "x2": 220,
+              "y2": 175
+            }
           ],
           "start_connection": null,
           "end_connection": null,
@@ -91,8 +133,18 @@
         {
           "id": "00000000-0000-0000-0000-000000000011",
           "segments": [
-            {"x1": 280, "y1": 175, "x2": 350, "y2": 175},
-            {"x1": 350, "y1": 175, "x2": 350, "y2": 180}
+            {
+              "x1": 280,
+              "y1": 175,
+              "x2": 350,
+              "y2": 175
+            },
+            {
+              "x1": 350,
+              "y1": 175,
+              "x2": 350,
+              "y2": 180
+            }
           ],
           "start_connection": null,
           "end_connection": null,
@@ -103,15 +155,46 @@
         {
           "id": "00000000-0000-0000-0000-000000000012",
           "segments": [
-            {"x1": 350, "y1": 220, "x2": 350, "y2": 260},
-            {"x1": 350, "y1": 260, "x2": 100, "y2": 260},
-            {"x1": 100, "y1": 260, "x2": 100, "y2": 225}
+            {
+              "x1": 350,
+              "y1": 220,
+              "x2": 350,
+              "y2": 260
+            },
+            {
+              "x1": 350,
+              "y1": 260,
+              "x2": 100,
+              "y2": 260
+            },
+            {
+              "x1": 100,
+              "y1": 260,
+              "x2": 100,
+              "y2": 225
+            }
           ],
           "start_connection": null,
           "end_connection": null,
           "junctions": [],
           "node_name": "",
           "alias": ""
+        },
+        {
+          "id": "76322902-badb-42e2-9030-62edc083c44e",
+          "segments": [
+            {
+              "x1": 350.0,
+              "y1": 175.0,
+              "x2": 450.0,
+              "y2": 175.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "out",
+          "alias": "out"
         }
       ]
     }

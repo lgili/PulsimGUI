@@ -45,12 +45,17 @@ def create_component(
     }
 
 
-def create_wire(segments: list[tuple[float, float, float, float]], node_name: str = "") -> dict:
+def create_wire(
+    segments: list[tuple[float, float, float, float]],
+    node_name: str = "",
+    alias: str = "",
+) -> dict:
     """Create a wire dictionary.
 
     Args:
         segments: List of (x1, y1, x2, y2) tuples for each segment
         node_name: Optional node name for the wire
+        alias: Optional display alias for the node
     """
     return {
         "id": str(uuid4()),
@@ -62,7 +67,7 @@ def create_wire(segments: list[tuple[float, float, float, float]], node_name: st
         "end_connection": None,
         "junctions": [],
         "node_name": node_name,
-        "alias": "",
+        "alias": alias,
     }
 
 
@@ -131,6 +136,57 @@ GROUND_PINS = [
     create_pin(0, "gnd", 0, -10),
 ]
 
+SCOPE_PINS = [
+    create_pin(0, "CH1", -40, -9),
+    create_pin(1, "CH2", -40, 9),
+]
+
+
+def add_scope_probe(
+    components: list[dict],
+    wires: list[dict],
+    node_name: str,
+    anchor_x: float,
+    anchor_y: float,
+    alias: str = "",
+) -> None:
+    """Add a connected electrical scope for quick waveform inspection."""
+    existing_names = {str(comp.get("name") or "") for comp in components}
+    idx = 1
+    scope_name = f"Scope{idx}"
+    while scope_name in existing_names:
+        idx += 1
+        scope_name = f"Scope{idx}"
+
+    # Keep scope near the observed node without going too far right.
+    scope_x = anchor_x + 140 if anchor_x <= 720 else anchor_x - 140
+    scope_y = anchor_y + 9
+    ch1_x = scope_x - 40
+
+    components.append(
+        create_component(
+            "ELECTRICAL_SCOPE",
+            scope_name,
+            scope_x,
+            scope_y,
+            {
+                "channel_count": 2,
+                "channels": [
+                    {"label": "CH1", "overlay": True},
+                    {"label": "CH2", "overlay": True},
+                ],
+            },
+            SCOPE_PINS,
+        )
+    )
+    wires.append(
+        create_wire(
+            [(anchor_x, anchor_y, ch1_x, anchor_y)],
+            node_name=node_name,
+            alias=alias,
+        )
+    )
+
 
 def voltage_divider_project() -> dict:
     """Voltage divider: V1=10V, R1=R2=1k, expect V(out)=5V."""
@@ -180,6 +236,8 @@ def voltage_divider_project() -> dict:
         ], "0"),
     ]
 
+    add_scope_probe(components, wires, node_name="OUT", anchor_x=280, anchor_y=100, alias="Vout")
+
     return create_project("Voltage Divider", "main", components, wires)
 
 
@@ -227,6 +285,8 @@ def rc_lowpass_project() -> dict:
             (100, 300, 100, 340),
         ], "0"),
     ]
+
+    add_scope_probe(components, wires, node_name="OUT", anchor_x=350, anchor_y=100, alias="Vout")
 
     return create_project("RC Lowpass Filter", "main", components, wires)
 
@@ -286,6 +346,8 @@ def rc_transient_project() -> dict:
             (100, 300, 100, 340),
         ], "0"),
     ]
+
+    add_scope_probe(components, wires, node_name="OUT", anchor_x=350, anchor_y=100, alias="Vout")
 
     return create_project("RC Transient", "main", components, wires)
 
@@ -360,6 +422,8 @@ def mosfet_switch_project() -> dict:
         ], "0"),
     ]
 
+    add_scope_probe(components, wires, node_name="DRAIN", anchor_x=350, anchor_y=50)
+
     return create_project("MOSFET Switch", "main", components, wires)
 
 
@@ -415,6 +479,8 @@ def diode_rectifier_project() -> dict:
             (100, 300, 100, 340),
         ], "0"),
     ]
+
+    add_scope_probe(components, wires, node_name="OUT", anchor_x=350, anchor_y=100, alias="Vout")
 
     return create_project("Diode Rectifier", "main", components, wires)
 
@@ -475,6 +541,8 @@ def rl_circuit_project() -> dict:
         ], "0"),
     ]
 
+    add_scope_probe(components, wires, node_name="OUT", anchor_x=350, anchor_y=100, alias="IL")
+
     return create_project("RL Circuit", "main", components, wires)
 
 
@@ -514,6 +582,7 @@ def export_all_projects(output_dir: Path | str) -> None:
     print("  4. mosfet_switch: Run DC, check MOSFET conducting")
     print("  5. diode_rectifier: Run Transient 0-33ms, see half-wave")
     print("  6. rl_circuit: Run Transient 0-500us, see current rise")
+    print("  7. Double-click Scope1 in each example to inspect waveforms")
 
 
 if __name__ == "__main__":
