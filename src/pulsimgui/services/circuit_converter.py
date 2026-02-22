@@ -20,6 +20,16 @@ class CircuitConverter:
     def __init__(self, pulsim_module: Any) -> None:
         self._sl = pulsim_module
 
+    _INSTRUMENTATION_COMPONENTS = {
+        ComponentType.VOLTAGE_PROBE,
+        ComponentType.CURRENT_PROBE,
+        ComponentType.POWER_PROBE,
+        ComponentType.ELECTRICAL_SCOPE,
+        ComponentType.THERMAL_SCOPE,
+        ComponentType.SIGNAL_MUX,
+        ComponentType.SIGNAL_DEMUX,
+    }
+
     def build(self, circuit_data: dict) -> Any:
         """Create a ``pulsim.Circuit`` instance from serialized schematic data.
 
@@ -39,6 +49,8 @@ class CircuitConverter:
 
         for component in components:
             comp_type = self._component_type(component.get("type"))
+            if self._should_skip_component(comp_type):
+                continue
             nodes = self._resolve_nodes(component, node_map, alias_map)
             name = self._component_name(component, comp_type)
             resolved_components.append((component, comp_type, name, nodes))
@@ -57,6 +69,14 @@ class CircuitConverter:
 
         self._apply_positions_from_list(circuit, positions_to_apply)
         return circuit
+
+    def _should_skip_component(self, comp_type: ComponentType) -> bool:
+        """Return True for GUI-only instrumentation components.
+
+        These blocks are used for measurement/visualization and should not
+        become physical devices in the backend netlist.
+        """
+        return comp_type in self._INSTRUMENTATION_COMPONENTS
 
     def _component_type(self, raw_type: str | None) -> ComponentType:
         if not raw_type:

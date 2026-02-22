@@ -118,6 +118,43 @@
               "y": -10
             }
           ]
+        },
+        {
+          "id": "82834566-2e2f-44f0-b278-3c8217cc074a",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope1",
+          "x": 420.0,
+          "y": 109.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "CH1",
+                "overlay": true
+              },
+              {
+                "label": "CH2",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40,
+              "y": -9
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40,
+              "y": 9
+            }
+          ]
         }
       ],
       "wires": [
@@ -207,6 +244,22 @@
           "end_connection": null,
           "junctions": [],
           "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "df361be0-3460-4dbc-bc81-0921f1f82a7b",
+          "segments": [
+            {
+              "x1": 280.0,
+              "y1": 100.0,
+              "x2": 380.0,
+              "y2": 100.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "OUT",
           "alias": ""
         }
       ]

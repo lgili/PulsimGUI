@@ -57,6 +57,38 @@ def test_converter_falls_back_to_get_node_when_add_node_is_missing() -> None:
     assert converted.devices == [("R1", 1, 0, 2200.0)]
 
 
+def test_converter_ignores_scope_components_during_build() -> None:
+    """Scope/probe blocks are GUI instrumentation and must not reach backend."""
+
+    fake_module = SimpleNamespace(Circuit=_CircuitNoAddNode)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "scope1",
+                "type": "ELECTRICAL_SCOPE",
+                "name": "Scope1",
+                "parameters": {"channel_count": 2},
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 1000.0},
+                "pin_nodes": ["1", "0"],
+            },
+        ],
+        "node_map": {"r1": ["1", "0"]},
+        "node_aliases": {"1": "OUT", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert converted.nodes == {"OUT": 1}
+    assert converted.devices == [("R1", 1, 0, 1000.0)]
+
+
 def test_build_node_map_merges_split_wires_on_shared_endpoint() -> None:
     """Split wires touching at a point should be treated as one electrical net."""
 
