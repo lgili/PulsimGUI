@@ -212,11 +212,67 @@ exec "${HERE}/usr/bin/pulsimgui" "$@"
     appimagetool = BUILD_DIR / "appimagetool"
     if not appimagetool.exists():
         print("  Downloading appimagetool...")
-        subprocess.run([
-            "wget", "-q",
+
+        def _download_with_available_tool(url: str, destination: Path) -> None:
+            """Download a file using curl/wget, whichever is available."""
+            commands: list[list[str]] = []
+            if shutil.which("curl"):
+                commands.append([
+                    "curl",
+                    "-fL",
+                    "--retry", "5",
+                    "--retry-delay", "2",
+                    "--connect-timeout", "20",
+                    url,
+                    "-o",
+                    str(destination),
+                ])
+            if shutil.which("wget"):
+                commands.append([
+                    "wget",
+                    "-q",
+                    "--tries=5",
+                    "--timeout=20",
+                    "-O",
+                    str(destination),
+                    url,
+                ])
+
+            if not commands:
+                raise RuntimeError("Neither curl nor wget is available for downloading appimagetool.")
+
+            last_error: Exception | None = None
+            for command in commands:
+                try:
+                    subprocess.run(command, check=True)
+                    return
+                except Exception as exc:  # pragma: no cover - tool availability depends on host
+                    last_error = exc
+            raise RuntimeError(f"Failed to download appimagetool from {url}: {last_error}")
+
+        download_urls = [
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage",
+            # Legacy fallback URL
             "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage",
-            "-O", str(appimagetool),
-        ], check=True)
+        ]
+
+        download_error: Exception | None = None
+        for url in download_urls:
+            try:
+                _download_with_available_tool(url, appimagetool)
+                download_error = None
+                break
+            except Exception as exc:  # pragma: no cover - depends on remote availability
+                download_error = exc
+                if appimagetool.exists():
+                    appimagetool.unlink()
+                print(f"  Download from {url} failed: {exc}")
+
+        if download_error is not None:
+            raise RuntimeError(
+                "Unable to download appimagetool from all known sources."
+            ) from download_error
+
         appimagetool.chmod(0o755)
 
     # Create AppImage
