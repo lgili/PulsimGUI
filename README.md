@@ -227,7 +227,7 @@ PulsimGui requires:
 | pyqtgraph | >= 0.13.0 | Scientific graphics library |
 | numpy | >= 1.24.0 | Numerical computing |
 | qtawesome | >= 1.3.0 | Icon fonts for Qt |
-| pulsim | >= 0.1.11 | Power electronics simulation engine |
+| pulsim | >= 0.4.0 | Power electronics simulation engine |
 
 ## Development
 

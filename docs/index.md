@@ -21,6 +21,6 @@ Bem-vindo à documentação oficial do **PulsimGui**, interface gráfica para co
 
 Atualmente o GUI está configurado para usar o backend padrão:
 
-- `pulsim v0.3.3`
+- `pulsim v0.4.0`
 
 Isso garante alinhamento entre interface e runtime de simulação em novas instalações.

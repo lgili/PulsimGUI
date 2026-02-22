@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pulsimgui.models.component import ComponentType
@@ -287,6 +288,41 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.SWITCH and hasattr(circuit, "add_switch"):
+            n1, n2 = self._require_nodes(name, nodes, 2)
+            circuit.add_switch(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                bool(params.get("closed", False)),
+                self._as_float(params.get("g_on"), default=1e6),
+                self._as_float(params.get("g_off"), default=1e-12),
+            )
+            return
+
+        if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
+            n1, n2 = self._require_nodes(name, nodes, 2)
+            circuit.add_snubber_rc(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                self._as_float(params.get("resistance"), default=100.0),
+                self._as_float(params.get("capacitance"), default=100e-9),
+                self._as_float(params.get("initial_voltage"), default=0.0),
+            )
+            return
+
+        if hasattr(circuit, "add_virtual_component"):
+            self._add_virtual_component(
+                circuit,
+                comp_type,
+                name,
+                nodes,
+                params,
+                node_cache,
+            )
+            return
+
         raise CircuitConversionError(
             f"Backend converter does not yet support component '{comp_type.name}'"
         )
@@ -397,6 +433,50 @@ class CircuitConverter:
             if not hasattr(target, attr):
                 continue
             setattr(target, attr, value)
+
+    def _add_virtual_component(
+        self,
+        circuit: Any,
+        comp_type: ComponentType,
+        name: str,
+        nodes: list[str],
+        params: dict[str, Any],
+        node_cache: dict[str, int],
+    ) -> None:
+        node_indices = [self._node_index(circuit, node_name, node_cache) for node_name in nodes]
+        numeric_params: dict[str, float] = {}
+        metadata: dict[str, str] = {"component_type": comp_type.name}
+
+        for key, value in params.items():
+            param_name = str(key)
+            if isinstance(value, bool):
+                numeric_params[param_name] = 1.0 if value else 0.0
+                continue
+            if isinstance(value, (int, float)):
+                numeric_params[param_name] = float(value)
+                continue
+
+            if isinstance(value, str):
+                metadata[param_name] = value
+                continue
+
+            try:
+                metadata[param_name] = json.dumps(value)
+            except TypeError:
+                metadata[param_name] = str(value)
+
+        try:
+            circuit.add_virtual_component(
+                comp_type.name,
+                name,
+                node_indices,
+                numeric_params,
+                metadata,
+            )
+        except Exception as exc:
+            raise CircuitConversionError(
+                f"Backend converter failed to add virtual component '{comp_type.name}': {exc}"
+            ) from exc
 
     def _as_float(self, value: Any, *, default: float) -> float:
         try:

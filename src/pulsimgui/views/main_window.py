@@ -1394,8 +1394,18 @@ class MainWindow(QMainWindow):
 
         start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
         end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
-        start_pin = self._schematic_scene.find_nearest_pin(start_pos, max_distance=3.0)
-        end_pin = self._schematic_scene.find_nearest_pin(end_pos, max_distance=3.0)
+        start_pin = self._schematic_scene.find_nearest_pin(start_pos, max_distance=12.0)
+        end_pin = self._schematic_scene.find_nearest_pin(end_pos, max_distance=12.0)
+
+        # Force endpoint coordinates to land exactly on detected pin centers.
+        if start_pin is not None:
+            pin_pos = start_pin[0]
+            wire_segments[0].x1 = pin_pos.x()
+            wire_segments[0].y1 = pin_pos.y()
+        if end_pin is not None:
+            pin_pos = end_pin[0]
+            wire_segments[-1].x2 = pin_pos.x()
+            wire_segments[-1].y2 = pin_pos.y()
 
         start_ref = (start_pin[1].component, start_pin[2]) if start_pin is not None else None
         end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
@@ -1942,10 +1952,14 @@ class MainWindow(QMainWindow):
             if component.type == ComponentType.VOLTAGE_PROBE:
                 plus = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
                 minus = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
-                if plus is None:
+                if plus is None and minus is None:
                     continue
+                if plus is None and minus is not None:
+                    plus = [0.0] * len(minus)
                 if minus is None:
                     minus = [0.0] * len(plus)
+                if plus is None:
+                    continue
                 samples = min(len(plus), len(minus), len(enriched.time))
                 probe_name = component.name or "VoltageProbe"
                 enriched.signals[format_signal_key("VP", probe_name)] = [
@@ -1990,11 +2004,20 @@ class MainWindow(QMainWindow):
             alias = alias_map.get(node_id)
             if alias:
                 candidates.append(format_signal_key("V", alias))
+                candidates.append(f"V({alias})")
             candidates.append(format_signal_key("V", f"N{node_id}"))
+            candidates.append(f"V(N{node_id})")
+            candidates.append(f"V({node_id})")
 
         for key in candidates:
             series = result.signals.get(key)
             if series is not None:
+                return list(series)
+
+        # Compatibility fallback: some backends vary signal key case.
+        lowered_candidates = {key.lower() for key in candidates}
+        for key, series in result.signals.items():
+            if key.lower() in lowered_candidates and series is not None:
                 return list(series)
         return None
 
