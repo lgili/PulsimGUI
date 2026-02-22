@@ -1,134 +1,246 @@
 {
   "version": "1.0",
   "name": "RLC Resonant Circuit",
-  "description": "Series RLC circuit demonstrating resonance and damping",
-  "created": "2024-01-01T00:00:00Z",
-  "modified": "2024-01-01T00:00:00Z",
+  "created": "2026-02-21T19:20:37.028490",
+  "modified": "2026-02-21T19:20:37.028649",
+  "active_circuit": "main",
+  "simulation_settings": {
+    "tstop": 0.005,
+    "dt": 1e-06,
+    "tstart": 0.0,
+    "abstol": 1e-12,
+    "reltol": 0.001,
+    "max_iterations": 120
+  },
   "circuits": {
     "main": {
-      "id": "main",
-      "name": "RLC Circuit",
-      "components": {
-        "V1": {
-          "id": "V1",
-          "type": "voltage_source",
+      "name": "main",
+      "components": [
+        {
+          "id": "20000000-0000-0000-0000-000000000001",
+          "type": "VOLTAGE_SOURCE",
           "name": "V1",
-          "position": [100, 250],
+          "x": 100.0,
+          "y": 250.0,
           "rotation": 0,
-          "mirrored": false,
+          "mirrored_h": false,
+          "mirrored_v": false,
           "parameters": {
             "waveform": {
               "type": "pulse",
-              "v1": 0,
-              "v2": 10,
+              "v1": 0.0,
+              "v2": 10.0,
               "delay": 0.0001,
-              "rise_time": 1e-9,
-              "fall_time": 1e-9,
+              "rise_time": 1e-09,
+              "fall_time": 1e-09,
               "pulse_width": 0.01,
               "period": 0.02
             }
-          }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0,
+              "y": -25
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0,
+              "y": 25
+            }
+          ]
         },
-        "R1": {
-          "id": "R1",
-          "type": "resistor",
+        {
+          "id": "20000000-0000-0000-0000-000000000002",
+          "type": "RESISTOR",
           "name": "R1",
-          "position": [250, 100],
+          "x": 250.0,
+          "y": 225.0,
           "rotation": 0,
-          "mirrored": false,
+          "mirrored_h": false,
+          "mirrored_v": false,
           "parameters": {
-            "resistance": 10
-          }
+            "resistance": 10.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 30,
+              "y": 0
+            }
+          ]
         },
-        "L1": {
-          "id": "L1",
-          "type": "inductor",
+        {
+          "id": "20000000-0000-0000-0000-000000000003",
+          "type": "INDUCTOR",
           "name": "L1",
-          "position": [400, 100],
+          "x": 400.0,
+          "y": 225.0,
           "rotation": 0,
-          "mirrored": false,
+          "mirrored_h": false,
+          "mirrored_v": false,
           "parameters": {
-            "inductance": 1e-3,
-            "initial_current": 0
-          }
+            "inductance": 0.001,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 30,
+              "y": 0
+            }
+          ]
         },
-        "C1": {
-          "id": "C1",
-          "type": "capacitor",
+        {
+          "id": "20000000-0000-0000-0000-000000000004",
+          "type": "CAPACITOR",
           "name": "C1",
-          "position": [550, 250],
+          "x": 550.0,
+          "y": 250.0,
           "rotation": 90,
-          "mirrored": false,
+          "mirrored_h": false,
+          "mirrored_v": false,
           "parameters": {
-            "capacitance": 10e-6,
-            "initial_voltage": 0
-          }
+            "capacitance": 1e-05,
+            "initial_voltage": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": -20,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 20,
+              "y": 0
+            }
+          ]
         },
-        "GND1": {
-          "id": "GND1",
-          "type": "ground",
-          "name": "GND",
-          "position": [325, 450],
+        {
+          "id": "20000000-0000-0000-0000-000000000005",
+          "type": "GROUND",
+          "name": "GND1",
+          "x": 100.0,
+          "y": 285.0,
           "rotation": 0,
-          "mirrored": false,
-          "parameters": {}
-        }
-      },
-      "wires": {
-        "W1": {
-          "id": "W1",
-          "points": [[100, 150], [100, 100], [200, 100]],
-          "connections": [
-            {"component_id": "V1", "pin_index": 0},
-            {"component_id": "R1", "pin_index": 0}
-          ]
-        },
-        "W2": {
-          "id": "W2",
-          "points": [[300, 100], [350, 100]],
-          "connections": [
-            {"component_id": "R1", "pin_index": 1},
-            {"component_id": "L1", "pin_index": 0}
-          ]
-        },
-        "W3": {
-          "id": "W3",
-          "points": [[450, 100], [550, 100], [550, 200]],
-          "connections": [
-            {"component_id": "L1", "pin_index": 1},
-            {"component_id": "C1", "pin_index": 0}
-          ]
-        },
-        "W4": {
-          "id": "W4",
-          "points": [[100, 350], [100, 450], [325, 450]],
-          "connections": [
-            {"component_id": "V1", "pin_index": 1},
-            {"component_id": "GND1", "pin_index": 0}
-          ]
-        },
-        "W5": {
-          "id": "W5",
-          "points": [[550, 300], [550, 450], [325, 450]],
-          "connections": [
-            {"component_id": "C1", "pin_index": 1},
-            {"component_id": "GND1", "pin_index": 0}
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
           ]
         }
-      }
+      ],
+      "wires": [
+        {
+          "id": "20000000-0000-0000-0000-000000000101",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 225,
+              "x2": 220,
+              "y2": 225
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "in",
+          "alias": "in"
+        },
+        {
+          "id": "20000000-0000-0000-0000-000000000102",
+          "segments": [
+            {
+              "x1": 280,
+              "y1": 225,
+              "x2": 370,
+              "y2": 225
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "mid1",
+          "alias": ""
+        },
+        {
+          "id": "20000000-0000-0000-0000-000000000103",
+          "segments": [
+            {
+              "x1": 430,
+              "y1": 225,
+              "x2": 550,
+              "y2": 225
+            },
+            {
+              "x1": 550,
+              "y1": 225,
+              "x2": 550,
+              "y2": 230
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "out",
+          "alias": "out"
+        },
+        {
+          "id": "20000000-0000-0000-0000-000000000104",
+          "segments": [
+            {
+              "x1": 100,
+              "y1": 275,
+              "x2": 100,
+              "y2": 400
+            },
+            {
+              "x1": 100,
+              "y1": 400,
+              "x2": 550,
+              "y2": 400
+            },
+            {
+              "x1": 550,
+              "y1": 270,
+              "x2": 550,
+              "y2": 400
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "gnd",
+          "alias": ""
+        }
+      ]
     }
   },
-  "active_circuit": "main",
-  "simulation_settings": {
-    "transient": {
-      "stop_time": 0.005,
-      "time_step": 1e-6,
-      "start_time": 0
-    },
-    "solver": {
-      "type": "rk4",
-      "relative_tolerance": 1e-4,
-      "absolute_tolerance": 1e-6
-    }
-  }
+  "subcircuits": [],
+  "scope_windows": {}
 }

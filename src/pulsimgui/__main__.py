@@ -1,7 +1,36 @@
 """Entry point for PulsimGui application."""
 
 import os
+import stat
 import sys
+
+
+def _clear_hidden_flag(path: str) -> None:
+    """Remove macOS hidden flag if present.
+
+    Some PySide6 wheels end up with Qt plugin dylibs flagged as hidden, and Qt
+    ignores hidden plugin files during discovery.
+    """
+    if not hasattr(os, "chflags") or not hasattr(stat, "UF_HIDDEN"):
+        return
+    try:
+        current = os.stat(path, follow_symlinks=False).st_flags
+    except OSError:
+        return
+    if current & stat.UF_HIDDEN:
+        try:
+            os.chflags(path, current & ~stat.UF_HIDDEN, follow_symlinks=False)
+        except OSError:
+            pass
+
+
+def _ensure_qt_plugins_visible(plugin_path: str) -> None:
+    """Ensure Qt plugin files are visible to Qt on macOS."""
+    for root, dirs, files in os.walk(plugin_path):
+        for name in dirs:
+            _clear_hidden_flag(os.path.join(root, name))
+        for name in files:
+            _clear_hidden_flag(os.path.join(root, name))
 
 
 def _setup_qt_plugin_path() -> None:
@@ -19,6 +48,7 @@ def _setup_qt_plugin_path() -> None:
                 plugin_path = os.path.join(pyside_dir, "Qt", "plugins")
                 platforms_path = os.path.join(plugin_path, "platforms")
                 if os.path.isdir(platforms_path):
+                    _ensure_qt_plugins_visible(plugin_path)
                     # Set the specific platforms plugin path
                     os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = platforms_path
                     # Also set QT_PLUGIN_PATH for other Qt plugins
@@ -36,9 +66,9 @@ def _setup_qt_plugin_path() -> None:
 # MUST be called before any PySide6/Qt imports
 _setup_qt_plugin_path()
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from pulsimgui.views.main_window import MainWindow
+from pulsimgui.views.main_window import MainWindow  # noqa: E402
 
 
 def main() -> int:

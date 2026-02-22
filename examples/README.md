@@ -9,6 +9,7 @@ This directory contains example project files demonstrating various power electr
 | File | Description |
 |------|-------------|
 | `rc_circuit.pulsim` | Simple RC low-pass filter |
+| `07_rc_backend_smoke.pulsim` | RC transient project validated against the backend adapter |
 | `rl_circuit.pulsim` | Simple RL circuit with step response |
 | `rlc_circuit.pulsim` | RLC resonant circuit |
 
