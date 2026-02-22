@@ -1,0 +1,33 @@
+<svg width="1200" height="640" viewBox="0 0 1200 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="640" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#1E293B"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="640" rx="18" fill="url(#bg)"/>
+  <text x="36" y="52" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700">RC Low-pass Step Response</text>
+  <text x="36" y="82" fill="#94A3B8" font-family="monospace" font-size="14">R = 1k, C = 1u, tau = 1ms</text>
+
+  <rect x="36" y="108" width="1128" height="494" rx="12" fill="#111827" stroke="#334155"/>
+  <line x1="102" y1="160" x2="102" y2="562" stroke="#475569" stroke-width="2"/>
+  <line x1="102" y1="562" x2="1110" y2="562" stroke="#475569" stroke-width="2"/>
+
+  <text x="70" y="170" fill="#94A3B8" font-family="monospace" font-size="13">V</text>
+  <text x="1100" y="580" fill="#94A3B8" font-family="monospace" font-size="13">t</text>
+
+  <line x1="102" y1="220" x2="1110" y2="220" stroke="#1F2937" stroke-width="1"/>
+  <line x1="102" y1="302" x2="1110" y2="302" stroke="#1F2937" stroke-width="1"/>
+  <line x1="102" y1="384" x2="1110" y2="384" stroke="#1F2937" stroke-width="1"/>
+  <line x1="102" y1="466" x2="1110" y2="466" stroke="#1F2937" stroke-width="1"/>
+
+  <polyline points="102,540 132,500 162,460 192,420 222,385 252,356 282,332 312,313 342,298 372,286 402,276 432,268 462,262 492,257 522,253 552,250 582,247 612,245 642,243 672,242 702,241 732,240 762,239 792,238 822,237 852,236 882,236 912,235 942,235 972,235 1002,234 1032,234 1062,234 1092,234" stroke="#22D3EE" stroke-width="4" fill="none"/>
+  <polyline points="102,220 1092,220" stroke="#F59E0B" stroke-width="3" stroke-dasharray="10 8" fill="none"/>
+
+  <text x="920" y="212" fill="#FCD34D" font-family="monospace" font-size="13">V(vin)</text>
+  <text x="920" y="250" fill="#67E8F9" font-family="monospace" font-size="13">V(vout)</text>
+
+  <line x1="302" y1="562" x2="302" y2="280" stroke="#0D9488" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="312" y="296" fill="#5EEAD4" font-family="monospace" font-size="13">t = tau = 1ms</text>
+  <text x="312" y="316" fill="#5EEAD4" font-family="monospace" font-size="13">Vout ~ 63%</text>
+</svg>

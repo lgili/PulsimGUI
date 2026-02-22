@@ -1,0 +1,32 @@
+:root {
+  --pulse-accent: #0d9488;
+  --pulse-accent-2: #f59e0b;
+}
+
+.md-header {
+  background: linear-gradient(110deg, #0f172a 0%, #0d9488 65%, #14b8a6 100%);
+}
+
+.md-tabs {
+  background: linear-gradient(90deg, #0b1220 0%, #1f2937 100%);
+}
+
+.md-main__inner {
+  margin-top: 1rem;
+}
+
+.md-content__inner h1 {
+  border-bottom: 3px solid rgba(13, 148, 136, 0.25);
+  padding-bottom: 0.35rem;
+}
+
+.md-typeset img {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.22);
+  background: radial-gradient(circle at top, #1f2937 0%, #0f172a 100%);
+}
+
+.md-typeset code {
+  border-radius: 6px;
+}

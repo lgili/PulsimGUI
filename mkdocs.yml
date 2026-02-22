@@ -1,0 +1,68 @@
+site_name: PulsimGui
+site_description: GUI para simulação de eletrônica de potência com Pulsim
+site_url: https://lgili.github.io/PulsimGui/
+repo_url: https://github.com/lgili/PulsimGui
+repo_name: lgili/PulsimGui
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: pt-BR
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Alternar para tema escuro
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Alternar para tema claro
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+nav:
+  - Início: index.md
+  - Instalação e Execução: instalacao.md
+  - GUI:
+      - Visão Geral: gui/visao-geral.md
+      - Configuração de Simulação: gui/configuracao-simulacao.md
+  - Tutoriais:
+      - Circuito RC de Teste: tutoriais/circuito-rc.md
+  - Referência:
+      - Manual do Usuário: user-manual.md
+      - Backend Adapter: backend-adapter.md
+      - Guia do Desenvolvedor: developer-guide.md
+      - Roteiros de Vídeo: tutorials.md

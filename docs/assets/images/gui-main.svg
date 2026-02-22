@@ -1,0 +1,64 @@
+<svg width="1400" height="820" viewBox="0 0 1400 820" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1400" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1400" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D9488"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="820" rx="18" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1400" height="58" rx="18" fill="url(#hdr)"/>
+  <text x="24" y="36" fill="#F8FAFC" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700">PulsimGui</text>
+  <text x="170" y="36" fill="#CCFBF1" font-family="Helvetica, Arial, sans-serif" font-size="16">Schematic Editor + Simulation</text>
+
+  <rect x="20" y="80" width="250" height="680" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="36" y="110" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700">Library Panel</text>
+  <rect x="36" y="128" width="218" height="32" rx="8" fill="#1F2937"/>
+  <text x="48" y="149" fill="#94A3B8" font-family="monospace" font-size="14">Voltage Source</text>
+  <rect x="36" y="170" width="218" height="32" rx="8" fill="#1F2937"/>
+  <text x="48" y="191" fill="#94A3B8" font-family="monospace" font-size="14">Resistor</text>
+  <rect x="36" y="212" width="218" height="32" rx="8" fill="#1F2937"/>
+  <text x="48" y="233" fill="#94A3B8" font-family="monospace" font-size="14">Capacitor</text>
+  <rect x="36" y="254" width="218" height="32" rx="8" fill="#1F2937"/>
+  <text x="48" y="275" fill="#94A3B8" font-family="monospace" font-size="14">MOSFET</text>
+
+  <rect x="286" y="80" width="820" height="490" rx="12" fill="#0B1220" stroke="#334155"/>
+  <text x="306" y="110" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700">Schematic Editor</text>
+
+  <line x1="460" y1="280" x2="650" y2="280" stroke="#38BDF8" stroke-width="4"/>
+  <line x1="650" y1="280" x2="820" y2="280" stroke="#38BDF8" stroke-width="4"/>
+  <line x1="820" y1="280" x2="820" y2="430" stroke="#38BDF8" stroke-width="4"/>
+  <line x1="450" y1="430" x2="820" y2="430" stroke="#38BDF8" stroke-width="4"/>
+
+  <rect x="400" y="245" width="60" height="70" rx="8" fill="#1E293B" stroke="#F59E0B"/>
+  <text x="410" y="285" fill="#FCD34D" font-family="monospace" font-size="14">Vin</text>
+
+  <rect x="650" y="250" width="100" height="60" rx="8" fill="#1E293B" stroke="#22D3EE"/>
+  <text x="675" y="286" fill="#BAE6FD" font-family="monospace" font-size="14">R1</text>
+
+  <rect x="780" y="375" width="80" height="90" rx="8" fill="#1E293B" stroke="#34D399"/>
+  <text x="804" y="425" fill="#A7F3D0" font-family="monospace" font-size="14">C1</text>
+
+  <rect x="440" y="390" width="80" height="40" rx="8" fill="#1E293B" stroke="#94A3B8"/>
+  <text x="458" y="415" fill="#CBD5E1" font-family="monospace" font-size="14">GND</text>
+
+  <rect x="286" y="586" width="820" height="174" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="306" y="615" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700">Waveform Viewer</text>
+  <polyline points="330,720 380,710 430,690 480,650 530,620 580,605 630,598 680,596 730,595 780,595 830,595 880,595 930,595 980,595 1030,595" stroke="#22D3EE" stroke-width="4" fill="none"/>
+  <line x1="330" y1="730" x2="1030" y2="730" stroke="#475569" stroke-width="2"/>
+  <line x1="330" y1="620" x2="330" y2="730" stroke="#475569" stroke-width="2"/>
+  <text x="340" y="646" fill="#7DD3FC" font-family="monospace" font-size="13">V(vout)</text>
+
+  <rect x="1120" y="80" width="260" height="680" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="1138" y="110" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700">Properties</text>
+  <text x="1138" y="144" fill="#94A3B8" font-family="monospace" font-size="14">R1.value = 1k</text>
+  <text x="1138" y="172" fill="#94A3B8" font-family="monospace" font-size="14">C1.value = 1u</text>
+  <text x="1138" y="200" fill="#94A3B8" font-family="monospace" font-size="14">Solver = auto</text>
+  <text x="1138" y="228" fill="#94A3B8" font-family="monospace" font-size="14">t_stop = 10ms</text>
+  <rect x="1140" y="680" width="220" height="44" rx="10" fill="#0D9488"/>
+  <text x="1218" y="708" fill="#ECFEFF" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Run</text>
+</svg>
