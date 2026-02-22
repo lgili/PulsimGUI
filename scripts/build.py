@@ -111,17 +111,8 @@ def build_macos_dmg(app_path: Path) -> Path:
     version = get_version()
     dmg_path = DIST_DIR / f"PulsimGui-{version}-macos.dmg"
 
-    # Use dmgbuild if available, otherwise use hdiutil
-    try:
-        import dmgbuild
-        settings = PACKAGING_DIR / "macos" / "dmg_settings.json"
-        dmgbuild.build_dmg(
-            str(dmg_path),
-            "PulsimGui",
-            settings=str(settings) if settings.exists() else None,
-        )
-    except ImportError:
-        # Fallback to hdiutil
+    def _build_with_hdiutil() -> None:
+        """Fallback DMG creation using macOS native tooling."""
         subprocess.run([
             "hdiutil", "create",
             "-volname", "PulsimGui",
@@ -130,6 +121,20 @@ def build_macos_dmg(app_path: Path) -> Path:
             "-format", "UDZO",
             str(dmg_path),
         ], check=True)
+
+    # Use dmgbuild when correctly configured, otherwise fall back to hdiutil.
+    try:
+        import dmgbuild
+        settings_file = PACKAGING_DIR / "macos" / "dmg_settings.py"
+        if settings_file.exists():
+            # Third positional arg is the settings-file path expected by dmgbuild.
+            dmgbuild.build_dmg(str(dmg_path), "PulsimGui", str(settings_file))
+        else:
+            print("  dmgbuild settings file not found, using hdiutil fallback.")
+            _build_with_hdiutil()
+    except Exception as exc:
+        print(f"  dmgbuild failed ({exc!s}), using hdiutil fallback.")
+        _build_with_hdiutil()
 
     print(f"Created: {dmg_path}")
     return dmg_path
