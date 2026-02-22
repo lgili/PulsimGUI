@@ -68,6 +68,30 @@ class _FakeNewtonOptions:
         self.tolerances: Any = None
 
 
+def _simple_circuit_data() -> dict[str, Any]:
+    return {
+        "components": [
+            {
+                "id": "v1",
+                "type": "VOLTAGE_SOURCE",
+                "name": "V1",
+                "parameters": {"waveform": {"type": "dc", "value": 5.0}},
+                "pin_nodes": ["1", "0"],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 1000.0},
+                "pin_nodes": ["1", "0"],
+            },
+        ],
+        "node_map": {"v1": ["1", "0"], "r1": ["1", "0"]},
+        "node_aliases": {"1": "OUT", "0": "0"},
+        "wires": [],
+    }
+
+
 def test_transient_runs_without_linear_solver_stack() -> None:
     """Backend adapter should support APIs where LinearSolverStackConfig is absent."""
 
@@ -116,27 +140,7 @@ def test_transient_runs_without_linear_solver_stack() -> None:
         rel_tol=1e-5,
         abs_tol=1e-8,
     )
-    circuit_data = {
-        "components": [
-            {
-                "id": "v1",
-                "type": "VOLTAGE_SOURCE",
-                "name": "V1",
-                "parameters": {"waveform": {"type": "dc", "value": 5.0}},
-                "pin_nodes": ["1", "0"],
-            },
-            {
-                "id": "r1",
-                "type": "RESISTOR",
-                "name": "R1",
-                "parameters": {"resistance": 1000.0},
-                "pin_nodes": ["1", "0"],
-            },
-        ],
-        "node_map": {"v1": ["1", "0"], "r1": ["1", "0"]},
-        "node_aliases": {"1": "OUT", "0": "0"},
-        "wires": [],
-    }
+    circuit_data = _simple_circuit_data()
 
     result = backend.run_transient(
         circuit_data,
@@ -154,3 +158,114 @@ def test_transient_runs_without_linear_solver_stack() -> None:
     assert result.signals["V(OUT)"] == [0.0, 1.0]
     assert seen["arg_count"] == 5
     assert seen["dt"] == settings.t_step
+
+
+def test_transient_retries_convergence_failures_with_stronger_profile() -> None:
+    """Transient should retry with stronger options when Newton diverges."""
+    calls: list[dict[str, Any]] = []
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        newton_opts = args[0]
+        calls.append(
+            {
+                "dt": dt,
+                "max_iterations": newton_opts.max_iterations,
+                "enable_limiting": newton_opts.enable_limiting,
+                "max_voltage_step": newton_opts.max_voltage_step,
+            }
+        )
+        if len(calls) == 1:
+            return [], [], False, "Transient failed at t=0.000020: Newton iteration diverging"
+        return [t_start, t_stop], [[0.0], [1.5]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=1e-3,
+        t_step=1e-6,
+        max_step=5e-6,
+        rel_tol=1e-5,
+        abs_tol=1e-8,
+        max_newton_iterations=50,
+        enable_voltage_limiting=False,
+        max_voltage_step=5.0,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert len(result.time) == 2
+    assert result.signals["V(OUT)"] == [0.0, 1.5]
+    assert len(calls) == 2
+    assert calls[0]["max_iterations"] == 50
+    assert calls[1]["max_iterations"] >= 100
+    assert result.statistics["convergence_retry_profile"] == "gmin-seed"
+    assert result.statistics["convergence_retries"] == 1
+
+
+def test_transient_does_not_retry_non_convergence_errors() -> None:
+    """Transient retries should not run for non-convergence failures."""
+    calls = {"count": 0}
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        calls["count"] += 1
+        return [], [], False, "Unsupported transient API signature"
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert calls["count"] == 1
+    assert result.error_message == "Unsupported transient API signature"

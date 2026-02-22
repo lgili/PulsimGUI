@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QPen, QColor, QPainter, QBrush
+from PySide6.QtGui import QPen, QColor, QPainter, QBrush, QPainterPath
 from PySide6.QtWidgets import QGraphicsScene
 
 from pulsimgui.models.circuit import Circuit
@@ -24,12 +24,19 @@ class SchematicScene(QGraphicsScene):
     component_added = Signal(object)
     component_removed = Signal(object)
     wire_added = Signal(object)
+    component_moved = Signal(object, float, float, float, float)
     selection_changed_custom = Signal(int)
 
     # Grid settings - 20px is good for schematics
     GRID_SIZE = 20.0  # pixels
     GRID_DOT_SIZE = 3.0  # dot diameter in pixels
-    PIN_CAPTURE_DISTANCE = 18.0  # pixels
+    PIN_CAPTURE_DISTANCE = 22.0  # pixels
+    COMPONENT_COLLISION_PADDING = 2.0  # minimum spacing between component bodies
+    COMPONENT_COLLISION_SEARCH_RADIUS = 16  # in grid cells
+    WIRE_COMPONENT_CLEARANCE = 1.0  # shrink obstacle rect slightly to allow pin touches
+    WIRE_PIN_SIDE_THRESHOLD = 9.0  # consider a pin near a side if inside this distance
+    WIRE_PIN_SIDE_INSET = 8.0  # extra inset on sides that expose pins
+    WIRE_PIN_ENTRY_ALLOWANCE = 14.0  # allow short ingress near a valid pin endpoint
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +123,199 @@ class SchematicScene(QGraphicsScene):
         x = round(point.x() / self._grid_size) * self._grid_size
         y = round(point.y() / self._grid_size) * self._grid_size
         return QPointF(x, y)
+
+    def resolve_component_position(self, component_item, desired_pos: QPointF) -> QPointF:
+        """Resolve a collision-free component position near the desired grid point."""
+        snapped = self.snap_to_grid(desired_pos)
+        if not self._component_overlaps_at(component_item, snapped):
+            return snapped
+
+        step = self._grid_size
+        for radius in range(1, self.COMPONENT_COLLISION_SEARCH_RADIUS + 1):
+            candidates: list[QPointF] = []
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                    candidate = QPointF(snapped.x() + dx * step, snapped.y() + dy * step)
+                    if not self._component_overlaps_at(component_item, candidate):
+                        candidates.append(candidate)
+            if candidates:
+                return min(
+                    candidates,
+                    key=lambda p: (p.x() - snapped.x()) ** 2 + (p.y() - snapped.y()) ** 2,
+                )
+
+        return component_item.pos()
+
+    def is_wire_path_clear(self, segments: list) -> bool:
+        """Return False when any segment crosses through a component body."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        component_items = [item for item in self.items() if isinstance(item, ComponentItem)]
+        if not component_items:
+            return True
+
+        for segment in segments:
+            x1, y1, x2, y2 = self._segment_coords(segment)
+            for component_item in component_items:
+                if self._segment_crosses_component_body(x1, y1, x2, y2, component_item):
+                    return False
+        return True
+
+    def _segment_coords(self, segment) -> tuple[float, float, float, float]:
+        """Extract segment coordinates from either tuple or model segment object."""
+        if hasattr(segment, "x1"):
+            return (
+                float(segment.x1),
+                float(segment.y1),
+                float(segment.x2),
+                float(segment.y2),
+            )
+        return (
+            float(segment[0]),
+            float(segment[1]),
+            float(segment[2]),
+            float(segment[3]),
+        )
+
+    def _component_overlaps_at(self, component_item, pos: QPointF) -> bool:
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        candidate_rect = self._component_body_rect(component_item, pos).adjusted(
+            -self.COMPONENT_COLLISION_PADDING,
+            -self.COMPONENT_COLLISION_PADDING,
+            self.COMPONENT_COLLISION_PADDING,
+            self.COMPONENT_COLLISION_PADDING,
+        )
+
+        for item in self.items():
+            if not isinstance(item, ComponentItem) or item is component_item:
+                continue
+            other_rect = self._component_body_rect(item)
+            if candidate_rect.intersects(other_rect):
+                return True
+        return False
+
+    def _component_body_rect(self, component_item, pos: QPointF | None = None) -> QRectF:
+        """Return component symbol body bounds in scene coordinates (without labels)."""
+        mapped_rect = component_item.mapRectToScene(component_item.boundingRect())
+        rect = mapped_rect if isinstance(mapped_rect, QRectF) else mapped_rect.boundingRect()
+        if pos is None:
+            return rect
+        delta = pos - component_item.pos()
+        return rect.translated(delta.x(), delta.y())
+
+    def _segment_crosses_component_body(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        component_item,
+    ) -> bool:
+        """Check if a segment crosses the interior of a component bounding box."""
+        rect = self._wire_obstacle_rect(component_item)
+        if rect.isEmpty():
+            return False
+
+        horizontal = abs(y1 - y2) <= 0.1
+        vertical = abs(x1 - x2) <= 0.1
+
+        if horizontal:
+            y = y1
+            if y <= rect.top() or y >= rect.bottom():
+                return False
+            min_x, max_x = sorted((x1, x2))
+            overlap_start = max(min_x, rect.left())
+            overlap_end = min(max_x, rect.right())
+            overlap_len = overlap_end - overlap_start
+            if overlap_len <= 0.5:
+                return False
+            if overlap_len <= self.WIRE_PIN_ENTRY_ALLOWANCE and (
+                self._point_is_component_pin(component_item, x1, y1)
+                or self._point_is_component_pin(component_item, x2, y2)
+            ):
+                return False
+            return True
+
+        if vertical:
+            x = x1
+            if x <= rect.left() or x >= rect.right():
+                return False
+            min_y, max_y = sorted((y1, y2))
+            overlap_start = max(min_y, rect.top())
+            overlap_end = min(max_y, rect.bottom())
+            overlap_len = overlap_end - overlap_start
+            if overlap_len <= 0.5:
+                return False
+            if overlap_len <= self.WIRE_PIN_ENTRY_ALLOWANCE and (
+                self._point_is_component_pin(component_item, x1, y1)
+                or self._point_is_component_pin(component_item, x2, y2)
+            ):
+                return False
+            return True
+
+        # Fallback for any non-orthogonal segment (should be rare).
+        seg_path = QPainterPath(QPointF(x1, y1))
+        seg_path.lineTo(x2, y2)
+        rect_path = QPainterPath()
+        rect_path.addRect(rect)
+        return seg_path.intersects(rect_path)
+
+    def _wire_obstacle_rect(self, component_item) -> QRectF:
+        """Return the rectangle used as wire obstacle for a component body."""
+        rect = self._component_body_rect(component_item)
+        if rect.isEmpty():
+            return rect
+
+        left_inset = self.WIRE_COMPONENT_CLEARANCE
+        right_inset = self.WIRE_COMPONENT_CLEARANCE
+        top_inset = self.WIRE_COMPONENT_CLEARANCE
+        bottom_inset = self.WIRE_COMPONENT_CLEARANCE
+
+        pins = self._component_pin_scene_positions(component_item)
+        for pin in pins:
+            if pin.x() <= rect.left() + self.WIRE_PIN_SIDE_THRESHOLD:
+                left_inset = max(left_inset, self.WIRE_PIN_SIDE_INSET)
+            if pin.x() >= rect.right() - self.WIRE_PIN_SIDE_THRESHOLD:
+                right_inset = max(right_inset, self.WIRE_PIN_SIDE_INSET)
+            if pin.y() <= rect.top() + self.WIRE_PIN_SIDE_THRESHOLD:
+                top_inset = max(top_inset, self.WIRE_PIN_SIDE_INSET)
+            if pin.y() >= rect.bottom() - self.WIRE_PIN_SIDE_THRESHOLD:
+                bottom_inset = max(bottom_inset, self.WIRE_PIN_SIDE_INSET)
+
+        max_x_inset = max(0.0, rect.width() / 2.0 - 1.0)
+        max_y_inset = max(0.0, rect.height() / 2.0 - 1.0)
+        left_inset = min(left_inset, max_x_inset)
+        right_inset = min(right_inset, max_x_inset)
+        top_inset = min(top_inset, max_y_inset)
+        bottom_inset = min(bottom_inset, max_y_inset)
+
+        return rect.adjusted(left_inset, top_inset, -right_inset, -bottom_inset)
+
+    def _component_pin_scene_positions(self, component_item) -> list[QPointF]:
+        """Get all pin positions of a component in scene coordinates."""
+        component = getattr(component_item, "component", None)
+        if component is None:
+            return []
+        pins: list[QPointF] = []
+        for pin_index in range(len(component.pins)):
+            pins.append(component_item.get_pin_position(pin_index))
+        return pins
+
+    def _point_is_component_pin(
+        self,
+        component_item,
+        x: float,
+        y: float,
+        tolerance: float = 3.0,
+    ) -> bool:
+        """Return True when point matches a component pin center within tolerance."""
+        for pin in self._component_pin_scene_positions(component_item):
+            if abs(pin.x() - x) <= tolerance and abs(pin.y() - y) <= tolerance:
+                return True
+        return False
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         """Draw the grid background with major grid markers every 5 cells.
@@ -258,6 +458,11 @@ class SchematicScene(QGraphicsScene):
         item = create_component_item(component)
         item.set_dark_mode(self._dark_mode)
         self.addItem(item)
+        resolved = self.resolve_component_position(item, item.pos())
+        if resolved != item.pos():
+            item.setPos(resolved)
+            component.x = resolved.x()
+            component.y = resolved.y()
         self.component_added.emit(component)
 
     def remove_component(self, component) -> None:
@@ -285,7 +490,7 @@ class SchematicScene(QGraphicsScene):
     def find_nearest_pin(
         self,
         pos: QPointF,
-        max_distance: float = 15.0,
+        max_distance: float | None = None,
         pin_filter: Callable[[object, int], bool] | None = None,
     ) -> tuple[QPointF, object, int] | None:
         """
@@ -297,6 +502,9 @@ class SchematicScene(QGraphicsScene):
             Tuple of (pin_position, component_item, pin_index) or None if no pin nearby
         """
         from pulsimgui.views.schematic.items import ComponentItem
+
+        if max_distance is None:
+            max_distance = self.PIN_CAPTURE_DISTANCE
 
         nearest_pin = None
         nearest_distance = max_distance

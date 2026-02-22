@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pulsimgui.models.wire import Wire
+from pulsimgui.models.wire import Wire, WireSegment
 
 
 class WireItem(QGraphicsPathItem):
@@ -51,6 +51,7 @@ class WireItem(QGraphicsPathItem):
         self._dragging_segment: int | None = None  # Index of segment being dragged
         self._drag_start_pos: QPointF | None = None
         self._drag_orientation: str | None = None  # 'horizontal' or 'vertical'
+        self._drag_snapshot: list[tuple[float, float, float, float]] | None = None
 
         # Enable selection and hover events (NOT ItemIsMovable - we handle movement ourselves)
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable)
@@ -292,6 +293,10 @@ class WireItem(QGraphicsPathItem):
             # Find which segment was clicked
             seg_idx = self._find_segment_at(pos)
             if seg_idx is not None:
+                self._drag_snapshot = [
+                    (seg.x1, seg.y1, seg.x2, seg.y2)
+                    for seg in self._wire.segments
+                ]
                 self._dragging_segment = seg_idx
                 self._drag_start_pos = pos
                 seg = self._wire.segments[seg_idx]
@@ -329,8 +334,25 @@ class WireItem(QGraphicsPathItem):
                 self._snap_all_to_grid()
                 # Clean up any zero-length segments
                 self._cleanup_segments()
+                scene = self.scene()
+                if (
+                    scene is not None
+                    and hasattr(scene, "is_wire_path_clear")
+                    and not scene.is_wire_path_clear(self._wire.segments)
+                ):
+                    self._restore_drag_snapshot()
                 self._rebuild_path()
+                self._drag_snapshot = None
         super().mouseReleaseEvent(event)
+
+    def _restore_drag_snapshot(self) -> None:
+        """Restore wire geometry saved before drag operation."""
+        if self._drag_snapshot is None:
+            return
+        self._wire.segments = [
+            WireSegment(x1=x1, y1=y1, x2=x2, y2=y2)
+            for x1, y1, x2, y2 in self._drag_snapshot
+        ]
 
     def _find_segment_at(self, pos: QPointF) -> int | None:
         """Find which segment index is at the given position."""

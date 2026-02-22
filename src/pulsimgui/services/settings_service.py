@@ -172,7 +172,7 @@ class SettingsService:
         """Get saved solver settings."""
         return {
             "max_newton_iterations": int(self._settings.value("solver/max_newton_iterations", 50)),
-            "enable_voltage_limiting": self._settings.value("solver/enable_voltage_limiting", True, type=bool),
+            "enable_voltage_limiting": self._settings.value("solver/enable_voltage_limiting", False, type=bool),
             "max_voltage_step": float(self._settings.value("solver/max_voltage_step", 5.0)),
             "dc_strategy": self._settings.value("solver/dc_strategy", "auto"),
             "gmin_initial": float(self._settings.value("solver/gmin_initial", 1e-3)),

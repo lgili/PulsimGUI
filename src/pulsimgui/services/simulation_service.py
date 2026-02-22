@@ -68,7 +68,7 @@ class SimulationSettings:
 
     # Newton solver settings
     max_newton_iterations: int = 50
-    enable_voltage_limiting: bool = True
+    enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
 
     # DC analysis settings
@@ -497,7 +497,7 @@ class SimulationService(QObject):
             # Load persisted solver settings
             solver_settings = settings_service.get_solver_settings()
             self._settings.max_newton_iterations = solver_settings.get("max_newton_iterations", self._settings.max_newton_iterations)
-            self._settings.enable_voltage_limiting = solver_settings.get("enable_voltage_limiting", self._settings.enable_voltage_limiting)
+            self._settings.enable_voltage_limiting = False
             self._settings.max_voltage_step = solver_settings.get("max_voltage_step", self._settings.max_voltage_step)
             self._settings.dc_strategy = solver_settings.get("dc_strategy", self._settings.dc_strategy)
             self._settings.gmin_initial = solver_settings.get("gmin_initial", self._settings.gmin_initial)

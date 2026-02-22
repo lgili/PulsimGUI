@@ -140,6 +140,7 @@ class ComponentItem(QGraphicsItem):
         self._dc_current: float | None = None
         self._dc_power: float | None = None
         self._hovered = False
+        self._drag_start_pos: QPointF | None = None
 
         # Enable item features
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
@@ -412,6 +413,35 @@ class ComponentItem(QGraphicsItem):
         self.update()
         super().hoverLeaveEvent(event)
 
+    def mousePressEvent(self, event) -> None:
+        """Track pre-drag position for undoable move commands."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = QPointF(self.pos())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        """Emit movement information after a drag completes."""
+        start_pos = self._drag_start_pos
+        self._drag_start_pos = None
+        super().mouseReleaseEvent(event)
+
+        if event.button() != Qt.MouseButton.LeftButton or start_pos is None:
+            return
+
+        end_pos = self.pos()
+        if abs(end_pos.x() - start_pos.x()) < 0.01 and abs(end_pos.y() - start_pos.y()) < 0.01:
+            return
+
+        scene = self.scene()
+        if scene is not None and hasattr(scene, "component_moved"):
+            scene.component_moved.emit(
+                self._component,
+                start_pos.x(),
+                start_pos.y(),
+                end_pos.x(),
+                end_pos.y(),
+            )
+
     def _update_labels(self) -> None:
         """Update label positions and content."""
         from pulsimgui.utils.si_prefix import format_component_value
@@ -458,6 +488,8 @@ class ComponentItem(QGraphicsItem):
             if scene is not None:
                 new_pos = value  # QPointF
                 snapped_pos = scene.snap_to_grid(new_pos)
+                if hasattr(scene, "resolve_component_position"):
+                    return scene.resolve_component_position(self, snapped_pos)
                 return snapped_pos
         elif change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             # Update component model position
@@ -482,12 +514,12 @@ class ResistorItem(ComponentItem):
     ]
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-35, -12, 70, 24)
+        return QRectF(-42, -12, 84, 24)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         painter.setPen(self._lead_pen(2.0))
-        painter.drawLine(QPointF(-35, 0), QPointF(-20, 0))
-        painter.drawLine(QPointF(20, 0), QPointF(35, 0))
+        painter.drawLine(QPointF(-40, 0), QPointF(-20, 0))
+        painter.drawLine(QPointF(20, 0), QPointF(40, 0))
 
         body_rect = QRectF(-20, -9, 40, 18)
         body_top = QColor(222, 196, 158) if not self._dark_mode else QColor(146, 120, 88)
@@ -544,12 +576,12 @@ class InductorItem(ComponentItem):
     """Graphics item for inductor with copper coil emphasis."""
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-35, -14, 70, 28)
+        return QRectF(-42, -14, 84, 28)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         painter.setPen(self._lead_pen(2.0))
-        painter.drawLine(QPointF(-35, 0), QPointF(-22, 0))
-        painter.drawLine(QPointF(22, 0), QPointF(35, 0))
+        painter.drawLine(QPointF(-40, 0), QPointF(-22, 0))
+        painter.drawLine(QPointF(22, 0), QPointF(40, 0))
 
         coil = QColor(194, 128, 72) if not self._dark_mode else QColor(233, 175, 116)
         highlight = coil.lighter(124)
@@ -624,11 +656,11 @@ class GroundItem(ComponentItem):
     """Graphics item for ground symbol."""
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-15, -15, 30, 25)
+        return QRectF(-15, -22, 30, 32)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         painter.setPen(self._lead_pen(2.0))
-        painter.drawLine(QPointF(0, -15), QPointF(0, 0))
+        painter.drawLine(QPointF(0, -20), QPointF(0, 0))
         painter.setPen(self._symbol_pen(2.4, self._muted_color()))
         painter.drawLine(QPointF(-12, 0), QPointF(12, 0))
         painter.drawLine(QPointF(-8, 5), QPointF(8, 5))
@@ -701,6 +733,8 @@ class SwitchItem(ComponentItem):
     """Graphics item for ideal switch."""
 
     def boundingRect(self) -> QRectF:
+        if len(self._component.pins) >= 3:
+            return QRectF(-30, -45, 60, 75)
         return QRectF(-28, -15, 56, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -716,6 +750,12 @@ class SwitchItem(ComponentItem):
 
         painter.setPen(self._symbol_pen(2.6, self._muted_color()))
         painter.drawLine(QPointF(-10, 0), QPointF(8, -12))
+
+        if len(self._component.pins) >= 3:
+            painter.setPen(self._lead_pen(2.0))
+            painter.drawLine(QPointF(0, -32), QPointF(0, -16))
+            painter.setPen(self._symbol_pen(1.6, self._accent_blue()))
+            painter.drawLine(QPointF(-4, -16), QPointF(4, -16))
 
 
 class IGBTItem(ComponentItem):
@@ -750,14 +790,14 @@ class TransformerItem(ComponentItem):
     """Graphics item for transformer with compact modern silhouette."""
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-38, -28, 76, 56)
+        return QRectF(-42, -28, 84, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         painter.setPen(self._lead_pen(2.0))
-        painter.drawLine(QPointF(-38, -18), QPointF(-20, -18))
-        painter.drawLine(QPointF(-38, 18), QPointF(-20, 18))
-        painter.drawLine(QPointF(20, -18), QPointF(38, -18))
-        painter.drawLine(QPointF(20, 18), QPointF(38, 18))
+        painter.drawLine(QPointF(-40, -20), QPointF(-20, -20))
+        painter.drawLine(QPointF(-40, 20), QPointF(-20, 20))
+        painter.drawLine(QPointF(20, -20), QPointF(40, -20))
+        painter.drawLine(QPointF(20, 20), QPointF(40, 20))
 
         primary = QColor(194, 128, 72) if not self._dark_mode else QColor(232, 176, 116)
         secondary = QColor(176, 110, 62) if not self._dark_mode else QColor(216, 160, 104)

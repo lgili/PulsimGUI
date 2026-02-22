@@ -242,11 +242,14 @@ class CircuitConverter:
 
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
-            circuit.add_diode(
-                name,
-                self._node_index(circuit, n_anode, node_cache),
-                self._node_index(circuit, n_cathode, node_cache),
-            )
+            anode = self._node_index(circuit, n_anode, node_cache)
+            cathode = self._node_index(circuit, n_cathode, node_cache)
+            g_on, g_off = self._switch_conductances(params)
+            try:
+                circuit.add_diode(name, anode, cathode, g_on, g_off)
+            except TypeError:
+                # Backward compatibility with older backends that accept only 2 terminals.
+                circuit.add_diode(name, anode, cathode)
             return
 
         if comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
@@ -288,17 +291,36 @@ class CircuitConverter:
             )
             return
 
-        if comp_type == ComponentType.SWITCH and hasattr(circuit, "add_switch"):
-            n1, n2 = self._require_nodes(name, nodes, 2)
-            circuit.add_switch(
-                name,
-                self._node_index(circuit, n1, node_cache),
-                self._node_index(circuit, n2, node_cache),
-                bool(params.get("closed", False)),
-                self._as_float(params.get("g_on"), default=1e6),
-                self._as_float(params.get("g_off"), default=1e-12),
-            )
-            return
+        if comp_type == ComponentType.SWITCH:
+            g_on, g_off = self._switch_conductances(params)
+            if len(nodes) >= 3:
+                if not hasattr(circuit, "add_vcswitch"):
+                    raise CircuitConversionError(
+                        f"Component '{name}' uses a controlled switch but backend lacks 'add_vcswitch'"
+                    )
+                ctrl, t1, t2 = self._require_nodes(name, nodes, 3)
+                circuit.add_vcswitch(
+                    name,
+                    self._node_index(circuit, ctrl, node_cache),
+                    self._node_index(circuit, t1, node_cache),
+                    self._node_index(circuit, t2, node_cache),
+                    self._as_float(params.get("v_threshold"), default=2.5),
+                    g_on,
+                    g_off,
+                )
+                return
+
+            if hasattr(circuit, "add_switch"):
+                n1, n2 = self._require_nodes(name, nodes, 2)
+                circuit.add_switch(
+                    name,
+                    self._node_index(circuit, n1, node_cache),
+                    self._node_index(circuit, n2, node_cache),
+                    self._switch_closed(params),
+                    g_on,
+                    g_off,
+                )
+                return
 
         if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
             n1, n2 = self._require_nodes(name, nodes, 2)
@@ -483,6 +505,28 @@ class CircuitConverter:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    def _switch_closed(self, params: dict[str, Any]) -> bool:
+        if "closed" in params:
+            return bool(params.get("closed"))
+        return bool(params.get("initial_state", False))
+
+    def _switch_conductances(self, params: dict[str, Any]) -> tuple[float, float]:
+        g_on_value = params.get("g_on")
+        if g_on_value is None:
+            ron = self._as_float(params.get("ron"), default=1e-3)
+            g_on = 1.0 / max(abs(ron), 1e-15)
+        else:
+            g_on = self._as_float(g_on_value, default=1e3)
+
+        g_off_value = params.get("g_off")
+        if g_off_value is None:
+            roff = self._as_float(params.get("roff"), default=1e9)
+            g_off = 1.0 / max(abs(roff), 1e-30)
+        else:
+            g_off = self._as_float(g_off_value, default=1e-9)
+
+        return g_on, g_off
 
 
 __all__ = ["CircuitConverter", "CircuitConversionError"]

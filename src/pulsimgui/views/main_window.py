@@ -1,6 +1,5 @@
 """Main application window."""
 
-from copy import deepcopy
 from pathlib import Path
 from uuid import UUID
 
@@ -21,6 +20,15 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.commands.base import CommandStack
+from pulsimgui.commands.component_commands import (
+    AddComponentCommand,
+    DeleteComponentCommand,
+    FlipComponentCommand,
+    MoveComponentCommand,
+    RotateComponentCommand,
+    UpdateComponentStateCommand,
+)
+from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     ComponentType,
@@ -90,6 +98,7 @@ class MainWindow(QMainWindow):
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
         self._latest_thermal_waveform: SimulationResult | None = None
+        self._component_state_cache: dict[UUID, dict] = {}
 
         self._setup_window()
         self._create_actions()
@@ -141,6 +150,14 @@ class MainWindow(QMainWindow):
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.wire_created.connect(self._on_wire_created)
+        self._schematic_view.component_delete_requested.connect(
+            self._on_component_delete_requested
+        )
+        self._schematic_view.wire_delete_requested.connect(self._on_wire_delete_requested)
+        self._schematic_view.component_rotate_requested.connect(
+            self._on_component_rotate_requested
+        )
+        self._schematic_view.component_flip_requested.connect(self._on_component_flip_requested)
         self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
         self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
         self._schematic_view.scope_open_requested.connect(self._on_scope_open_requested)
@@ -152,6 +169,7 @@ class MainWindow(QMainWindow):
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
+        self._schematic_scene.component_moved.connect(self._on_component_moved)
         # Throttle minimap updates to avoid performance issues during rapid changes
         self._minimap_update_timer = QTimer(self)
         self._minimap_update_timer.setSingleShot(True)
@@ -159,6 +177,7 @@ class MainWindow(QMainWindow):
         self._minimap_update_timer.timeout.connect(self._minimap.update_minimap)
         self._schematic_scene.changed.connect(lambda _: self._schedule_minimap_update())
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
+        self._refresh_component_state_cache()
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -862,9 +881,17 @@ class MainWindow(QMainWindow):
 
     def _on_scene_selection_changed(self) -> None:
         """Handle selection change in schematic scene."""
+        from shiboken6 import isValid
         from pulsimgui.views.schematic.items import ComponentItem
 
-        selected_items = self._schematic_scene.selectedItems()
+        scene = self._schematic_scene
+        if scene is None or not isValid(scene):
+            return
+
+        try:
+            selected_items = scene.selectedItems()
+        except RuntimeError:
+            return
 
         # Filter to get only ComponentItems
         selected_components = [
@@ -904,6 +931,7 @@ class MainWindow(QMainWindow):
     def _on_hierarchy_changed(self, _level) -> None:
         """Refresh scene when hierarchy level changes."""
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._schematic_scene.clearSelection()
         self._properties_panel.set_component(None)
         self.update_selection(0)
@@ -1010,8 +1038,33 @@ class MainWindow(QMainWindow):
         """Load the current project's circuit into the schematic scene."""
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
+
+    def _apply_project_simulation_settings_to_service(self) -> None:
+        """Mirror project transient settings into the runtime simulation service."""
+        project_settings = self._project.simulation_settings
+        runtime_settings = self._simulation_service.settings
+        runtime_settings.t_start = float(project_settings.tstart)
+        runtime_settings.t_stop = float(project_settings.tstop)
+        runtime_settings.t_step = float(project_settings.dt)
+        runtime_settings.max_step = float(project_settings.dt)
+        # Extremely small abs_tol values from legacy files can destabilize switching solves.
+        runtime_settings.abs_tol = max(float(project_settings.abstol), 1e-10)
+        runtime_settings.rel_tol = float(project_settings.reltol)
+        runtime_settings.max_newton_iterations = int(project_settings.max_iterations)
+
+    def _apply_simulation_service_settings_to_project(self) -> None:
+        """Persist runtime simulation settings back into the project model."""
+        project_settings = self._project.simulation_settings
+        runtime_settings = self._simulation_service.settings
+        project_settings.tstart = float(runtime_settings.t_start)
+        project_settings.tstop = float(runtime_settings.t_stop)
+        project_settings.dt = float(runtime_settings.t_step)
+        project_settings.abstol = float(runtime_settings.abs_tol)
+        project_settings.reltol = float(runtime_settings.rel_tol)
+        project_settings.max_iterations = int(runtime_settings.max_newton_iterations)
 
     # Slots
     def _on_new_project(self) -> None:
@@ -1025,6 +1078,7 @@ class MainWindow(QMainWindow):
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
@@ -1090,6 +1144,7 @@ class MainWindow(QMainWindow):
 
     def _on_save(self) -> None:
         """Save the current project."""
+        self._apply_simulation_service_settings_to_project()
         if self._project.path is None:
             self._on_save_as()
         else:
@@ -1104,6 +1159,7 @@ class MainWindow(QMainWindow):
 
     def _on_save_as(self) -> None:
         """Save the project with a new name."""
+        self._apply_simulation_service_settings_to_project()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
@@ -1135,6 +1191,7 @@ class MainWindow(QMainWindow):
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
@@ -1142,17 +1199,57 @@ class MainWindow(QMainWindow):
 
     def _on_undo(self) -> None:
         """Undo the last command."""
+        if not self._command_stack.can_undo:
+            return
         self._command_stack.undo()
+        self._reload_schematic_scene()
         self._project.mark_dirty()
         self._update_title()
         self._update_modified_indicator()
 
     def _on_redo(self) -> None:
         """Redo the last undone command."""
+        if not self._command_stack.can_redo:
+            return
         self._command_stack.redo()
+        self._reload_schematic_scene()
         self._project.mark_dirty()
         self._update_title()
         self._update_modified_indicator()
+
+    def _execute_schematic_command(
+        self,
+        command,
+        *,
+        refresh_scene: bool = True,
+        merge: bool = False,
+    ) -> None:
+        """Execute an undoable command and update project/UI state."""
+        self._command_stack.execute(command, merge=merge)
+        if refresh_scene:
+            self._reload_schematic_scene()
+        else:
+            self._refresh_component_state_cache()
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+    def _reload_schematic_scene(self) -> None:
+        """Reload active circuit into scene to reflect model changes."""
+        self._schematic_scene.load_circuit(self._current_circuit())
+        self._refresh_component_state_cache()
+
+    def _component_state_snapshot(self, component) -> dict:
+        """Capture an undo-friendly snapshot for a component."""
+        return UpdateComponentStateCommand.snapshot(component)
+
+    def _refresh_component_state_cache(self) -> None:
+        """Refresh local cache used to build property-edit undo commands."""
+        circuit = self._current_circuit()
+        self._component_state_cache = {
+            component.id: self._component_state_snapshot(component)
+            for component in circuit.components.values()
+        }
 
     def _on_about(self) -> None:
         """Show about dialog."""
@@ -1236,16 +1333,11 @@ class MainWindow(QMainWindow):
 
         # Create component
         component = Component(comp_type, x=x, y=y)
-        circuit = self._current_circuit()
-        circuit.add_component(component)
-
-        # Update scene
-        if scene:
-            scene.load_circuit(circuit)
-
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
     def _on_zoom_in(self) -> None:
         """Zoom in the schematic view."""
@@ -1325,17 +1417,15 @@ class MainWindow(QMainWindow):
         # Create component
         component = Component(type=comp_type, name=name, x=x, y=y)
 
-        # Add to circuit and scene
-        self._current_circuit().add_component(component)
-        self._schematic_scene.add_component(component)
+        # Add to circuit through command stack
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
-
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
 
     def _on_component_dropped(self, comp_type_name: str, x: float, y: float) -> None:
         """Handle component drop from library panel."""
@@ -1353,17 +1443,15 @@ class MainWindow(QMainWindow):
         # Create component at drop position
         component = Component(type=comp_type, name=name, x=x, y=y)
 
-        # Add to circuit and scene
-        self._current_circuit().add_component(component)
-        self._schematic_scene.add_component(component)
+        # Add to circuit through command stack
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
-
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
 
     def _on_component_removed(self, component) -> None:
         """Tear down scope window state when a component disappears."""
@@ -1376,11 +1464,108 @@ class MainWindow(QMainWindow):
             self._project.mark_dirty()
             self._update_modified_indicator()
 
+    def _on_component_delete_requested(self, component_id: str) -> None:
+        """Delete a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        component = circuit.get_component(comp_uuid)
+        if component is None:
+            return
+
+        self._execute_schematic_command(
+            DeleteComponentCommand(circuit, comp_uuid),
+            refresh_scene=True,
+            merge=False,
+        )
+        self._on_component_removed(component)
+
+    def _on_wire_delete_requested(self, wire_id: str) -> None:
+        """Delete a wire via command stack."""
+        try:
+            wire_uuid = UUID(wire_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_wire(wire_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            DeleteWireCommand(circuit, wire_uuid),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_rotate_requested(self, component_id: str, degrees: int) -> None:
+        """Rotate a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_component(comp_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            RotateComponentCommand(circuit, comp_uuid, degrees=int(degrees)),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_flip_requested(self, component_id: str, horizontal: bool) -> None:
+        """Flip a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_component(comp_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            FlipComponentCommand(circuit, comp_uuid, horizontal=bool(horizontal)),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_moved(
+        self,
+        component,
+        old_x: float,
+        old_y: float,
+        new_x: float,
+        new_y: float,
+    ) -> None:
+        """Record drag movement as an undoable command."""
+        if component is None:
+            return
+        if abs(new_x - old_x) < 0.01 and abs(new_y - old_y) < 0.01:
+            return
+
+        self._execute_schematic_command(
+            MoveComponentCommand(
+                self._current_circuit(),
+                component.id,
+                new_x,
+                new_y,
+                old_x=old_x,
+                old_y=old_y,
+                already_applied=True,
+            ),
+            refresh_scene=False,
+            merge=False,
+        )
+
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
         from PySide6.QtCore import QPointF
         from pulsimgui.models.wire import Wire, WireConnection, WireSegment
-        from pulsimgui.views.schematic.items import WireItem
 
         if not segments:
             return
@@ -1394,8 +1579,14 @@ class MainWindow(QMainWindow):
 
         start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
         end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
-        start_pin = self._schematic_scene.find_nearest_pin(start_pos, max_distance=12.0)
-        end_pin = self._schematic_scene.find_nearest_pin(end_pos, max_distance=12.0)
+        start_pin = self._schematic_scene.find_nearest_pin(
+            start_pos,
+            max_distance=self._schematic_scene.PIN_CAPTURE_DISTANCE,
+        )
+        end_pin = self._schematic_scene.find_nearest_pin(
+            end_pos,
+            max_distance=self._schematic_scene.PIN_CAPTURE_DISTANCE,
+        )
 
         # Force endpoint coordinates to land exactly on detected pin centers.
         if start_pin is not None:
@@ -1428,18 +1619,18 @@ class MainWindow(QMainWindow):
                 pin_index=end_ref[1],
             )
 
-        # Add to circuit
-        self._current_circuit().add_wire(wire)
+        if not self._schematic_scene.is_wire_path_clear(wire_segments):
+            self.statusBar().showMessage(
+                "Invalid route: wires cannot pass through component bodies.",
+                5000,
+            )
+            return
 
-        # Add to scene
-        wire_item = WireItem(wire)
-        wire_item.set_dark_mode(self._theme_service.is_dark)
-        self._schematic_scene.addItem(wire_item)
-
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
+        self._execute_schematic_command(
+            AddWireCommand(self._current_circuit(), wire),
+            refresh_scene=True,
+            merge=False,
+        )
 
     def _is_valid_wire_measurement_connection(self, start_ref, end_ref) -> bool:
         """Validate dedicated scope/probe/thermal endpoint compatibility."""
@@ -1486,55 +1677,23 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
 
-        if not self._apply_component_properties(component, dialog.edited_component):
+        old_state = self._component_state_snapshot(component)
+        new_state = self._component_state_snapshot(dialog.edited_component)
+        if old_state == new_state:
             return
 
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
-        self.statusBar().showMessage("Component properties updated", 2000)
-
-    def _apply_component_properties(self, target, edited) -> bool:
-        """Apply edited component state to target component and refresh scene item."""
-        has_changes = (
-            target.name != edited.name
-            or target.rotation != edited.rotation
-            or target.mirrored_h != edited.mirrored_h
-            or target.mirrored_v != edited.mirrored_v
-            or target.parameters != edited.parameters
-            or target.pins != edited.pins
+        self._execute_schematic_command(
+            UpdateComponentStateCommand(
+                self._current_circuit(),
+                component.id,
+                new_state,
+                old_state=old_state,
+            ),
+            refresh_scene=True,
+            merge=False,
         )
-        if not has_changes:
-            return False
-
-        target.name = edited.name
-        target.rotation = edited.rotation % 360
-        target.mirrored_h = bool(edited.mirrored_h)
-        target.mirrored_v = bool(edited.mirrored_v)
-        target.parameters = deepcopy(edited.parameters)
-        target.pins = deepcopy(edited.pins)
-
-        item = self._find_component_item(target)
-        if item is not None:
-            item.setRotation(target.rotation)
-            item.update_transform()
-            item._name_label.setText(target.name)
-            item._update_labels()
-            self._schematic_scene.update_connected_wires(item)
-            item.update()
-
-        self._schematic_scene.update()
         self._refresh_scope_window_bindings()
-        return True
-
-    def _find_component_item(self, component):
-        """Find scene item corresponding to a component model instance."""
-        from pulsimgui.views.schematic.items import ComponentItem
-
-        for item in self._schematic_scene.items():
-            if isinstance(item, ComponentItem) and item.component is component:
-                return item
-        return None
+        self.statusBar().showMessage("Component properties updated", 2000)
 
     def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
         """Persist window state whenever a scope window closes."""
@@ -1582,15 +1741,28 @@ class MainWindow(QMainWindow):
         """Handle property change from properties panel."""
         from pulsimgui.views.schematic.items import ComponentItem
 
-        # Mark project dirty and update display
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
-
         # Get the component being edited from properties panel
         edited_component = self._properties_panel._component
         if edited_component is None:
             return
+
+        old_state = self._component_state_cache.get(edited_component.id)
+        new_state = self._component_state_snapshot(edited_component)
+
+        if old_state is None:
+            self._component_state_cache[edited_component.id] = new_state
+        elif old_state != new_state:
+            self._execute_schematic_command(
+                UpdateComponentStateCommand(
+                    self._current_circuit(),
+                    edited_component.id,
+                    new_state,
+                    old_state=old_state,
+                    already_applied=True,
+                ),
+                refresh_scene=False,
+                merge=True,
+            )
 
         # Find and update the corresponding component item in the scene
         for item in self._schematic_scene.items():
@@ -1602,10 +1774,13 @@ class MainWindow(QMainWindow):
                     item.setPos(edited_component.x, edited_component.y)
                 elif name == "rotation":
                     item.setRotation(edited_component.rotation)
+                    item.update_transform()
+                elif name == "mirror_h" or name == "mirror_v":
+                    item.update_transform()
                 elif name == THERMAL_PORT_PARAMETER:
                     self._schematic_scene.update_connected_wires(item)
                 # Update name label
-                item._name_label.setPlainText(edited_component.name)
+                item._name_label.setText(edited_component.name)
                 # Update labels for parameter changes (value text)
                 item._update_labels()
                 item.update()
@@ -1789,6 +1964,7 @@ class MainWindow(QMainWindow):
     # Simulation handlers
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_transient(circuit_data)
 
@@ -1807,12 +1983,14 @@ class MainWindow(QMainWindow):
 
     def _on_dc_analysis(self) -> None:
         """Run DC operating point analysis."""
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_dc_operating_point(circuit_data)
 
     def _on_ac_analysis(self) -> None:
         """Run AC analysis."""
         # TODO: Show AC settings dialog first
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_ac_analysis(circuit_data, 1, 1e6, 10)
 
@@ -1826,6 +2004,10 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec():
             self._simulation_service.settings = dialog.get_settings()
+            self._apply_simulation_service_settings_to_project()
+            self._project.mark_dirty()
+            self._update_title()
+            self._update_modified_indicator()
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
@@ -1843,6 +2025,7 @@ class MainWindow(QMainWindow):
             sweep_settings = dialog.get_settings()
             if not sweep_settings:
                 return
+            self._apply_project_simulation_settings_to_service()
             circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
 

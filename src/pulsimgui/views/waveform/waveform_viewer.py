@@ -33,6 +33,7 @@ from pulsimgui.services.theme_service import ThemeService, Theme
 # Maximum points to display before decimation kicks in
 # Higher = better resolution but slower updates
 MAX_DISPLAY_POINTS = 10000
+TRACE_PERFORMANCE_THRESHOLD = 5000
 
 
 # Color palette for traces (distinguishable colors)
@@ -639,6 +640,11 @@ class SignalListPanel(QFrame):
             return self._signal_items[signal_name].color
         return None
 
+    def set_signal_color(self, signal_name: str, color: tuple[int, int, int]) -> None:
+        """Override display color for a specific signal."""
+        if signal_name in self._signal_items:
+            self._signal_items[signal_name].color = color
+
     def set_signal_visible(self, signal_name: str, visible: bool) -> None:
         """Set visibility state for a signal."""
         if signal_name in self._signal_items:
@@ -713,6 +719,11 @@ class WaveformViewer(QWidget):
         self._color_index = 0
         self._trace_palette = TRACE_COLORS.copy()
         self._cursor_palette = CURSOR_COLORS.copy()
+        self._trace_styles: dict[str, dict[str, object]] = {}
+        self._default_trace_width = 1.0
+        self._time_array: np.ndarray | None = None
+        self._signal_arrays: dict[str, np.ndarray] = {}
+        self._signal_statistics: dict[str, dict[str, float]] = {}
 
         # Cursors
         self._cursor1: DraggableCursor | None = None
@@ -743,7 +754,7 @@ class WaveformViewer(QWidget):
         self._last_displayed_index = 0  # Track how much data we've shown
 
         # Configure pyqtgraph
-        pg.setConfigOptions(antialias=True)
+        pg.setConfigOptions(antialias=False)
 
         self._setup_ui()
         if self._theme_service is not None:
@@ -894,6 +905,115 @@ class WaveformViewer(QWidget):
         """Control whether all available signals are auto-plotted on new results."""
         self._auto_show_all_signals = bool(enabled)
 
+    def set_default_trace_width(self, width: float) -> None:
+        """Set default line width used when no per-signal style is provided."""
+        self._default_trace_width = max(0.5, float(width))
+        self._reapply_trace_pens()
+
+    def set_trace_styles(self, styles: dict[str, dict[str, object]]) -> None:
+        """Set per-signal style overrides for color and line width."""
+        normalized: dict[str, dict[str, object]] = {}
+        for signal_name, raw in styles.items():
+            if not isinstance(raw, dict):
+                continue
+            style: dict[str, object] = {}
+            color_raw = raw.get("color")
+            if (
+                isinstance(color_raw, tuple)
+                and len(color_raw) == 3
+                and all(isinstance(channel, (int, float)) for channel in color_raw)
+            ):
+                style["color"] = tuple(int(channel) for channel in color_raw)
+            width_raw = raw.get("width")
+            if isinstance(width_raw, (int, float)):
+                style["width"] = max(0.5, float(width_raw))
+            if style:
+                normalized[signal_name] = style
+
+        self._trace_styles = normalized
+        self._refresh_signal_list_colors()
+        self._reapply_trace_pens()
+
+    def _refresh_signal_list_colors(self) -> None:
+        self._signal_list_panel.set_trace_palette(self._trace_palette)
+        for signal_name, style in self._trace_styles.items():
+            color = style.get("color")
+            if isinstance(color, tuple) and len(color) == 3:
+                self._signal_list_panel.set_signal_color(signal_name, color)
+
+    @staticmethod
+    def _extract_pen_color(trace: pg.PlotDataItem) -> tuple[int, int, int] | None:
+        pen = trace.opts.get("pen")
+        if pen is None:
+            return None
+        qcolor = pen.color()
+        return qcolor.red(), qcolor.green(), qcolor.blue()
+
+    def _resolve_trace_pen(
+        self,
+        signal_name: str,
+        fallback_color: tuple[int, int, int],
+    ):
+        style = self._trace_styles.get(signal_name, {})
+        color = style.get("color")
+        if not (isinstance(color, tuple) and len(color) == 3):
+            color = fallback_color
+        width_raw = style.get("width")
+        if isinstance(width_raw, (int, float)):
+            width = max(0.5, float(width_raw))
+        else:
+            width = self._default_trace_width
+        return pg.mkPen(color=color, width=width)
+
+    def _reapply_trace_pens(self) -> None:
+        for signal_name, trace in self._traces.items():
+            color = self._signal_list_panel.get_signal_color(signal_name)
+            fallback_color = color or self._extract_pen_color(trace) or self._trace_palette[0]
+            trace.setPen(self._resolve_trace_pen(signal_name, fallback_color))
+
+        for signal_name, trace in self._streaming_traces.items():
+            fallback_color = self._extract_pen_color(trace) or self._trace_palette[0]
+            trace.setPen(self._resolve_trace_pen(signal_name, fallback_color))
+
+    @staticmethod
+    def _configure_trace_performance(trace: pg.PlotDataItem, point_count: int) -> None:
+        """Enable rendering options that keep interaction responsive on dense traces."""
+        if point_count < TRACE_PERFORMANCE_THRESHOLD:
+            return
+        trace.setClipToView(True)
+        trace.setDownsampling(auto=True, method="peak")
+
+    def _rebuild_result_caches(self) -> None:
+        """Cache numeric arrays and per-signal statistics for fast cursor/UI updates."""
+        self._time_array = None
+        self._signal_arrays = {}
+        self._signal_statistics = {}
+
+        if not self._result or not self._result.time:
+            return
+
+        time = np.asarray(self._result.time, dtype=float)
+        if len(time) == 0:
+            return
+        self._time_array = time
+
+        for signal_name, values_raw in self._result.signals.items():
+            values = np.asarray(values_raw, dtype=float)
+            if len(values) != len(time) or len(values) == 0:
+                continue
+            self._signal_arrays[signal_name] = values
+            min_val = float(np.min(values))
+            max_val = float(np.max(values))
+            mean_val = float(np.mean(values))
+            rms_val = float(np.sqrt(np.mean(values ** 2)))
+            self._signal_statistics[signal_name] = {
+                "min": min_val,
+                "max": max_val,
+                "mean": mean_val,
+                "rms": rms_val,
+                "pkpk": max_val - min_val,
+            }
+
     def cursor_state(self) -> tuple[bool, float | None, float | None]:
         """Return cursor enabled flag and current positions."""
         enabled = bool(self._cursor_checkbox.isChecked())
@@ -976,7 +1096,7 @@ class WaveformViewer(QWidget):
         self._legend.setBrush(pg.mkBrush(c.plot_legend_background))
         self._legend.setPen(pg.mkPen(c.plot_legend_border))
 
-        self._signal_list_panel.set_trace_palette(self._trace_palette)
+        self._refresh_signal_list_colors()
         self._signal_list_panel.apply_theme(theme)
         self._measurements_panel.apply_theme(theme, cursor_palette=self._cursor_palette)
 
@@ -1009,13 +1129,7 @@ class WaveformViewer(QWidget):
             }}
         """)
 
-        for index, trace in enumerate(self._traces.values()):
-            color = self._trace_palette[index % len(self._trace_palette)]
-            trace.setPen(pg.mkPen(color=color, width=1))
-
-        for index, trace in enumerate(self._streaming_traces.values()):
-            color = self._trace_palette[index % len(self._trace_palette)]
-            trace.setPen(pg.mkPen(color=color, width=1))
+        self._reapply_trace_pens()
 
         if self._cursor1 is not None:
             self._cursor1.set_color(self._cursor_palette[0])
@@ -1025,6 +1139,7 @@ class WaveformViewer(QWidget):
     def set_result(self, result: SimulationResult) -> None:
         """Set the simulation result to display."""
         self._result = result
+        self._rebuild_result_caches()
         self._update_signal_combo()
 
         # Clear existing traces and zoom history
@@ -1040,6 +1155,7 @@ class WaveformViewer(QWidget):
         if result.signals:
             signal_names = list(result.signals.keys())
             self._signal_list_panel.set_signals(signal_names)
+            self._refresh_signal_list_colors()
             first_signal = signal_names[0]
             self._active_signal = first_signal
 
@@ -1066,34 +1182,23 @@ class WaveformViewer(QWidget):
             self._signal_combo.addItems(list(self._result.signals.keys()))
 
     def _measurement_signal_names(self) -> list[str]:
-        if self._result:
-            return list(self._result.signals.keys())
-        return []
+        return list(self._signal_arrays.keys())
 
     def _build_per_signal_measurements(
         self,
         t1: float | None = None,
         t2: float | None = None,
     ) -> dict[str, dict[str, float | None]]:
-        if not self._result or not self._result.time:
-            return {}
-
-        time = np.array(self._result.time, dtype=float)
-        if len(time) == 0:
+        if self._time_array is None or not self._signal_arrays:
             return {}
 
         measurements: dict[str, dict[str, float | None]] = {}
-        for signal_name in self._measurement_signal_names():
-            if signal_name not in self._result.signals:
-                continue
-            values = np.array(self._result.signals[signal_name], dtype=float)
-            if len(values) != len(time) or len(values) == 0:
+        time = self._time_array
+        for signal_name, values in self._signal_arrays.items():
+            stats = self._signal_statistics.get(signal_name)
+            if stats is None:
                 continue
 
-            min_val = float(np.min(values))
-            max_val = float(np.max(values))
-            mean_val = float(np.mean(values))
-            rms_val = float(np.sqrt(np.mean(values ** 2)))
             c1_val = self._interpolate_value(time, values, t1) if t1 is not None else None
             c2_val = self._interpolate_value(time, values, t2) if t2 is not None else None
             dv = c2_val - c1_val if c1_val is not None and c2_val is not None else None
@@ -1101,11 +1206,11 @@ class WaveformViewer(QWidget):
                 "c1": c1_val,
                 "c2": c2_val,
                 "dv": dv,
-                "min": min_val,
-                "max": max_val,
-                "mean": mean_val,
-                "rms": rms_val,
-                "pkpk": max_val - min_val,
+                "min": stats["min"],
+                "max": stats["max"],
+                "mean": stats["mean"],
+                "rms": stats["rms"],
+                "pkpk": stats["pkpk"],
             }
         return measurements
 
@@ -1126,8 +1231,12 @@ class WaveformViewer(QWidget):
         if signal_name in self._traces:
             return
 
-        time = np.array(self._result.time)
-        values = np.array(self._result.signals[signal_name])
+        raw_time = self._time_array if self._time_array is not None else np.asarray(self._result.time, dtype=float)
+        raw_values = self._signal_arrays.get(signal_name)
+        if raw_values is None:
+            raw_values = np.asarray(self._result.signals[signal_name], dtype=float)
+        time = raw_time
+        values = raw_values
 
         # Decimate if too many points to prevent GUI freeze
         if len(time) > MAX_DISPLAY_POINTS:
@@ -1139,12 +1248,12 @@ class WaveformViewer(QWidget):
             color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
 
-        # Use optimized pen (width=1 is fastest)
-        pen = pg.mkPen(color=color, width=1)
+        pen = self._resolve_trace_pen(signal_name, color)
         trace = self._plot_widget.plot(
             time, values, pen=pen, name=signal_name,
             skipFiniteCheck=True,  # Skip NaN/Inf check (faster)
         )
+        self._configure_trace_performance(trace, len(raw_time))
         self._traces[signal_name] = trace
 
         # Update statistics
@@ -1311,8 +1420,16 @@ class WaveformViewer(QWidget):
             self._refresh_measurements_table()
             return
 
-        time = np.array(self._result.time)
-        values = np.array(self._result.signals[self._active_signal])
+        if self._time_array is None:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
+            return
+        values = self._signal_arrays.get(self._active_signal)
+        if values is None:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
+            return
+        time = self._time_array
 
         # Get cursor positions
         t1 = self._cursor1.value()
@@ -1332,7 +1449,12 @@ class WaveformViewer(QWidget):
         self._measurements_panel.update_delta(dt, dv, v1, v2)
         self._refresh_measurements_table(t1, t2)
 
-        # Update label positions
+        self._update_cursor_label_positions()
+
+    def _update_cursor_label_positions(self) -> None:
+        """Update only cursor label Y placement without recomputing measurements."""
+        if self._cursor1 is None and self._cursor2 is None:
+            return
         view_range = self._plot_widget.getViewBox().viewRange()
         y_top = view_range[1][1]
         if self._cursor1:
@@ -1370,22 +1492,17 @@ class WaveformViewer(QWidget):
 
     def _update_statistics(self, signal_name: str) -> None:
         """Update statistics for the specified signal."""
-        if not self._result or signal_name not in self._result.signals:
+        stats = self._signal_statistics.get(signal_name)
+        if stats is None:
             self._measurements_panel.clear_statistics()
             return
 
-        values = np.array(self._result.signals[signal_name])
-
-        if len(values) == 0:
-            self._measurements_panel.clear_statistics()
-            return
-
-        min_val = float(np.min(values))
-        max_val = float(np.max(values))
-        mean_val = float(np.mean(values))
-        rms_val = float(np.sqrt(np.mean(values ** 2)))
-
-        self._measurements_panel.update_statistics(min_val, max_val, mean_val, rms_val)
+        self._measurements_panel.update_statistics(
+            stats["min"],
+            stats["max"],
+            stats["mean"],
+            stats["rms"],
+        )
 
     def _auto_range(self) -> None:
         """Auto-range the plot to fit all data."""
@@ -1419,7 +1536,7 @@ class WaveformViewer(QWidget):
 
         # Update cursor label positions
         if self._cursors_visible:
-            self._update_cursor_values()
+            self._update_cursor_label_positions()
 
     def _update_navigation_buttons(self) -> None:
         """Update enabled state of back/forward buttons."""
@@ -1620,12 +1737,13 @@ class WaveformViewer(QWidget):
             if name not in self._streaming_traces:
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
-                pen = pg.mkPen(color=color, width=1)
+                pen = self._resolve_trace_pen(name, color)
                 # Start with empty data
                 trace = self._plot_widget.plot(
                     [], [], pen=pen, name=name,
                     skipFiniteCheck=True,
                 )
+                self._configure_trace_performance(trace, total_points)
                 self._streaming_traces[name] = trace
 
         # Set up animation timer (separate from regular update timer)
@@ -1716,11 +1834,12 @@ class WaveformViewer(QWidget):
                 # Create new trace (only happens once per signal)
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
-                pen = pg.mkPen(color=color, width=1)
+                pen = self._resolve_trace_pen(name, color)
                 trace = self._plot_widget.plot(
                     time_array, values_array, pen=pen, name=name,
                     skipFiniteCheck=True,
                 )
+                self._configure_trace_performance(trace, len(time_array))
                 self._streaming_traces[name] = trace
 
         # Set view to show waveform growing from start
