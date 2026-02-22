@@ -216,6 +216,9 @@ exec "${HERE}/usr/bin/pulsimgui" "$@"
 
     # Create AppImage
     env = {"ARCH": "x86_64"}
+    # GitHub-hosted runners often don't allow FUSE mounts for AppImage execution.
+    # This flag makes appimagetool run in extract mode and avoids mount errors.
+    env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
     subprocess.run([
         str(appimagetool), str(appdir), str(DIST_DIR / appimage_name)
     ], env={**subprocess.os.environ, **env}, check=True)
