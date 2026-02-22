@@ -68,8 +68,8 @@ def _setup_qt_plugin_path() -> None:
 # MUST be called before any PySide6/Qt imports
 _setup_qt_plugin_path()
 
-from PySide6.QtCore import QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QPolygonF  # noqa: E402
 from PySide6.QtWidgets import QApplication, QSplashScreen  # noqa: E402
 
 try:  # noqa: E402
@@ -131,9 +131,33 @@ def _create_startup_splash(logo_path: Path) -> QSplashScreen:
             rendered = True
 
     if not rendered:
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#22d3ee"))
-        painter.drawRoundedRect(logo_rect, 24.0, 24.0)
+        fallback_pen = QPen(QColor("#22d3ee"), 7.0)
+        fallback_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        fallback_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(fallback_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        x0 = logo_rect.left() + 18.0
+        y_mid = logo_rect.top() + logo_rect.height() * 0.62
+        step = (logo_rect.width() - 36.0) / 6.0
+        amp = logo_rect.height() * 0.28
+
+        trace = [
+            QPointF(x0, y_mid),
+            QPointF(x0 + step, y_mid),
+            QPointF(x0 + step, y_mid - amp),
+            QPointF(x0 + 2.0 * step, y_mid - amp),
+            QPointF(x0 + 2.0 * step, y_mid),
+            QPointF(x0 + 3.0 * step, y_mid),
+            QPointF(x0 + 3.0 * step, y_mid - amp * 0.72),
+            QPointF(x0 + 4.0 * step, y_mid - amp * 0.72),
+            QPointF(x0 + 4.0 * step, y_mid),
+            QPointF(x0 + 5.0 * step, y_mid),
+            QPointF(x0 + 5.0 * step, y_mid - amp * 1.26),
+            QPointF(x0 + 6.0 * step, y_mid - amp * 1.26),
+            QPointF(x0 + 6.0 * step, y_mid),
+        ]
+        painter.drawPolyline(QPolygonF(trace))
 
     painter.end()
 
