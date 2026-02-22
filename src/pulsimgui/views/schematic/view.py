@@ -1,13 +1,18 @@
 """Schematic view with pan and zoom."""
 
 from enum import Enum, auto
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
 from shiboken6 import isValid
 
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    can_connect_measurement_pins,
+)
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.schematic.scene import SchematicScene
@@ -224,6 +229,7 @@ class SchematicView(QGraphicsView):
         self._wire_preview: WirePreviewItem | None = None
         self._wire_in_progress: WireInProgressItem | None = None  # Shows confirmed segments
         self._wire_start: QPointF | None = None
+        self._wire_start_pin: tuple[Component, int] | None = None
         self._alias_editor: QLineEdit | None = None
         self._alias_wire_item: WireItem | None = None
 
@@ -426,6 +432,26 @@ class SchematicView(QGraphicsView):
                 scene.removeItem(in_progress)
         self._wire_in_progress = None
 
+    def _wire_endpoint_pin_filter(self) -> Callable[[object, int], bool] | None:
+        """Return a pin filter that enforces scope/probe connection rules."""
+        if self._wire_start_pin is None:
+            return None
+
+        start_component, start_pin_index = self._wire_start_pin
+
+        def _pin_filter(item: object, pin_index: int) -> bool:
+            candidate_component = getattr(item, "component", None)
+            if candidate_component is None:
+                return False
+            return can_connect_measurement_pins(
+                start_component,
+                start_pin_index,
+                candidate_component,
+                pin_index,
+            )
+
+        return _pin_filter
+
     def resizeEvent(self, event):  # noqa: D401 - Qt override
         super().resizeEvent(event)
         self._position_alias_editor()
@@ -468,21 +494,22 @@ class SchematicView(QGraphicsView):
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.WIRE:
             # Wire tool: start, add point, or complete wire
             scene_pos = self.mapToScene(event.position().toPoint())
+            preview = self._get_wire_preview()
+            in_progress = self._get_wire_in_progress()
+            nearest_pin = None
 
             # Check if clicking on a pin (magnetic snap) - pins take priority
             # Wires ALWAYS snap to grid or pin for clean schematics
             clicked_on_pin = False
             if isinstance(self.scene(), SchematicScene):
-                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                pin_filter = self._wire_endpoint_pin_filter() if preview is not None else None
+                nearest_pin = self.scene().find_nearest_pin(scene_pos, pin_filter=pin_filter)
                 if nearest_pin is not None:
                     scene_pos = nearest_pin[0]
                     clicked_on_pin = True
                 else:
                     # Always snap wires to grid
                     scene_pos = self.scene().snap_to_grid(scene_pos)
-
-            preview = self._get_wire_preview()
-            in_progress = self._get_wire_in_progress()
 
             if preview is None:
                 # Start new wire
@@ -491,6 +518,10 @@ class SchematicView(QGraphicsView):
                 self._wire_in_progress = WireInProgressItem()
                 self.scene().addItem(self._wire_in_progress)
                 self.scene().addItem(self._wire_preview)
+                if clicked_on_pin and nearest_pin is not None:
+                    self._wire_start_pin = (nearest_pin[1].component, nearest_pin[2])
+                else:
+                    self._wire_start_pin = None
             elif clicked_on_pin:
                 # Clicked on a pin - auto-finish the wire
                 # Update preview end to pin position
@@ -510,6 +541,7 @@ class SchematicView(QGraphicsView):
                 self._remove_wire_preview()
                 self._remove_wire_in_progress()
                 self._wire_start = None
+                self._wire_start_pin = None
             else:
                 # Add current segment to confirmed segments and continue
                 if in_progress is None:
@@ -549,7 +581,10 @@ class SchematicView(QGraphicsView):
         elif self._get_wire_preview() is not None:
             # Wires ALWAYS snap to grid or pin for clean schematics
             if isinstance(self.scene(), SchematicScene):
-                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                nearest_pin = self.scene().find_nearest_pin(
+                    scene_pos,
+                    pin_filter=self._wire_endpoint_pin_filter(),
+                )
                 if nearest_pin is not None:
                     # Snap to pin position and show highlight
                     scene_pos = nearest_pin[0]
@@ -613,6 +648,7 @@ class SchematicView(QGraphicsView):
                 self._remove_wire_preview()
                 self._remove_wire_in_progress()
                 self._wire_start = None
+                self._wire_start_pin = None
                 event.accept()
                 return
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
@@ -1156,6 +1192,8 @@ class SchematicView(QGraphicsView):
         self._remove_wire_preview()
         self._remove_wire_in_progress()
         self._wire_start = None
+        self._wire_start_pin = None
+        self._hide_pin_highlight()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Handle drag enter to accept component drops and show preview."""

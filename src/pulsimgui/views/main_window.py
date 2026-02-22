@@ -22,7 +22,12 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import ComponentType, THERMAL_PORT_PARAMETER
+from pulsimgui.models.component import (
+    ComponentType,
+    THERMAL_PORT_PARAMETER,
+    can_connect_measurement_pins,
+    is_restricted_measurement_pin,
+)
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
@@ -57,6 +62,7 @@ from pulsimgui.views.dialogs import (
     ComponentPropertiesDialog,
 )
 from pulsimgui.services.template_service import TemplateService
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView
@@ -1372,7 +1378,8 @@ class MainWindow(QMainWindow):
 
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
-        from pulsimgui.models.wire import Wire, WireSegment
+        from PySide6.QtCore import QPointF
+        from pulsimgui.models.wire import Wire, WireConnection, WireSegment
         from pulsimgui.views.schematic.items import WireItem
 
         if not segments:
@@ -1384,6 +1391,32 @@ class MainWindow(QMainWindow):
             for seg in segments
         ]
         wire = Wire(segments=wire_segments)
+
+        start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
+        end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
+        start_pin = self._schematic_scene.find_nearest_pin(start_pos, max_distance=3.0)
+        end_pin = self._schematic_scene.find_nearest_pin(end_pos, max_distance=3.0)
+
+        start_ref = (start_pin[1].component, start_pin[2]) if start_pin is not None else None
+        end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
+        if not self._is_valid_wire_measurement_connection(start_ref, end_ref):
+            self.statusBar().showMessage(
+                "Invalid connection: Electrical Scope only accepts V/I probe outputs; "
+                "Thermal Scope only accepts TH outputs.",
+                5000,
+            )
+            return
+
+        if start_ref is not None:
+            wire.start_connection = WireConnection(
+                component_id=start_ref[0].id,
+                pin_index=start_ref[1],
+            )
+        if end_ref is not None:
+            wire.end_connection = WireConnection(
+                component_id=end_ref[0].id,
+                pin_index=end_ref[1],
+            )
 
         # Add to circuit
         self._current_circuit().add_wire(wire)
@@ -1397,6 +1430,26 @@ class MainWindow(QMainWindow):
         self._project.mark_dirty()
         self._update_title()
         self._update_modified_indicator()
+
+    def _is_valid_wire_measurement_connection(self, start_ref, end_ref) -> bool:
+        """Validate dedicated scope/probe/thermal endpoint compatibility."""
+        if start_ref is not None and end_ref is not None:
+            left_component, left_pin = start_ref
+            right_component, right_pin = end_ref
+            return can_connect_measurement_pins(
+                left_component,
+                left_pin,
+                right_component,
+                right_pin,
+            )
+
+        for ref in (start_ref, end_ref):
+            if ref is None:
+                continue
+            component, pin_index = ref
+            if is_restricted_measurement_pin(component, pin_index):
+                return False
+        return True
 
     def _on_wire_alias_changed(self, wire) -> None:
         """Update project state when a wire alias is renamed."""
@@ -1860,7 +1913,7 @@ class MainWindow(QMainWindow):
                 f"{len(result.signals)} signals",
                 5000,
             )
-            self._latest_electrical_result = result
+            self._latest_electrical_result = self._result_with_probe_signals(result)
         else:
             QMessageBox.warning(
                 self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
@@ -1868,6 +1921,82 @@ class MainWindow(QMainWindow):
             self._latest_electrical_result = None
 
         self._update_scope_results()
+
+    def _result_with_probe_signals(self, result: SimulationResult) -> SimulationResult:
+        """Build an enriched result view with probe-exported scope channels."""
+        circuit = self._current_circuit()
+        if circuit is None or not result.time:
+            return result
+
+        enriched = SimulationResult(
+            time=list(result.time),
+            signals={name: list(values) for name, values in result.signals.items()},
+            statistics=dict(result.statistics),
+            error_message=result.error_message,
+        )
+
+        node_map = build_node_map(circuit)
+        alias_map = build_node_alias_map(circuit, node_map)
+
+        for component in circuit.components.values():
+            if component.type == ComponentType.VOLTAGE_PROBE:
+                plus = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
+                minus = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
+                if plus is None:
+                    continue
+                if minus is None:
+                    minus = [0.0] * len(plus)
+                samples = min(len(plus), len(minus), len(enriched.time))
+                probe_name = component.name or "VoltageProbe"
+                enriched.signals[format_signal_key("VP", probe_name)] = [
+                    plus[idx] - minus[idx] for idx in range(samples)
+                ]
+
+            if component.type == ComponentType.CURRENT_PROBE:
+                node_in = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
+                node_out = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
+                if node_in is None and node_out is None:
+                    continue
+                if node_in is None and node_out is not None:
+                    node_in = [0.0] * len(node_out)
+                if node_out is None and node_in is not None:
+                    node_out = [0.0] * len(node_in)
+                if node_in is None or node_out is None:
+                    continue
+
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(node_in), len(node_out), len(enriched.time))
+                probe_name = component.name or "CurrentProbe"
+                enriched.signals[format_signal_key("IP", probe_name)] = [
+                    (node_in[idx] - node_out[idx]) * scale for idx in range(samples)
+                ]
+
+        return enriched
+
+    def _probe_node_series(
+        self,
+        result: SimulationResult,
+        node_id: str | None,
+        alias_map: dict[str, str],
+    ) -> list[float] | None:
+        """Resolve a node id to a voltage trace from simulation results."""
+        if node_id is None:
+            return None
+
+        candidates: list[str] = []
+        if node_id == "0":
+            candidates.extend(["V(0)", "V(gnd)", "V(GND)"])
+        else:
+            alias = alias_map.get(node_id)
+            if alias:
+                candidates.append(format_signal_key("V", alias))
+            candidates.append(format_signal_key("V", f"N{node_id}"))
+
+        for key in candidates:
+            series = result.signals.get(key)
+            if series is not None:
+                return list(series)
+        return None
 
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""

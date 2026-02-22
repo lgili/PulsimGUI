@@ -69,14 +69,58 @@ def test_thermal_scope_ignores_non_thermal_component_pins() -> None:
     assert bindings[0].signals == []
 
 
-def test_electrical_scope_keeps_voltage_fallback_for_unconnected_channel() -> None:
-    """Electrical scope regression: channel without source still keeps V(node) fallback."""
+def test_electrical_scope_requires_probe_output_for_unconnected_channel() -> None:
+    """Electrical scope channels require probe outputs and should not synthesize V(node)."""
     circuit = Circuit(name="electrical-scope-unconnected")
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=200.0, y=109.0)
     circuit.add_component(scope)
 
     bindings = build_scope_channel_bindings(scope, circuit)
     assert bindings
+    assert bindings[0].signals == []
+
+
+def test_electrical_scope_resolves_voltage_probe_output_signal() -> None:
+    """Electrical scope should resolve VP signal key when connected to voltage probe output."""
+    circuit = Circuit(name="electrical-scope-voltage-probe")
+    probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
+    circuit.add_component(probe)
+    circuit.add_component(scope)
+    _connect_pins(circuit, probe, 2, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
     assert bindings[0].signals
-    assert bindings[0].signals[0].signal_key is not None
-    assert bindings[0].signals[0].signal_key.startswith("V(")
+    assert bindings[0].signals[0].label == "VP1"
+    assert bindings[0].signals[0].signal_key == format_signal_key("VP", "VP1")
+
+
+def test_electrical_scope_ignores_direct_non_probe_connections() -> None:
+    """Electrical scope should not resolve direct component pins without probes."""
+    circuit = Circuit(name="electrical-scope-direct-component")
+    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
+    circuit.add_component(resistor)
+    circuit.add_component(scope)
+    _connect_pins(circuit, resistor, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals == []
+
+
+def test_electrical_scope_resolves_current_probe_output_signal() -> None:
+    """Electrical scope should resolve IP signal key when connected to current probe output."""
+    circuit = Circuit(name="electrical-scope-current-probe")
+    probe = Component(type=ComponentType.CURRENT_PROBE, name="IP1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
+    circuit.add_component(probe)
+    circuit.add_component(scope)
+    _connect_pins(circuit, probe, 2, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "IP1"
+    assert bindings[0].signals[0].signal_key == format_signal_key("IP", "IP1")

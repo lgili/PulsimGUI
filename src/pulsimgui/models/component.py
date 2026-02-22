@@ -175,6 +175,8 @@ def _scope_label_prefix(comp_type: ComponentType) -> str:
 
 THERMAL_PORT_PARAMETER = "enable_thermal_port"
 THERMAL_PORT_PIN_NAME = "TH"
+VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
+CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
 THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.RESISTOR,
     ComponentType.CAPACITOR,
@@ -206,6 +208,82 @@ def supports_thermal_port(component_type: ComponentType) -> bool:
     """Return True when component type can expose a thermal measurement port."""
 
     return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
+def _pin_name(component: "Component", pin_index: int) -> str:
+    if 0 <= pin_index < len(component.pins):
+        return component.pins[pin_index].name
+    return ""
+
+
+def is_scope_input_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin belongs to an electrical or thermal scope input."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return False
+    return component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE)
+
+
+def is_voltage_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin is the scope-facing output of a voltage probe."""
+    if component.type != ComponentType.VOLTAGE_PROBE:
+        return False
+    return _pin_name(component, pin_index) == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+
+def is_current_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin is the scope-facing output of a current probe."""
+    if component.type != ComponentType.CURRENT_PROBE:
+        return False
+    return _pin_name(component, pin_index) == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+
+def is_thermal_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for optional thermal output pins exposed by components."""
+    if is_scope_input_pin(component, pin_index):
+        return False
+    return _pin_name(component, pin_index) == THERMAL_PORT_PIN_NAME
+
+
+def is_electrical_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for any electrical probe output that can feed electrical scopes."""
+    return is_voltage_probe_output_pin(component, pin_index) or is_current_probe_output_pin(component, pin_index)
+
+
+def is_restricted_measurement_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when a pin has dedicated measurement-routing rules."""
+    return (
+        is_scope_input_pin(component, pin_index)
+        or is_electrical_probe_output_pin(component, pin_index)
+        or is_thermal_output_pin(component, pin_index)
+    )
+
+
+def can_connect_measurement_pins(
+    left_component: "Component",
+    left_pin_index: int,
+    right_component: "Component",
+    right_pin_index: int,
+) -> bool:
+    """Validate dedicated scope/probe/thermal routing compatibility."""
+    left_is_e_scope = left_component.type == ComponentType.ELECTRICAL_SCOPE
+    right_is_e_scope = right_component.type == ComponentType.ELECTRICAL_SCOPE
+    left_is_t_scope = left_component.type == ComponentType.THERMAL_SCOPE
+    right_is_t_scope = right_component.type == ComponentType.THERMAL_SCOPE
+
+    left_is_e_probe_out = is_electrical_probe_output_pin(left_component, left_pin_index)
+    right_is_e_probe_out = is_electrical_probe_output_pin(right_component, right_pin_index)
+    left_is_t_out = is_thermal_output_pin(left_component, left_pin_index)
+    right_is_t_out = is_thermal_output_pin(right_component, right_pin_index)
+
+    electrical_group = left_is_e_scope or right_is_e_scope or left_is_e_probe_out or right_is_e_probe_out
+    if electrical_group:
+        return (left_is_e_scope and right_is_e_probe_out) or (right_is_e_scope and left_is_e_probe_out)
+
+    thermal_group = left_is_t_scope or right_is_t_scope or left_is_t_out or right_is_t_out
+    if thermal_group:
+        return (left_is_t_scope and right_is_t_out) or (right_is_t_scope and left_is_t_out)
+
+    return True
 
 
 # Default pin configurations for each component type
@@ -317,8 +395,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ],
 
     # Measurement
-    ComponentType.VOLTAGE_PROBE: [Pin(0, "+", -20, -10), Pin(1, "-", -20, 10)],
-    ComponentType.CURRENT_PROBE: [Pin(0, "IN", -20, 0), Pin(1, "OUT", 20, 0)],
+    ComponentType.VOLTAGE_PROBE: [
+        Pin(0, "+", -20, -10),
+        Pin(1, "-", -20, 10),
+        Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+    ],
+    ComponentType.CURRENT_PROBE: [
+        Pin(0, "IN", -20, 0),
+        Pin(1, "OUT", 20, 0),
+        Pin(2, CURRENT_PROBE_OUTPUT_PIN_NAME, 0, -20),
+    ],
     ComponentType.POWER_PROBE: [
         Pin(0, "V+", -25, -15),
         Pin(1, "V-", -25, 15),
@@ -646,8 +732,22 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.CURRENT_PROBE):
+        _synchronize_measurement_probe_pins(component)
     else:
         _synchronize_thermal_port(component)
+
+
+def _synchronize_measurement_probe_pins(component: Component) -> None:
+    """Synchronize probe pin layout after schema changes."""
+    default_pins = DEFAULT_PINS.get(component.type, [])
+    if not default_pins:
+        return
+    if len(component.pins) == len(default_pins):
+        names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
+        if names_match:
+            return
+    component.pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins]
 
 
 def _synchronize_thermal_port(component: Component) -> None:

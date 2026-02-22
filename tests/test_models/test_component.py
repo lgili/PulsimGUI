@@ -1,14 +1,14 @@
 """Tests for Component model."""
 
-import pytest
-from uuid import UUID
-
 from pulsimgui.models.component import (
+    CURRENT_PROBE_OUTPUT_PIN_NAME,
     Component,
     ComponentType,
     Pin,
     THERMAL_PORT_PARAMETER,
     THERMAL_PORT_PIN_NAME,
+    VOLTAGE_PROBE_OUTPUT_PIN_NAME,
+    can_connect_measurement_pins,
     set_thermal_port_enabled,
 )
 
@@ -134,3 +134,29 @@ class TestComponent:
     def test_thermal_port_not_exposed_for_unsupported_components(self):
         pi = Component(type=ComponentType.PI_CONTROLLER)
         assert THERMAL_PORT_PARAMETER not in pi.parameters
+
+    def test_voltage_probe_has_scope_output_pin(self):
+        probe = Component(type=ComponentType.VOLTAGE_PROBE)
+        assert len(probe.pins) == 3
+        assert probe.pins[2].name == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+    def test_current_probe_has_scope_output_pin(self):
+        probe = Component(type=ComponentType.CURRENT_PROBE)
+        assert len(probe.pins) == 3
+        assert probe.pins[2].name == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+    def test_scope_connection_rules_for_electrical_probes(self):
+        scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
+        v_probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1")
+        resistor = Component(type=ComponentType.RESISTOR, name="R1")
+
+        assert can_connect_measurement_pins(scope, 0, v_probe, 2)
+        assert not can_connect_measurement_pins(scope, 0, resistor, 0)
+
+    def test_scope_connection_rules_for_thermal_outputs(self):
+        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1")
+        resistor = Component(type=ComponentType.RESISTOR, name="R1")
+        set_thermal_port_enabled(resistor, True)
+
+        assert can_connect_measurement_pins(scope, 0, resistor, 2)
+        assert not can_connect_measurement_pins(scope, 0, resistor, 1)
