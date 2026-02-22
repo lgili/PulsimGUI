@@ -173,6 +173,41 @@ def _scope_label_prefix(comp_type: ComponentType) -> str:
     return "CH" if comp_type == ComponentType.ELECTRICAL_SCOPE else "T"
 
 
+THERMAL_PORT_PARAMETER = "enable_thermal_port"
+THERMAL_PORT_PIN_NAME = "TH"
+THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.RESISTOR,
+    ComponentType.CAPACITOR,
+    ComponentType.INDUCTOR,
+    ComponentType.VOLTAGE_SOURCE,
+    ComponentType.CURRENT_SOURCE,
+    ComponentType.DIODE,
+    ComponentType.ZENER_DIODE,
+    ComponentType.LED,
+    ComponentType.MOSFET_N,
+    ComponentType.MOSFET_P,
+    ComponentType.IGBT,
+    ComponentType.BJT_NPN,
+    ComponentType.BJT_PNP,
+    ComponentType.THYRISTOR,
+    ComponentType.TRIAC,
+    ComponentType.SWITCH,
+    ComponentType.TRANSFORMER,
+    ComponentType.RELAY,
+    ComponentType.FUSE,
+    ComponentType.CIRCUIT_BREAKER,
+    ComponentType.SATURABLE_INDUCTOR,
+    ComponentType.COUPLED_INDUCTOR,
+    ComponentType.SNUBBER_RC,
+}
+
+
+def supports_thermal_port(component_type: ComponentType) -> bool:
+    """Return True when component type can expose a thermal measurement port."""
+
+    return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
 # Default pin configurations for each component type
 DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Basic passive
@@ -611,6 +646,36 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    else:
+        _synchronize_thermal_port(component)
+
+
+def _synchronize_thermal_port(component: Component) -> None:
+    """Synchronize optional thermal measurement pin on supported components."""
+    if not supports_thermal_port(component.type):
+        component.parameters.pop(THERMAL_PORT_PARAMETER, None)
+        return
+
+    enabled = bool(component.parameters.get(THERMAL_PORT_PARAMETER, False))
+    component.parameters[THERMAL_PORT_PARAMETER] = enabled
+
+    base_pins = DEFAULT_PINS.get(component.type, [])
+    if not base_pins:
+        return
+
+    # Keep the original electrical pin map stable and reserve TH as optional last pin.
+    pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in component.pins if pin.name != THERMAL_PORT_PIN_NAME]
+    if len(pins) < len(base_pins):
+        pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in base_pins]
+    else:
+        pins = pins[:len(base_pins)]
+
+    if enabled:
+        pins.append(Pin(index=len(pins), name=THERMAL_PORT_PIN_NAME, x=0.0, y=11.0))
+
+    for index, pin in enumerate(pins):
+        pin.index = index
+    component.pins = pins
 
 
 def _synchronize_scope(component: Component, force_count: int | None = None) -> None:
@@ -696,3 +761,10 @@ def set_demux_output_count(component: Component, count: int) -> None:
     """Update a demux component's output count and pin layout."""
 
     _synchronize_demux(component, force_count=count)
+
+
+def set_thermal_port_enabled(component: Component, enabled: bool) -> None:
+    """Enable or disable thermal measurement pin for compatible components."""
+
+    component.parameters[THERMAL_PORT_PARAMETER] = bool(enabled)
+    _synchronize_special_component(component)

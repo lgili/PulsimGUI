@@ -6,9 +6,24 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    THERMAL_PORT_PIN_NAME,
+)
 from pulsimgui.utils.net_utils import build_node_map, build_node_alias_map
 from pulsimgui.utils.signal_utils import format_signal_key
+
+THERMAL_SIGNAL_EXCLUDED_TYPES = {
+    ComponentType.GROUND,
+    ComponentType.ELECTRICAL_SCOPE,
+    ComponentType.THERMAL_SCOPE,
+    ComponentType.VOLTAGE_PROBE,
+    ComponentType.CURRENT_PROBE,
+    ComponentType.POWER_PROBE,
+    ComponentType.SIGNAL_MUX,
+    ComponentType.SIGNAL_DEMUX,
+}
 
 
 @dataclass(slots=True)
@@ -95,7 +110,7 @@ def build_scope_channel_bindings(
             node_map,
         )
 
-        if not signals and node_id:
+        if not signals and node_id and component.type != ComponentType.THERMAL_SCOPE:
             signals = [
                 _make_scope_signal(component.type, node_id, node_label, preferred_label=label)
             ]
@@ -126,6 +141,14 @@ def _resolve_node_signals(
 ) -> list[ScopeSignal]:
     if not node_id:
         return []
+
+    if scope_component.type == ComponentType.THERMAL_SCOPE:
+        return _resolve_thermal_node_signals(
+            scope_component=scope_component,
+            node_id=node_id,
+            node_refs=node_refs,
+            component_lookup=component_lookup,
+        )
 
     visited_nodes = visited_nodes or set()
     if node_id in visited_nodes:
@@ -196,6 +219,42 @@ def _resolve_node_signals(
     if not expanded:
         node_label = _derive_node_label(node_id, alias_map)
         return [_make_scope_signal(scope_component.type, node_id, node_label)]
+
+    return _dedupe_signals(signals)
+
+
+def _resolve_thermal_node_signals(
+    scope_component: Component,
+    node_id: str,
+    node_refs: dict[str, list[tuple[str, int]]],
+    component_lookup: dict[str, Component],
+) -> list[ScopeSignal]:
+    """Resolve thermal scope node to connected component temperature signals."""
+    scope_id = str(scope_component.id)
+    signals: list[ScopeSignal] = []
+
+    for comp_id, _pin_index in node_refs.get(node_id, []):
+        if comp_id == scope_id:
+            continue
+        component = component_lookup.get(comp_id)
+        if component is None:
+            continue
+        if _pin_index >= len(component.pins):
+            continue
+        if component.pins[_pin_index].name != THERMAL_PORT_PIN_NAME:
+            continue
+        if component.type in THERMAL_SIGNAL_EXCLUDED_TYPES:
+            continue
+
+        label = component.name or component.type.name.replace("_", " ").title()
+        signals.append(
+            ScopeSignal(
+                label=label,
+                signal_key=format_signal_key("T", label),
+                node_id=node_id,
+                node_label=label,
+            )
+        )
 
     return _dedupe_signals(signals)
 

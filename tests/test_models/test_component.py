@@ -3,7 +3,14 @@
 import pytest
 from uuid import UUID
 
-from pulsimgui.models.component import Component, ComponentType, Pin
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    Pin,
+    THERMAL_PORT_PARAMETER,
+    THERMAL_PORT_PIN_NAME,
+    set_thermal_port_enabled,
+)
 
 
 class TestPin:
@@ -104,3 +111,26 @@ class TestComponent:
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
         assert pwm.parameters["frequency"] == 10000.0
+
+    def test_thermal_port_default_is_disabled(self):
+        resistor = Component(type=ComponentType.RESISTOR)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is False
+        assert all(pin.name != THERMAL_PORT_PIN_NAME for pin in resistor.pins)
+
+    def test_thermal_port_toggle_updates_pin_layout(self):
+        resistor = Component(type=ComponentType.RESISTOR)
+        assert len(resistor.pins) == 2
+
+        set_thermal_port_enabled(resistor, True)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is True
+        assert len(resistor.pins) == 3
+        assert resistor.pins[-1].name == THERMAL_PORT_PIN_NAME
+
+        set_thermal_port_enabled(resistor, False)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is False
+        assert len(resistor.pins) == 2
+        assert all(pin.name != THERMAL_PORT_PIN_NAME for pin in resistor.pins)
+
+    def test_thermal_port_not_exposed_for_unsupported_components(self):
+        pi = Component(type=ComponentType.PI_CONTROLLER)
+        assert THERMAL_PORT_PARAMETER not in pi.parameters
