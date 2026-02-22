@@ -38,6 +38,7 @@ from pulsimgui.models.component import (
 )
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 from pulsimgui.resources.icons import IconService
+from pulsimgui.views.library.library_panel import create_component_icon
 from pulsimgui.services.theme_service import (
     ThemeService,
     Theme,
@@ -508,6 +509,9 @@ class PropertiesPanel(QWidget):
         self._params_header: SectionHeader | None = None
         self._pos_header: SectionHeader | None = None
         self._transform_label: QLabel | None = None
+        self._summary_icon: QLabel | None = None
+        self._summary_title: QLabel | None = None
+        self._summary_subtitle: QLabel | None = None
 
         self._setup_ui()
         if self._theme_service is not None:
@@ -520,23 +524,47 @@ class PropertiesPanel(QWidget):
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         # Component info section
         self._info_container = QWidget()
+        self._info_container.setObjectName("PropertiesSectionCard")
         info_layout = QVBoxLayout(self._info_container)
-        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setContentsMargins(8, 6, 8, 8)
         info_layout.setSpacing(8)
 
         self._info_header = SectionHeader("info", "Component", "#3b82f6")
         info_layout.addWidget(self._info_header)
 
+        summary = QWidget()
+        summary_layout = QHBoxLayout(summary)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(10)
+        self._summary_icon = QLabel()
+        self._summary_icon.setFixedSize(38, 38)
+        self._summary_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        summary_layout.addWidget(self._summary_icon)
+
+        summary_text = QWidget()
+        summary_text_layout = QVBoxLayout(summary_text)
+        summary_text_layout.setContentsMargins(0, 0, 0, 0)
+        summary_text_layout.setSpacing(1)
+        self._summary_title = QLabel("No component selected")
+        self._summary_subtitle = QLabel("Select a component to edit parameters")
+        self._summary_title.setObjectName("PropertiesSummaryTitle")
+        self._summary_subtitle.setObjectName("PropertiesSummarySubtitle")
+        summary_text_layout.addWidget(self._summary_title)
+        summary_text_layout.addWidget(self._summary_subtitle)
+        summary_layout.addWidget(summary_text, 1)
+        info_layout.addWidget(summary)
+
         # Type and name
         form = QWidget()
         form_layout = QFormLayout(form)
         form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(8)
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.setHorizontalSpacing(10)
+        form_layout.setVerticalSpacing(8)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self._type_label = QLabel("-")
         form_layout.addRow("Type:", self._type_label)
@@ -581,8 +609,9 @@ class PropertiesPanel(QWidget):
 
         # Parameters section
         self._params_container = QWidget()
+        self._params_container.setObjectName("PropertiesSectionCard")
         params_container_layout = QVBoxLayout(self._params_container)
-        params_container_layout.setContentsMargins(0, 0, 0, 0)
+        params_container_layout.setContentsMargins(8, 6, 8, 8)
         params_container_layout.setSpacing(8)
 
         self._params_header = SectionHeader("sliders", "Parameters", "#10b981")
@@ -593,27 +622,33 @@ class PropertiesPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMaximumHeight(250)
+        scroll.setMinimumHeight(270)
+        scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self._params_widget = QWidget()
         self._params_layout = QFormLayout(self._params_widget)
         self._params_layout.setContentsMargins(0, 0, 0, 0)
-        self._params_layout.setSpacing(8)
-        self._params_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._params_layout.setHorizontalSpacing(10)
+        self._params_layout.setVerticalSpacing(8)
+        self._params_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._params_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
         )
         scroll.setWidget(self._params_widget)
 
         params_container_layout.addWidget(scroll)
-        layout.addWidget(self._params_container)
+        self._params_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self._params_container, 1)
 
         self._scroll = scroll
 
         # Position section
         self._pos_container = QWidget()
+        self._pos_container.setObjectName("PropertiesSectionCard")
         pos_layout = QVBoxLayout(self._pos_container)
-        pos_layout.setContentsMargins(0, 0, 0, 0)
+        pos_layout.setContentsMargins(8, 6, 8, 8)
         pos_layout.setSpacing(8)
 
         self._pos_header = SectionHeader("move", "Position", "#f59e0b")
@@ -641,7 +676,7 @@ class PropertiesPanel(QWidget):
         pos_form_layout.addWidget(self._y_spin)
 
         pos_layout.addWidget(pos_form)
-        layout.addWidget(self._pos_container)
+        layout.addWidget(self._pos_container, 0)
 
         layout.addStretch()
 
@@ -676,6 +711,12 @@ class PropertiesPanel(QWidget):
             self._info_container.hide()
             self._params_container.hide()
             self._pos_container.hide()
+            if self._summary_icon is not None:
+                self._summary_icon.clear()
+            if self._summary_title is not None:
+                self._summary_title.setText("No component selected")
+            if self._summary_subtitle is not None:
+                self._summary_subtitle.setText("Select a component to edit parameters")
             return
 
         self._no_selection_label.hide()
@@ -687,6 +728,24 @@ class PropertiesPanel(QWidget):
         type_name = self._component.type.name.replace("_", " ").title()
         self._type_label.setText(type_name)
         self._name_edit.setText(self._component.name)
+        if self._summary_title is not None:
+            self._summary_title.setText(self._component.name or type_name)
+        if self._summary_subtitle is not None:
+            if len(self._components) > 1:
+                self._summary_subtitle.setText(f"{len(self._components)} components selected")
+            else:
+                self._summary_subtitle.setText(type_name)
+        if self._summary_icon is not None:
+            dark_mode = bool(self._theme and self._theme.is_dark)
+            icon_color = self._theme.colors.foreground_muted if self._theme else "#6b7280"
+            self._summary_icon.setPixmap(
+                create_component_icon(
+                    self._component.type,
+                    size=36,
+                    color=icon_color,
+                    dark_mode=dark_mode,
+                )
+            )
 
         # Update flip button states
         self._flip_h_btn.set_active(self._component.mirrored_h)
@@ -1130,8 +1189,22 @@ class PropertiesPanel(QWidget):
             QWidget#PropertiesPanelRoot {{
                 background-color: {c.panel_background};
             }}
+            QWidget#PropertiesSectionCard {{
+                background-color: {c.panel_header};
+                border: 1px solid {c.panel_border};
+                border-radius: 8px;
+            }}
             QLabel {{
                 color: {c.foreground};
+            }}
+            QLabel#PropertiesSummaryTitle {{
+                color: {c.foreground};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QLabel#PropertiesSummarySubtitle {{
+                color: {c.foreground_muted};
+                font-size: 11px;
             }}
             QLabel#ChannelIndexLabel {{
                 color: {c.foreground_muted};
@@ -1166,7 +1239,7 @@ class PropertiesPanel(QWidget):
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 4px;
-                padding: 4px 6px;
+                padding: 5px 6px;
                 color: {c.foreground};
                 selection-background-color: {c.primary};
                 selection-color: {c.primary_foreground};
@@ -1189,6 +1262,11 @@ class PropertiesPanel(QWidget):
 
         self._type_label.setStyleSheet(f"color: {c.foreground_muted}; font-weight: 500;")
         self._no_selection_label.setStyleSheet(f"color: {c.foreground_muted}; padding: 40px;")
+        if self._summary_icon is not None:
+            self._summary_icon.setStyleSheet(
+                f"background-color: {c.input_background}; border: 1px solid {c.input_border}; "
+                "border-radius: 6px;"
+            )
         if self._transform_label is not None:
             self._transform_label.setStyleSheet(f"color: {c.foreground_muted};")
 

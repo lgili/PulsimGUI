@@ -1,6 +1,6 @@
 """Component library panel with grid card layout and drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize
+from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize, QEvent
 from PySide6.QtGui import (
     QDrag, QPixmap, QPainter, QColor, QPen, QBrush, QLinearGradient,
     QFont, QPainterPath, QCursor,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QSizePolicy,
     QStyleOptionGraphicsItem,
+    QToolButton,
 )
 
 from pulsimgui.models.component import Component, ComponentType
@@ -91,6 +92,12 @@ COMPONENT_LIBRARY = {
     "Networks": [
         {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
     ],
+}
+
+COMPONENT_META: dict[ComponentType, dict[str, str]] = {
+    comp["type"]: {"name": comp["name"], "shortcut": comp["shortcut"]}
+    for comps in COMPONENT_LIBRARY.values()
+    for comp in comps
 }
 
 # Category colors for visual distinction
@@ -789,8 +796,10 @@ class ComponentCard(QFrame):
         self._hover_fill = "rgba(59, 130, 246, 0.1)"
         self._hover_border = "rgba(59, 130, 246, 0.3)"
         self._name_color = "#374151"
+        self._badge_bg = "rgba(107, 114, 128, 0.16)"
+        self._badge_text = "#6b7280"
 
-        self.setFixedSize(72, 80)
+        self.setFixedSize(76, 92)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setMouseTracking(True)
 
@@ -799,8 +808,8 @@ class ComponentCard(QFrame):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 6, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(4, 6, 4, 5)
+        layout.setSpacing(3)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Icon
@@ -818,6 +827,20 @@ class ComponentCard(QFrame):
         self._name_label.setFont(font)
         self._name_label.setWordWrap(True)
         layout.addWidget(self._name_label)
+
+        self._shortcut_label = QLabel(self._shortcut)
+        self._shortcut_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._shortcut_label.setVisible(bool(self._shortcut))
+        self._shortcut_label.setObjectName("ComponentShortcutBadge")
+        badge_font = self._shortcut_label.font()
+        badge_font.setPointSize(7)
+        badge_font.setBold(True)
+        self._shortcut_label.setFont(badge_font)
+        self._shortcut_label.setStyleSheet(
+            "color: #6b7280; background: rgba(107, 114, 128, 0.16); "
+            "border-radius: 6px; padding: 1px 6px;"
+        )
+        layout.addWidget(self._shortcut_label)
 
     def _update_icon(self):
         pixmap = create_component_icon(
@@ -872,6 +895,17 @@ class ComponentCard(QFrame):
         )
         self._name_color = c.foreground
         self._name_label.setStyleSheet(f"color: {self._name_color};")
+        badge_bg = QColor(c.tree_item_selected)
+        badge_fg = QColor(c.foreground_muted)
+        badge_alpha = 115 if theme.is_dark else 150
+        self._badge_bg = (
+            f"rgba({badge_bg.red()}, {badge_bg.green()}, {badge_bg.blue()}, {badge_alpha})"
+        )
+        self._badge_text = badge_fg.name()
+        self._shortcut_label.setStyleSheet(
+            f"color: {self._badge_text}; background: {self._badge_bg}; "
+            "border-radius: 6px; padding: 1px 6px;"
+        )
         self._update_icon()
         self._update_style()
 
@@ -945,11 +979,14 @@ class CategorySection(QWidget):
         self._name = name
         self._color = color
         self._expanded = True
+        self._theme: Theme | None = None
         self._cards: list[ComponentCard] = []
         self._icon_color = "#374151"
         self._icon_dark_mode = False
         self._header: QWidget | None = None
         self._color_bar: QFrame | None = None
+        self._toggle_btn: QToolButton | None = None
+        self._count_label: QLabel | None = None
 
         self._setup_ui()
 
@@ -960,9 +997,11 @@ class CategorySection(QWidget):
 
         # Header
         self._header = QWidget()
+        self._header.setObjectName("CategoryHeader")
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self._header)
-        header_layout.setContentsMargins(8, 4, 8, 4)
-        header_layout.setSpacing(8)
+        header_layout.setContentsMargins(8, 5, 8, 5)
+        header_layout.setSpacing(7)
 
         # Color indicator
         self._color_bar = QFrame()
@@ -971,21 +1010,39 @@ class CategorySection(QWidget):
 
         # Category name
         self._title_label = QLabel(self._name)
+        self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         font = self._title_label.font()
         font.setBold(True)
-        font.setPointSize(11)
+        font.setPointSize(10)
         self._title_label.setFont(font)
         header_layout.addWidget(self._title_label)
 
+        self._count_label = QLabel("0")
+        self._count_label.setObjectName("CategoryCount")
+        self._count_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._count_label.setMinimumWidth(20)
+        header_layout.addWidget(self._count_label)
+
         header_layout.addStretch()
 
+        self._toggle_btn = QToolButton()
+        self._toggle_btn.setObjectName("CategoryToggle")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setText("▾")
+        self._toggle_btn.setAutoRaise(True)
+        self._toggle_btn.clicked.connect(self._toggle_expanded)
+        header_layout.addWidget(self._toggle_btn)
+
         layout.addWidget(self._header)
+        for clickable in (self._header, self._title_label, self._count_label, self._color_bar):
+            clickable.installEventFilter(self)
 
         # Grid container
         self._grid_container = QWidget()
         self._grid_layout = QGridLayout(self._grid_container)
-        self._grid_layout.setContentsMargins(4, 0, 4, 0)
-        self._grid_layout.setSpacing(4)
+        self._grid_layout.setContentsMargins(4, 2, 4, 0)
+        self._grid_layout.setSpacing(6)
         self._grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         layout.addWidget(self._grid_container)
@@ -999,11 +1056,31 @@ class CategorySection(QWidget):
         card.double_clicked.connect(self.component_double_clicked.emit)
 
         self._cards.append(card)
+        if self._count_label is not None:
+            self._count_label.setText(str(len(self._cards)))
 
         # Add to grid (3 columns)
         row = (len(self._cards) - 1) // 3
         col = (len(self._cards) - 1) % 3
         self._grid_layout.addWidget(card, row, col)
+
+    def _toggle_expanded(self) -> None:
+        self._expanded = not self._expanded
+        self._grid_container.setVisible(self._expanded)
+        if self._toggle_btn is not None:
+            self._toggle_btn.setText("▾" if self._expanded else "▸")
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonRelease and watched in {
+            self._header,
+            self._title_label,
+            self._count_label,
+            self._color_bar,
+        }:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._toggle_expanded()
+                return True
+        return super().eventFilter(watched, event)
 
     def set_icon_color(self, color: str):
         self._icon_color = color
@@ -1026,10 +1103,21 @@ class CategorySection(QWidget):
             return
 
         c = theme.colors
+        self._theme = theme
         self._header.setStyleSheet(
-            f"background-color: {c.panel_header}; border-radius: 6px;"
+            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 6px;"
         )
         self._title_label.setStyleSheet(f"color: {c.foreground};")
+        if self._count_label is not None:
+            self._count_label.setStyleSheet(
+                f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
+                "border-radius: 5px; padding: 0 5px; font-size: 10px;"
+            )
+        if self._toggle_btn is not None:
+            self._toggle_btn.setStyleSheet(
+                f"QToolButton {{ color: {c.foreground_muted}; border: none; padding: 0 2px; }}"
+                f"QToolButton:hover {{ color: {c.foreground}; }}"
+            )
 
     def apply_theme(self, theme: Theme, accent_color: str, icon_color: str) -> None:
         """Apply theme to section and nested component cards."""
@@ -1046,13 +1134,25 @@ class CategorySection(QWidget):
         """Filter components by search text. Returns True if any visible."""
         search_lower = search_text.lower()
         any_visible = False
+        visible_count = 0
 
         for card in self._cards:
             visible = not search_text or search_lower in card._name.lower()
             card.setVisible(visible)
             if visible:
                 any_visible = True
+                visible_count += 1
 
+        if search_text and any_visible and not self._expanded:
+            self._expanded = True
+            self._grid_container.setVisible(True)
+            if self._toggle_btn is not None:
+                self._toggle_btn.setText("▾")
+        if self._count_label is not None:
+            if search_text:
+                self._count_label.setText(f"{visible_count}/{len(self._cards)}")
+            else:
+                self._count_label.setText(str(len(self._cards)))
         self.setVisible(any_visible or not search_text)
         return any_visible
 
@@ -1076,6 +1176,8 @@ class LibraryPanel(QWidget):
         self._max_recent = 5
         self._scroll: QScrollArea | None = None
         self._search_action = None
+        self._summary_label: QLabel | None = None
+        self._total_components = 0
 
         self._setup_ui()
         self._populate_components()
@@ -1087,11 +1189,27 @@ class LibraryPanel(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
+
+        title_row = QWidget()
+        title_row.setObjectName("LibraryTitleRow")
+        title_layout = QHBoxLayout(title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(6)
+
+        title = QLabel("Component Library")
+        title.setObjectName("LibraryPanelTitle")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+
+        self._summary_label = QLabel("")
+        self._summary_label.setObjectName("LibrarySummaryLabel")
+        title_layout.addWidget(self._summary_label)
+        layout.addWidget(title_row)
 
         # Search bar
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Search components...")
+        self._search_edit.setPlaceholderText("Search component or function...")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         search_icon = IconService.get_icon("search", "#9ca3af", 16)
@@ -1128,13 +1246,27 @@ class LibraryPanel(QWidget):
 
             for comp in components:
                 section.add_component(comp["type"], comp["name"], comp["shortcut"])
+                self._total_components += 1
 
             self._sections.append(section)
             self._content_layout.insertWidget(self._content_layout.count() - 1, section)
+        self._update_summary_label()
 
     def _on_search_changed(self, text: str):
+        visible_count = 0
         for section in self._sections:
-            section.filter_components(text)
+            if section.filter_components(text):
+                visible_count += sum(1 for card in section._cards if card.isVisible())
+        self._update_summary_label(visible_count if text else self._total_components)
+
+    def _update_summary_label(self, visible_count: int | None = None) -> None:
+        if self._summary_label is None:
+            return
+        count = self._total_components if visible_count is None else visible_count
+        if self._search_edit is not None and self._search_edit.text():
+            self._summary_label.setText(f"{count} matching")
+        else:
+            self._summary_label.setText(f"{count} components")
 
     def _on_component_clicked(self, comp_type: ComponentType):
         self.component_selected.emit(comp_type)
@@ -1177,6 +1309,25 @@ class LibraryPanel(QWidget):
             QWidget#LibraryPanelRoot {{
                 background-color: {c.panel_background};
             }}
+            QWidget#LibraryTitleRow {{
+                background-color: {c.panel_header};
+                border: 1px solid {c.panel_border};
+                border-radius: 6px;
+                padding: 4px 6px;
+            }}
+            QLabel#LibraryPanelTitle {{
+                color: {c.foreground};
+                font-weight: 600;
+                font-size: 12px;
+            }}
+            QLabel#LibrarySummaryLabel {{
+                color: {c.foreground_muted};
+                background-color: {c.tree_item_hover};
+                border-radius: 5px;
+                padding: 1px 7px;
+                font-size: 10px;
+                font-weight: 500;
+            }}
             QWidget#LibraryContentRoot {{
                 background-color: {c.panel_background};
             }}
@@ -1184,7 +1335,7 @@ class LibraryPanel(QWidget):
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 6px;
-                padding: 6px 8px;
+                padding: 7px 8px;
                 color: {c.foreground};
             }}
             QLineEdit:focus {{

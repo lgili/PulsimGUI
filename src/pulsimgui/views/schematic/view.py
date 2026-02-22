@@ -5,6 +5,7 @@ from enum import Enum, auto
 from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
+from shiboken6 import isValid
 
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.resources.icons import IconService
@@ -387,6 +388,43 @@ class SchematicView(QGraphicsView):
         self.zoom_changed.emit(self.zoom_percent)
         self._position_alias_editor()
 
+    @staticmethod
+    def _is_alive_graphics_item(item: QGraphicsItem | None) -> bool:
+        """Check whether a Qt graphics item still has a live C++ object."""
+        return item is not None and isValid(item)
+
+    def _get_wire_preview(self) -> WirePreviewItem | None:
+        """Return wire preview only when the underlying C++ item is still valid."""
+        if not self._is_alive_graphics_item(self._wire_preview):
+            self._wire_preview = None
+            return None
+        return self._wire_preview
+
+    def _get_wire_in_progress(self) -> WireInProgressItem | None:
+        """Return in-progress wire overlay only when item is still valid."""
+        if not self._is_alive_graphics_item(self._wire_in_progress):
+            self._wire_in_progress = None
+            return None
+        return self._wire_in_progress
+
+    def _remove_wire_preview(self) -> None:
+        """Safely remove wire preview item from scene."""
+        preview = self._get_wire_preview()
+        if preview is not None:
+            scene = self.scene()
+            if scene is not None:
+                scene.removeItem(preview)
+        self._wire_preview = None
+
+    def _remove_wire_in_progress(self) -> None:
+        """Safely remove in-progress wire overlay from scene."""
+        in_progress = self._get_wire_in_progress()
+        if in_progress is not None:
+            scene = self.scene()
+            if scene is not None:
+                scene.removeItem(in_progress)
+        self._wire_in_progress = None
+
     def resizeEvent(self, event):  # noqa: D401 - Qt override
         super().resizeEvent(event)
         self._position_alias_editor()
@@ -442,7 +480,10 @@ class SchematicView(QGraphicsView):
                     # Always snap wires to grid
                     scene_pos = self.scene().snap_to_grid(scene_pos)
 
-            if self._wire_preview is None:
+            preview = self._get_wire_preview()
+            in_progress = self._get_wire_in_progress()
+
+            if preview is None:
                 # Start new wire
                 self._wire_start = scene_pos
                 self._wire_preview = WirePreviewItem(scene_pos)
@@ -452,35 +493,37 @@ class SchematicView(QGraphicsView):
             elif clicked_on_pin:
                 # Clicked on a pin - auto-finish the wire
                 # Update preview end to pin position
-                self._wire_preview.set_end(scene_pos)
+                preview.set_end(scene_pos)
 
                 # Add final segments from preview
-                final_segments = self._wire_preview.get_segments()
-                if final_segments:
-                    self._wire_in_progress.add_segments(final_segments)
+                final_segments = preview.get_segments()
+                if final_segments and in_progress is not None:
+                    in_progress.add_segments(final_segments)
 
                 # Get all accumulated segments and emit
-                all_segments = self._wire_in_progress.get_all_segments()
+                all_segments = in_progress.get_all_segments() if in_progress is not None else []
                 if all_segments:
                     self.wire_created.emit(all_segments)
 
                 # Clean up
-                self.scene().removeItem(self._wire_preview)
-                self.scene().removeItem(self._wire_in_progress)
-                self._wire_preview = None
-                self._wire_in_progress = None
+                self._remove_wire_preview()
+                self._remove_wire_in_progress()
                 self._wire_start = None
             else:
                 # Add current segment to confirmed segments and continue
-                current_segments = self._wire_preview.get_segments()
+                if in_progress is None:
+                    self._wire_in_progress = WireInProgressItem()
+                    in_progress = self._wire_in_progress
+                    self.scene().addItem(in_progress)
+                current_segments = preview.get_segments()
                 if current_segments:
-                    self._wire_in_progress.add_segments(current_segments)
+                    in_progress.add_segments(current_segments)
 
                 # Update start point for next segment
                 self._wire_start = scene_pos
 
                 # Reset preview from new point
-                self.scene().removeItem(self._wire_preview)
+                self._remove_wire_preview()
                 self._wire_preview = WirePreviewItem(scene_pos)
                 self.scene().addItem(self._wire_preview)
             event.accept()
@@ -502,7 +545,7 @@ class SchematicView(QGraphicsView):
             )
             self._position_alias_editor()
             event.accept()
-        elif self._wire_preview is not None:
+        elif self._get_wire_preview() is not None:
             # Wires ALWAYS snap to grid or pin for clean schematics
             if isinstance(self.scene(), SchematicScene):
                 nearest_pin = self.scene().find_nearest_pin(scene_pos)
@@ -514,7 +557,9 @@ class SchematicView(QGraphicsView):
                     # Always snap wires to grid, hide pin highlight
                     scene_pos = self.scene().snap_to_grid(scene_pos)
                     self._hide_pin_highlight()
-            self._wire_preview.set_end(scene_pos)
+            preview = self._get_wire_preview()
+            if preview is not None:
+                preview.set_end(scene_pos)
             event.accept()
         else:
             # When not drawing wire, still show pin highlight in wire mode
@@ -545,27 +590,27 @@ class SchematicView(QGraphicsView):
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Handle double-click to complete wire."""
         if event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.WIRE:
-            if self._wire_preview is not None and self._wire_in_progress is not None:
+            preview = self._get_wire_preview()
+            in_progress = self._get_wire_in_progress()
+            if preview is not None and in_progress is not None:
                 # Get final segment
                 scene_pos = self.mapToScene(event.position().toPoint())
                 if self._snap_to_grid and isinstance(self.scene(), SchematicScene):
                     scene_pos = self.scene().snap_to_grid(scene_pos)
 
                 # Add final segments from preview
-                final_segments = self._wire_preview.get_segments()
+                final_segments = preview.get_segments()
                 if final_segments:
-                    self._wire_in_progress.add_segments(final_segments)
+                    in_progress.add_segments(final_segments)
 
                 # Get all accumulated segments and emit
-                all_segments = self._wire_in_progress.get_all_segments()
+                all_segments = in_progress.get_all_segments()
                 if all_segments:
                     self.wire_created.emit(all_segments)
 
                 # Clean up
-                self.scene().removeItem(self._wire_preview)
-                self.scene().removeItem(self._wire_in_progress)
-                self._wire_preview = None
-                self._wire_in_progress = None
+                self._remove_wire_preview()
+                self._remove_wire_in_progress()
                 self._wire_start = None
                 event.accept()
                 return
@@ -632,7 +677,7 @@ class SchematicView(QGraphicsView):
                     return
             if key == Qt.Key.Key_Escape:
                 # Cancel wire drawing if in progress
-                if self._wire_preview is not None:
+                if self._get_wire_preview() is not None:
                     self.cancel_wire()
                 else:
                     self.current_tool = Tool.SELECT
@@ -647,8 +692,9 @@ class SchematicView(QGraphicsView):
                 return
             elif key == Qt.Key.Key_Space:
                 # Toggle wire direction while drawing
-                if self._wire_preview is not None:
-                    self._wire_preview.toggle_direction()
+                preview = self._get_wire_preview()
+                if preview is not None:
+                    preview.toggle_direction()
                 return
             # Component shortcuts
             elif key == Qt.Key.Key_R:
@@ -1083,12 +1129,8 @@ class SchematicView(QGraphicsView):
 
     def cancel_wire(self) -> None:
         """Cancel current wire drawing operation."""
-        if self._wire_preview is not None:
-            self.scene().removeItem(self._wire_preview)
-            self._wire_preview = None
-        if self._wire_in_progress is not None:
-            self.scene().removeItem(self._wire_in_progress)
-            self._wire_in_progress = None
+        self._remove_wire_preview()
+        self._remove_wire_in_progress()
         self._wire_start = None
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
