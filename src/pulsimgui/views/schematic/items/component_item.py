@@ -1519,6 +1519,7 @@ class VoltageProbeItem(ComponentItem):
         painter.setPen(self._lead_pen(2.0))
         painter.drawLine(QPointF(-25, -10), QPointF(-12, -10))
         painter.drawLine(QPointF(-25, 10), QPointF(-12, 10))
+        painter.drawLine(QPointF(12, 0), QPointF(25, 0))
 
         painter.setPen(self._symbol_pen(2.0))
         painter.setBrush(self._surface_color().lighter(106))
@@ -1536,11 +1537,12 @@ class CurrentProbeItem(ComponentItem):
     """Graphics item for current probe (clamp meter style)."""
 
     def boundingRect(self) -> QRectF:
-        return QRectF(-25, -15, 50, 30)
+        return QRectF(-25, -25, 50, 45)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         painter.setPen(self._lead_pen(2.0))
         painter.drawLine(QPointF(-25, 0), QPointF(25, 0))
+        painter.drawLine(QPointF(0, -12), QPointF(0, -20))
 
         painter.setPen(self._symbol_pen(2.0))
         painter.setBrush(self._surface_color().lighter(106))
@@ -1557,6 +1559,9 @@ class CurrentProbeItem(ComponentItem):
         painter.drawLine(QPointF(-20, -8), QPointF(-14, -8))
         painter.drawLine(QPointF(-14, -8), QPointF(-16, -10))
         painter.drawLine(QPointF(-14, -8), QPointF(-16, -6))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._accent_green())
+        painter.drawEllipse(QPointF(0, -20), 2.4, 2.4)
 
 
 class PowerProbeItem(ComponentItem):

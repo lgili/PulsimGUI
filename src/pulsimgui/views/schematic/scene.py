@@ -1,5 +1,7 @@
 """Schematic scene for circuit editing."""
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF
 from PySide6.QtGui import QPen, QColor, QPainter, QBrush
 from PySide6.QtWidgets import QGraphicsScene
@@ -276,7 +278,12 @@ class SchematicScene(QGraphicsScene):
             items = [item for item in items if isinstance(item, item_type)]
         return items
 
-    def find_nearest_pin(self, pos: QPointF, max_distance: float = 15.0) -> tuple[QPointF, object, int] | None:
+    def find_nearest_pin(
+        self,
+        pos: QPointF,
+        max_distance: float = 15.0,
+        pin_filter: Callable[[object, int], bool] | None = None,
+    ) -> tuple[QPointF, object, int] | None:
         """
         Find the nearest component pin within max_distance.
 
@@ -295,7 +302,9 @@ class SchematicScene(QGraphicsScene):
         for item in self.items():
             if isinstance(item, ComponentItem):
                 component = item.component
-                for pin_index, pin in enumerate(component.pins):
+                for pin_index, _pin in enumerate(component.pins):
+                    if pin_filter is not None and not pin_filter(item, pin_index):
+                        continue
                     pin_pos = item.get_pin_position(pin_index)
                     dx = pin_pos.x() - pos.x()
                     dy = pin_pos.y() - pos.y()

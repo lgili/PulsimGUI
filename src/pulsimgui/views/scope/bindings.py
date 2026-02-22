@@ -9,7 +9,9 @@ from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     Component,
     ComponentType,
+    CURRENT_PROBE_OUTPUT_PIN_NAME,
     THERMAL_PORT_PIN_NAME,
+    VOLTAGE_PROBE_OUTPUT_PIN_NAME,
 )
 from pulsimgui.utils.net_utils import build_node_map, build_node_alias_map
 from pulsimgui.utils.signal_utils import format_signal_key
@@ -110,7 +112,10 @@ def build_scope_channel_bindings(
             node_map,
         )
 
-        if not signals and node_id and component.type != ComponentType.THERMAL_SCOPE:
+        if not signals and node_id and component.type not in (
+            ComponentType.ELECTRICAL_SCOPE,
+            ComponentType.THERMAL_SCOPE,
+        ):
             signals = [
                 _make_scope_signal(component.type, node_id, node_label, preferred_label=label)
             ]
@@ -213,10 +218,34 @@ def _resolve_node_signals(
                     ignored,
                 )
             )
+        elif component.type == ComponentType.VOLTAGE_PROBE and pin_name == VOLTAGE_PROBE_OUTPUT_PIN_NAME:
+            expanded = True
+            probe_name = component.name or "Voltage Probe"
+            signals.append(
+                ScopeSignal(
+                    label=probe_name,
+                    signal_key=format_signal_key("VP", probe_name),
+                    node_id=node_id,
+                    node_label=probe_name,
+                )
+            )
+        elif component.type == ComponentType.CURRENT_PROBE and pin_name == CURRENT_PROBE_OUTPUT_PIN_NAME:
+            expanded = True
+            probe_name = component.name or "Current Probe"
+            signals.append(
+                ScopeSignal(
+                    label=probe_name,
+                    signal_key=format_signal_key("IP", probe_name),
+                    node_id=node_id,
+                    node_label=probe_name,
+                )
+            )
 
     visited_nodes.discard(node_id)
 
     if not expanded:
+        if scope_component.type == ComponentType.ELECTRICAL_SCOPE:
+            return []
         node_label = _derive_node_label(node_id, alias_map)
         return [_make_scope_signal(scope_component.type, node_id, node_label)]
 
@@ -298,7 +327,11 @@ def _expand_mux_inputs(
             visited_nodes,
             next_ignored,
         )
-        if not child_signals and node_id:
+        if (
+            not child_signals
+            and node_id
+            and scope_component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE)
+        ):
             child_signals = [
                 _make_scope_signal(scope_component.type, node_id, _derive_node_label(node_id, alias_map), preferred)
             ]
@@ -347,7 +380,11 @@ def _expand_demux_outputs(
             visited_nodes,
             next_ignored,
         )
-        if not child_signals and node_id:
+        if (
+            not child_signals
+            and node_id
+            and scope_component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE)
+        ):
             child_signals = [
                 _make_scope_signal(scope_component.type, node_id, _derive_node_label(node_id, alias_map), preferred)
             ]
@@ -390,7 +427,7 @@ def _resolve_demux_output(
         next_ignored,
     )
 
-    if not upstream_signals:
+    if not upstream_signals and scope_component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
         node_label = _derive_node_label(input_node, alias_map)
         placeholder = _make_scope_signal(scope_component.type, input_node, node_label)
         upstream_signals = [placeholder]
@@ -408,6 +445,8 @@ def _resolve_demux_output(
             )
         )
     else:
+        if scope_component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+            return []
         node_label = _derive_node_label(input_node, alias_map)
         label = _demux_output_label(demux_component, output_idx, node_label or "Signal")
         selected.append(
