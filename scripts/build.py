@@ -10,6 +10,7 @@ No additional installation is required on the target machine.
 """
 
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -26,6 +27,10 @@ HOOKS_DIR = PROJECT_ROOT / "hooks"
 
 def get_version() -> str:
     """Get version from pyproject.toml."""
+    env_version = os.environ.get("PULSIMGUI_VERSION", "").strip()
+    if env_version:
+        return env_version.lstrip("v")
+
     pyproject = PROJECT_ROOT / "pyproject.toml"
     with open(pyproject) as f:
         for line in f:

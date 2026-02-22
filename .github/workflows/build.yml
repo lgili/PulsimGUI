@@ -1,82 +1,166 @@
-name: Build Standalone Installers
+name: Release Packages
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build'
+        description: "Optional version override (e.g. 0.2.0)"
         required: false
-        default: ''
+        default: ""
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    name: Build macOS
+    runs-on: macos-13
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          VERSION="${VERSION#v}"
+          echo "PULSIMGUI_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Release version: $VERSION"
 
       - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[build]"
 
-      - name: Build with PyInstaller
+      - name: Verify backend dependency
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pulsim
+          import pulsim._pulsim
+          print("pulsim backend available:", pulsim.__version__)
+          PY
+
+      - name: Build package
+        shell: bash
         run: python scripts/build.py
 
-      - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: PulsimGui-macos
-          path: dist/*.dmg
+      - name: Package app bundle as zip
+        shell: bash
+        run: |
+          if [ -d "dist/PulsimGui.app" ]; then
+            ditto -c -k --sequesterRsrc --keepParent \
+              "dist/PulsimGui.app" \
+              "dist/PulsimGui-${PULSIMGUI_VERSION}-macos-app.zip"
+          fi
 
-      - name: Upload macOS App Bundle
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PulsimGui-macos-app
-          path: dist/PulsimGui.app
+          name: macos-build
+          if-no-files-found: error
+          path: |
+            dist/*.dmg
+            dist/*-macos-app.zip
 
   build-windows:
+    name: Build Windows
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "${{ github.ref_name }}"
+          }
+          $version = $version.TrimStart('v')
+          "PULSIMGUI_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Release version: $version"
 
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[build]"
 
-      - name: Build with PyInstaller
-        run: python scripts/build.py --no-installer
+      - name: Verify backend dependency
+        shell: pwsh
+        run: |
+          python -c "import pulsim, pulsim._pulsim; print('pulsim backend available:', pulsim.__version__)"
 
-      - name: Upload Windows Executable
+      - name: Build package
+        shell: pwsh
+        run: |
+          # NSIS script still expects one-dir layout, so we publish portable exe here.
+          python scripts/build.py --no-installer
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\\PulsimGui.exe" -DestinationPath "dist\\PulsimGui-$env:PULSIMGUI_VERSION-windows-x64.zip" -Force
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PulsimGui-windows
-          path: dist/PulsimGui.exe
+          name: windows-build
+          if-no-files-found: error
+          path: |
+            dist/PulsimGui.exe
+            dist/*-windows-x64.zip
 
   build-linux:
+    name: Build Linux
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          VERSION="${VERSION#v}"
+          echo "PULSIMGUI_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Release version: $VERSION"
 
       - name: Install system dependencies
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -100,45 +184,74 @@ jobs:
             fuse \
             libfuse2
 
-      - name: Install Python dependencies
+      - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[build]"
 
-      - name: Build with PyInstaller
+      - name: Verify backend dependency
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pulsim
+          import pulsim._pulsim
+          print("pulsim backend available:", pulsim.__version__)
+          PY
+
+      - name: Build package
+        shell: bash
         run: python scripts/build.py
 
-      - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v4
-        with:
-          name: PulsimGui-linux
-          path: dist/*.AppImage
+      - name: Create portable tarball
+        shell: bash
+        run: |
+          if [ -f "dist/pulsimgui" ]; then
+            tar -C dist -czf "dist/PulsimGui-${PULSIMGUI_VERSION}-linux-x64.tar.gz" pulsimgui
+          fi
 
-      - name: Upload Linux Executable
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PulsimGui-linux-bin
-          path: dist/pulsimgui
+          name: linux-build
+          if-no-files-found: error
+          path: |
+            dist/*.AppImage
+            dist/*-linux-x64.tar.gz
+            dist/pulsimgui
 
   release:
+    name: Create GitHub Release
     needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Display structure of downloaded files
-        run: ls -R
+      - name: Prepare release files
+        shell: bash
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" -o -name "*.exe" -o -name "*.tar.gz" \) -exec cp {} release/ \;
+          ls -lah release
 
-      - name: Create Release
+      - name: Publish release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            PulsimGui-macos/*.dmg
-            PulsimGui-windows/PulsimGui.exe
-            PulsimGui-linux/*.AppImage
-          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: PulsimGui ${{ github.ref_name }}
+          draft: false
           generate_release_notes: true
+          files: release/*
+          body: |
+            Cross-platform packages for PulsimGui with the Pulsim backend bundled.
+
+            Included artifacts:
+            - Windows: portable `PulsimGui.exe` and zip package
+            - macOS: `.dmg` installer and `.app` zip
+            - Linux: `.AppImage` and portable tarball
