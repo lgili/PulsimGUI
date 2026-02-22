@@ -528,6 +528,11 @@ class MainWindow(QMainWindow):
         self._library_panel = LibraryPanel(theme_service=self._theme_service)
         self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
         self.library_dock.setWidget(self._library_panel)
+        self.library_dock.setMinimumWidth(272)
+        self.library_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.library_dock)
 
         # Properties Panel (right)
@@ -539,6 +544,11 @@ class MainWindow(QMainWindow):
         self._properties_panel = PropertiesPanel(theme_service=self._theme_service)
         self._properties_panel.property_changed.connect(self._on_property_changed)
         self.properties_dock.setWidget(self._properties_panel)
+        self.properties_dock.setMinimumWidth(310)
+        self.properties_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
         # Waveform Viewer (bottom)
