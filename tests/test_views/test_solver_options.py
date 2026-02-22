@@ -26,7 +26,7 @@ class TestUIValueChanges:
         # Check solver settings
         assert dialog._solver_combo.currentIndex() == 0  # auto
         assert dialog._max_iterations_spin.value() == 50
-        assert dialog._voltage_limiting_check.isChecked()
+        assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 5.0
 
         # Check DC strategy
@@ -110,8 +110,8 @@ class TestUIValueChanges:
         dialog._on_accept()
 
         # Check settings were updated
-        assert settings.t_stop == 10e-3
-        assert settings.t_step == 10e-6
+        assert settings.t_stop == pytest.approx(10e-3)
+        assert settings.t_step == pytest.approx(10e-6)
         assert settings.solver == "rk45"
         assert settings.max_newton_iterations == 75
         assert settings.enable_voltage_limiting is False
@@ -122,6 +122,20 @@ class TestUIValueChanges:
         assert settings.rel_tol == 1e-6
         assert settings.abs_tol == 1e-8
         assert settings.output_points == 20000
+
+    def test_accept_commits_pending_si_text_without_focus_change(self, qapp) -> None:
+        """OK should commit edited SI text even if the field still has focus."""
+        settings = SimulationSettings(t_stop=1e-3, max_step=1e-6)
+        dialog = SimulationSettingsDialog(settings)
+
+        # Simulate typing new values but not leaving the field.
+        dialog._t_stop_edit._edit.setText("2m")
+        dialog._max_step_edit._edit.setText("25u")
+
+        dialog._on_accept()
+
+        assert settings.t_stop == pytest.approx(2e-3)
+        assert settings.max_step == pytest.approx(25e-6)
 
     def test_all_solver_types_load_correctly(self, qapp) -> None:
         """Test that all solver types are loaded correctly."""
@@ -274,7 +288,7 @@ class TestBackendReceivesOptions:
 
         assert dc_settings.strategy == "auto"
         assert dc_settings.max_iterations == 50
-        assert dc_settings.enable_limiting is True
+        assert dc_settings.enable_limiting is False
         assert dc_settings.max_voltage_step == 5.0
         assert dc_settings.gmin_initial == 1e-3
         assert dc_settings.gmin_final == 1e-12

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QCheckBox,
     QScrollArea,
+    QAbstractSpinBox,
 )
 
 from pulsimgui.services.backend_adapter import BackendInfo
@@ -219,7 +220,7 @@ class SimulationSettingsDialog(QDialog):
         newton_layout.addRow("Max iterations:", self._max_iterations_spin)
 
         self._voltage_limiting_check = QCheckBox("Enable voltage limiting")
-        self._voltage_limiting_check.setChecked(True)
+        self._voltage_limiting_check.setChecked(False)
         self._voltage_limiting_check.setToolTip("Limit voltage changes to prevent divergence")
         newton_layout.addRow(self._voltage_limiting_check)
 
@@ -407,6 +408,8 @@ class SimulationSettingsDialog(QDialog):
 
     def _on_accept(self) -> None:
         """Apply settings and close."""
+        self._commit_pending_inputs()
+
         self._settings.t_start = self._t_start_edit.value
         self._settings.t_stop = self._t_stop_edit.value
         self._settings.t_step = self._t_step_edit.value
@@ -432,6 +435,19 @@ class SimulationSettingsDialog(QDialog):
         self._settings.output_points = self._output_points_spin.value()
 
         self.accept()
+
+    def _commit_pending_inputs(self) -> None:
+        """Commit text still being edited before reading values."""
+        for edit in (
+            self._t_start_edit,
+            self._t_stop_edit,
+            self._t_step_edit,
+            self._max_step_edit,
+        ):
+            edit.commit_pending_value()
+
+        for spin in self.findChildren(QAbstractSpinBox):
+            spin.interpretText()
 
     def _set_duration_preset(self, duration: float) -> None:
         """Set stop time to a preset duration."""

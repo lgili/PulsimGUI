@@ -2,13 +2,13 @@
   "version": "1.0",
   "name": "Buck Converter",
   "created": "2024-01-01T00:00:00",
-  "modified": "2026-02-22T17:10:00",
+  "modified": "2026-02-22T17:21:26.432008",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.002,
-    "dt": 2e-07,
-    "tstart": 0,
-    "abstol": 1e-10,
+    "tstop": 0.05,
+    "dt": 1e-06,
+    "tstart": 0.0,
+    "abstol": 0.0,
     "reltol": 0.0001,
     "max_iterations": 140
   },
@@ -28,7 +28,7 @@
           "parameters": {
             "waveform": {
               "type": "dc",
-              "value": 12.0
+              "value": 15.0
             },
             "enable_thermal_port": false
           },
@@ -58,15 +58,14 @@
           "mirrored_v": false,
           "parameters": {
             "waveform": {
-              "type": "pwm",
-              "v_off": 0.0,
-              "v_on": 20.0,
-              "frequency": 100000.0,
-              "duty_cycle": 0.4,
-              "dead_time": 0.0,
-              "phase": 0.0,
-              "rise_time": 0.0,
-              "fall_time": 0.0
+              "type": "pulse",
+              "v1": 12.0,
+              "v2": 0.0,
+              "td": 0.0,
+              "tr": 1e-09,
+              "tf": 1e-09,
+              "pw": 4.9999999999999996e-05,
+              "per": 9.999999999999999e-05
             },
             "enable_thermal_port": false
           },

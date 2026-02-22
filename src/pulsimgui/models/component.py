@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import math
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -117,6 +118,31 @@ class Pin:
         )
 
 
+PIN_GRID_STEP = 20.0
+
+
+def _snap_to_pin_grid(value: float) -> float:
+    """Snap a coordinate to the pin grid step using half-away-from-zero rounding."""
+    step = PIN_GRID_STEP
+    value = float(value)
+    if value >= 0:
+        return math.floor((value + step / 2.0) / step) * step
+    return math.ceil((value - step / 2.0) / step) * step
+
+
+def _snap_pin_layout(pins: list[Pin]) -> list[Pin]:
+    """Return a copy of pins with coordinates aligned to the pin grid."""
+    return [
+        Pin(pin.index, pin.name, _snap_to_pin_grid(pin.x), _snap_to_pin_grid(pin.y))
+        for pin in pins
+    ]
+
+
+def _snap_component_pins_to_grid(component: "Component") -> None:
+    """Mutate component pin coordinates so every pin lands on the wiring grid."""
+    component.pins = _snap_pin_layout(component.pins)
+
+
 def _generate_stacked_pins(
     count: int,
     x: float,
@@ -128,16 +154,23 @@ def _generate_stacked_pins(
     if count <= 0:
         return []
 
-    spacing = 18.0
-    offset = (count - 1) * spacing / 2.0
+    spacing = PIN_GRID_STEP
     pins: list[Pin] = []
     for idx in range(count):
+        if count % 2 == 1:
+            y = (idx - (count // 2)) * spacing
+        else:
+            lower_half = count // 2
+            if idx < lower_half:
+                y = (idx - lower_half) * spacing
+            else:
+                y = (idx - lower_half + 1) * spacing
         pins.append(
             Pin(
                 start_index + idx,
                 f"{name_prefix}{idx + 1}",
-                x,
-                -offset + idx * spacing,
+                _snap_to_pin_grid(x),
+                y,
             )
         )
     return pins
@@ -433,6 +466,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
 }
 
+
+def _normalize_default_pin_map() -> None:
+    """Normalize every default pin layout to the global pin grid."""
+    for comp_type, pins in list(DEFAULT_PINS.items()):
+        DEFAULT_PINS[comp_type] = _snap_pin_layout(pins)
+
+
+_normalize_default_pin_map()
+
+
 # Default parameter templates for each component type
 DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     # Basic passive
@@ -658,6 +701,7 @@ class Component:
             self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
 
         _synchronize_special_component(self)
+        _snap_component_pins_to_grid(self)
 
     def get_pin_position(self, pin_index: int) -> tuple[float, float]:
         """Get absolute position of a pin, accounting for rotation and mirroring."""
@@ -747,7 +791,7 @@ def _synchronize_measurement_probe_pins(component: Component) -> None:
         names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
         if names_match:
             return
-    component.pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins]
+    component.pins = _snap_pin_layout([Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins])
 
 
 def _synchronize_thermal_port(component: Component) -> None:
@@ -763,19 +807,18 @@ def _synchronize_thermal_port(component: Component) -> None:
     if not base_pins:
         return
 
-    # Keep the original electrical pin map stable and reserve TH as optional last pin.
+    # Keep the current electrical pin map stable and reserve TH as optional last pin.
+    # This preserves extended pin layouts (for example, a controlled switch with 3 pins).
     pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in component.pins if pin.name != THERMAL_PORT_PIN_NAME]
     if len(pins) < len(base_pins):
         pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in base_pins]
-    else:
-        pins = pins[:len(base_pins)]
 
     if enabled:
-        pins.append(Pin(index=len(pins), name=THERMAL_PORT_PIN_NAME, x=0.0, y=11.0))
+        pins.append(Pin(index=len(pins), name=THERMAL_PORT_PIN_NAME, x=0.0, y=PIN_GRID_STEP))
 
     for index, pin in enumerate(pins):
         pin.index = index
-    component.pins = pins
+    component.pins = _snap_pin_layout(pins)
 
 
 def _synchronize_scope(component: Component, force_count: int | None = None) -> None:
@@ -796,7 +839,7 @@ def _synchronize_scope(component: Component, force_count: int | None = None) -> 
         channel.setdefault("label", f"{prefix}{idx + 1}")
         channel.setdefault("overlay", False)
 
-    component.pins = _default_scope_pins(channel_count)
+    component.pins = _snap_pin_layout(_default_scope_pins(channel_count))
 
 
 def _synchronize_mux(component: Component, force_count: int | None = None) -> None:
@@ -819,7 +862,7 @@ def _synchronize_mux(component: Component, force_count: int | None = None) -> No
         max(0, min(input_count - 1, idx)) for idx in ordering
     ]
 
-    component.pins = _default_mux_pins(input_count)
+    component.pins = _snap_pin_layout(_default_mux_pins(input_count))
 
 
 def _synchronize_demux(component: Component, force_count: int | None = None) -> None:
@@ -842,7 +885,7 @@ def _synchronize_demux(component: Component, force_count: int | None = None) -> 
         max(0, min(output_count - 1, idx)) for idx in ordering
     ]
 
-    component.pins = _default_demux_pins(output_count)
+    component.pins = _snap_pin_layout(_default_demux_pins(output_count))
 
 
 def set_scope_channel_count(component: Component, count: int) -> None:

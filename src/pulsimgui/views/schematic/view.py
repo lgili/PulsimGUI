@@ -210,6 +210,10 @@ class SchematicView(QGraphicsView):
     component_properties_requested = Signal(object)  # Component instance
     quick_add_component = Signal(object)  # ComponentType for keyboard shortcuts
     scroll_changed = Signal()  # emitted when view scrolls
+    component_delete_requested = Signal(str)  # component UUID string
+    wire_delete_requested = Signal(str)  # wire UUID string
+    component_rotate_requested = Signal(str, int)  # component UUID string, degrees
+    component_flip_requested = Signal(str, bool)  # component UUID string, horizontal
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -413,6 +417,13 @@ class SchematicView(QGraphicsView):
             self._wire_in_progress = None
             return None
         return self._wire_in_progress
+
+    def _get_pin_highlight(self) -> PinHighlightItem | None:
+        """Return pin highlight only when item is still valid."""
+        if not self._is_alive_graphics_item(self._pin_highlight):
+            self._pin_highlight = None
+            return None
+        return self._pin_highlight
 
     def _remove_wire_preview(self) -> None:
         """Safely remove wire preview item from scene."""
@@ -777,23 +788,21 @@ class SchematicView(QGraphicsView):
         if not selected:
             return
 
-        # Collect items to delete (copy list since we'll modify scene)
-        wires_to_delete = []
-        components_to_delete = []
-
+        wire_ids: list[str] = []
+        component_ids: list[str] = []
         for item in selected:
             if isinstance(item, WireItem):
-                wires_to_delete.append(item)
+                wire_ids.append(str(item.wire.id))
             elif isinstance(item, ComponentItem):
-                components_to_delete.append(item)
+                component_ids.append(str(item.component.id))
 
         # Delete wires first
-        for wire_item in wires_to_delete:
-            self._delete_wire(wire_item)
+        for wire_id in wire_ids:
+            self.wire_delete_requested.emit(wire_id)
 
         # Delete components
-        for comp_item in components_to_delete:
-            self._delete_component(comp_item)
+        for component_id in component_ids:
+            self.component_delete_requested.emit(component_id)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         from pulsimgui.views.schematic.items import ComponentItem
@@ -934,49 +943,34 @@ class SchematicView(QGraphicsView):
         return True
 
     def _delete_wire(self, wire_item: WireItem) -> None:
-        """Delete a wire from the scene and circuit."""
-        scene = self.scene()
-        if scene is None or not isinstance(scene, SchematicScene):
+        """Request deletion of a wire from the owning controller."""
+        wire = getattr(wire_item, "wire", None)
+        if wire is None:
             return
-        if scene.circuit is not None:
-            scene.circuit.remove_wire(wire_item.wire.id)
-        scene.removeItem(wire_item)
+        self.wire_delete_requested.emit(str(wire.id))
 
     def _delete_component(self, comp_item) -> None:
-        """Delete a component from the scene and circuit."""
+        """Request deletion of a component from the owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
-        scene = self.scene()
-        if scene is None or not isinstance(scene, SchematicScene):
-            return
-        if isinstance(comp_item, ComponentItem) and scene.circuit is not None:
-            scene.circuit.remove_component(comp_item.component.id)
-            scene.component_removed.emit(comp_item.component)
-        scene.removeItem(comp_item)
+        if isinstance(comp_item, ComponentItem):
+            self.component_delete_requested.emit(str(comp_item.component.id))
 
     def _rotate_component(self, comp_item, angle: int) -> None:
-        """Rotate a component by the given angle."""
+        """Request component rotation from owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
-        current = comp_item.component.rotation
-        new_rotation = (current + angle) % 360
-        comp_item.component.rotation = new_rotation
-        comp_item.setRotation(new_rotation)
-        comp_item.update()
+        self.component_rotate_requested.emit(str(comp_item.component.id), int(angle))
 
     def _flip_component(self, comp_item, horizontal: bool = True) -> None:
-        """Flip a component horizontally or vertically."""
+        """Request component flip from owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
-        if horizontal:
-            comp_item.component.mirrored_h = not comp_item.component.mirrored_h
-        else:
-            comp_item.component.mirrored_v = not comp_item.component.mirrored_v
-        comp_item.update()
+        self.component_flip_requested.emit(str(comp_item.component.id), bool(horizontal))
 
     def _duplicate_component(self, comp_item) -> None:
         """Duplicate a component at a slight offset."""
@@ -1244,10 +1238,12 @@ class SchematicView(QGraphicsView):
 
     def _remove_drop_preview(self) -> None:
         """Remove the drop preview item from the scene."""
-        if self._drop_preview is not None:
-            self.scene().removeItem(self._drop_preview)
-            self._drop_preview = None
-            self._drop_comp_type = None
+        if self._is_alive_graphics_item(self._drop_preview):
+            scene = self.scene()
+            if scene is not None and isValid(scene):
+                scene.removeItem(self._drop_preview)
+        self._drop_preview = None
+        self._drop_comp_type = None
 
     def dropEvent(self, event: QDropEvent) -> None:
         """Handle drop to add component at location."""
@@ -1274,17 +1270,24 @@ class SchematicView(QGraphicsView):
 
     def _show_pin_highlight(self, pos: QPointF) -> None:
         """Show pin highlight glow at the given position."""
-        if self._pin_highlight is None:
-            self._pin_highlight = PinHighlightItem()
-            self.scene().addItem(self._pin_highlight)
+        scene = self.scene()
+        if scene is None or not isValid(scene):
+            return
 
-        self._pin_highlight.setPos(pos)
-        self._pin_highlight.set_visible(True)
+        highlight = self._get_pin_highlight()
+        if highlight is None:
+            self._pin_highlight = PinHighlightItem()
+            scene.addItem(self._pin_highlight)
+            highlight = self._pin_highlight
+
+        highlight.setPos(pos)
+        highlight.set_visible(True)
 
     def _hide_pin_highlight(self) -> None:
         """Hide the pin highlight glow."""
-        if self._pin_highlight is not None:
-            self._pin_highlight.set_visible(False)
+        highlight = self._get_pin_highlight()
+        if highlight is not None:
+            highlight.set_visible(False)
 
     def _show_alignment_guides(self, moving_item) -> None:
         """Show alignment guides when moving a component."""

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.wire import Wire, WireSegment
@@ -36,6 +38,7 @@ class _CircuitWithVirtual(_CircuitNoAddNode):
         super().__init__()
         self.virtual_components: list[tuple[str, str, list[int], dict[str, float], dict[str, str]]] = []
         self.switches: list[tuple[str, int, int, bool, float, float]] = []
+        self.vcswitches: list[tuple[str, int, int, int, float, float, float]] = []
         self.snubbers: list[tuple[str, int, int, float, float, float]] = []
 
     def add_virtual_component(
@@ -59,6 +62,18 @@ class _CircuitWithVirtual(_CircuitNoAddNode):
     ) -> None:
         self.switches.append((name, n1, n2, closed, g_on, g_off))
 
+    def add_vcswitch(
+        self,
+        name: str,
+        ctrl: int,
+        t1: int,
+        t2: int,
+        v_threshold: float,
+        g_on: float,
+        g_off: float,
+    ) -> None:
+        self.vcswitches.append((name, ctrl, t1, t2, v_threshold, g_on, g_off))
+
     def add_snubber_rc(
         self,
         name: str,
@@ -69,6 +84,22 @@ class _CircuitWithVirtual(_CircuitNoAddNode):
         initial_voltage: float,
     ) -> None:
         self.snubbers.append((name, n1, n2, resistance, capacitance, initial_voltage))
+
+
+class _CircuitWithDiode(_CircuitNoAddNode):
+    def __init__(self) -> None:
+        super().__init__()
+        self.diodes: list[tuple[str, int, int, float, float]] = []
+
+    def add_diode(
+        self,
+        name: str,
+        anode: int,
+        cathode: int,
+        g_on: float = 1000.0,
+        g_off: float = 1e-9,
+    ) -> None:
+        self.diodes.append((name, anode, cathode, g_on, g_off))
 
 
 def test_converter_falls_back_to_get_node_when_add_node_is_missing() -> None:
@@ -178,7 +209,7 @@ def test_converter_prefers_native_switch_and_snubber_methods() -> None:
                 "id": "s1",
                 "type": "SWITCH",
                 "name": "S1",
-                "parameters": {"closed": True, "g_on": 2e6, "g_off": 1e-10},
+                "parameters": {"initial_state": True, "ron": 0.001, "roff": 1e9},
                 "pin_nodes": ["1", "2"],
             },
             {
@@ -197,9 +228,73 @@ def test_converter_prefers_native_switch_and_snubber_methods() -> None:
 
     assert len(converted.switches) == 1
     assert converted.switches[0][0] == "S1"
+    assert converted.switches[0][3] is True
+    assert converted.switches[0][4] == pytest.approx(1000.0)
+    assert converted.switches[0][5] == pytest.approx(1e-9)
     assert len(converted.snubbers) == 1
     assert converted.snubbers[0][0] == "SN1"
     assert converted.virtual_components == []
+    assert converted.vcswitches == []
+
+
+def test_converter_uses_vcswitch_for_three_pin_switch() -> None:
+    """Three-pin GUI switches should map to backend add_vcswitch path."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "s1",
+                "type": "SWITCH",
+                "name": "S1",
+                "parameters": {"v_threshold": 5.0, "ron": 0.002, "roff": 2e8},
+                "pin_nodes": ["1", "2", "3"],
+            }
+        ],
+        "node_map": {"s1": ["1", "2", "3"]},
+        "node_aliases": {"1": "CTRL", "2": "VIN", "3": "SW"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert converted.switches == []
+    assert len(converted.vcswitches) == 1
+    name, ctrl, t1, t2, v_threshold, g_on, g_off = converted.vcswitches[0]
+    assert name == "S1"
+    assert (ctrl, t1, t2) == (1, 2, 3)
+    assert v_threshold == pytest.approx(5.0)
+    assert g_on == pytest.approx(500.0)
+    assert g_off == pytest.approx(5e-9)
+
+
+def test_converter_passes_diode_conductance_parameters() -> None:
+    """Diode conductance parameters should be forwarded when backend supports them."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithDiode)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "d1",
+                "type": "DIODE",
+                "name": "D1",
+                "parameters": {"g_on": 350.0, "g_off": 2e-9},
+                "pin_nodes": ["0", "1"],
+            }
+        ],
+        "node_map": {"d1": ["0", "1"]},
+        "node_aliases": {"1": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.diodes) == 1
+    name, anode, cathode, g_on, g_off = converted.diodes[0]
+    assert name == "D1"
+    assert (anode, cathode) == (0, 1)
+    assert g_on == pytest.approx(350.0)
+    assert g_off == pytest.approx(2e-9)
 
 
 def test_build_node_map_merges_split_wires_on_shared_endpoint() -> None:

@@ -198,6 +198,10 @@ class SIValueWidget(QWidget):
         except ValueError:
             self._edit.setText(self._format_value(self._value))
 
+    def commit_pending_value(self) -> None:
+        """Commit the current text to numeric value even if focus has not changed."""
+        self._apply_value()
+
     def _apply_validation_style(self) -> None:
         """Apply current input style, respecting theme and validation state."""
         if self._theme is None:

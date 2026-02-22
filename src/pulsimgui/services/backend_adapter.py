@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from importlib import import_module, metadata
 from pathlib import Path
@@ -100,6 +101,18 @@ class BackendCallbacks:
     data_point: Callable[[float, dict[str, float]], None]
     check_cancelled: Callable[[], bool]
     wait_if_paused: Callable[[], None]
+
+
+@dataclass(frozen=True)
+class _TransientRetryProfile:
+    """Retry profile used to recover from transient convergence failures."""
+
+    name: str
+    dc_strategy: str | None = None
+    min_newton_iterations: int | None = None
+    force_voltage_limiting: bool | None = None
+    max_voltage_step: float | None = None
+    dt_scale: float = 1.0
 
 
 class SimulationBackend(Protocol):
@@ -463,84 +476,216 @@ class PulsimBackend(SimulationBackend):
     ) -> BackendRunResult:
         result = BackendRunResult()
 
-        try:
-            circuit = self._converter.build(circuit_data)
-        except CircuitConversionError as exc:
-            result.error_message = str(exc)
-            return result
-
         callbacks.progress(0.0, "Starting Pulsim simulation...")
 
         try:
-            dt = self._compute_time_step(settings)
+            base_dt = self._compute_time_step(settings)
+        except Exception as exc:
+            result.error_message = str(exc)
+            return result
+
+        retry_profiles = self._build_transient_retry_profiles(settings)
+        retry_errors: list[str] = []
+
+        for retry_index, profile in enumerate(retry_profiles):
+            if retry_index > 0:
+                callbacks.progress(2.0, f"Retrying convergence with profile '{profile.name}'...")
+
+            try:
+                circuit = self._converter.build(circuit_data)
+            except CircuitConversionError as exc:
+                result.error_message = str(exc)
+                return result
+
+            attempt_settings = self._apply_transient_retry_profile(settings, profile)
+            dt = base_dt * profile.dt_scale
+
             if hasattr(circuit, "set_timestep"):
                 try:
                     circuit.set_timestep(dt)
                 except Exception:
                     pass
-            newton_opts = self._build_newton_options(settings, circuit)
-            linear_solver = self._build_linear_solver_config()
-            x0 = self._build_initial_state(circuit, settings)
 
-            # Initialize result containers
-            node_names = list(circuit.node_names())
-            result.time = []
-            for name in node_names:
-                result.signals[f"V({name})"] = []
-
-            if hasattr(self._module, "run_transient_shared"):
-                return self._run_transient_shared(
-                    circuit, settings, callbacks, result,
-                    node_names, dt, x0, newton_opts, linear_solver,
+            try:
+                newton_opts = self._build_newton_options(attempt_settings, circuit)
+                linear_solver = self._build_linear_solver_config()
+                x0 = self._build_initial_state(circuit, attempt_settings)
+                attempt_result = self._run_transient_once(
+                    circuit,
+                    attempt_settings,
+                    callbacks,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
                 )
+            except Exception as exc:
+                attempt_result = BackendRunResult(error_message=str(exc))
 
-            if hasattr(self._module, "run_transient_streaming"):
-                streaming_result = self._run_transient_streaming(
-                    circuit, settings, callbacks, result,
-                    node_names, dt, x0, newton_opts, linear_solver,
-                )
-                if not streaming_result.error_message:
-                    return streaming_result
-                if "cancel" in streaming_result.error_message.lower():
-                    return streaming_result
-                if hasattr(self._module, "run_transient"):
-                    callbacks.progress(
-                        5.0,
-                        "Streaming transient failed; retrying in compatibility mode...",
-                    )
-                    fallback_result = self._run_transient_chunked(
-                        circuit,
-                        settings,
-                        callbacks,
-                        result,
-                        node_names,
-                        dt,
-                        x0,
-                        newton_opts,
-                        linear_solver,
-                    )
-                    if not fallback_result.error_message:
-                        fallback_result.statistics["fallback_mode"] = "chunked"
-                        fallback_result.statistics["streaming_error"] = (
-                            streaming_result.error_message
-                        )
-                        return fallback_result
-                    fallback_result.error_message = (
-                        f"{streaming_result.error_message} | Fallback error: "
-                        f"{fallback_result.error_message}"
-                    )
-                    return fallback_result
-                return streaming_result
+            if not attempt_result.error_message:
+                if retry_index > 0:
+                    attempt_result.statistics["convergence_retry_profile"] = profile.name
+                    attempt_result.statistics["convergence_retries"] = retry_index
+                    attempt_result.statistics["convergence_retry_errors"] = retry_errors.copy()
+                return attempt_result
 
-            return self._run_transient_chunked(
+            error_text = attempt_result.error_message
+            if "cancel" in error_text.lower():
+                return attempt_result
+
+            retry_errors.append(error_text)
+            is_last_profile = retry_index >= len(retry_profiles) - 1
+            if is_last_profile or not self._is_transient_convergence_failure(error_text):
+                if retry_index > 0:
+                    attempt_result.statistics["convergence_retry_profile"] = profile.name
+                    attempt_result.statistics["convergence_retries"] = retry_index
+                return attempt_result
+
+        if retry_errors:
+            result.error_message = retry_errors[-1]
+        return result
+
+    def _run_transient_once(
+        self,
+        circuit: Any,
+        settings: "SimulationSettings",
+        callbacks: BackendCallbacks,
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any | None,
+    ) -> BackendRunResult:
+        """Run one transient attempt with precomputed solver state."""
+        result = BackendRunResult()
+        node_names = list(circuit.node_names())
+        result.time = []
+        for name in node_names:
+            result.signals[f"V({name})"] = []
+
+        if hasattr(self._module, "run_transient_shared"):
+            return self._run_transient_shared(
                 circuit, settings, callbacks, result,
                 node_names, dt, x0, newton_opts, linear_solver,
             )
 
-        except Exception as exc:
-            result.error_message = str(exc)
+        if hasattr(self._module, "run_transient_streaming"):
+            streaming_result = self._run_transient_streaming(
+                circuit, settings, callbacks, result,
+                node_names, dt, x0, newton_opts, linear_solver,
+            )
+            if not streaming_result.error_message:
+                return streaming_result
+            if "cancel" in streaming_result.error_message.lower():
+                return streaming_result
+            if hasattr(self._module, "run_transient"):
+                callbacks.progress(
+                    5.0,
+                    "Streaming transient failed; retrying in compatibility mode...",
+                )
+                fallback_result = self._run_transient_chunked(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    node_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not fallback_result.error_message:
+                    fallback_result.statistics["fallback_mode"] = "chunked"
+                    fallback_result.statistics["streaming_error"] = (
+                        streaming_result.error_message
+                    )
+                    return fallback_result
+                fallback_result.error_message = (
+                    f"{streaming_result.error_message} | Fallback error: "
+                    f"{fallback_result.error_message}"
+                )
+                return fallback_result
+            return streaming_result
 
-        return result
+        return self._run_transient_chunked(
+            circuit, settings, callbacks, result,
+            node_names, dt, x0, newton_opts, linear_solver,
+        )
+
+    def _build_transient_retry_profiles(
+        self,
+        settings: "SimulationSettings",
+    ) -> list[_TransientRetryProfile]:
+        """Build progressive retry profiles for Newton convergence failures."""
+        base_iterations = max(1, int(getattr(settings, "max_newton_iterations", 50)))
+        configured_step = float(getattr(settings, "max_voltage_step", 5.0))
+        safe_step = configured_step if configured_step > 0 else 5.0
+
+        return [
+            _TransientRetryProfile(name="default"),
+            _TransientRetryProfile(
+                name="gmin-seed",
+                dc_strategy="gmin",
+                min_newton_iterations=max(base_iterations, 100),
+            ),
+            _TransientRetryProfile(
+                name="source-limited-half-step",
+                dc_strategy="source",
+                min_newton_iterations=max(base_iterations, 160),
+                force_voltage_limiting=True,
+                max_voltage_step=min(safe_step, 3.0),
+                dt_scale=0.5,
+            ),
+            _TransientRetryProfile(
+                name="pseudo-limited-quarter-step",
+                dc_strategy="pseudo",
+                min_newton_iterations=max(base_iterations, 220),
+                force_voltage_limiting=True,
+                max_voltage_step=min(safe_step, 2.0),
+                dt_scale=0.25,
+            ),
+        ]
+
+    def _apply_transient_retry_profile(
+        self,
+        settings: "SimulationSettings",
+        profile: _TransientRetryProfile,
+    ) -> "SimulationSettings":
+        """Clone runtime settings and apply retry profile overrides."""
+        try:
+            attempt_settings = copy.deepcopy(settings)
+        except Exception:
+            attempt_settings = copy.copy(settings)
+
+        if profile.dc_strategy is not None:
+            attempt_settings.dc_strategy = profile.dc_strategy
+        if profile.min_newton_iterations is not None:
+            attempt_settings.max_newton_iterations = max(
+                int(getattr(attempt_settings, "max_newton_iterations", 50)),
+                profile.min_newton_iterations,
+            )
+        if profile.force_voltage_limiting is not None:
+            attempt_settings.enable_voltage_limiting = profile.force_voltage_limiting
+        if profile.max_voltage_step is not None:
+            attempt_settings.max_voltage_step = profile.max_voltage_step
+
+        return attempt_settings
+
+    def _is_transient_convergence_failure(self, error_message: str) -> bool:
+        """Return True if an error should trigger a convergence retry profile."""
+        lowered = (error_message or "").lower()
+        if "cancel" in lowered:
+            return False
+
+        indicators = (
+            "newton",
+            "diverg",
+            "converg",
+            "singular",
+            "transient failed",
+            "time step too small",
+            "timestep too small",
+        )
+        return any(indicator in lowered for indicator in indicators)
 
     def _run_transient_streaming(
         self,

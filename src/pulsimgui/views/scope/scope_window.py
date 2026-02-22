@@ -6,10 +6,11 @@ import numpy as np
 import pyqtgraph as pg
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QColorDialog,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -39,6 +40,10 @@ class ScopeWindow(QWidget):
     """Standalone scope window wrapping a :class:`WaveformViewer`."""
 
     closed = Signal(str, tuple)
+    DEFAULT_TRACE_WIDTH = 2.0
+    STACKED_MAX_DISPLAY_POINTS = 10000
+    STACKED_TOTAL_POINT_BUDGET = 24000
+    STACKED_MIN_POINTS_PER_SIGNAL = 1200
 
     def __init__(
         self,
@@ -63,21 +68,42 @@ class ScopeWindow(QWidget):
         self._default_mode_set = False
         self._stacked_time: np.ndarray = np.array([], dtype=float)
         self._stacked_signals: dict[str, np.ndarray] = {}
+        self._stacked_signal_stats: dict[str, dict[str, float]] = {}
         self._stacked_active_signal: str | None = None
         self._stacked_cursors_enabled = False
         self._stacked_grid_enabled = True
         self._stacked_cursor_lines: list[tuple[pg.InfiniteLine, pg.InfiniteLine]] = []
         self._syncing_stacked_cursor_controls = False
         self._stacked_cursor_initialized = False
+        self._trace_styles: dict[str, dict[str, object]] = {}
+        self._default_trace_width = self.DEFAULT_TRACE_WIDTH
+        self._syncing_trace_style_controls = False
 
         self._viewer = WaveformViewer(theme_service=self._theme_service)
         self._viewer.setMinimumSize(760, 460)
         self._viewer.set_manual_signal_add_enabled(False)
         self._viewer.set_auto_show_all_signals(True)
+        self._viewer.set_default_trace_width(self._default_trace_width)
+        self._viewer.set_trace_styles(self._trace_styles)
 
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(["Overlay", "Stacked"])
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+
+        self._trace_signal_combo = QComboBox()
+        self._trace_signal_combo.setMinimumWidth(220)
+        self._trace_signal_combo.currentTextChanged.connect(self._on_trace_style_signal_changed)
+        self._trace_width_spin = QDoubleSpinBox()
+        self._trace_width_spin.setRange(0.5, 8.0)
+        self._trace_width_spin.setSingleStep(0.2)
+        self._trace_width_spin.setDecimals(1)
+        self._trace_width_spin.setMaximumWidth(76)
+        self._trace_width_spin.setValue(self._default_trace_width)
+        self._trace_width_spin.valueChanged.connect(self._on_trace_width_changed)
+        self._trace_color_btn = QPushButton("Color")
+        self._trace_color_btn.clicked.connect(self._on_trace_color_clicked)
+        self._trace_reset_btn = QPushButton("Reset")
+        self._trace_reset_btn.clicked.connect(self._on_trace_style_reset)
 
         self._view_stack = QStackedWidget()
         self._view_stack.addWidget(self._viewer)
@@ -198,13 +224,21 @@ class ScopeWindow(QWidget):
         mode_layout.addWidget(QLabel("Display:"))
         mode_layout.addWidget(self._mode_combo, stretch=0)
         mode_layout.addSpacing(12)
-        mode_layout.addWidget(self._mapping_label, stretch=1)
+        mode_layout.addWidget(QLabel("Trace:"))
+        mode_layout.addWidget(self._trace_signal_combo, stretch=0)
+        mode_layout.addWidget(QLabel("Width:"))
+        mode_layout.addWidget(self._trace_width_spin, stretch=0)
+        mode_layout.addWidget(self._trace_color_btn, stretch=0)
+        mode_layout.addWidget(self._trace_reset_btn, stretch=0)
+        mode_layout.addStretch(1)
         info_layout.addWidget(mode_row)
+        info_layout.addWidget(self._mapping_label)
         info_layout.addWidget(self._message_label)
         layout.addWidget(info_container, stretch=0)
 
         self._set_stacked_cursor_enabled(False)
-        self._stacked_signal_list.set_trace_palette(self._trace_palette())
+        self._apply_stacked_trace_colors()
+        self._sync_trace_style_controls()
 
         self._refresh_title()
         if self._theme_service is not None:
@@ -252,8 +286,11 @@ class ScopeWindow(QWidget):
         if not result or not result.time:
             self._current_result = SimulationResult()
             self._viewer.set_result(self._current_result)
-            self._refresh_stacked_sidebar(self._current_result)
-            self._rebuild_stacked_plots(self._current_result)
+            if self._mode_combo.currentIndex() == 1:
+                self._refresh_stacked_sidebar(self._current_result)
+                self._rebuild_stacked_plots(self._current_result)
+            else:
+                self._sync_trace_style_controls()
             self._message_label.setText("No simulation data available yet.")
             return
 
@@ -285,8 +322,11 @@ class ScopeWindow(QWidget):
 
         self._current_result = subset if subset.signals else SimulationResult(time=subset.time, signals={})
         self._viewer.set_result(self._current_result)
-        self._refresh_stacked_sidebar(self._current_result)
-        self._rebuild_stacked_plots(self._current_result)
+        if self._mode_combo.currentIndex() == 1:
+            self._refresh_stacked_sidebar(self._current_result)
+            self._rebuild_stacked_plots(self._current_result)
+        else:
+            self._sync_trace_style_controls()
 
         self._message_label.setText(self._format_status(found_channels, missing_channels))
 
@@ -325,7 +365,7 @@ class ScopeWindow(QWidget):
         self._theme = theme
         c = theme.colors
         self._viewer.apply_theme(theme)
-        self._stacked_signal_list.set_trace_palette(self._trace_palette())
+        self._apply_stacked_trace_colors()
         self._stacked_signal_list.apply_theme(theme)
         self._stacked_measurements.apply_theme(theme, cursor_palette=self._cursor_palette())
         self.setStyleSheet(f"""
@@ -359,7 +399,9 @@ class ScopeWindow(QWidget):
                 padding: 0;
             }}
         """)
-        self._rebuild_stacked_plots(self._current_result)
+        self._sync_trace_style_controls()
+        if self._mode_combo.currentIndex() == 1:
+            self._rebuild_stacked_plots(self._current_result)
 
     def _on_mode_changed(self, index: int) -> None:
         if index == 1:
@@ -449,6 +491,285 @@ class ScopeWindow(QWidget):
             return self._theme_service.get_cursor_palette(self._theme)
         return None
 
+    def _trace_style_color(self, signal_name: str) -> tuple[int, int, int] | None:
+        style = self._trace_styles.get(signal_name, {})
+        color = style.get("color")
+        if isinstance(color, tuple) and len(color) == 3:
+            return color
+        return None
+
+    def _trace_signal_names(self) -> list[str]:
+        if self._current_result and self._current_result.signals:
+            return list(self._current_result.signals.keys())
+        return list(self._stacked_signals.keys())
+
+    def _default_trace_color(self, signal_name: str) -> tuple[int, int, int]:
+        palette = self._trace_palette()
+        signal_names = self._trace_signal_names()
+        if signal_name in signal_names:
+            index = signal_names.index(signal_name)
+            return palette[index % len(palette)]
+        return palette[0]
+
+    def _trace_style_width(self, signal_name: str) -> float:
+        style = self._trace_styles.get(signal_name, {})
+        width = style.get("width")
+        if isinstance(width, (int, float)):
+            return max(0.5, float(width))
+        return self._default_trace_width
+
+    @staticmethod
+    def _rgb_to_hex(color: tuple[int, int, int]) -> str:
+        return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+
+    def _apply_trace_styles_to_viewer(self) -> None:
+        self._viewer.set_trace_styles(self._trace_styles)
+
+    def _apply_stacked_trace_colors(self) -> None:
+        self._stacked_signal_list.set_trace_palette(self._trace_palette())
+        for signal_name in self._stacked_signals:
+            override = self._trace_style_color(signal_name)
+            if override is not None:
+                self._stacked_signal_list.set_signal_color(signal_name, override)
+
+    def _selected_trace_signal(self) -> str | None:
+        signal_name = self._trace_signal_combo.currentText().strip()
+        if signal_name and signal_name in self._trace_signal_names():
+            return signal_name
+        return None
+
+    def _update_trace_color_button(self, signal_name: str | None) -> None:
+        if signal_name is None:
+            self._trace_color_btn.setText("Color")
+            return
+        color = self._trace_style_color(signal_name)
+        if color is None:
+            color = self._stacked_signal_list.get_signal_color(signal_name)
+        if color is None:
+            color = self._default_trace_color(signal_name)
+        self._trace_color_btn.setText(self._rgb_to_hex(color).upper())
+
+    def _set_trace_controls_for_signal(self, signal_name: str | None) -> None:
+        width = self._default_trace_width
+        if signal_name is not None:
+            width = self._trace_style_width(signal_name)
+
+        self._syncing_trace_style_controls = True
+        self._trace_width_spin.blockSignals(True)
+        try:
+            self._trace_width_spin.setValue(width)
+        finally:
+            self._trace_width_spin.blockSignals(False)
+            self._syncing_trace_style_controls = False
+
+        self._update_trace_color_button(signal_name)
+
+    def _sync_trace_style_controls(self) -> None:
+        signal_names = self._trace_signal_names()
+        current = self._trace_signal_combo.currentText()
+        if current in signal_names:
+            selected = current
+        elif self._stacked_active_signal in signal_names:
+            selected = self._stacked_active_signal
+        elif signal_names:
+            selected = signal_names[0]
+        else:
+            selected = ""
+
+        self._syncing_trace_style_controls = True
+        self._trace_signal_combo.blockSignals(True)
+        try:
+            self._trace_signal_combo.clear()
+            self._trace_signal_combo.addItems(signal_names)
+            if selected:
+                index = self._trace_signal_combo.findText(selected)
+                if index >= 0:
+                    self._trace_signal_combo.setCurrentIndex(index)
+        finally:
+            self._trace_signal_combo.blockSignals(False)
+            self._syncing_trace_style_controls = False
+
+        controls_enabled = bool(signal_names)
+        self._trace_signal_combo.setEnabled(controls_enabled)
+        self._trace_width_spin.setEnabled(controls_enabled)
+        self._trace_color_btn.setEnabled(controls_enabled)
+        self._trace_reset_btn.setEnabled(controls_enabled)
+        self._set_trace_controls_for_signal(selected or None)
+
+    def _prune_trace_style(self, signal_name: str) -> None:
+        style = self._trace_styles.get(signal_name)
+        if not style:
+            return
+
+        width = style.get("width")
+        if isinstance(width, (int, float)) and abs(float(width) - self._default_trace_width) < 1e-9:
+            style.pop("width", None)
+
+        color = style.get("color")
+        if not (isinstance(color, tuple) and len(color) == 3):
+            style.pop("color", None)
+
+        if not style:
+            self._trace_styles.pop(signal_name, None)
+
+    def _on_trace_style_signal_changed(self, signal_name: str) -> None:
+        if self._syncing_trace_style_controls:
+            return
+        self._set_trace_controls_for_signal(signal_name or None)
+
+    def _on_trace_width_changed(self, value: float) -> None:
+        if self._syncing_trace_style_controls:
+            return
+        signal_name = self._selected_trace_signal()
+        if signal_name is None:
+            return
+
+        style = self._trace_styles.setdefault(signal_name, {})
+        style["width"] = max(0.5, float(value))
+        self._prune_trace_style(signal_name)
+        self._apply_trace_styles_to_viewer()
+        if self._mode_combo.currentIndex() == 1:
+            self._rebuild_stacked_plots(self._current_result)
+
+    def _on_trace_color_clicked(self) -> None:
+        signal_name = self._selected_trace_signal()
+        if signal_name is None:
+            return
+
+        base_color = self._trace_style_color(signal_name)
+        if base_color is None:
+            base_color = self._stacked_signal_list.get_signal_color(signal_name)
+        if base_color is None:
+            base_color = self._default_trace_color(signal_name)
+
+        picked = QColorDialog.getColor(
+            QColor(*base_color),
+            self,
+            f"Trace color - {signal_name}",
+        )
+        if not picked.isValid():
+            return
+
+        style = self._trace_styles.setdefault(signal_name, {})
+        style["color"] = (picked.red(), picked.green(), picked.blue())
+        self._prune_trace_style(signal_name)
+        self._apply_trace_styles_to_viewer()
+        self._apply_stacked_trace_colors()
+        self._set_trace_controls_for_signal(signal_name)
+        if self._mode_combo.currentIndex() == 1:
+            self._rebuild_stacked_plots(self._current_result)
+
+    def _on_trace_style_reset(self) -> None:
+        signal_name = self._selected_trace_signal()
+        if signal_name is None:
+            return
+
+        self._trace_styles.pop(signal_name, None)
+        self._apply_trace_styles_to_viewer()
+        self._apply_stacked_trace_colors()
+        self._set_trace_controls_for_signal(signal_name)
+        if self._mode_combo.currentIndex() == 1:
+            self._rebuild_stacked_plots(self._current_result)
+
+    @staticmethod
+    def _decimate_stacked_for_display(
+        time: np.ndarray,
+        values: np.ndarray,
+        max_points: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Downsample preserving waveform shape by min/max bucketing."""
+        n_points = len(time)
+        if n_points <= max_points or max_points < 4:
+            return time, values
+
+        n_buckets = max(1, max_points // 2)
+        bucket_size = max(1, n_points // n_buckets)
+
+        max_output_size = (n_buckets * 2) + 2
+        decimated_time = np.empty(max_output_size, dtype=time.dtype)
+        decimated_values = np.empty(max_output_size, dtype=values.dtype)
+
+        out_idx = 0
+        last_global_idx = -1
+
+        # Keep signal boundaries for stable cursor/readout behavior.
+        decimated_time[out_idx] = time[0]
+        decimated_values[out_idx] = values[0]
+        out_idx += 1
+        last_global_idx = 0
+
+        for bucket in range(n_buckets):
+            start = bucket * bucket_size
+            if start >= n_points:
+                break
+            end = n_points if bucket == n_buckets - 1 else min(start + bucket_size, n_points)
+            if end <= start:
+                continue
+
+            bucket_values = values[start:end]
+            if len(bucket_values) == 0:
+                continue
+
+            min_local = int(np.argmin(bucket_values))
+            max_local = int(np.argmax(bucket_values))
+            first_local, second_local = (
+                (min_local, max_local)
+                if min_local <= max_local
+                else (max_local, min_local)
+            )
+
+            for local_idx in (first_local, second_local):
+                global_idx = start + local_idx
+                if global_idx == last_global_idx:
+                    continue
+                decimated_time[out_idx] = time[global_idx]
+                decimated_values[out_idx] = values[global_idx]
+                out_idx += 1
+                last_global_idx = global_idx
+                if out_idx >= max_output_size:
+                    break
+
+            if out_idx >= max_output_size:
+                break
+
+        if last_global_idx != n_points - 1 and out_idx < max_output_size:
+            decimated_time[out_idx] = time[-1]
+            decimated_values[out_idx] = values[-1]
+            out_idx += 1
+
+        return decimated_time[:out_idx], decimated_values[:out_idx]
+
+    @staticmethod
+    def _configure_stacked_trace_performance(trace: pg.PlotDataItem, point_count: int) -> None:
+        if point_count < 5000:
+            return
+        trace.setClipToView(True)
+        trace.setDownsampling(auto=True, method="peak")
+
+    def _stacked_target_points_per_signal(self, visible_count: int) -> int:
+        if visible_count <= 0:
+            return self.STACKED_MAX_DISPLAY_POINTS
+        budget = self.STACKED_TOTAL_POINT_BUDGET // visible_count
+        bounded = min(self.STACKED_MAX_DISPLAY_POINTS, budget)
+        return max(self.STACKED_MIN_POINTS_PER_SIGNAL, bounded)
+
+    def _rebuild_stacked_statistics_cache(self) -> None:
+        self._stacked_signal_stats = {}
+        for signal_name, values in self._stacked_signals.items():
+            if len(values) == 0:
+                continue
+            min_val = float(np.min(values))
+            max_val = float(np.max(values))
+            mean_val = float(np.mean(values))
+            rms_val = float(np.sqrt(np.mean(values ** 2)))
+            self._stacked_signal_stats[signal_name] = {
+                "min": min_val,
+                "max": max_val,
+                "mean": mean_val,
+                "rms": rms_val,
+                "pkpk": max_val - min_val,
+            }
+
     def _set_stacked_cursor_enabled(self, enabled: bool) -> None:
         final_enabled = bool(enabled) and self._stacked_cursors_enabled
         self._c1_label.setEnabled(final_enabled)
@@ -509,6 +830,7 @@ class ScopeWindow(QWidget):
         if not result or not result.time or not result.signals:
             self._stacked_time = np.array([], dtype=float)
             self._stacked_signals = {}
+            self._stacked_signal_stats = {}
             self._stacked_active_signal = None
             self._stacked_cursor_initialized = False
             self._stacked_signal_list.clear()
@@ -516,6 +838,7 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.clear_statistics()
             self._stacked_measurements.clear_cursor_measurements()
             self._stacked_measurements.set_multi_signal_measurements({})
+            self._sync_trace_style_controls()
             return
 
         time = np.asarray(result.time, dtype=float)
@@ -528,6 +851,7 @@ class ScopeWindow(QWidget):
         if not valid_signals:
             self._stacked_time = np.array([], dtype=float)
             self._stacked_signals = {}
+            self._stacked_signal_stats = {}
             self._stacked_active_signal = None
             self._stacked_cursor_initialized = False
             self._stacked_signal_list.clear()
@@ -535,16 +859,18 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.clear_statistics()
             self._stacked_measurements.clear_cursor_measurements()
             self._stacked_measurements.set_multi_signal_measurements({})
+            self._sync_trace_style_controls()
             return
 
         self._stacked_time = time
         self._stacked_signals = valid_signals
+        self._rebuild_stacked_statistics_cache()
 
         previous_visible = set(self._stacked_signal_list.get_visible_signals())
         previous_active = self._stacked_active_signal
 
         self._stacked_signal_list.set_signals(list(valid_signals.keys()))
-        self._stacked_signal_list.set_trace_palette(self._trace_palette())
+        self._apply_stacked_trace_colors()
 
         default_show_all = not previous_visible
         for name in valid_signals:
@@ -566,6 +892,7 @@ class ScopeWindow(QWidget):
 
         self._configure_stacked_cursor_spins()
         self._update_stacked_measurements()
+        self._sync_trace_style_controls()
 
     def _configure_stacked_cursor_spins(self) -> None:
         if len(self._stacked_time) == 0:
@@ -617,6 +944,12 @@ class ScopeWindow(QWidget):
     def _on_stacked_signal_selected(self, signal_name: str) -> None:
         if signal_name in self._stacked_signals:
             self._stacked_active_signal = signal_name
+            combo_index = self._trace_signal_combo.findText(signal_name)
+            if combo_index >= 0:
+                self._trace_signal_combo.blockSignals(True)
+                self._trace_signal_combo.setCurrentIndex(combo_index)
+                self._trace_signal_combo.blockSignals(False)
+            self._set_trace_controls_for_signal(signal_name)
             self._update_stacked_measurements()
 
     def _on_stacked_cursor_changed(self, _value: float) -> None:
@@ -638,11 +971,16 @@ class ScopeWindow(QWidget):
             self._stacked_active_signal = signal_name
 
         values = self._stacked_signals[signal_name]
-        min_val = float(np.min(values))
-        max_val = float(np.max(values))
-        mean_val = float(np.mean(values))
-        rms_val = float(np.sqrt(np.mean(values ** 2)))
-        self._stacked_measurements.update_statistics(min_val, max_val, mean_val, rms_val)
+        stats = self._stacked_signal_stats.get(signal_name)
+        if stats is None:
+            self._stacked_measurements.clear_statistics()
+        else:
+            self._stacked_measurements.update_statistics(
+                stats["min"],
+                stats["max"],
+                stats["mean"],
+                stats["rms"],
+            )
 
         if self._stacked_cursors_enabled:
             t1 = self._c1_spin.value()
@@ -670,10 +1008,9 @@ class ScopeWindow(QWidget):
     ) -> dict[str, dict[str, float | None]]:
         table: dict[str, dict[str, float | None]] = {}
         for name, values in self._stacked_signals.items():
-            min_val = float(np.min(values))
-            max_val = float(np.max(values))
-            mean_val = float(np.mean(values))
-            rms_val = float(np.sqrt(np.mean(values ** 2)))
+            stats = self._stacked_signal_stats.get(name)
+            if stats is None:
+                continue
             c1 = self._interpolate_stacked_value(t1, values) if t1 is not None else None
             c2 = self._interpolate_stacked_value(t2, values) if t2 is not None else None
             dv = c2 - c1 if c1 is not None and c2 is not None else None
@@ -681,11 +1018,11 @@ class ScopeWindow(QWidget):
                 "c1": c1,
                 "c2": c2,
                 "dv": dv,
-                "min": min_val,
-                "max": max_val,
-                "mean": mean_val,
-                "rms": rms_val,
-                "pkpk": max_val - min_val,
+                "min": stats["min"],
+                "max": stats["max"],
+                "mean": stats["mean"],
+                "rms": stats["rms"],
+                "pkpk": stats["pkpk"],
             }
         return table
 
@@ -725,15 +1062,14 @@ class ScopeWindow(QWidget):
             self._stacked_layout.addStretch()
             return
 
-        for idx, (name, values) in enumerate(signal_items):
+        points_per_signal = self._stacked_target_points_per_signal(len(signal_items))
 
-            # Keep stacked mode responsive for large simulations.
-            if len(time) > 30000:
-                stride = max(1, len(time) // 30000)
-                t = time[::stride]
-                values = values[::stride]
-            else:
-                t = time
+        for idx, (name, values) in enumerate(signal_items):
+            t, plot_values = self._decimate_stacked_for_display(
+                time,
+                values,
+                max_points=points_per_signal,
+            )
 
             panel = QFrame()
             panel_layout = QVBoxLayout(panel)
@@ -749,8 +1085,19 @@ class ScopeWindow(QWidget):
             plot.setMinimumHeight(200)
             grid_alpha = 0.25 if self._stacked_grid_enabled else 0.0
             plot.showGrid(x=self._stacked_grid_enabled, y=self._stacked_grid_enabled, alpha=grid_alpha)
-            color = palette[idx % len(palette)]
-            plot.plot(t, values, pen=pg.mkPen(color=color, width=1.3), skipFiniteCheck=True)
+            color = self._stacked_signal_list.get_signal_color(name)
+            if color is None:
+                color = palette[idx % len(palette)]
+            color_override = self._trace_style_color(name)
+            line_color = color_override if color_override is not None else color
+            line_width = self._trace_style_width(name)
+            trace = plot.plot(
+                t,
+                plot_values,
+                pen=pg.mkPen(color=line_color, width=line_width),
+                skipFiniteCheck=True,
+            )
+            self._configure_stacked_trace_performance(trace, len(t))
 
             item = plot.getPlotItem()
             item.setLabel("left", "")
