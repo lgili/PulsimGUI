@@ -218,7 +218,11 @@ def _resolve_node_signals(
                     ignored,
                 )
             )
-        elif component.type == ComponentType.VOLTAGE_PROBE and pin_name == VOLTAGE_PROBE_OUTPUT_PIN_NAME:
+        elif component.type == ComponentType.VOLTAGE_PROBE and pin_name in (
+            VOLTAGE_PROBE_OUTPUT_PIN_NAME,
+            "+",
+            "-",
+        ):
             expanded = True
             probe_name = component.name or "Voltage Probe"
             signals.append(
@@ -229,7 +233,10 @@ def _resolve_node_signals(
                     node_label=probe_name,
                 )
             )
-        elif component.type == ComponentType.CURRENT_PROBE and pin_name == CURRENT_PROBE_OUTPUT_PIN_NAME:
+        elif component.type == ComponentType.CURRENT_PROBE and pin_name in (
+            CURRENT_PROBE_OUTPUT_PIN_NAME,
+            "OUT",
+        ):
             expanded = True
             probe_name = component.name or "Current Probe"
             signals.append(

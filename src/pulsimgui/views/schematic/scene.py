@@ -7,6 +7,7 @@ from PySide6.QtGui import QPen, QColor, QPainter, QBrush
 from PySide6.QtWidgets import QGraphicsScene
 
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.wire import WireConnection
 
 
 class SchematicScene(QGraphicsScene):
@@ -28,6 +29,7 @@ class SchematicScene(QGraphicsScene):
     # Grid settings - 20px is good for schematics
     GRID_SIZE = 20.0  # pixels
     GRID_DOT_SIZE = 3.0  # dot diameter in pixels
+    PIN_CAPTURE_DISTANCE = 18.0  # pixels
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,6 +57,7 @@ class SchematicScene(QGraphicsScene):
     def circuit(self, circuit: Circuit | None) -> None:
         """Set the circuit and update display."""
         self._circuit = circuit
+        self._normalize_circuit_geometry()
         self._rebuild_scene()
 
     @property
@@ -251,6 +254,7 @@ class SchematicScene(QGraphicsScene):
         """Add a component to the scene."""
         from pulsimgui.views.schematic.items import create_component_item
 
+        self._snap_component_to_grid(component)
         item = create_component_item(component)
         item.set_dark_mode(self._dark_mode)
         self.addItem(item)
@@ -412,5 +416,123 @@ class SchematicScene(QGraphicsScene):
 
     def load_circuit(self, circuit) -> None:
         """Load a circuit and rebuild connections."""
-        self._circuit = circuit
-        self._rebuild_scene()
+        self.circuit = circuit
+
+    # ------------------------------------------------------------------
+    # Geometry normalization helpers
+    # ------------------------------------------------------------------
+    def _snap_value_to_grid(self, value: float) -> float:
+        return round(value / self._grid_size) * self._grid_size
+
+    def _snap_component_to_grid(self, component) -> None:
+        snapped = self.snap_to_grid(QPointF(component.x, component.y))
+        component.x = snapped.x()
+        component.y = snapped.y()
+
+    def _normalize_circuit_geometry(self) -> None:
+        """Keep component/wire geometry aligned so wiring remains connectable."""
+        if self._circuit is None:
+            return
+
+        for component in self._circuit.components.values():
+            self._snap_component_to_grid(component)
+
+        for wire in self._circuit.wires.values():
+            for seg in wire.segments:
+                seg.x1 = self._snap_value_to_grid(seg.x1)
+                seg.y1 = self._snap_value_to_grid(seg.y1)
+                seg.x2 = self._snap_value_to_grid(seg.x2)
+                seg.y2 = self._snap_value_to_grid(seg.y2)
+
+            # Preserve continuous polyline topology after snapping.
+            for idx in range(len(wire.segments) - 1):
+                wire.segments[idx + 1].x1 = wire.segments[idx].x2
+                wire.segments[idx + 1].y1 = wire.segments[idx].y2
+
+            if wire.junctions:
+                wire.junctions = [
+                    (
+                        self._snap_value_to_grid(float(jx)),
+                        self._snap_value_to_grid(float(jy)),
+                    )
+                    for jx, jy in wire.junctions
+                ]
+
+            self._synchronize_wire_endpoint_connection(wire, endpoint="start")
+            self._synchronize_wire_endpoint_connection(wire, endpoint="end")
+
+    def _synchronize_wire_endpoint_connection(self, wire, endpoint: str) -> None:
+        """Ensure wire endpoint metadata and endpoint coordinates match nearby pins."""
+        if not wire.segments:
+            return
+
+        is_start = endpoint == "start"
+        connection = wire.start_connection if is_start else wire.end_connection
+        pin_pos = self._pin_position_for_connection(connection)
+
+        if pin_pos is None:
+            point = (
+                (wire.segments[0].x1, wire.segments[0].y1)
+                if is_start
+                else (wire.segments[-1].x2, wire.segments[-1].y2)
+            )
+            inferred = self._nearest_component_pin(point[0], point[1], max_distance=self.PIN_CAPTURE_DISTANCE)
+            if inferred is None:
+                if is_start:
+                    wire.start_connection = None
+                else:
+                    wire.end_connection = None
+                return
+
+            component, pin_index, pin_x, pin_y = inferred
+            if is_start:
+                wire.start_connection = WireConnection(component_id=component.id, pin_index=pin_index)
+            else:
+                wire.end_connection = WireConnection(component_id=component.id, pin_index=pin_index)
+            pin_pos = (pin_x, pin_y)
+
+        if pin_pos is None:
+            return
+
+        pin_x, pin_y = pin_pos
+        if is_start:
+            wire.segments[0].x1 = pin_x
+            wire.segments[0].y1 = pin_y
+        else:
+            wire.segments[-1].x2 = pin_x
+            wire.segments[-1].y2 = pin_y
+
+    def _pin_position_for_connection(
+        self,
+        connection: WireConnection | None,
+    ) -> tuple[float, float] | None:
+        if self._circuit is None or connection is None:
+            return None
+        component = self._circuit.components.get(connection.component_id)
+        if component is None:
+            return None
+        if connection.pin_index < 0 or connection.pin_index >= len(component.pins):
+            return None
+        return component.get_pin_position(connection.pin_index)
+
+    def _nearest_component_pin(
+        self,
+        x: float,
+        y: float,
+        max_distance: float,
+    ) -> tuple[object, int, float, float] | None:
+        if self._circuit is None:
+            return None
+
+        nearest = None
+        nearest_sq = max_distance * max_distance
+        for component in self._circuit.components.values():
+            for pin_index in range(len(component.pins)):
+                pin_x, pin_y = component.get_pin_position(pin_index)
+                dx = pin_x - x
+                dy = pin_y - y
+                dist_sq = dx * dx + dy * dy
+                if dist_sq <= nearest_sq:
+                    nearest_sq = dist_sq
+                    nearest = (component, pin_index, pin_x, pin_y)
+        return nearest

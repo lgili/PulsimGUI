@@ -31,6 +31,46 @@ class _CircuitNoAddNode:
         self.devices.append((name, n1, n2, value))
 
 
+class _CircuitWithVirtual(_CircuitNoAddNode):
+    def __init__(self) -> None:
+        super().__init__()
+        self.virtual_components: list[tuple[str, str, list[int], dict[str, float], dict[str, str]]] = []
+        self.switches: list[tuple[str, int, int, bool, float, float]] = []
+        self.snubbers: list[tuple[str, int, int, float, float, float]] = []
+
+    def add_virtual_component(
+        self,
+        comp_type: str,
+        name: str,
+        nodes: list[int],
+        numeric_params: dict[str, float],
+        metadata: dict[str, str],
+    ) -> None:
+        self.virtual_components.append((comp_type, name, list(nodes), dict(numeric_params), dict(metadata)))
+
+    def add_switch(
+        self,
+        name: str,
+        n1: int,
+        n2: int,
+        closed: bool,
+        g_on: float,
+        g_off: float,
+    ) -> None:
+        self.switches.append((name, n1, n2, closed, g_on, g_off))
+
+    def add_snubber_rc(
+        self,
+        name: str,
+        n1: int,
+        n2: int,
+        resistance: float,
+        capacitance: float,
+        initial_voltage: float,
+    ) -> None:
+        self.snubbers.append((name, n1, n2, resistance, capacitance, initial_voltage))
+
+
 def test_converter_falls_back_to_get_node_when_add_node_is_missing() -> None:
     """Circuit conversion should work when backend Circuit has no add_node method."""
 
@@ -87,6 +127,79 @@ def test_converter_ignores_scope_components_during_build() -> None:
 
     assert converted.nodes == {"OUT": 1}
     assert converted.devices == [("R1", 1, 0, 1000.0)]
+
+
+def test_converter_uses_virtual_component_for_unmapped_types() -> None:
+    """Unmapped components should use backend virtual-component path when available."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "q1",
+                "type": "BJT_NPN",
+                "name": "Q1",
+                "parameters": {
+                    "beta": 120.0,
+                    "enabled": True,
+                    "model": "npn",
+                    "notes": ["demo", "virtual"],
+                },
+                "pin_nodes": ["1", "2", "0"],
+            }
+        ],
+        "node_map": {"q1": ["1", "2", "0"]},
+        "node_aliases": {"1": "B", "2": "C", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    comp_type, name, nodes, numeric_params, metadata = converted.virtual_components[0]
+    assert comp_type == "BJT_NPN"
+    assert name == "Q1"
+    assert len(nodes) == 3
+    assert numeric_params["beta"] == 120.0
+    assert numeric_params["enabled"] == 1.0
+    assert metadata["component_type"] == "BJT_NPN"
+    assert metadata["model"] == "npn"
+    assert metadata["notes"] == "[\"demo\", \"virtual\"]"
+
+
+def test_converter_prefers_native_switch_and_snubber_methods() -> None:
+    """When backend has native methods, converter should not downgrade to virtual."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "s1",
+                "type": "SWITCH",
+                "name": "S1",
+                "parameters": {"closed": True, "g_on": 2e6, "g_off": 1e-10},
+                "pin_nodes": ["1", "2"],
+            },
+            {
+                "id": "sn1",
+                "type": "SNUBBER_RC",
+                "name": "SN1",
+                "parameters": {"resistance": 220.0, "capacitance": 4.7e-8, "initial_voltage": 0.2},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"s1": ["1", "2"], "sn1": ["2", "0"]},
+        "node_aliases": {"1": "IN", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.switches) == 1
+    assert converted.switches[0][0] == "S1"
+    assert len(converted.snubbers) == 1
+    assert converted.snubbers[0][0] == "SN1"
+    assert converted.virtual_components == []
 
 
 def test_build_node_map_merges_split_wires_on_shared_endpoint() -> None:

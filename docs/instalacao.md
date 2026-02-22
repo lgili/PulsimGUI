@@ -63,4 +63,4 @@ QT_QPA_PLATFORM=offscreen python3 -m pulsimgui
 
 ### Backend não encontrado
 
-Abra `Preferences > Simulation > Backend Runtime` e rode **Install / Update Backend** com alvo `v0.3.3`.
+Abra `Preferences > Simulation > Backend Runtime` e rode **Install / Update Backend** com alvo `v0.4.0`.

@@ -77,7 +77,7 @@ Esta página documenta os campos reais disponíveis hoje na GUI.
 
 No estado atual do projeto, o default é:
 
-- `target_version = v0.3.3`
+- `target_version = v0.4.0`
 
 Isso é aplicado quando não existe valor salvo em settings.
 
@@ -86,5 +86,5 @@ Isso é aplicado quando não existe valor salvo em settings.
 Para ter reprodutibilidade entre máquinas:
 
 1. Manter `Source = PyPI`.
-2. Fixar `Target version = v0.3.3` (ou versão aprovada do release).
+2. Fixar `Target version = v0.4.0` (ou versão aprovada do release).
 3. Ativar `Auto-sync backend on startup` em ambientes de validação.

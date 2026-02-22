@@ -417,6 +417,9 @@ class WireItem(QGraphicsPathItem):
         if scene is not None and hasattr(scene, 'grid_size'):
             grid_size = scene.grid_size
 
+        start_pin_pos = self._connected_pin_position("start")
+        end_pin_pos = self._connected_pin_position("end")
+
         for seg in self._wire.segments:
             seg.x1 = round(seg.x1 / grid_size) * grid_size
             seg.y1 = round(seg.y1 / grid_size) * grid_size
@@ -429,6 +432,32 @@ class WireItem(QGraphicsPathItem):
             next_seg = self._wire.segments[i + 1]
             next_seg.x1 = curr_seg.x2
             next_seg.y1 = curr_seg.y2
+
+        # Keep endpoints locked to component pins when connection metadata exists.
+        if self._wire.segments and start_pin_pos is not None:
+            self._wire.segments[0].x1 = start_pin_pos[0]
+            self._wire.segments[0].y1 = start_pin_pos[1]
+        if self._wire.segments and end_pin_pos is not None:
+            self._wire.segments[-1].x2 = end_pin_pos[0]
+            self._wire.segments[-1].y2 = end_pin_pos[1]
+
+    def _connected_pin_position(self, endpoint: str) -> tuple[float, float] | None:
+        """Resolve pin position for a connected wire endpoint."""
+        connection = self._wire.start_connection if endpoint == "start" else self._wire.end_connection
+        if connection is None:
+            return None
+
+        scene = self.scene()
+        circuit = getattr(scene, "circuit", None) if scene is not None else None
+        if circuit is None:
+            return None
+        component = circuit.components.get(connection.component_id)
+        if component is None:
+            return None
+        pin_index = connection.pin_index
+        if pin_index < 0 or pin_index >= len(component.pins):
+            return None
+        return component.get_pin_position(pin_index)
 
     def _cleanup_segments(self) -> None:
         """Remove zero-length segments and merge collinear segments."""
