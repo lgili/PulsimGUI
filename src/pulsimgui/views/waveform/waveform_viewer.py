@@ -20,6 +20,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QAbstractItemView,
+    QHeaderView,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
 )
 
 from pulsimgui.services.simulation_service import SimulationResult
@@ -136,6 +140,24 @@ class MeasurementsPanel(QFrame):
                 padding: 0 6px;
                 background-color: #ffffff;
             }
+            QTableWidget {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                gridline-color: #e5e7eb;
+                color: #111827;
+                font-size: 10px;
+            }
+            QHeaderView::section {
+                background-color: #f3f4f6;
+                color: #374151;
+                border: none;
+                border-right: 1px solid #e5e7eb;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 4px 6px;
+                font-size: 10px;
+                font-weight: 600;
+            }
             """)
             muted_color = "#6b7280"
             accent_colors = {
@@ -173,6 +195,24 @@ class MeasurementsPanel(QFrame):
                     padding: 0 6px;
                     background-color: {c.background};
                 }}
+                QTableWidget {{
+                    background-color: {c.background};
+                    border: 1px solid {c.panel_border};
+                    border-radius: 6px;
+                    gridline-color: {c.divider};
+                    color: {c.foreground};
+                    font-size: 10px;
+                }}
+                QHeaderView::section {{
+                    background-color: {c.panel_background};
+                    color: {c.foreground};
+                    border: none;
+                    border-right: 1px solid {c.divider};
+                    border-bottom: 1px solid {c.divider};
+                    padding: 4px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }}
             """)
             muted_color = c.foreground_muted
             cursor_1 = cursor_colors[0] if cursor_colors is not None else c.error
@@ -199,6 +239,9 @@ class MeasurementsPanel(QFrame):
 
         if self._separator is not None:
             self._separator.setStyleSheet(f"background-color: {separator_color};")
+
+        if hasattr(self, "_multi_table"):
+            self._multi_table.viewport().update()
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
@@ -273,30 +316,32 @@ class MeasurementsPanel(QFrame):
 
         layout.addWidget(cursor_group)
 
-        # Signal statistics
-        stats_group = QGroupBox("Signal Statistics")
-        stats_layout = QGridLayout(stats_group)
-        stats_layout.setContentsMargins(10, 16, 10, 10)
-        stats_layout.setSpacing(6)
+        # Measurements table (channels as columns, metrics as rows)
+        table_group = QGroupBox("Measurements")
+        table_layout = QVBoxLayout(table_group)
+        table_layout.setContentsMargins(8, 16, 8, 8)
+        table_layout.setSpacing(6)
 
-        stat_labels = [
-            ("Min", "_min_value", "stat_min"),
-            ("Max", "_max_value", "stat_max"),
-            ("Mean", "_mean_value", "stat_mean"),
-            ("RMS", "_rms_value", "stat_rms"),
-            ("Pk-Pk", "_pkpk_value", "stat_pkpk"),
+        self._measurement_rows: list[tuple[str, str]] = [
+            ("c1", "C1"),
+            ("c2", "C2"),
+            ("dv", "dV"),
+            ("min", "Min"),
+            ("max", "Max"),
+            ("mean", "Mean"),
+            ("rms", "RMS"),
+            ("pkpk", "Pk-Pk"),
         ]
+        self._multi_table = QTableWidget(len(self._measurement_rows), 0)
+        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
+        self._multi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._multi_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._multi_table.setAlternatingRowColors(True)
+        self._multi_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._multi_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table_layout.addWidget(self._multi_table)
 
-        for row, (name, attr, accent_role) in enumerate(stat_labels):
-            label = QLabel(name)
-            self._muted_labels.append(label)
-            stats_layout.addWidget(label, row, 0)
-            value_label = QLabel("---")
-            self._accent_labels[value_label] = accent_role
-            stats_layout.addWidget(value_label, row, 1)
-            setattr(self, attr, value_label)
-
-        layout.addWidget(stats_group)
+        layout.addWidget(table_group, stretch=1)
         layout.addStretch()
 
     def update_cursor1(self, time: float, value: float | None) -> None:
@@ -339,20 +384,46 @@ class MeasurementsPanel(QFrame):
         mean_val: float,
         rms_val: float,
     ) -> None:
-        """Update signal statistics."""
-        self._min_value.setText(f"{min_val:.6g}")
-        self._max_value.setText(f"{max_val:.6g}")
-        self._mean_value.setText(f"{mean_val:.6g}")
-        self._rms_value.setText(f"{rms_val:.6g}")
-        self._pkpk_value.setText(f"{max_val - min_val:.6g}")
+        """Legacy API kept for compatibility; stats now shown in Measurements table."""
+        _ = (min_val, max_val, mean_val, rms_val)
 
     def clear_statistics(self) -> None:
-        """Clear all statistics."""
-        self._min_value.setText("---")
-        self._max_value.setText("---")
-        self._mean_value.setText("---")
-        self._rms_value.setText("---")
-        self._pkpk_value.setText("---")
+        """Legacy API kept for compatibility; stats now shown in Measurements table."""
+        return
+
+    def clear_cursor_measurements(self) -> None:
+        """Clear cursor readouts."""
+        self._c1_time.setText("---")
+        self._c1_value.setText("---")
+        self._c2_time.setText("---")
+        self._c2_value.setText("---")
+        self._delta_t.setText("---")
+        self._delta_v.setText("---")
+        self._frequency.setText("---")
+
+    @staticmethod
+    def _fmt(value: float | None) -> str:
+        if value is None:
+            return "---"
+        return f"{value:.6g}"
+
+    def set_multi_signal_measurements(
+        self,
+        per_signal: dict[str, dict[str, float | None]],
+    ) -> None:
+        """Populate measurements table (metrics in rows, channels in columns)."""
+        signal_names = list(per_signal.keys())
+        self._multi_table.setColumnCount(len(signal_names))
+        self._multi_table.setHorizontalHeaderLabels(signal_names)
+        self._multi_table.setRowCount(len(self._measurement_rows))
+        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
+
+        for row, (metric_key, _metric_label) in enumerate(self._measurement_rows):
+            for col, signal_name in enumerate(signal_names):
+                values = per_signal.get(signal_name, {})
+                item = QTableWidgetItem(self._fmt(values.get(metric_key)))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._multi_table.setItem(row, col, item)
 
     def apply_theme(self, theme: Theme, cursor_palette: list[tuple[int, int, int]] | None = None) -> None:
         """Apply theme colors to measurement surfaces and readouts."""
@@ -435,6 +506,10 @@ class SignalListPanel(QFrame):
         self._signal_items: dict[str, SignalListItem] = {}
         self._color_index = 0
         self._trace_palette = TRACE_COLORS.copy()
+        self._compact_min_rows = 2
+        self._compact_max_rows = 7
+        self._root_layout: QVBoxLayout | None = None
+        self._button_row: QWidget | None = None
 
         self._setup_ui()
 
@@ -443,6 +518,7 @@ class SignalListPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
+        self._root_layout = layout
 
         # Header
         self._header_label = QLabel("Signals")
@@ -462,7 +538,10 @@ class SignalListPanel(QFrame):
         layout.addWidget(self._list_widget)
 
         # Buttons
-        button_layout = QHBoxLayout()
+        self._button_row = QWidget()
+        button_layout = QHBoxLayout(self._button_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(5)
 
         show_all_btn = QPushButton("Show All")
         show_all_btn.clicked.connect(self._show_all)
@@ -472,7 +551,42 @@ class SignalListPanel(QFrame):
         hide_all_btn.clicked.connect(self._hide_all)
         button_layout.addWidget(hide_all_btn)
 
-        layout.addLayout(button_layout)
+        layout.addWidget(self._button_row)
+        self._update_compact_height()
+
+    def _row_height_hint(self) -> int:
+        if self._list_widget.count() > 0:
+            row_hint = self._list_widget.sizeHintForRow(0)
+            if row_hint > 0:
+                return row_hint
+        return max(20, self.fontMetrics().height() + 8)
+
+    def _update_compact_height(self) -> None:
+        if self._root_layout is None or self._button_row is None:
+            return
+
+        row_height = self._row_height_hint()
+        item_count = self._list_widget.count()
+        visible_rows = min(max(item_count, self._compact_min_rows), self._compact_max_rows)
+
+        list_height = (self._list_widget.frameWidth() * 2) + (visible_rows * row_height) + 4
+        self._list_widget.setMinimumHeight(list_height)
+        self._list_widget.setMaximumHeight(list_height)
+
+        margins = self._root_layout.contentsMargins()
+        spacing = self._root_layout.spacing()
+        total_height = (
+            margins.top()
+            + margins.bottom()
+            + self._header_label.sizeHint().height()
+            + self._button_row.sizeHint().height()
+            + list_height
+            + (spacing * 2)
+        )
+
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(total_height)
+        self.setMaximumHeight(total_height)
 
     def set_signals(self, signal_names: list[str]) -> None:
         """Set the list of available signals."""
@@ -487,6 +601,8 @@ class SignalListPanel(QFrame):
             item = SignalListItem(name, color)
             self._list_widget.addItem(item)
             self._signal_items[name] = item
+
+        self._update_compact_height()
 
     def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
         """Update signal color palette and refresh existing list colors."""
@@ -515,6 +631,7 @@ class SignalListPanel(QFrame):
             }}
         """)
         self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
+        self._update_compact_height()
 
     def get_signal_color(self, signal_name: str) -> tuple | None:
         """Get the color assigned to a signal."""
@@ -578,6 +695,7 @@ class SignalListPanel(QFrame):
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._update_compact_height()
 
 
 class WaveformViewer(QWidget):
@@ -601,6 +719,8 @@ class WaveformViewer(QWidget):
         self._cursor2: DraggableCursor | None = None
         self._cursors_visible = False
         self._active_signal: str | None = None
+        self._manual_signal_add_enabled = True
+        self._auto_show_all_signals = False
 
         # Zoom history for back/forward navigation
         self._zoom_history: list[tuple] = []
@@ -665,23 +785,26 @@ class WaveformViewer(QWidget):
 
         # Controls bar
         controls = QWidget()
+        controls.setObjectName("waveformControlsBar")
         controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(5, 5, 5, 5)
+        controls_layout.setContentsMargins(3, 2, 3, 2)
+        controls_layout.setSpacing(4)
 
         # Signal selector
-        controls_layout.addWidget(QLabel("Add Signal:"))
+        self._add_signal_label = QLabel("Add Signal:")
+        controls_layout.addWidget(self._add_signal_label)
         self._signal_combo = QComboBox()
-        self._signal_combo.setMinimumWidth(150)
+        self._signal_combo.setMinimumWidth(120)
         self._signal_combo.currentTextChanged.connect(self._on_signal_selected)
         controls_layout.addWidget(self._signal_combo)
 
-        add_btn = QPushButton("Add")
-        add_btn.clicked.connect(self._on_add_signal)
-        controls_layout.addWidget(add_btn)
+        self._add_signal_btn = QPushButton("Add")
+        self._add_signal_btn.clicked.connect(self._on_add_signal)
+        controls_layout.addWidget(self._add_signal_btn)
 
-        clear_btn = QPushButton("Clear All")
-        clear_btn.clicked.connect(self.clear_traces)
-        controls_layout.addWidget(clear_btn)
+        self._clear_btn = QPushButton("Clear All")
+        self._clear_btn.clicked.connect(self.clear_traces)
+        controls_layout.addWidget(self._clear_btn)
 
         controls_layout.addStretch()
 
@@ -701,14 +824,14 @@ class WaveformViewer(QWidget):
         # Navigation buttons
         self._back_btn = QPushButton("<")
         self._back_btn.setToolTip("Previous zoom level")
-        self._back_btn.setMaximumWidth(30)
+        self._back_btn.setMaximumWidth(24)
         self._back_btn.setEnabled(False)
         self._back_btn.clicked.connect(self._zoom_back)
         controls_layout.addWidget(self._back_btn)
 
         self._forward_btn = QPushButton(">")
         self._forward_btn.setToolTip("Next zoom level")
-        self._forward_btn.setMaximumWidth(30)
+        self._forward_btn.setMaximumWidth(24)
         self._forward_btn.setEnabled(False)
         self._forward_btn.clicked.connect(self._zoom_forward)
         controls_layout.addWidget(self._forward_btn)
@@ -736,8 +859,8 @@ class WaveformViewer(QWidget):
 
         # Signal list panel
         self._signal_list_panel = SignalListPanel()
-        self._signal_list_panel.setMinimumWidth(150)
-        self._signal_list_panel.setMaximumWidth(200)
+        self._signal_list_panel.setMinimumWidth(180)
+        self._signal_list_panel.setMaximumWidth(320)
         self._signal_list_panel.signal_visibility_changed.connect(
             self._on_signal_visibility_changed
         )
@@ -746,16 +869,84 @@ class WaveformViewer(QWidget):
 
         # Measurements panel
         self._measurements_panel = MeasurementsPanel()
-        self._measurements_panel.setMinimumWidth(150)
-        self._measurements_panel.setMaximumWidth(200)
-        right_layout.addWidget(self._measurements_panel, stretch=1)
+        self._measurements_panel.setMinimumWidth(260)
+        self._measurements_panel.setMaximumWidth(460)
+        right_layout.addWidget(self._measurements_panel, stretch=2)
 
         splitter.addWidget(right_container)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 2)
 
         # Set splitter sizes
-        splitter.setSizes([700, 200])
+        splitter.setSizes([820, 360])
 
         layout.addWidget(splitter)
+        self._update_manual_signal_add_controls()
+
+    def set_manual_signal_add_enabled(self, enabled: bool) -> None:
+        """Enable/disable manual signal add controls."""
+        self._manual_signal_add_enabled = bool(enabled)
+        self._update_manual_signal_add_controls()
+
+    def set_auto_show_all_signals(self, enabled: bool) -> None:
+        """Control whether all available signals are auto-plotted on new results."""
+        self._auto_show_all_signals = bool(enabled)
+
+    def cursor_state(self) -> tuple[bool, float | None, float | None]:
+        """Return cursor enabled flag and current positions."""
+        enabled = bool(self._cursor_checkbox.isChecked())
+        c1 = float(self._cursor1.value()) if self._cursor1 is not None else None
+        c2 = float(self._cursor2.value()) if self._cursor2 is not None else None
+        return enabled, c1, c2
+
+    def set_cursor_state(
+        self,
+        enabled: bool,
+        c1: float | None = None,
+        c2: float | None = None,
+    ) -> None:
+        """Set cursor enabled flag and optionally sync cursor positions."""
+        enabled = bool(enabled)
+        if self._cursor_checkbox.isChecked() != enabled:
+            self._cursor_checkbox.setChecked(enabled)
+
+        if not enabled or self._cursor1 is None or self._cursor2 is None:
+            return
+
+        if c1 is not None and c2 is not None:
+            self._set_cursor_positions(c1, c2)
+
+    def _update_manual_signal_add_controls(self) -> None:
+        show = self._manual_signal_add_enabled
+        self._add_signal_label.setVisible(show)
+        self._signal_combo.setVisible(show)
+        self._add_signal_btn.setVisible(show)
+
+    def _set_cursor_positions(self, c1: float, c2: float) -> None:
+        if self._cursor1 is None or self._cursor2 is None:
+            return
+
+        c1_clamped = self._clamp_cursor_time(c1)
+        c2_clamped = self._clamp_cursor_time(c2)
+
+        self._cursor1.blockSignals(True)
+        self._cursor2.blockSignals(True)
+        try:
+            self._cursor1.setValue(c1_clamped)
+            self._cursor2.setValue(c2_clamped)
+        finally:
+            self._cursor1.blockSignals(False)
+            self._cursor2.blockSignals(False)
+        self._update_cursor_values()
+
+    def _clamp_cursor_time(self, value: float) -> float:
+        if not self._result or not self._result.time:
+            return float(value)
+        t_min = float(min(self._result.time))
+        t_max = float(max(self._result.time))
+        return float(min(max(value, t_min), t_max))
 
     @staticmethod
     def _rgb_to_hex(color: tuple[int, int, int]) -> str:
@@ -796,6 +987,26 @@ class WaveformViewer(QWidget):
             QFrame {{
                 color: {c.foreground};
             }}
+            QWidget#waveformControlsBar QLabel {{
+                color: {c.foreground_muted};
+                font-size: 11px;
+            }}
+            QWidget#waveformControlsBar QComboBox,
+            QWidget#waveformControlsBar QPushButton {{
+                background-color: {c.input_background};
+                color: {c.foreground};
+                border: 1px solid {c.input_border};
+                border-radius: 4px;
+                padding: 1px 6px;
+                min-height: 20px;
+                max-height: 22px;
+            }}
+            QWidget#waveformControlsBar QCheckBox {{
+                color: {c.foreground};
+                spacing: 4px;
+                margin: 0;
+                padding: 0;
+            }}
         """)
 
         for index, trace in enumerate(self._traces.values()):
@@ -827,26 +1038,85 @@ class WaveformViewer(QWidget):
 
         # Update signal list panel
         if result.signals:
-            self._signal_list_panel.set_signals(list(result.signals.keys()))
-
-            # Auto-add first signal if available
-            first_signal = list(result.signals.keys())[0]
-            self.add_trace(first_signal)
+            signal_names = list(result.signals.keys())
+            self._signal_list_panel.set_signals(signal_names)
+            first_signal = signal_names[0]
             self._active_signal = first_signal
 
-            # Mark first signal as visible in list
-            self._signal_list_panel.set_signal_visible(first_signal, True)
+            if self._auto_show_all_signals:
+                for signal_name in signal_names:
+                    self.add_trace(signal_name)
+                    self._signal_list_panel.set_signal_visible(signal_name, True)
+            else:
+                # Auto-add first signal if available
+                self.add_trace(first_signal)
+                self._signal_list_panel.set_signal_visible(first_signal, True)
 
             # Auto-range to fit new data (ensures time axis updates)
             self._auto_range()
         else:
             self._signal_list_panel.clear()
+            self._active_signal = None
+        self._refresh_measurements_table()
 
     def _update_signal_combo(self) -> None:
         """Update the signal combo box with available signals."""
         self._signal_combo.clear()
         if self._result:
             self._signal_combo.addItems(list(self._result.signals.keys()))
+
+    def _measurement_signal_names(self) -> list[str]:
+        if self._result:
+            return list(self._result.signals.keys())
+        return []
+
+    def _build_per_signal_measurements(
+        self,
+        t1: float | None = None,
+        t2: float | None = None,
+    ) -> dict[str, dict[str, float | None]]:
+        if not self._result or not self._result.time:
+            return {}
+
+        time = np.array(self._result.time, dtype=float)
+        if len(time) == 0:
+            return {}
+
+        measurements: dict[str, dict[str, float | None]] = {}
+        for signal_name in self._measurement_signal_names():
+            if signal_name not in self._result.signals:
+                continue
+            values = np.array(self._result.signals[signal_name], dtype=float)
+            if len(values) != len(time) or len(values) == 0:
+                continue
+
+            min_val = float(np.min(values))
+            max_val = float(np.max(values))
+            mean_val = float(np.mean(values))
+            rms_val = float(np.sqrt(np.mean(values ** 2)))
+            c1_val = self._interpolate_value(time, values, t1) if t1 is not None else None
+            c2_val = self._interpolate_value(time, values, t2) if t2 is not None else None
+            dv = c2_val - c1_val if c1_val is not None and c2_val is not None else None
+            measurements[signal_name] = {
+                "c1": c1_val,
+                "c2": c2_val,
+                "dv": dv,
+                "min": min_val,
+                "max": max_val,
+                "mean": mean_val,
+                "rms": rms_val,
+                "pkpk": max_val - min_val,
+            }
+        return measurements
+
+    def _refresh_measurements_table(
+        self,
+        t1: float | None = None,
+        t2: float | None = None,
+    ) -> None:
+        self._measurements_panel.set_multi_signal_measurements(
+            self._build_per_signal_measurements(t1, t2)
+        )
 
     def add_trace(self, signal_name: str) -> None:
         """Add a trace for the specified signal."""
@@ -879,6 +1149,10 @@ class WaveformViewer(QWidget):
 
         # Update statistics
         self._update_statistics(signal_name)
+        if self._cursor1 is not None and self._cursor2 is not None:
+            self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+        else:
+            self._refresh_measurements_table()
 
     def _decimate_for_display(
         self, time: np.ndarray, values: np.ndarray
@@ -922,6 +1196,12 @@ class WaveformViewer(QWidget):
         if signal_name in self._traces:
             self._plot_widget.removeItem(self._traces[signal_name])
             del self._traces[signal_name]
+            if self._active_signal == signal_name:
+                self._active_signal = next(iter(self._traces), None)
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
 
     def clear_traces(self) -> None:
         """Remove all traces from the plot."""
@@ -931,6 +1211,8 @@ class WaveformViewer(QWidget):
         self._color_index = 0
         self._legend.clear()
         self._measurements_panel.clear_statistics()
+        self._measurements_panel.clear_cursor_measurements()
+        self._measurements_panel.set_multi_signal_measurements({})
 
         # Sync with signal list panel - uncheck all signals
         for signal_name in list(self._signal_list_panel.get_visible_signals()):
@@ -950,6 +1232,8 @@ class WaveformViewer(QWidget):
             self._active_signal = signal_name
             self._update_statistics(signal_name)
             self._update_cursor_values()
+            if self._cursor1 is None or self._cursor2 is None:
+                self._refresh_measurements_table()
 
     def _toggle_grid(self, show: bool) -> None:
         """Toggle grid visibility."""
@@ -963,6 +1247,8 @@ class WaveformViewer(QWidget):
             self._create_cursors()
         else:
             self._remove_cursors()
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
 
     def _create_cursors(self) -> None:
         """Create the two measurement cursors."""
@@ -1012,12 +1298,17 @@ class WaveformViewer(QWidget):
     def _update_cursor_values(self) -> None:
         """Update cursor value displays."""
         if not self._cursor1 or not self._cursor2:
+            self._refresh_measurements_table()
             return
 
         if not self._result or not self._active_signal:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
             return
 
         if self._active_signal not in self._result.signals:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
             return
 
         time = np.array(self._result.time)
@@ -1039,6 +1330,7 @@ class WaveformViewer(QWidget):
         dt = t2 - t1
         dv = v2 - v1 if v1 is not None and v2 is not None else None
         self._measurements_panel.update_delta(dt, dv, v1, v2)
+        self._refresh_measurements_table(t1, t2)
 
         # Update label positions
         view_range = self._plot_widget.getViewBox().viewRange()
@@ -1196,9 +1488,6 @@ class WaveformViewer(QWidget):
         # Start update timer
         self._update_timer.start()
         self._pending_updates = False
-
-        # Make viewer visible
-        self.parentWidget().setVisible(True) if self.parentWidget() else None
 
     def stop_streaming(self) -> None:
         """Stop streaming mode."""
@@ -1646,10 +1935,22 @@ class WaveformViewer(QWidget):
 
         # Update active signal if the toggled signal is now the only visible one
         visible_signals = self._signal_list_panel.get_visible_signals()
-        if visible_signals and self._active_signal not in visible_signals:
+        if not visible_signals:
+            self._active_signal = None
+            self._measurements_panel.clear_statistics()
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
+        elif self._active_signal not in visible_signals:
             self._active_signal = visible_signals[0]
             self._update_statistics(self._active_signal)
             self._update_cursor_values()
+        else:
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
 
     def _on_signal_list_selected(self, signal_name: str) -> None:
         """Handle signal selection from signal list panel.
@@ -1662,6 +1963,8 @@ class WaveformViewer(QWidget):
         self._active_signal = signal_name
         self._update_statistics(signal_name)
         self._update_cursor_values()
+        if self._cursor1 is None or self._cursor2 is None:
+            self._refresh_measurements_table()
 
         # Also update the combo box selection
         idx = self._signal_combo.findText(signal_name)
