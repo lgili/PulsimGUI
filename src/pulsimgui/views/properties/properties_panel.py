@@ -32,9 +32,11 @@ from pulsimgui.models.component import (
     ComponentType,
     SCOPE_CHANNEL_LIMITS,
     MUX_CHANNEL_LIMITS,
+    THERMAL_PORT_PARAMETER,
     set_scope_channel_count,
     set_mux_input_count,
     set_demux_output_count,
+    set_thermal_port_enabled,
 )
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 from pulsimgui.resources.icons import IconService
@@ -1137,7 +1139,11 @@ class PropertiesPanel(QWidget):
     def _on_param_changed(self, name: str, value: Any) -> None:
         """Handle parameter value change."""
         if self._component:
-            self._component.parameters[name] = value
+            if name == THERMAL_PORT_PARAMETER:
+                set_thermal_port_enabled(self._component, bool(value))
+                value = bool(self._component.parameters.get(THERMAL_PORT_PARAMETER, False))
+            else:
+                self._component.parameters[name] = value
             self.property_changed.emit(name, value)
 
     def _on_position_changed(self, axis: str, value: float) -> None:

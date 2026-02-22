@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import ComponentType, THERMAL_PORT_PARAMETER
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
@@ -63,6 +63,7 @@ from pulsimgui.views.schematic import SchematicScene, SchematicView
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
+from pulsimgui.utils.signal_utils import format_signal_key
 
 
 class MainWindow(QMainWindow):
@@ -1538,6 +1539,8 @@ class MainWindow(QMainWindow):
                     item.setPos(edited_component.x, edited_component.y)
                 elif name == "rotation":
                     item.setRotation(edited_component.rotation)
+                elif name == THERMAL_PORT_PARAMETER:
+                    self._schematic_scene.update_connected_wires(item)
                 # Update name label
                 item._name_label.setPlainText(edited_component.name)
                 # Update labels for parameter changes (value text)
@@ -1664,8 +1667,12 @@ class MainWindow(QMainWindow):
         for device in thermal_result.devices:
             if not device.temperature_trace:
                 continue
-            key = f"T({device.component_name})"
-            subset.signals[key] = list(device.temperature_trace)
+            key = format_signal_key("T", device.component_name)
+            trace = list(device.temperature_trace)
+            subset.signals[key] = trace
+            legacy_key = f"T({device.component_name})"
+            if legacy_key != key and legacy_key not in subset.signals:
+                subset.signals[legacy_key] = trace
         return subset if subset.signals else None
 
     def _get_component_by_id(self, component_id: str, circuit: Circuit | None = None):
