@@ -202,6 +202,7 @@ class SchematicView(QGraphicsView):
     grid_toggle_requested = Signal()  # emitted when G key is pressed
     subcircuit_open_requested = Signal(object)  # Component instance
     scope_open_requested = Signal(object)  # Component instance
+    component_properties_requested = Signal(object)  # Component instance
     quick_add_component = Signal(object)  # ComponentType for keyboard shortcuts
     scroll_changed = Signal()  # emitted when view scrolls
 
@@ -629,6 +630,9 @@ class SchematicView(QGraphicsView):
                         self.scope_open_requested.emit(item.component)
                         event.accept()
                         return
+                    self.component_properties_requested.emit(item.component)
+                    event.accept()
+                    return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -672,6 +676,9 @@ class SchematicView(QGraphicsView):
 
         # Tool shortcuts (without modifiers)
         if not modifiers:
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._request_properties_for_selected_component():
+                    return
             if key == Qt.Key.Key_F2:
                 if self._maybe_start_alias_edit():
                     return
@@ -850,7 +857,9 @@ class SchematicView(QGraphicsView):
             flip_v.setShortcut("V")
 
             chosen = menu.exec(event.globalPos())
-            if chosen == rotate_cw:
+            if chosen == props_action:
+                self.component_properties_requested.emit(item.component)
+            elif chosen == rotate_cw:
                 self._rotate_component(item, 90)
             elif chosen == rotate_ccw:
                 self._rotate_component(item, -90)
@@ -872,6 +881,21 @@ class SchematicView(QGraphicsView):
             return
 
         super().contextMenuEvent(event)
+
+    def _request_properties_for_selected_component(self) -> bool:
+        """Emit properties request for a single selected component."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None:
+            return False
+
+        selected = [item for item in scene.selectedItems() if isinstance(item, ComponentItem)]
+        if len(selected) != 1:
+            return False
+
+        self.component_properties_requested.emit(selected[0].component)
+        return True
 
     def _delete_wire(self, wire_item: WireItem) -> None:
         """Delete a wire from the scene and circuit."""

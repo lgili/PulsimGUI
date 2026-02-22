@@ -12,6 +12,7 @@ from pulsimgui.views.dialogs.parameter_sweep_dialog import ParameterSweepDialog
 from pulsimgui.views.dialogs.parameter_sweep_results_dialog import ParameterSweepResultsDialog
 from pulsimgui.views.dialogs.thermal_viewer_dialog import ThermalViewerDialog
 from pulsimgui.views.dialogs.convergence_diagnostics_dialog import ConvergenceDiagnosticsDialog
+from pulsimgui.views.dialogs.component_properties_dialog import ComponentPropertiesDialog
 
 __all__ = [
     "PreferencesDialog",
@@ -27,4 +28,5 @@ __all__ = [
     "ParameterSweepResultsDialog",
     "ThermalViewerDialog",
     "ConvergenceDiagnosticsDialog",
+    "ComponentPropertiesDialog",
 ]
