@@ -177,6 +177,17 @@ class SettingsService:
             "dc_strategy": self._settings.value("solver/dc_strategy", "auto"),
             "gmin_initial": float(self._settings.value("solver/gmin_initial", 1e-3)),
             "gmin_final": float(self._settings.value("solver/gmin_final", 1e-12)),
+            "dc_source_steps": int(self._settings.value("solver/dc_source_steps", 10)),
+            "transient_robust_mode": self._settings.value(
+                "solver/transient_robust_mode",
+                True,
+                type=bool,
+            ),
+            "transient_auto_regularize": self._settings.value(
+                "solver/transient_auto_regularize",
+                True,
+                type=bool,
+            ),
         }
 
     def set_solver_settings(self, settings: dict) -> None:

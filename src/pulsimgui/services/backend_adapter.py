@@ -445,20 +445,16 @@ class PulsimBackend(SimulationBackend):
 
         caps = {"transient"}
 
-        # Check for DC analysis (top-level or v1/v2 solver)
-        if hasattr(self._module, "dc_operating_point") or hasattr(self._module, "solve_dc"):
-            caps.add("dc")
-        elif hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
-            caps.add("dc")
-        elif hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
+        # Check for DC analysis (top-level, simulator, or v1/v2 solver)
+        if self._supports_dc_analysis(self._module):
             caps.add("dc")
 
         # Check for AC analysis
-        if hasattr(self._module, "run_ac") or hasattr(self._module, "ACAnalysis"):
+        if self._supports_ac_analysis(self._module):
             caps.add("ac")
 
         # Check for thermal simulation
-        if hasattr(self._module, "ThermalSimulator"):
+        if self._supports_thermal_analysis(self._module):
             caps.add("thermal")
 
         self._cached_capabilities = caps
@@ -545,6 +541,47 @@ class PulsimBackend(SimulationBackend):
             result.error_message = retry_errors[-1]
         return result
 
+    def _resolve_signal_names(self, circuit: Any) -> list[str]:
+        """Resolve labels for transient state-vector signals."""
+        candidates: list[str] = []
+
+        if hasattr(circuit, "signal_names"):
+            try:
+                candidates = [str(name) for name in circuit.signal_names()]
+            except Exception:
+                candidates = []
+
+        if not candidates and hasattr(circuit, "node_names"):
+            try:
+                candidates = [str(name) for name in circuit.node_names()]
+            except Exception:
+                candidates = []
+
+        if not candidates:
+            return []
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_name in candidates:
+            name = self._normalize_signal_name(raw_name)
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
+
+    @staticmethod
+    def _normalize_signal_name(raw_name: str) -> str:
+        """Normalize backend signal names for waveform display."""
+        name = str(raw_name or "").strip()
+        if not name:
+            return "V(?)"
+
+        upper = name.upper()
+        if upper.startswith(("V(", "I(", "P(", "T(")):
+            return name
+        return f"V({name})"
+
     def _run_transient_once(
         self,
         circuit: Any,
@@ -557,58 +594,77 @@ class PulsimBackend(SimulationBackend):
     ) -> BackendRunResult:
         """Run one transient attempt with precomputed solver state."""
         result = BackendRunResult()
-        node_names = list(circuit.node_names())
+        signal_names = self._resolve_signal_names(circuit)
         result.time = []
-        for name in node_names:
-            result.signals[f"V({name})"] = []
+        for name in signal_names:
+            result.signals[name] = []
 
-        if hasattr(self._module, "run_transient_shared"):
-            return self._run_transient_shared(
-                circuit, settings, callbacks, result,
-                node_names, dt, x0, newton_opts, linear_solver,
+        # Prefer robust run_transient path first to match notebook behavior.
+        if hasattr(self._module, "run_transient"):
+            chunked_result = self._run_transient_chunked(
+                circuit,
+                settings,
+                callbacks,
+                result,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
             )
-
-        if hasattr(self._module, "run_transient_streaming"):
-            streaming_result = self._run_transient_streaming(
-                circuit, settings, callbacks, result,
-                node_names, dt, x0, newton_opts, linear_solver,
-            )
-            if not streaming_result.error_message:
-                return streaming_result
-            if "cancel" in streaming_result.error_message.lower():
-                return streaming_result
-            if hasattr(self._module, "run_transient"):
+            if not chunked_result.error_message:
+                return chunked_result
+            if "cancel" in chunked_result.error_message.lower():
+                return chunked_result
+            if hasattr(self._module, "run_transient_streaming"):
                 callbacks.progress(
                     5.0,
-                    "Streaming transient failed; retrying in compatibility mode...",
+                    "Compatibility transient failed; retrying in streaming mode...",
                 )
-                fallback_result = self._run_transient_chunked(
+                streaming_result = self._run_transient_streaming(
                     circuit,
                     settings,
                     callbacks,
                     result,
-                    node_names,
+                    signal_names,
                     dt,
                     x0,
                     newton_opts,
                     linear_solver,
                 )
-                if not fallback_result.error_message:
-                    fallback_result.statistics["fallback_mode"] = "chunked"
-                    fallback_result.statistics["streaming_error"] = (
-                        streaming_result.error_message
+                if not streaming_result.error_message:
+                    streaming_result.statistics["fallback_mode"] = "streaming"
+                    streaming_result.statistics["compatibility_error"] = (
+                        chunked_result.error_message
                     )
-                    return fallback_result
-                fallback_result.error_message = (
-                    f"{streaming_result.error_message} | Fallback error: "
-                    f"{fallback_result.error_message}"
+                    return streaming_result
+                streaming_result.error_message = (
+                    f"{chunked_result.error_message} | Fallback error: "
+                    f"{streaming_result.error_message}"
                 )
-                return fallback_result
+                return streaming_result
+            return chunked_result
+
+        if hasattr(self._module, "run_transient_shared"):
+            return self._run_transient_shared(
+                circuit, settings, callbacks, result,
+                signal_names, dt, x0, newton_opts, linear_solver,
+            )
+
+        if hasattr(self._module, "run_transient_streaming"):
+            streaming_result = self._run_transient_streaming(
+                circuit, settings, callbacks, result,
+                signal_names, dt, x0, newton_opts, linear_solver,
+            )
+            if not streaming_result.error_message:
+                return streaming_result
+            if "cancel" in streaming_result.error_message.lower():
+                return streaming_result
             return streaming_result
 
         return self._run_transient_chunked(
             circuit, settings, callbacks, result,
-            node_names, dt, x0, newton_opts, linear_solver,
+            signal_names, dt, x0, newton_opts, linear_solver,
         )
 
     def _build_transient_retry_profiles(
@@ -693,7 +749,7 @@ class PulsimBackend(SimulationBackend):
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         result: BackendRunResult,
-        node_names: list[str],
+        signal_names: list[str],
         dt: float,
         x0: Any,
         newton_opts: Any,
@@ -740,7 +796,26 @@ class PulsimBackend(SimulationBackend):
             linear_solver=linear_solver,
         )
         transient_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
-        times, states, success, message = self._module.run_transient_streaming(*transient_args)
+        try:
+            times, states, success, message = self._module.run_transient_streaming(*transient_args)
+        except TypeError as exc:
+            # Some backend variants require explicit x0 in streaming API.
+            # Retry once with a synthesized state vector for compatibility.
+            if x0 is not None:
+                raise
+            retry_args = self._compose_transient_args(
+                circuit=circuit,
+                settings=settings,
+                dt=dt,
+                x0=self._ensure_state_vector(x0, len(signal_names)),
+                newton_opts=newton_opts,
+                linear_solver=linear_solver,
+            )
+            retry_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
+            try:
+                times, states, success, message = self._module.run_transient_streaming(*retry_args)
+            except TypeError:
+                raise exc
 
         if not success:
             result.error_message = message
@@ -749,8 +824,8 @@ class PulsimBackend(SimulationBackend):
         # Build final result from complete simulation data
         for t, state in zip(times, states):
             result.time.append(float(t))
-            for i, name in enumerate(node_names):
-                result.signals[f"V({name})"].append(float(state[i]))
+            for i, name in enumerate(signal_names):
+                result.signals[name].append(float(state[i]))
 
         callbacks.progress(95.0, "Finalizing results...")
 
@@ -768,7 +843,7 @@ class PulsimBackend(SimulationBackend):
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         result: BackendRunResult,
-        node_names: list[str],
+        signal_names: list[str],
         dt: float,
         x0: Any,
         newton_opts: Any,
@@ -786,11 +861,11 @@ class PulsimBackend(SimulationBackend):
         # Calculate buffer size (add 20% margin for safety)
         total_steps = int((settings.t_stop - settings.t_start) / dt)
         buffer_size = int(total_steps * 1.2) + 100
-        num_nodes = len(node_names)
+        num_signals = len(signal_names)
 
         # Pre-allocate numpy arrays (shared memory buffers)
         time_buffer = np.zeros(buffer_size, dtype=np.float64)
-        states_buffer = np.zeros((buffer_size, num_nodes), dtype=np.float64)
+        states_buffer = np.zeros((buffer_size, num_signals), dtype=np.float64)
         status_buffer = np.zeros(3, dtype=np.int64)
         # status_buffer[0] = current_index (steps completed)
         # status_buffer[1] = status (0=running, 1=completed, 2=error, 3=cancelled)
@@ -798,7 +873,7 @@ class PulsimBackend(SimulationBackend):
 
         # Get initial state
         if x0 is None:
-            x0 = np.zeros(num_nodes)
+            x0 = np.zeros(num_signals)
 
         # Variables for the simulation thread
         sim_success = [True]
@@ -863,14 +938,14 @@ class PulsimBackend(SimulationBackend):
                 streaming_data = {
                     "_time_np": time_buffer[:current_index],
                     "_signals_np": {
-                        f"V({name})": states_buffer[:current_index, i]
-                        for i, name in enumerate(node_names)
+                        name: states_buffer[:current_index, i]
+                        for i, name in enumerate(signal_names)
                     },
                     "_current_index": current_index,
                 }
                 last_sample = {
-                    f"V({name})": float(states_buffer[current_index - 1, i])
-                    for i, name in enumerate(node_names)
+                    name: float(states_buffer[current_index - 1, i])
+                    for i, name in enumerate(signal_names)
                 }
                 last_sample["_full_data"] = streaming_data
                 callbacks.data_point(float(time_buffer[current_index - 1]), last_sample)
@@ -898,8 +973,8 @@ class PulsimBackend(SimulationBackend):
 
         # Copy final data to result (full resolution)
         result.time = time_buffer[:final_index].tolist()
-        for i, name in enumerate(node_names):
-            result.signals[f"V({name})"] = states_buffer[:final_index, i].tolist()
+        for i, name in enumerate(signal_names):
+            result.signals[name] = states_buffer[:final_index, i].tolist()
 
         # Send final complete data
         if result.time:
@@ -915,7 +990,7 @@ class PulsimBackend(SimulationBackend):
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         result: BackendRunResult,
-        node_names: list[str],
+        signal_names: list[str],
         dt: float,
         x0: Any,
         newton_opts: Any,
@@ -933,7 +1008,7 @@ class PulsimBackend(SimulationBackend):
             newton_opts=newton_opts,
             linear_solver=linear_solver,
         )
-        times, states, success, message = self._module.run_transient(*transient_args)
+        times, states, success, message = self._invoke_run_transient(transient_args, settings)
 
         if not success:
             result.error_message = message
@@ -948,8 +1023,8 @@ class PulsimBackend(SimulationBackend):
         callbacks.progress(70.0, f"Converting {total_points:,} data points...")
 
         signal_arrays = {}
-        for i, name in enumerate(node_names):
-            signal_arrays[f"V({name})"] = np.array(
+        for i, name in enumerate(signal_names):
+            signal_arrays[name] = np.array(
                 [float(state[i]) for state in states if i < len(state)],
                 dtype=np.float64
             )
@@ -998,6 +1073,12 @@ class PulsimBackend(SimulationBackend):
             if hasattr(self._module, "dc_operating_point"):
                 return self._run_dc_top_level(circuit, settings)
 
+            # Try simulator-based API
+            if hasattr(self._module, "Simulator"):
+                simulator_result = self._run_dc_via_simulator(circuit, settings)
+                if simulator_result is not None:
+                    return simulator_result
+
             # Try top-level solve_dc
             if hasattr(self._module, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
@@ -1025,6 +1106,34 @@ class PulsimBackend(SimulationBackend):
                 error_message=str(exc),
                 convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
             )
+
+    def _run_dc_via_simulator(self, circuit: Any, settings: DCSettings) -> DCResult | None:
+        """Try DC operating point through Simulator APIs.
+
+        Returns:
+            DCResult when simulator path succeeds, otherwise None.
+        """
+        simulator_cls = getattr(self._module, "Simulator", None)
+        if simulator_cls is None:
+            return None
+
+        try:
+            simulator = simulator_cls(circuit)
+        except Exception:
+            return None
+
+        try:
+            if hasattr(simulator, "dc_operating_point"):
+                native_result = simulator.dc_operating_point()
+                return self._convert_newton_result(native_result, circuit)
+            if hasattr(simulator, "solve_dc"):
+                newton_opts = self._build_dc_options(settings)
+                native_result = simulator.solve_dc(newton_opts)
+                return self._convert_newton_result(native_result, circuit)
+        except Exception:
+            return None
+
+        return None
 
     def _run_dc_top_level(self, circuit: Any, settings: DCSettings) -> DCResult:
         """Run DC analysis using top-level dc_operating_point function."""
@@ -1350,19 +1459,48 @@ class PulsimBackend(SimulationBackend):
             # Build AC options
             ac_opts = self._build_ac_options(settings)
 
-            # Try different AC analysis APIs
-            if hasattr(self._module, "run_ac"):
-                native_result = self._module.run_ac(circuit, ac_opts)
-            elif hasattr(self._module, "ACAnalysis"):
-                analyzer = self._module.ACAnalysis(circuit)
-                native_result = analyzer.run(ac_opts)
-            else:
+            native_result = self._run_ac_native(circuit, ac_opts)
+            if native_result is None:
                 return ACResult(error_message="No AC analysis API available")
 
             return self._convert_ac_result(native_result, settings)
 
         except Exception as exc:
             return ACResult(error_message=str(exc))
+
+    def _run_ac_native(self, circuit: Any, ac_opts: Any) -> Any | None:
+        """Run AC analysis across backend API variants."""
+        if hasattr(self._module, "run_ac"):
+            return self._module.run_ac(circuit, ac_opts)
+
+        if hasattr(self._module, "run_ac_analysis"):
+            return self._module.run_ac_analysis(circuit, ac_opts)
+
+        if hasattr(self._module, "run_small_signal"):
+            return self._module.run_small_signal(circuit, ac_opts)
+
+        if hasattr(self._module, "ACAnalysis"):
+            analyzer = self._module.ACAnalysis(circuit)
+            if hasattr(analyzer, "run"):
+                return analyzer.run(ac_opts)
+            if hasattr(analyzer, "analyze"):
+                return analyzer.analyze(ac_opts)
+
+        simulator_cls = getattr(self._module, "Simulator", None)
+        if simulator_cls is not None:
+            try:
+                simulator = simulator_cls(circuit)
+            except Exception:
+                simulator = None
+            if simulator is not None:
+                if hasattr(simulator, "run_ac"):
+                    return simulator.run_ac(ac_opts)
+                if hasattr(simulator, "run_ac_analysis"):
+                    return simulator.run_ac_analysis(ac_opts)
+                if hasattr(simulator, "run_small_signal"):
+                    return simulator.run_small_signal(ac_opts)
+
+        return None
 
     def _build_ac_options(self, settings: ACSettings) -> Any:
         """Build PulsimCore AC options from ACSettings."""
@@ -1371,30 +1509,40 @@ class PulsimBackend(SimulationBackend):
         else:
             opts = type("ACOptions", (), {})()
 
-        # New bindings use fstart, fstop, npoints (not f_start, f_stop, points_per_decade)
-        if hasattr(opts, "fstart"):
-            opts.fstart = settings.f_start
-        elif hasattr(opts, "f_start"):
-            opts.f_start = settings.f_start
+        # Calculate total points based on points_per_decade
+        decades = math.log10(settings.f_stop / max(settings.f_start, 0.001))
+        npoints = max(1, int(decades * settings.points_per_decade))
 
-        if hasattr(opts, "fstop"):
-            opts.fstop = settings.f_stop
-        elif hasattr(opts, "f_stop"):
-            opts.f_stop = settings.f_stop
+        # Frequency range aliases across versions
+        for attr in ("fstart", "f_start", "f_min", "start_frequency", "frequency_start"):
+            if hasattr(opts, attr):
+                setattr(opts, attr, settings.f_start)
+                break
+        for attr in ("fstop", "f_stop", "f_max", "stop_frequency", "frequency_stop"):
+            if hasattr(opts, attr):
+                setattr(opts, attr, settings.f_stop)
+                break
 
+        # Point count aliases
         if hasattr(opts, "npoints"):
-            # Calculate total points based on points_per_decade
-            decades = math.log10(settings.f_stop / max(settings.f_start, 0.001))
-            opts.npoints = max(1, int(decades * settings.points_per_decade))
+            opts.npoints = npoints
+        elif hasattr(opts, "num_points"):
+            opts.num_points = npoints
+        elif hasattr(opts, "points"):
+            opts.points = npoints
         elif hasattr(opts, "points_per_decade"):
             opts.points_per_decade = settings.points_per_decade
 
         # Set sweep type to Decade if available
         if hasattr(opts, "sweep_type") and hasattr(self._module, "FrequencySweepType"):
             opts.sweep_type = self._module.FrequencySweepType.Decade
+        elif hasattr(opts, "sweep_mode") and hasattr(self._module, "FrequencySweepType"):
+            opts.sweep_mode = self._module.FrequencySweepType.Decade
 
         if hasattr(opts, "input_source"):
             opts.input_source = settings.input_source
+        if hasattr(opts, "output_nodes"):
+            opts.output_nodes = list(settings.output_nodes)
 
         return opts
 
@@ -1463,24 +1611,229 @@ class PulsimBackend(SimulationBackend):
             return ThermalResult(error_message=str(exc), is_synthetic=True)
 
         try:
-            # Create thermal simulator
-            thermal_sim = self._module.ThermalSimulator(circuit)
+            direct_result = self._run_thermal_native(circuit, electrical_result, settings)
+            if direct_result is not None:
+                return direct_result
 
-            # Configure settings
-            if hasattr(thermal_sim, "set_ambient_temperature"):
-                thermal_sim.set_ambient_temperature(settings.ambient_temperature)
-            if hasattr(thermal_sim, "include_switching_losses"):
-                thermal_sim.include_switching_losses = settings.include_switching_losses
-            if hasattr(thermal_sim, "include_conduction_losses"):
-                thermal_sim.include_conduction_losses = settings.include_conduction_losses
+            waveform_result = self._run_thermal_from_waveforms(circuit_data, electrical_result, settings)
+            if waveform_result is not None:
+                return waveform_result
 
-            # Run thermal analysis with electrical results
-            native_result = thermal_sim.run(electrical_result.time, electrical_result.signals)
-
-            return self._convert_thermal_result(native_result, settings)
+            return ThermalResult(
+                error_message="No compatible thermal API available for this backend version",
+                is_synthetic=True,
+            )
 
         except Exception as exc:
             return ThermalResult(error_message=str(exc), is_synthetic=True)
+
+    def _run_thermal_native(
+        self,
+        circuit: Any,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult | None:
+        """Run thermal through circuit-coupled backend APIs when available."""
+        simulator_cls = getattr(self._module, "ThermalSimulator", None)
+        if simulator_cls is None:
+            return None
+
+        try:
+            thermal_sim = simulator_cls(circuit)
+        except Exception:
+            return None
+
+        if hasattr(thermal_sim, "set_ambient_temperature"):
+            thermal_sim.set_ambient_temperature(settings.ambient_temperature)
+        elif hasattr(thermal_sim, "set_ambient"):
+            thermal_sim.set_ambient(settings.ambient_temperature)
+
+        if hasattr(thermal_sim, "include_switching_losses"):
+            thermal_sim.include_switching_losses = settings.include_switching_losses
+        if hasattr(thermal_sim, "include_conduction_losses"):
+            thermal_sim.include_conduction_losses = settings.include_conduction_losses
+
+        if not hasattr(thermal_sim, "run"):
+            return None
+
+        native_result = thermal_sim.run(electrical_result.time, electrical_result.signals)
+        return self._convert_thermal_result(native_result, settings)
+
+    def _run_thermal_from_waveforms(
+        self,
+        circuit_data: dict,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult | None:
+        """Run thermal using Foster-network API with per-device power waveforms."""
+        simulator_cls = getattr(self._module, "ThermalSimulator", None)
+        create_simple_model = getattr(self._module, "create_simple_thermal_model", None)
+        if simulator_cls is None or not callable(create_simple_model):
+            return None
+
+        times = [float(t) for t in (electrical_result.time or [])]
+        if len(times) < 2:
+            return None
+
+        device_names = self._extract_thermal_device_names(circuit_data)
+        if not device_names:
+            return None
+
+        devices: list[ThermalDeviceResult] = []
+        used_real_power = False
+
+        for index, device_name in enumerate(device_names):
+            measured_power = self._extract_power_trace(device_name, electrical_result.signals, len(times))
+            if measured_power:
+                used_real_power = True
+                powers = measured_power
+            else:
+                fallback_power = 2.0 + (0.4 * index)
+                powers = [fallback_power] * len(times)
+
+            if len(powers) < len(times):
+                powers = powers + [powers[-1] if powers else 0.0] * (len(times) - len(powers))
+            elif len(powers) > len(times):
+                powers = powers[: len(times)]
+
+            rth = 0.8 + (0.15 * index)
+            tau = 0.02 + (0.004 * index)
+            network = create_simple_model(rth, tau, device_name)
+            thermal_sim = simulator_cls(network, settings.ambient_temperature)
+            if hasattr(thermal_sim, "set_ambient"):
+                thermal_sim.set_ambient(settings.ambient_temperature)
+            elif hasattr(thermal_sim, "set_ambient_temperature"):
+                thermal_sim.set_ambient_temperature(settings.ambient_temperature)
+
+            if not hasattr(thermal_sim, "simulate"):
+                return None
+
+            temps = [float(value) for value in thermal_sim.simulate(times, powers)]
+            avg_power = sum(float(abs(value)) for value in powers) / max(1, len(powers))
+
+            conduction = 0.0
+            switching_on = 0.0
+            if settings.include_conduction_losses and settings.include_switching_losses:
+                conduction = avg_power * 0.7
+                switching_on = avg_power * 0.3
+            elif settings.include_conduction_losses:
+                conduction = avg_power
+            elif settings.include_switching_losses:
+                switching_on = avg_power
+
+            devices.append(ThermalDeviceResult(
+                name=device_name,
+                junction_temperature=temps,
+                peak_temperature=max(temps) if temps else settings.ambient_temperature,
+                steady_state_temperature=temps[-1] if temps else settings.ambient_temperature,
+                losses=LossBreakdown(
+                    conduction=conduction,
+                    switching_on=switching_on,
+                ),
+                foster_stages=self._extract_foster_stages(network),
+            ))
+
+        if not devices:
+            return None
+
+        return ThermalResult(
+            time=times,
+            devices=devices,
+            ambient_temperature=settings.ambient_temperature,
+            is_synthetic=not used_real_power,
+        )
+
+    def _extract_thermal_device_names(self, circuit_data: dict) -> list[str]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        thermal_types = {
+            "DIODE",
+            "ZENER_DIODE",
+            "LED",
+            "MOSFET_N",
+            "MOSFET_P",
+            "IGBT",
+            "BJT_NPN",
+            "BJT_PNP",
+            "THYRISTOR",
+            "TRIAC",
+            "SWITCH",
+            "TRANSFORMER",
+        }
+        names: list[str] = []
+        seen: set[str] = set()
+        for component in components:
+            comp_type = str(component.get("type", "")).strip().upper()
+            if comp_type not in thermal_types:
+                continue
+            name = str(component.get("name") or component.get("id") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    def _extract_power_trace(
+        self,
+        device_name: str,
+        signals: dict[str, list[float]],
+        expected_points: int,
+    ) -> list[float]:
+        if not signals:
+            return []
+
+        key_candidates = (
+            f"P({device_name})",
+            f"p({device_name})",
+            f"power:{device_name}",
+            f"{device_name}:power",
+        )
+        for key in key_candidates:
+            series = signals.get(key)
+            if series:
+                return [float(value) for value in series[:expected_points]]
+
+        device_lower = device_name.lower()
+        for key, series in signals.items():
+            if not series:
+                continue
+            key_lower = str(key).lower()
+            if key_lower.startswith("p(") and device_lower in key_lower:
+                return [float(value) for value in series[:expected_points]]
+
+        total_series = signals.get("P(total)") or signals.get("p(total)")
+        if total_series:
+            return [float(value) for value in total_series[:expected_points]]
+        return []
+
+    def _extract_foster_stages(self, network: Any) -> list[FosterStage]:
+        stages_attr = getattr(network, "stages", None)
+        if stages_attr is None:
+            return []
+
+        try:
+            raw_stages = stages_attr() if callable(stages_attr) else list(stages_attr)
+        except Exception:
+            return []
+
+        stages: list[FosterStage] = []
+        for stage in raw_stages:
+            resistance = getattr(stage, "Rth", 0.0)
+            resistance = resistance() if callable(resistance) else resistance
+
+            capacitance = getattr(stage, "Cth", 0.0)
+            capacitance = capacitance() if callable(capacitance) else capacitance
+
+            if (capacitance is None or float(capacitance) == 0.0) and hasattr(stage, "tau"):
+                tau = getattr(stage, "tau")
+                tau = tau() if callable(tau) else tau
+                if resistance:
+                    capacitance = float(tau) / max(float(resistance), 1e-12)
+
+            stages.append(FosterStage(
+                resistance=float(resistance),
+                capacitance=float(capacitance) if capacitance is not None else 0.0,
+            ))
+        return stages
 
     def _convert_thermal_result(self, native_result: Any, settings: ThermalSettings) -> ThermalResult:
         """Convert PulsimCore thermal result to GUI ThermalResult."""
@@ -1647,6 +2000,22 @@ class PulsimBackend(SimulationBackend):
             args.append(linear_solver)
         return args
 
+    def _invoke_run_transient(self, args: list[Any], settings: "SimulationSettings") -> tuple[Any, Any, bool, str]:
+        """Invoke run_transient with optional robust kwargs when supported."""
+        robust = bool(getattr(settings, "transient_robust_mode", True))
+        auto_regularize = bool(getattr(settings, "transient_auto_regularize", True))
+        try:
+            return self._module.run_transient(
+                *args,
+                robust=robust,
+                auto_regularize=auto_regularize,
+            )
+        except TypeError as exc:
+            text = str(exc)
+            if "robust" not in text and "auto_regularize" not in text:
+                raise
+        return self._module.run_transient(*args)
+
     def _build_newton_options(self, settings: "SimulationSettings", circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
         if hasattr(self._module, "NewtonOptions"):
@@ -1663,6 +2032,8 @@ class PulsimBackend(SimulationBackend):
             tolerances.voltage_reltol = settings.rel_tol
             tolerances.current_abstol = settings.abs_tol
             tolerances.current_reltol = settings.rel_tol
+            if hasattr(tolerances, "residual_tol"):
+                tolerances.residual_tol = max(settings.abs_tol, 1e-12)
             opts.tolerances = tolerances
 
         if hasattr(circuit, "num_nodes"):
@@ -1706,11 +2077,16 @@ class PulsimBackend(SimulationBackend):
                     config.gmin_config.final_gmin = settings.gmin_final
                 elif settings.dc_strategy == "source" and hasattr(self._module, "DCStrategy"):
                     config.strategy = self._module.DCStrategy.SourceStepping
-                    config.source_config.max_steps = 10
+                    if hasattr(config, "source_config"):
+                        source_steps = int(getattr(settings, "dc_source_steps", 10))
+                        config.source_config.max_steps = max(1, source_steps)
                 elif settings.dc_strategy == "pseudo" and hasattr(self._module, "DCStrategy"):
                     config.strategy = self._module.DCStrategy.PseudoTransient
                 dc_result = self._module.dc_operating_point(circuit, config)
-                if getattr(dc_result, "success", False):
+                success = getattr(dc_result, "success", False)
+                if callable(success):
+                    success = success()
+                if success:
                     newton_result = getattr(dc_result, "newton_result", None)
                     if newton_result is not None:
                         return newton_result.solution
@@ -1720,6 +2096,112 @@ class PulsimBackend(SimulationBackend):
         if hasattr(circuit, "initial_state"):
             return circuit.initial_state()
         return None
+
+    @staticmethod
+    def _ensure_state_vector(x0: Any, size: int) -> Any:
+        if x0 is not None:
+            return x0
+        return np.zeros(max(1, int(size)), dtype=np.float64)
+
+    @staticmethod
+    def _supports_dc_analysis(module: Any) -> bool:
+        if any(hasattr(module, name) for name in ("dc_operating_point", "solve_dc", "run_dc", "run_dc_analysis")):
+            return True
+
+        for ns_name in ("v1", "v2"):
+            namespace = getattr(module, ns_name, None)
+            if namespace is None:
+                continue
+            if any(
+                hasattr(namespace, name)
+                for name in ("dc_operating_point", "solve_dc", "run_dc", "run_dc_analysis", "DCConvergenceSolver")
+            ):
+                return True
+
+        simulator_cls = getattr(module, "Simulator", None)
+        if simulator_cls is not None and any(
+            hasattr(simulator_cls, name) for name in ("dc_operating_point", "solve_dc", "run_dc", "run_dc_analysis")
+        ):
+            return True
+
+        cap_fn = getattr(module, "backend_capabilities", None)
+        if callable(cap_fn):
+            try:
+                raw_caps = cap_fn()
+            except Exception:
+                return False
+            if isinstance(raw_caps, dict):
+                for key in ("dc", "dc_analysis", "operating_point"):
+                    dc_value = raw_caps.get(key)
+                    if isinstance(dc_value, bool):
+                        return dc_value
+            if isinstance(raw_caps, (set, tuple, list)):
+                return any(cap in raw_caps for cap in ("dc", "dc_analysis", "operating_point"))
+        return False
+
+    @staticmethod
+    def _supports_ac_analysis(module: Any) -> bool:
+        if any(hasattr(module, name) for name in ("run_ac", "run_ac_analysis", "run_small_signal", "ACAnalysis")):
+            return True
+
+        simulator_cls = getattr(module, "Simulator", None)
+        if simulator_cls is not None and any(
+            hasattr(simulator_cls, name) for name in ("run_ac", "run_ac_analysis", "run_small_signal")
+        ):
+            return True
+
+        cap_fn = getattr(module, "backend_capabilities", None)
+        if callable(cap_fn):
+            try:
+                raw_caps = cap_fn()
+            except Exception:
+                return False
+            if isinstance(raw_caps, dict):
+                for key in ("ac", "ac_analysis", "small_signal"):
+                    ac_value = raw_caps.get(key)
+                    if isinstance(ac_value, bool):
+                        return ac_value
+            if isinstance(raw_caps, (set, tuple, list)):
+                return any(cap in raw_caps for cap in ("ac", "ac_analysis", "small_signal"))
+        return False
+
+    @staticmethod
+    def _supports_thermal_analysis(module: Any) -> bool:
+        if any(hasattr(module, name) for name in ("run_thermal", "run_thermal_analysis")):
+            return True
+
+        thermal_simulator = getattr(module, "ThermalSimulator", None)
+        if thermal_simulator is not None:
+            if hasattr(thermal_simulator, "run"):
+                return True
+            if hasattr(thermal_simulator, "simulate") and callable(
+                getattr(module, "create_simple_thermal_model", None)
+            ):
+                return True
+            # Keep legacy detection behavior: older compatibility tests and
+            # adapters treat ThermalSimulator presence as thermal capability.
+            return True
+
+        simulator_cls = getattr(module, "Simulator", None)
+        if simulator_cls is not None and any(
+            hasattr(simulator_cls, name) for name in ("run_thermal", "run_thermal_analysis")
+        ):
+            return True
+
+        cap_fn = getattr(module, "backend_capabilities", None)
+        if callable(cap_fn):
+            try:
+                raw_caps = cap_fn()
+            except Exception:
+                return False
+            if isinstance(raw_caps, dict):
+                for key in ("thermal", "thermal_analysis"):
+                    thermal_value = raw_caps.get(key)
+                    if isinstance(thermal_value, bool):
+                        return thermal_value
+            if isinstance(raw_caps, (set, tuple, list)):
+                return any(cap in raw_caps for cap in ("thermal", "thermal_analysis"))
+        return False
 
 
 class BackendLoader:
@@ -1834,20 +2316,13 @@ class BackendLoader:
         location = Path(getattr(module, "__file__", "")).resolve().parent.as_posix()
         capabilities = {"transient"}
 
-        # Check for DC analysis capability (multiple possible APIs)
-        if hasattr(module, "dc_operating_point") or hasattr(module, "solve_dc"):
-            capabilities.add("dc")
-        elif hasattr(module, "v2") and hasattr(module.v2, "solve_dc"):
-            capabilities.add("dc")
-        elif hasattr(module, "v1") and hasattr(module.v1, "DCConvergenceSolver"):
+        if PulsimBackend._supports_dc_analysis(module):
             capabilities.add("dc")
 
-        # Check for AC analysis capability
-        if hasattr(module, "run_ac") or hasattr(module, "ACAnalysis"):
+        if PulsimBackend._supports_ac_analysis(module):
             capabilities.add("ac")
 
-        # Check for thermal simulation capability
-        if hasattr(module, "ThermalSimulator"):
+        if PulsimBackend._supports_thermal_analysis(module):
             capabilities.add("thermal")
 
         # Parse version for compatibility checking

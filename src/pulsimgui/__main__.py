@@ -69,7 +69,7 @@ def _setup_qt_plugin_path() -> None:
 _setup_qt_plugin_path()
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QPolygonF  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QPolygonF  # noqa: E402
 from PySide6.QtWidgets import QApplication, QSplashScreen  # noqa: E402
 
 try:  # noqa: E402
@@ -78,6 +78,33 @@ except Exception:  # pragma: no cover - optional fallback
     QSvgRenderer = None
 
 from pulsimgui.views.main_window import MainWindow  # noqa: E402
+
+
+def _preferred_ui_font(base_font: QFont) -> QFont:
+    """Return a platform-appropriate UI font with safe fallbacks."""
+    font = QFont(base_font)
+    db = QFontDatabase()
+    families = set(db.families())
+
+    if sys.platform == "win32":
+        candidates = ("Segoe UI Variable Text", "Segoe UI", "Arial")
+        fallback_point_size = 10
+    elif sys.platform == "darwin":
+        candidates = (".AppleSystemUIFont", "SF Pro Text", "Helvetica Neue")
+        fallback_point_size = 12
+    else:
+        candidates = ("Noto Sans", "Ubuntu", "DejaVu Sans", "Arial")
+        fallback_point_size = 10
+
+    for family in candidates:
+        if family in families:
+            font.setFamily(family)
+            break
+
+    if font.pointSizeF() <= 0:
+        font.setPointSize(fallback_point_size)
+
+    return font
 
 
 def _branding_logo_path() -> Path:
@@ -186,6 +213,8 @@ def _wait_min_splash_time(app: QApplication, start_time: float, min_seconds: flo
 def main() -> int:
     """Run the PulsimGui application."""
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setFont(_preferred_ui_font(app.font()))
     app.setApplicationName("PulsimGui")
     app.setOrganizationName("Pulsim")
     app.setOrganizationDomain("pulsim.org")

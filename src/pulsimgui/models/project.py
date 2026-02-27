@@ -20,6 +20,14 @@ class SimulationSettings:
     abstol: float = 1e-12
     reltol: float = 1e-3
     max_iterations: int = 50
+    enable_voltage_limiting: bool = False
+    max_voltage_step: float = 5.0
+    dc_strategy: str = "auto"
+    gmin_initial: float = 1e-3
+    gmin_final: float = 1e-12
+    dc_source_steps: int = 10
+    transient_robust_mode: bool = True
+    transient_auto_regularize: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -30,6 +38,14 @@ class SimulationSettings:
             "abstol": self.abstol,
             "reltol": self.reltol,
             "max_iterations": self.max_iterations,
+            "enable_voltage_limiting": self.enable_voltage_limiting,
+            "max_voltage_step": self.max_voltage_step,
+            "dc_strategy": self.dc_strategy,
+            "gmin_initial": self.gmin_initial,
+            "gmin_final": self.gmin_final,
+            "dc_source_steps": self.dc_source_steps,
+            "transient_robust_mode": self.transient_robust_mode,
+            "transient_auto_regularize": self.transient_auto_regularize,
         }
 
     @classmethod
@@ -42,6 +58,14 @@ class SimulationSettings:
             abstol=data.get("abstol", 1e-12),
             reltol=data.get("reltol", 1e-3),
             max_iterations=data.get("max_iterations", 50),
+            enable_voltage_limiting=bool(data.get("enable_voltage_limiting", False)),
+            max_voltage_step=float(data.get("max_voltage_step", 5.0)),
+            dc_strategy=str(data.get("dc_strategy", "auto")),
+            gmin_initial=float(data.get("gmin_initial", 1e-3)),
+            gmin_final=float(data.get("gmin_final", 1e-12)),
+            dc_source_steps=int(data.get("dc_source_steps", 10)),
+            transient_robust_mode=bool(data.get("transient_robust_mode", True)),
+            transient_auto_regularize=bool(data.get("transient_auto_regularize", True)),
         )
 
 

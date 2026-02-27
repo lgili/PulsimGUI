@@ -56,7 +56,7 @@ class _FakeSettingsService:
         return {}
 
     def get_solver_settings(self):
-        return {}
+        return self.solver_settings or {}
 
     def get_backend_runtime_settings(self):
         return self.runtime_settings or {}
@@ -90,6 +90,9 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
         dc_strategy="gmin",
         gmin_initial=1e-2,
         gmin_final=1e-13,
+        dc_source_steps=21,
+        transient_robust_mode=False,
+        transient_auto_regularize=False,
     )
 
     assert fake_settings.sim_settings is not None
@@ -100,6 +103,27 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
     assert fake_settings.solver_settings is not None
     assert fake_settings.solver_settings["max_newton_iterations"] == 80
     assert fake_settings.solver_settings["dc_strategy"] == "gmin"
+    assert fake_settings.solver_settings["dc_source_steps"] == 21
+    assert fake_settings.solver_settings["transient_robust_mode"] is False
+    assert fake_settings.solver_settings["transient_auto_regularize"] is False
+
+
+def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    fake_settings = _FakeSettingsService(
+        solver_settings={
+            "enable_voltage_limiting": True,
+            "dc_source_steps": 33,
+            "transient_robust_mode": False,
+            "transient_auto_regularize": False,
+        }
+    )
+    service = SimulationService(settings_service=fake_settings)
+
+    assert service.settings.enable_voltage_limiting is True
+    assert service.settings.dc_source_steps == 33
+    assert service.settings.transient_robust_mode is False
+    assert service.settings.transient_auto_regularize is False
 
 
 def test_default_runtime_target_version_loaded_when_settings_empty(monkeypatch) -> None:

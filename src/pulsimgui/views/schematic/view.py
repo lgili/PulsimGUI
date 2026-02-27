@@ -9,9 +9,11 @@ from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QA
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
     Component,
     ComponentType,
     can_connect_measurement_pins,
+    pin_connection_domain,
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
@@ -449,10 +451,14 @@ class SchematicView(QGraphicsView):
             return None
 
         start_component, start_pin_index = self._wire_start_pin
+        start_domain = pin_connection_domain(start_component, start_pin_index)
 
         def _pin_filter(item: object, pin_index: int) -> bool:
             candidate_component = getattr(item, "component", None)
             if candidate_component is None:
+                return False
+            candidate_domain = pin_connection_domain(candidate_component, pin_index)
+            if candidate_domain != start_domain:
                 return False
             return can_connect_measurement_pins(
                 start_component,
@@ -462,6 +468,13 @@ class SchematicView(QGraphicsView):
             )
 
         return _pin_filter
+
+    def _wire_domain(self) -> str:
+        """Return domain color for the wire currently being drawn."""
+        if self._wire_start_pin is None:
+            return CONNECTION_DOMAIN_CIRCUIT
+        component, pin_index = self._wire_start_pin
+        return pin_connection_domain(component, pin_index)
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
         super().resizeEvent(event)
@@ -533,6 +546,9 @@ class SchematicView(QGraphicsView):
                     self._wire_start_pin = (nearest_pin[1].component, nearest_pin[2])
                 else:
                     self._wire_start_pin = None
+                wire_domain = self._wire_domain()
+                self._wire_preview.set_domain(wire_domain)
+                self._wire_in_progress.set_domain(wire_domain)
             elif clicked_on_pin:
                 # Clicked on a pin - auto-finish the wire
                 # Update preview end to pin position
@@ -559,6 +575,7 @@ class SchematicView(QGraphicsView):
                     self._wire_in_progress = WireInProgressItem()
                     in_progress = self._wire_in_progress
                     self.scene().addItem(in_progress)
+                in_progress.set_domain(self._wire_domain())
                 current_segments = preview.get_segments()
                 if current_segments:
                     in_progress.add_segments(current_segments)
@@ -569,6 +586,7 @@ class SchematicView(QGraphicsView):
                 # Reset preview from new point
                 self._remove_wire_preview()
                 self._wire_preview = WirePreviewItem(scene_pos)
+                self._wire_preview.set_domain(self._wire_domain())
                 self.scene().addItem(self._wire_preview)
             event.accept()
         else:

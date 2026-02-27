@@ -33,6 +33,7 @@ from pulsimgui.models.component import (
     SCOPE_CHANNEL_LIMITS,
     MUX_CHANNEL_LIMITS,
     THERMAL_PORT_PARAMETER,
+    set_sum_input_count,
     set_scope_channel_count,
     set_mux_input_count,
     set_demux_output_count,
@@ -1146,6 +1147,12 @@ class PropertiesPanel(QWidget):
             if name == THERMAL_PORT_PARAMETER:
                 set_thermal_port_enabled(self._component, bool(value))
                 value = bool(self._component.parameters.get(THERMAL_PORT_PARAMETER, False))
+            elif (
+                name == "input_count"
+                and self._component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR)
+            ):
+                set_sum_input_count(self._component, int(value))
+                value = int(self._component.parameters.get("input_count", int(value)))
             else:
                 self._component.parameters[name] = value
             self.property_changed.emit(name, value)

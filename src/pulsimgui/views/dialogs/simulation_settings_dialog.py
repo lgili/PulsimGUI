@@ -231,6 +231,23 @@ class SimulationSettingsDialog(QDialog):
         self._max_voltage_step_spin.setToolTip("Maximum voltage change per iteration")
         newton_layout.addRow("Max voltage step:", self._max_voltage_step_spin)
 
+        self._transient_robust_mode_check = QCheckBox("Enable robust transient retries")
+        self._transient_robust_mode_check.setChecked(True)
+        self._transient_robust_mode_check.setToolTip(
+            "Use backend robust retry profiles (recommended for switching converters)."
+        )
+        newton_layout.addRow(self._transient_robust_mode_check)
+
+        self._transient_auto_regularize_check = QCheckBox("Enable automatic regularization")
+        self._transient_auto_regularize_check.setChecked(True)
+        self._transient_auto_regularize_check.setToolTip(
+            "Allow backend to inject tiny stabilization conductances when convergence fails."
+        )
+        newton_layout.addRow(self._transient_auto_regularize_check)
+
+        self._transient_robust_mode_check.toggled.connect(
+            self._transient_auto_regularize_check.setEnabled
+        )
         self._voltage_limiting_check.toggled.connect(self._max_voltage_step_spin.setEnabled)
 
         layout.addWidget(newton_group)
@@ -279,6 +296,20 @@ class SimulationSettingsDialog(QDialog):
         dc_layout.addRow(self._gmin_widget)
         self._gmin_widget.setVisible(False)
 
+        # Source stepping parameters (shown only for source strategy)
+        self._source_widget = QWidget()
+        source_layout = QFormLayout(self._source_widget)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._source_steps_spin = QSpinBox()
+        self._source_steps_spin.setRange(1, 500)
+        self._source_steps_spin.setValue(10)
+        self._source_steps_spin.setToolTip("Maximum number of source stepping increments")
+        source_layout.addRow("Source steps:", self._source_steps_spin)
+
+        dc_layout.addRow(self._source_widget)
+        self._source_widget.setVisible(False)
+
         self._dc_strategy_combo.currentIndexChanged.connect(self._on_dc_strategy_changed)
 
         layout.addWidget(dc_group)
@@ -326,6 +357,8 @@ class SimulationSettingsDialog(QDialog):
         """Show/hide GMIN parameters based on strategy."""
         # GMIN Stepping is index 2
         self._gmin_widget.setVisible(index == 2)
+        # Source Stepping is index 3
+        self._source_widget.setVisible(index == 3)
         self._update_dc_strategy_description()
 
     def _create_output_tab(self) -> QWidget:
@@ -392,12 +425,16 @@ class SimulationSettingsDialog(QDialog):
         self._voltage_limiting_check.setChecked(self._settings.enable_voltage_limiting)
         self._max_voltage_step_spin.setValue(self._settings.max_voltage_step)
         self._max_voltage_step_spin.setEnabled(self._settings.enable_voltage_limiting)
+        self._transient_robust_mode_check.setChecked(self._settings.transient_robust_mode)
+        self._transient_auto_regularize_check.setChecked(self._settings.transient_auto_regularize)
+        self._transient_auto_regularize_check.setEnabled(self._settings.transient_robust_mode)
 
         # DC strategy settings
         dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
         self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(self._settings.dc_strategy, 0))
         self._gmin_initial_spin.setValue(self._settings.gmin_initial)
         self._gmin_final_spin.setValue(self._settings.gmin_final)
+        self._source_steps_spin.setValue(self._settings.dc_source_steps)
 
         self._output_points_spin.setValue(self._settings.output_points)
 
@@ -425,12 +462,18 @@ class SimulationSettingsDialog(QDialog):
         self._settings.max_newton_iterations = self._max_iterations_spin.value()
         self._settings.enable_voltage_limiting = self._voltage_limiting_check.isChecked()
         self._settings.max_voltage_step = self._max_voltage_step_spin.value()
+        self._settings.transient_robust_mode = self._transient_robust_mode_check.isChecked()
+        self._settings.transient_auto_regularize = (
+            self._transient_auto_regularize_check.isChecked()
+            and self._transient_robust_mode_check.isChecked()
+        )
 
         # DC strategy settings
         dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
         self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
         self._settings.gmin_initial = self._gmin_initial_spin.value()
         self._settings.gmin_final = self._gmin_final_spin.value()
+        self._settings.dc_source_steps = self._source_steps_spin.value()
 
         self._settings.output_points = self._output_points_spin.value()
 

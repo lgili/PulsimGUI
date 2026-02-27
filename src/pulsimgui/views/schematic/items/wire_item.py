@@ -8,6 +8,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    CONNECTION_DOMAIN_SIGNAL,
+    CONNECTION_DOMAIN_THERMAL,
+    pin_connection_domain,
+)
 from pulsimgui.models.wire import Wire, WireSegment
 
 
@@ -26,16 +32,32 @@ class WireItem(QGraphicsPathItem):
     LINE_WIDTH = 2.5  # Slightly thicker for better visibility
     LINE_WIDTH_HOVER = 3.5
     LINE_WIDTH_SELECTED = 3.0
-    LINE_COLOR = QColor(16, 185, 129)  # Emerald green - modern and visible
-    LINE_COLOR_DARK = QColor(52, 211, 153)  # Light emerald for dark mode
-    HOVER_COLOR = QColor(5, 150, 105)  # Darker on hover
-    HOVER_COLOR_DARK = QColor(110, 231, 183)
+    DOMAIN_LINE_COLORS = {
+        CONNECTION_DOMAIN_CIRCUIT: QColor(16, 185, 129),
+        CONNECTION_DOMAIN_SIGNAL: QColor(52, 126, 232),
+        CONNECTION_DOMAIN_THERMAL: QColor(234, 108, 34),
+    }
+    DOMAIN_LINE_COLORS_DARK = {
+        CONNECTION_DOMAIN_CIRCUIT: QColor(52, 211, 153),
+        CONNECTION_DOMAIN_SIGNAL: QColor(130, 188, 255),
+        CONNECTION_DOMAIN_THERMAL: QColor(255, 182, 120),
+    }
+    DOMAIN_HOVER_COLORS = {
+        CONNECTION_DOMAIN_CIRCUIT: QColor(5, 150, 105),
+        CONNECTION_DOMAIN_SIGNAL: QColor(35, 102, 212),
+        CONNECTION_DOMAIN_THERMAL: QColor(211, 91, 24),
+    }
+    DOMAIN_HOVER_COLORS_DARK = {
+        CONNECTION_DOMAIN_CIRCUIT: QColor(110, 231, 183),
+        CONNECTION_DOMAIN_SIGNAL: QColor(171, 212, 255),
+        CONNECTION_DOMAIN_THERMAL: QColor(255, 205, 156),
+    }
     SELECTED_COLOR = QColor(59, 130, 246)  # Blue to match component selection
     SELECTED_GLOW = QColor(59, 130, 246, 60)  # Semi-transparent for glow
-    JUNCTION_RADIUS = 6.0
-    JUNCTION_RADIUS_HOVER = 7.0
-    CONNECTION_RADIUS = 5.0  # Connection indicator circles
-    CONNECTION_RADIUS_HOVER = 6.5
+    JUNCTION_RADIUS = 4.2
+    JUNCTION_RADIUS_HOVER = 5.2
+    CONNECTION_RADIUS = 3.8  # Connection indicator circles
+    CONNECTION_RADIUS_HOVER = 4.8
 
     def __init__(self, wire: Wire, parent=None):
         super().__init__(parent)
@@ -58,7 +80,7 @@ class WireItem(QGraphicsPathItem):
         self.setAcceptHoverEvents(True)
 
         # Set default pen for proper bounding rect calculation
-        self.setPen(QPen(self.LINE_COLOR, self.LINE_WIDTH))
+        self.setPen(QPen(self.DOMAIN_LINE_COLORS[CONNECTION_DOMAIN_CIRCUIT], self.LINE_WIDTH))
 
         # Build path from wire segments
         self._rebuild_path()
@@ -91,6 +113,34 @@ class WireItem(QGraphicsPathItem):
         """Clear all connected endpoint indicators."""
         self._connected_endpoints.clear()
         self.update()
+
+    def _wire_domain(self) -> str:
+        """Resolve wire domain from connected endpoint pin metadata."""
+        domains: set[str] = set()
+        for connection in (self._wire.start_connection, self._wire.end_connection):
+            domain = self._connection_domain(connection)
+            if domain:
+                domains.add(domain)
+
+        if CONNECTION_DOMAIN_THERMAL in domains:
+            return CONNECTION_DOMAIN_THERMAL
+        if CONNECTION_DOMAIN_SIGNAL in domains:
+            return CONNECTION_DOMAIN_SIGNAL
+        return CONNECTION_DOMAIN_CIRCUIT
+
+    def _connection_domain(self, connection) -> str | None:
+        if connection is None:
+            return None
+        scene = self.scene()
+        circuit = getattr(scene, "circuit", None) if scene is not None else None
+        if circuit is None:
+            return None
+        component = circuit.components.get(connection.component_id)
+        if component is None:
+            return None
+        if connection.pin_index < 0 or connection.pin_index >= len(component.pins):
+            return None
+        return pin_connection_domain(component, connection.pin_index)
 
     def _rebuild_path(self) -> None:
         """Rebuild the QPainterPath from wire segments."""
@@ -163,19 +213,24 @@ class WireItem(QGraphicsPathItem):
         # Determine state and colors
         is_selected = self.isSelected()
         is_hovered = self._hovered and not is_selected
+        domain = self._wire_domain()
 
         # Choose color and width based on state
         if is_selected:
             color = self.SELECTED_COLOR
             line_width = self.LINE_WIDTH_SELECTED
         elif is_hovered:
-            color = self.HOVER_COLOR_DARK if self._dark_mode else self.HOVER_COLOR
+            color = (
+                self.DOMAIN_HOVER_COLORS_DARK.get(domain, self.DOMAIN_HOVER_COLORS[CONNECTION_DOMAIN_CIRCUIT])
+                if self._dark_mode
+                else self.DOMAIN_HOVER_COLORS.get(domain, self.DOMAIN_HOVER_COLORS[CONNECTION_DOMAIN_CIRCUIT])
+            )
             line_width = self.LINE_WIDTH_HOVER
         elif self._dark_mode:
-            color = self.LINE_COLOR_DARK
+            color = self.DOMAIN_LINE_COLORS_DARK.get(domain, self.DOMAIN_LINE_COLORS_DARK[CONNECTION_DOMAIN_CIRCUIT])
             line_width = self.LINE_WIDTH
         else:
-            color = self.LINE_COLOR
+            color = self.DOMAIN_LINE_COLORS.get(domain, self.DOMAIN_LINE_COLORS[CONNECTION_DOMAIN_CIRCUIT])
             line_width = self.LINE_WIDTH
 
         # Draw selection glow effect (behind the wire)
@@ -342,6 +397,8 @@ class WireItem(QGraphicsPathItem):
                 ):
                     self._restore_drag_snapshot()
                 self._rebuild_path()
+                if scene is not None and hasattr(scene, "refresh_wire_connection_overlays"):
+                    scene.refresh_wire_connection_overlays()
                 self._drag_snapshot = None
         super().mouseReleaseEvent(event)
 
@@ -768,10 +825,22 @@ class WireInProgressItem(QGraphicsPathItem):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._segments: list[tuple[float, float, float, float]] = []
-        pen = QPen(self.CONFIRMED_COLOR, self.CONFIRMED_WIDTH)
+        self._domain = CONNECTION_DOMAIN_CIRCUIT
+        self._apply_pen()
+
+    def _apply_pen(self) -> None:
+        color = WireItem.DOMAIN_HOVER_COLORS.get(self._domain, self.CONFIRMED_COLOR)
+        pen = QPen(color, self.CONFIRMED_WIDTH)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.setPen(pen)
+
+    def set_domain(self, domain: str) -> None:
+        """Set active domain for in-progress segment color."""
+        if domain == self._domain:
+            return
+        self._domain = domain
+        self._apply_pen()
 
     def add_segments(self, segments: list[tuple[float, float, float, float]]) -> None:
         """Add confirmed segments."""
@@ -885,13 +954,24 @@ class WirePreviewItem(QGraphicsPathItem):
         self._route_index = 0
         self._available_routes: list[list[QPointF]] = []
         self._suggestion_items: list[WireRoutingSuggestion] = []
+        self._domain = CONNECTION_DOMAIN_CIRCUIT
+        self._apply_pen()
+        self._update_path()
 
-        pen = QPen(self.PREVIEW_COLOR, self.PREVIEW_WIDTH, Qt.PenStyle.DashLine)
+    def _apply_pen(self) -> None:
+        color = WireItem.DOMAIN_LINE_COLORS.get(self._domain, self.PREVIEW_COLOR)
+        pen = QPen(color, self.PREVIEW_WIDTH, Qt.PenStyle.DashLine)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         pen.setDashPattern([4, 3])  # Shorter dashes for cleaner look
         self.setPen(pen)
-        self._update_path()
+
+    def set_domain(self, domain: str) -> None:
+        """Set active domain for preview segment color."""
+        if domain == self._domain:
+            return
+        self._domain = domain
+        self._apply_pen()
 
     def set_end(self, end: QPointF) -> None:
         """Update the end point."""

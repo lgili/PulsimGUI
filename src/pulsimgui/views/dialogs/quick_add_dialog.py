@@ -13,32 +13,12 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component_catalog import QUICK_ADD_COMPONENTS
 from pulsimgui.resources.icons import IconService
 
 
 # Component search data: (type, display_name, keywords)
-COMPONENT_DATA = [
-    (ComponentType.RESISTOR, "Resistor", ["r", "res", "resistance", "ohm"]),
-    (ComponentType.CAPACITOR, "Capacitor", ["c", "cap", "capacitance", "farad"]),
-    (ComponentType.INDUCTOR, "Inductor", ["l", "ind", "inductance", "henry"]),
-    (ComponentType.VOLTAGE_SOURCE, "Voltage Source", ["v", "vs", "volt", "voltage", "vdc"]),
-    (ComponentType.CURRENT_SOURCE, "Current Source", ["i", "is", "curr", "current", "idc"]),
-    (ComponentType.GROUND, "Ground", ["gnd", "ground", "0"]),
-    (ComponentType.DIODE, "Diode", ["d", "diode", "rectifier"]),
-    (ComponentType.MOSFET_N, "N-Channel MOSFET", ["nmos", "nfet", "mosfet", "transistor"]),
-    (ComponentType.MOSFET_P, "P-Channel MOSFET", ["pmos", "pfet"]),
-    (ComponentType.IGBT, "IGBT", ["igbt", "transistor"]),
-    (ComponentType.SWITCH, "Switch", ["sw", "switch"]),
-    (ComponentType.TRANSFORMER, "Transformer", ["xfmr", "transformer", "trafo"]),
-    (ComponentType.PI_CONTROLLER, "PI Controller", ["pi", "controller"]),
-    (ComponentType.PID_CONTROLLER, "PID Controller", ["pid", "controller"]),
-    (ComponentType.MATH_BLOCK, "Math Block", ["math", "gain", "sum"]),
-    (ComponentType.PWM_GENERATOR, "PWM Generator", ["pwm", "pulse", "modulator"]),
-    (ComponentType.ELECTRICAL_SCOPE, "Electrical Scope", ["scope", "probe", "measure"]),
-    (ComponentType.THERMAL_SCOPE, "Thermal Scope", ["thermal", "temp", "temperature"]),
-    (ComponentType.SIGNAL_MUX, "Signal Mux", ["mux", "multiplexer"]),
-    (ComponentType.SIGNAL_DEMUX, "Signal Demux", ["demux", "demultiplexer"]),
-]
+COMPONENT_DATA = QUICK_ADD_COMPONENTS
 
 
 class QuickAddDialog(QDialog):

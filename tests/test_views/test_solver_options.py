@@ -28,11 +28,14 @@ class TestUIValueChanges:
         assert dialog._max_iterations_spin.value() == 50
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 5.0
+        assert dialog._transient_robust_mode_check.isChecked()
+        assert dialog._transient_auto_regularize_check.isChecked()
 
         # Check DC strategy
         assert dialog._dc_strategy_combo.currentIndex() == 0  # auto
         assert dialog._gmin_initial_spin.value() == 1e-3
         assert dialog._gmin_final_spin.value() == 1e-12
+        assert dialog._source_steps_spin.value() == 10
 
         # Check tolerances
         assert dialog._rel_tol_spin.value() == 1e-4
@@ -51,9 +54,12 @@ class TestUIValueChanges:
             max_newton_iterations=100,
             enable_voltage_limiting=False,
             max_voltage_step=10.0,
-            dc_strategy="gmin",
+            dc_strategy="source",
             gmin_initial=1e-2,
             gmin_final=1e-15,
+            dc_source_steps=42,
+            transient_robust_mode=False,
+            transient_auto_regularize=False,
             rel_tol=1e-5,
             abs_tol=1e-9,
             output_points=5000,
@@ -70,14 +76,16 @@ class TestUIValueChanges:
         assert dialog._max_iterations_spin.value() == 100
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 10.0
+        assert not dialog._transient_robust_mode_check.isChecked()
+        assert not dialog._transient_auto_regularize_check.isChecked()
 
-        # Check DC strategy (gmin is index 2)
-        assert dialog._dc_strategy_combo.currentIndex() == 2
+        # Check DC strategy (source is index 3)
+        assert dialog._dc_strategy_combo.currentIndex() == 3
         assert dialog._gmin_initial_spin.value() == 1e-2
         assert dialog._gmin_final_spin.value() == 1e-15
-        # GMIN widget should be set visible when gmin strategy selected
-        # (note: isVisible() returns False until dialog is shown, so check testAttribute)
-        assert not dialog._gmin_widget.isHidden()
+        assert dialog._source_steps_spin.value() == 42
+        assert dialog._gmin_widget.isHidden()
+        assert not dialog._source_widget.isHidden()
 
         # Check tolerances
         assert dialog._rel_tol_spin.value() == 1e-5
@@ -100,6 +108,9 @@ class TestUIValueChanges:
         dialog._voltage_limiting_check.setChecked(False)
         dialog._max_voltage_step_spin.setValue(8.0)
         dialog._dc_strategy_combo.setCurrentIndex(3)  # source
+        dialog._source_steps_spin.setValue(37)
+        dialog._transient_robust_mode_check.setChecked(False)
+        dialog._transient_auto_regularize_check.setChecked(True)
         dialog._gmin_initial_spin.setValue(5e-3)
         dialog._gmin_final_spin.setValue(1e-10)
         dialog._rel_tol_spin.setValue(1e-6)
@@ -117,6 +128,9 @@ class TestUIValueChanges:
         assert settings.enable_voltage_limiting is False
         assert settings.max_voltage_step == 8.0
         assert settings.dc_strategy == "source"
+        assert settings.dc_source_steps == 37
+        assert settings.transient_robust_mode is False
+        assert settings.transient_auto_regularize is False
         assert settings.gmin_initial == 5e-3
         assert settings.gmin_final == 1e-10
         assert settings.rel_tol == 1e-6
@@ -164,6 +178,12 @@ class TestUIValueChanges:
         # Change to GMIN strategy
         dialog._dc_strategy_combo.setCurrentIndex(2)  # gmin
         assert not dialog._gmin_widget.isHidden()
+        assert dialog._source_widget.isHidden()
+
+        # Change to source strategy
+        dialog._dc_strategy_combo.setCurrentIndex(3)  # source
+        assert dialog._gmin_widget.isHidden()
+        assert not dialog._source_widget.isHidden()
 
         # Change back to auto
         dialog._dc_strategy_combo.setCurrentIndex(0)  # auto

@@ -35,6 +35,7 @@ from pulsimgui.models.component import (
     THERMAL_PORT_PARAMETER,
     can_connect_measurement_pins,
     is_restricted_measurement_pin,
+    pin_connection_domain,
 )
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
@@ -636,11 +637,13 @@ class MainWindow(QMainWindow):
         """Enable or disable simulation actions based on backend readiness."""
         backend_ready = self._simulation_service.is_backend_ready
         is_running = self._simulation_service.is_running
+        has_dc = self._simulation_service.has_capability("dc")
+        has_ac = self._simulation_service.has_capability("ac")
         self.action_run.setEnabled(backend_ready and not is_running)
         self.action_stop.setEnabled(backend_ready and is_running)
         self.action_pause.setEnabled(backend_ready and is_running)
-        self.action_dc_op.setEnabled(backend_ready and not is_running)
-        self.action_ac.setEnabled(backend_ready and not is_running)
+        self.action_dc_op.setEnabled(backend_ready and has_dc and not is_running)
+        self.action_ac.setEnabled(backend_ready and has_ac and not is_running)
         self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
 
     def _update_backend_status(self, info: BackendInfo | None = None) -> None:
@@ -1054,6 +1057,14 @@ class MainWindow(QMainWindow):
         runtime_settings.abs_tol = max(float(project_settings.abstol), 1e-10)
         runtime_settings.rel_tol = float(project_settings.reltol)
         runtime_settings.max_newton_iterations = int(project_settings.max_iterations)
+        runtime_settings.enable_voltage_limiting = bool(project_settings.enable_voltage_limiting)
+        runtime_settings.max_voltage_step = float(project_settings.max_voltage_step)
+        runtime_settings.dc_strategy = str(project_settings.dc_strategy)
+        runtime_settings.gmin_initial = float(project_settings.gmin_initial)
+        runtime_settings.gmin_final = float(project_settings.gmin_final)
+        runtime_settings.dc_source_steps = int(project_settings.dc_source_steps)
+        runtime_settings.transient_robust_mode = bool(project_settings.transient_robust_mode)
+        runtime_settings.transient_auto_regularize = bool(project_settings.transient_auto_regularize)
 
     def _apply_simulation_service_settings_to_project(self) -> None:
         """Persist runtime simulation settings back into the project model."""
@@ -1065,6 +1076,14 @@ class MainWindow(QMainWindow):
         project_settings.abstol = float(runtime_settings.abs_tol)
         project_settings.reltol = float(runtime_settings.rel_tol)
         project_settings.max_iterations = int(runtime_settings.max_newton_iterations)
+        project_settings.enable_voltage_limiting = bool(runtime_settings.enable_voltage_limiting)
+        project_settings.max_voltage_step = float(runtime_settings.max_voltage_step)
+        project_settings.dc_strategy = str(runtime_settings.dc_strategy)
+        project_settings.gmin_initial = float(runtime_settings.gmin_initial)
+        project_settings.gmin_final = float(runtime_settings.gmin_final)
+        project_settings.dc_source_steps = int(runtime_settings.dc_source_steps)
+        project_settings.transient_robust_mode = bool(runtime_settings.transient_robust_mode)
+        project_settings.transient_auto_regularize = bool(runtime_settings.transient_auto_regularize)
 
     # Slots
     def _on_new_project(self) -> None:
@@ -1602,8 +1621,8 @@ class MainWindow(QMainWindow):
         end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
         if not self._is_valid_wire_measurement_connection(start_ref, end_ref):
             self.statusBar().showMessage(
-                "Invalid connection: Electrical Scope only accepts V/I probe outputs; "
-                "Thermal Scope only accepts TH outputs.",
+                "Invalid connection: domains cannot mix (circuit/signal/thermal). "
+                "Electrical Scope only accepts V/I probe outputs; Thermal Scope only accepts TH outputs.",
                 5000,
             )
             return
@@ -1637,12 +1656,15 @@ class MainWindow(QMainWindow):
         if start_ref is not None and end_ref is not None:
             left_component, left_pin = start_ref
             right_component, right_pin = end_ref
-            return can_connect_measurement_pins(
+            if not can_connect_measurement_pins(
                 left_component,
                 left_pin,
                 right_component,
                 right_pin,
-            )
+            ):
+                return False
+            # Never allow mixing circuit/signal/thermal domains on a direct wire connection.
+            return pin_connection_domain(left_component, left_pin) == pin_connection_domain(right_component, right_pin)
 
         for ref in (start_ref, end_ref):
             if ref is None:
@@ -1723,6 +1745,11 @@ class MainWindow(QMainWindow):
             ComponentType.IGBT: "Q",
             ComponentType.SWITCH: "S",
             ComponentType.TRANSFORMER: "T",
+            ComponentType.PWM_GENERATOR: "PWM",
+            ComponentType.PI_CONTROLLER: "PI",
+            ComponentType.GAIN: "K",
+            ComponentType.SUM: "SUM",
+            ComponentType.SUBTRACTOR: "SUB",
         }
 
         prefix = prefix_map.get(comp_type, "X")
@@ -1989,6 +2016,16 @@ class MainWindow(QMainWindow):
 
     def _on_ac_analysis(self) -> None:
         """Run AC analysis."""
+        if not self._simulation_service.has_capability("ac"):
+            QMessageBox.warning(
+                self,
+                "AC Analysis Unavailable",
+                (
+                    "The selected backend does not provide AC analysis.\n"
+                    "Install/enable a backend version with AC support to run this analysis."
+                ),
+            )
+            return
         # TODO: Show AC settings dialog first
         self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)

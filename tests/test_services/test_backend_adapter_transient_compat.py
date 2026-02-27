@@ -46,6 +46,14 @@ class _FakeCircuit:
         self._timestep = dt
 
 
+class _FakeCircuitWithSignals(_FakeCircuit):
+    def signal_names(self) -> list[str]:
+        return ["V(OUT)", "I(V1)"]
+
+    def num_branches(self) -> int:
+        return 1
+
+
 class _FakeTolerances:
     def __init__(self) -> None:
         self.voltage_abstol = 0.0
@@ -269,3 +277,104 @@ def test_transient_does_not_retry_non_convergence_errors() -> None:
 
     assert calls["count"] == 1
     assert result.error_message == "Unsupported transient API signature"
+
+
+def test_transient_prefers_run_transient_and_passes_robust_kwargs() -> None:
+    """Adapter should prefer run_transient and forward robust mode kwargs."""
+    seen: dict[str, Any] = {"streaming_calls": 0}
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, robust=True, auto_regularize=True):  # noqa: ANN001
+        _ = (circuit, t_start, dt)
+        newton_opts = args[0]
+        seen["robust"] = robust
+        seen["auto_regularize"] = auto_regularize
+        seen["max_iterations"] = newton_opts.max_iterations
+        return [t_start, t_stop], [[0.0], [2.0]], True, ""
+
+    def run_transient_streaming(*_args, **_kwargs):  # noqa: ANN001
+        seen["streaming_calls"] += 1
+        return [], [], False, "should not be called"
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient=run_transient,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        transient_robust_mode=False,
+        transient_auto_regularize=False,
+        max_newton_iterations=77,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert result.signals["V(OUT)"] == [0.0, 2.0]
+    assert seen["robust"] is False
+    assert seen["auto_regularize"] is False
+    assert seen["max_iterations"] == 77
+    assert seen["streaming_calls"] == 0
+
+
+def test_transient_uses_signal_names_when_available() -> None:
+    """Adapter should expose full signal_names() (including branch currents)."""
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **_kwargs):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        return [t_start, t_stop], [[0.0, -0.001], [1.0, -0.002]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithSignals,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient=run_transient,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert result.signals["V(OUT)"] == [0.0, 1.0]
+    assert result.signals["I(V1)"] == [-0.001, -0.002]

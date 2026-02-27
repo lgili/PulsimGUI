@@ -24,7 +24,7 @@ def test_normalize_backend_version() -> None:
 def test_default_target_version() -> None:
     config = BackendRuntimeConfig()
     assert config.target_version == DEFAULT_BACKEND_TARGET_VERSION
-    assert config.normalized_target_version == "0.4.0"
+    assert config.normalized_target_version == "0.5.0"
 
 
 def test_build_install_command_for_pypi_target() -> None:

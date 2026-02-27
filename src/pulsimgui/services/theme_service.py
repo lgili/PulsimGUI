@@ -606,11 +606,9 @@ class ThemeService(QObject):
 QMainWindow, QDialog {{
     background-color: {c.background};
     color: {c.foreground};
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }}
 
 QWidget {{
-    background-color: transparent;
     color: {c.foreground};
     font-size: 13px;
 }}

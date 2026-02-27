@@ -103,11 +103,20 @@ class MeasurementsPanel(QFrame):
         self.setObjectName("MeasurementsPanelRoot")
         self.setFrameStyle(QFrame.Shape.NoFrame)
         self._value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
+        self._theme: Theme | None = None
         self._muted_labels: list[QLabel] = []
         self._accent_labels: dict[QLabel, str] = {}
         self._separator: QFrame | None = None
+        self._cursor_palette: tuple[str, str] | None = None
+        self._latest_per_signal: dict[str, dict[str, float | None]] = {}
         self._setup_ui()
         self._apply_styles()
+
+    @staticmethod
+    def _compact_header(name: str, max_len: int = 12) -> str:
+        if len(name) <= max_len:
+            return name
+        return f"{name[:max_len - 1]}…"
 
     @staticmethod
     def _to_hex(color: tuple[int, int, int]) -> str:
@@ -123,28 +132,30 @@ class MeasurementsPanel(QFrame):
             self.setStyleSheet("""
             QFrame#MeasurementsPanelRoot {
                 background-color: #f9fafb;
-                border-radius: 8px;
+                border: 1px solid #e5e7eb;
+                border-radius: 10px;
             }
             QGroupBox {
                 font-weight: 600;
-                font-size: 11px;
+                font-size: 10px;
                 color: #374151;
                 border: 1px solid #e5e7eb;
-                border-radius: 6px;
+                border-radius: 8px;
                 margin-top: 12px;
-                padding-top: 8px;
+                padding-top: 10px;
                 background-color: #ffffff;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 6px;
+                left: 12px;
+                padding: 0 7px;
                 background-color: #ffffff;
             }
             QTableWidget {
                 background-color: #ffffff;
+                alternate-background-color: #f8fafc;
                 border: 1px solid #e5e7eb;
-                border-radius: 6px;
+                border-radius: 8px;
                 gridline-color: #e5e7eb;
                 color: #111827;
                 font-size: 10px;
@@ -178,28 +189,30 @@ class MeasurementsPanel(QFrame):
             self.setStyleSheet(f"""
                 QFrame#MeasurementsPanelRoot {{
                     background-color: {c.panel_background};
-                    border-radius: 8px;
+                    border: 1px solid {c.panel_border};
+                    border-radius: 10px;
                 }}
                 QGroupBox {{
                     font-weight: 600;
-                    font-size: 11px;
+                    font-size: 10px;
                     color: {c.foreground};
                     border: 1px solid {c.panel_border};
-                    border-radius: 6px;
+                    border-radius: 8px;
                     margin-top: 12px;
-                    padding-top: 8px;
+                    padding-top: 10px;
                     background-color: {c.background};
                 }}
                 QGroupBox::title {{
                     subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 6px;
+                    left: 12px;
+                    padding: 0 7px;
                     background-color: {c.background};
                 }}
                 QTableWidget {{
                     background-color: {c.background};
+                    alternate-background-color: {c.panel_background};
                     border: 1px solid {c.panel_border};
-                    border-radius: 6px;
+                    border-radius: 8px;
                     gridline-color: {c.divider};
                     color: {c.foreground};
                     font-size: 10px;
@@ -213,6 +226,12 @@ class MeasurementsPanel(QFrame):
                     padding: 4px 6px;
                     font-size: 10px;
                     font-weight: 600;
+                }}
+                QTableCornerButton::section {{
+                    background-color: {c.panel_background};
+                    border: none;
+                    border-right: 1px solid {c.divider};
+                    border-bottom: 1px solid {c.divider};
                 }}
             """)
             muted_color = c.foreground_muted
@@ -247,81 +266,101 @@ class MeasurementsPanel(QFrame):
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
-        # Cursor measurements
+        # ── Cursor Measurements (C1 / C2 two-column layout) ──────────────────
         cursor_group = QGroupBox("Cursor Measurements")
         cursor_layout = QGridLayout(cursor_group)
-        cursor_layout.setContentsMargins(10, 16, 10, 10)
-        cursor_layout.setSpacing(6)
+        cursor_layout.setContentsMargins(8, 14, 8, 8)
+        cursor_layout.setSpacing(4)
+        cursor_layout.setColumnStretch(1, 1)
+        cursor_layout.setColumnStretch(2, 1)
 
-        # Cursor 1
-        c1_label = QLabel("C1 Time")
-        self._muted_labels.append(c1_label)
-        cursor_layout.addWidget(c1_label, 0, 0)
+        # Column headers
+        _empty = QLabel("")
+        cursor_layout.addWidget(_empty, 0, 0)
+        self._c1_header = QLabel("● C1")
+        self._c1_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._accent_labels[self._c1_header] = "cursor_1"
+        cursor_layout.addWidget(self._c1_header, 0, 1)
+        self._c2_header = QLabel("● C2")
+        self._c2_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._accent_labels[self._c2_header] = "cursor_2"
+        cursor_layout.addWidget(self._c2_header, 0, 2)
+
+        # Separator under header
+        sep_h = QFrame()
+        sep_h.setFrameShape(QFrame.Shape.HLine)
+        sep_h.setFixedHeight(1)
+        self._separator = sep_h
+        cursor_layout.addWidget(sep_h, 1, 0, 1, 3)
+
+        # Time row
+        lbl_time = QLabel("Time")
+        self._muted_labels.append(lbl_time)
+        cursor_layout.addWidget(lbl_time, 2, 0)
         self._c1_time = QLabel("---")
+        self._c1_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._c1_time] = "cursor_1"
-        cursor_layout.addWidget(self._c1_time, 0, 1)
-
-        c1v_label = QLabel("C1 Value")
-        self._muted_labels.append(c1v_label)
-        cursor_layout.addWidget(c1v_label, 1, 0)
-        self._c1_value = QLabel("---")
-        self._accent_labels[self._c1_value] = "cursor_1"
-        cursor_layout.addWidget(self._c1_value, 1, 1)
-
-        # Cursor 2
-        c2_label = QLabel("C2 Time")
-        self._muted_labels.append(c2_label)
-        cursor_layout.addWidget(c2_label, 2, 0)
+        cursor_layout.addWidget(self._c1_time, 2, 1)
         self._c2_time = QLabel("---")
+        self._c2_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._c2_time] = "cursor_2"
-        cursor_layout.addWidget(self._c2_time, 2, 1)
+        cursor_layout.addWidget(self._c2_time, 2, 2)
 
-        c2v_label = QLabel("C2 Value")
-        self._muted_labels.append(c2v_label)
-        cursor_layout.addWidget(c2v_label, 3, 0)
+        # Value row
+        lbl_val = QLabel("Value")
+        self._muted_labels.append(lbl_val)
+        cursor_layout.addWidget(lbl_val, 3, 0)
+        self._c1_value = QLabel("---")
+        self._c1_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._accent_labels[self._c1_value] = "cursor_1"
+        cursor_layout.addWidget(self._c1_value, 3, 1)
         self._c2_value = QLabel("---")
+        self._c2_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._c2_value] = "cursor_2"
-        cursor_layout.addWidget(self._c2_value, 3, 1)
+        cursor_layout.addWidget(self._c2_value, 3, 2)
 
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFixedHeight(1)
-        self._separator = sep
-        cursor_layout.addWidget(sep, 4, 0, 1, 2)
+        # Separator before delta
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background-color: transparent; border: none;")
+        cursor_layout.addWidget(sep2, 4, 0, 1, 3)
 
-        # Delta measurements
-        dt_label = QLabel("Delta T")
-        self._muted_labels.append(dt_label)
-        cursor_layout.addWidget(dt_label, 5, 0)
+        # Delta row
+        lbl_dt = QLabel("Δ Time")
+        self._muted_labels.append(lbl_dt)
+        cursor_layout.addWidget(lbl_dt, 5, 0)
         self._delta_t = QLabel("---")
+        self._delta_t.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._delta_t] = "delta"
-        cursor_layout.addWidget(self._delta_t, 5, 1)
+        cursor_layout.addWidget(self._delta_t, 5, 1, 1, 2)
 
-        dv_label = QLabel("Delta V")
-        self._muted_labels.append(dv_label)
-        cursor_layout.addWidget(dv_label, 6, 0)
+        lbl_dv = QLabel("Δ Value")
+        self._muted_labels.append(lbl_dv)
+        cursor_layout.addWidget(lbl_dv, 6, 0)
         self._delta_v = QLabel("---")
+        self._delta_v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._delta_v] = "delta"
-        cursor_layout.addWidget(self._delta_v, 6, 1)
+        cursor_layout.addWidget(self._delta_v, 6, 1, 1, 2)
 
-        freq_label = QLabel("Frequency")
-        self._muted_labels.append(freq_label)
-        cursor_layout.addWidget(freq_label, 7, 0)
+        lbl_freq = QLabel("Freq")
+        self._muted_labels.append(lbl_freq)
+        cursor_layout.addWidget(lbl_freq, 7, 0)
         self._frequency = QLabel("---")
+        self._frequency.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._accent_labels[self._frequency] = "frequency"
-        cursor_layout.addWidget(self._frequency, 7, 1)
+        cursor_layout.addWidget(self._frequency, 7, 1, 1, 2)
 
         layout.addWidget(cursor_group)
 
-        # Measurements table (channels as columns, metrics as rows)
+        # ── Measurements table (channels as columns, metrics as rows) ─────────
         table_group = QGroupBox("Measurements")
         table_layout = QVBoxLayout(table_group)
-        table_layout.setContentsMargins(8, 16, 8, 8)
-        table_layout.setSpacing(6)
+        table_layout.setContentsMargins(6, 14, 6, 6)
+        table_layout.setSpacing(4)
 
         self._measurement_rows: list[tuple[str, str]] = [
             ("c1", "C1"),
@@ -338,12 +377,47 @@ class MeasurementsPanel(QFrame):
         self._multi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._multi_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._multi_table.setAlternatingRowColors(True)
-        self._multi_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self._multi_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._multi_table.setWordWrap(False)
+        self._multi_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._multi_table.horizontalHeader().setMinimumSectionSize(56)
+        self._multi_table.horizontalHeader().setDefaultSectionSize(74)
+        self._multi_table.horizontalHeader().setStretchLastSection(False)
+        self._multi_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self._multi_table.verticalHeader().setDefaultSectionSize(19)
+        self._multi_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._multi_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._multi_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._multi_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._multi_table.setMinimumHeight(170)
+        self._multi_table.setMaximumHeight(220)
         table_layout.addWidget(self._multi_table)
 
-        layout.addWidget(table_group, stretch=1)
-        layout.addStretch()
+        layout.addWidget(table_group, stretch=0)
+        layout.addStretch(1)
+
+    def _refresh_measurements_table(self) -> None:
+        signal_names = list(self._latest_per_signal.keys())
+        visible_rows = self._measurement_rows
+
+        self._multi_table.setColumnCount(len(signal_names))
+        compact_names = [self._compact_header(name) for name in signal_names]
+        self._multi_table.setHorizontalHeaderLabels(compact_names)
+        self._multi_table.setRowCount(len(visible_rows))
+        self._multi_table.setVerticalHeaderLabels([label for _, label in visible_rows])
+
+        for col, signal_name in enumerate(signal_names):
+            header_item = self._multi_table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setToolTip(signal_name)
+
+        for row, (metric_key, _metric_label) in enumerate(visible_rows):
+            for col, signal_name in enumerate(signal_names):
+                values = self._latest_per_signal.get(signal_name, {})
+                item = QTableWidgetItem(self._fmt(values.get(metric_key)))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if self._theme is not None:
+                    item.setForeground(QColor(self._theme.colors.foreground))
+                self._multi_table.setItem(row, col, item)
 
     def update_cursor1(self, time: float, value: float | None) -> None:
         """Update cursor 1 display."""
@@ -413,27 +487,19 @@ class MeasurementsPanel(QFrame):
         per_signal: dict[str, dict[str, float | None]],
     ) -> None:
         """Populate measurements table (metrics in rows, channels in columns)."""
-        signal_names = list(per_signal.keys())
-        self._multi_table.setColumnCount(len(signal_names))
-        self._multi_table.setHorizontalHeaderLabels(signal_names)
-        self._multi_table.setRowCount(len(self._measurement_rows))
-        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
-
-        for row, (metric_key, _metric_label) in enumerate(self._measurement_rows):
-            for col, signal_name in enumerate(signal_names):
-                values = per_signal.get(signal_name, {})
-                item = QTableWidgetItem(self._fmt(values.get(metric_key)))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self._multi_table.setItem(row, col, item)
+        self._latest_per_signal = dict(per_signal)
+        self._refresh_measurements_table()
 
     def apply_theme(self, theme: Theme, cursor_palette: list[tuple[int, int, int]] | None = None) -> None:
         """Apply theme colors to measurement surfaces and readouts."""
+        self._theme = theme
         cursor_colors = None
         if cursor_palette is not None and len(cursor_palette) >= 2:
             cursor_colors = (
                 self._to_hex(cursor_palette[0]),
                 self._to_hex(cursor_palette[1]),
             )
+        self._cursor_palette = cursor_colors
         self._apply_styles(theme, cursor_colors=cursor_colors)
 
 
@@ -459,9 +525,11 @@ class SignalListItem(QListWidgetItem):
         self._update_color_display()
 
     def _update_color_display(self) -> None:
-        """Update the color display for this item."""
+        """Update the color display for this item with a colored dot prefix."""
         r, g, b = self._color
         self.setForeground(QColor(r, g, b))
+        # Prefix signal name with a colored bullet
+        self.setText(f"●  {self._signal_name}")
 
     @property
     def signal_name(self) -> str:
@@ -510,21 +578,37 @@ class SignalListPanel(QFrame):
         self._compact_min_rows = 2
         self._compact_max_rows = 7
         self._root_layout: QVBoxLayout | None = None
-        self._button_row: QWidget | None = None
+        self._header_row: QWidget | None = None
+        self._theme: Theme | None = None
 
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
+        from PySide6.QtWidgets import QLineEdit
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setSpacing(4)
         self._root_layout = layout
 
-        # Header
+        # Header row: title only
+        header_row = QWidget()
+        header_layout = QHBoxLayout(header_row)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
         self._header_label = QLabel("Signals")
-        self._header_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self._header_label)
+        self._header_label.setStyleSheet("font-weight: 600;")
+        header_layout.addWidget(self._header_label, stretch=1)
+        self._header_row = header_row
+        layout.addWidget(header_row)
+
+        # Filter/search box
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter signals…")
+        self._filter_edit.setObjectName("signalFilterEdit")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.textChanged.connect(self._on_filter_changed)
+        layout.addWidget(self._filter_edit)
 
         # Signal list
         self._list_widget = QListWidget()
@@ -537,22 +621,8 @@ class SignalListPanel(QFrame):
         self._list_widget.itemClicked.connect(self._on_item_clicked)
         self._list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self._list_widget)
+        layout.addStretch(1)
 
-        # Buttons
-        self._button_row = QWidget()
-        button_layout = QHBoxLayout(self._button_row)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(5)
-
-        show_all_btn = QPushButton("Show All")
-        show_all_btn.clicked.connect(self._show_all)
-        button_layout.addWidget(show_all_btn)
-
-        hide_all_btn = QPushButton("Hide All")
-        hide_all_btn.clicked.connect(self._hide_all)
-        button_layout.addWidget(hide_all_btn)
-
-        layout.addWidget(self._button_row)
         self._update_compact_height()
 
     def _row_height_hint(self) -> int:
@@ -563,7 +633,7 @@ class SignalListPanel(QFrame):
         return max(20, self.fontMetrics().height() + 8)
 
     def _update_compact_height(self) -> None:
-        if self._root_layout is None or self._button_row is None:
+        if self._root_layout is None or self._header_row is None:
             return
 
         row_height = self._row_height_hint()
@@ -576,25 +646,29 @@ class SignalListPanel(QFrame):
 
         margins = self._root_layout.contentsMargins()
         spacing = self._root_layout.spacing()
+        header_h = self._header_row.sizeHint().height()
+        filter_h = self._filter_edit.sizeHint().height() if hasattr(self, "_filter_edit") else 0
         total_height = (
             margins.top()
             + margins.bottom()
-            + self._header_label.sizeHint().height()
-            + self._button_row.sizeHint().height()
+            + header_h
+            + spacing
+            + filter_h
+            + spacing
             + list_height
-            + (spacing * 2)
+            + spacing
         )
 
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.setMinimumHeight(total_height)
-        self.setMaximumHeight(total_height)
 
     def set_signals(self, signal_names: list[str]) -> None:
-        """Set the list of available signals."""
+        """Set the list of available signals (flat, no categories)."""
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
 
+        flt = self._filter_edit.text().strip().lower() if hasattr(self, "_filter_edit") else ""
         for name in signal_names:
             color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
@@ -602,8 +676,63 @@ class SignalListPanel(QFrame):
             item = SignalListItem(name, color)
             self._list_widget.addItem(item)
             self._signal_items[name] = item
+            if flt and flt not in name.lower():
+                item.setHidden(True)
 
         self._update_compact_height()
+
+    def set_signals_with_categories(
+        self,
+        signal_names: list[str],
+        categories: dict[str, str],
+    ) -> None:
+        """Set signals grouped under ELECTRICAL / CONTROL / THERMAL headers."""
+        self._list_widget.clear()
+        self._signal_items.clear()
+        self._color_index = 0
+
+        # Group signals preserving insertion order
+        groups: dict[str, list[str]] = {"ELECTRICAL": [], "CONTROL": [], "THERMAL": []}
+        for name in signal_names:
+            cat = categories.get(name, "CONTROL")
+            groups.setdefault(cat, []).append(name)
+
+        flt = self._filter_edit.text().strip().lower() if hasattr(self, "_filter_edit") else ""
+
+        for cat_name, names in groups.items():
+            if not names:
+                continue
+
+            # Category header item
+            header = QListWidgetItem(cat_name)
+            header.setFlags(Qt.ItemFlag.NoItemFlags)  # non-interactive
+            header.setData(Qt.ItemDataRole.UserRole, "__category_header__")
+            self._list_widget.addItem(header)
+            self._apply_category_header_style(header)
+
+            for name in names:
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
+                self._color_index += 1
+                item = SignalListItem(name, color)
+                self._list_widget.addItem(item)
+                self._signal_items[name] = item
+                if flt and flt not in name.lower():
+                    item.setHidden(True)
+
+        self._update_compact_height()
+
+    def _apply_category_header_style(self, header: QListWidgetItem) -> None:
+        """Style a category header list item."""
+        font = header.font()
+        font.setPointSize(max(font.pointSize() - 1, 7))
+        font.setBold(True)
+        header.setFont(font)
+        if self._theme is not None:
+            header.setForeground(QColor(self._theme.colors.foreground_muted))
+        else:
+            header.setForeground(QColor("#6b7280"))
+
+
 
     def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
         """Update signal color palette and refresh existing list colors."""
@@ -613,25 +742,49 @@ class SignalListPanel(QFrame):
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme to the signal list panel surfaces."""
+        self._theme = theme
         c = theme.colors
         self.setStyleSheet(f"""
             QFrame#SignalListPanelRoot {{
                 background-color: {c.panel_background};
                 border: 1px solid {c.panel_border};
-                border-radius: 8px;
+                border-radius: 10px;
             }}
             QListWidget {{
                 background-color: {c.background};
                 border: 1px solid {c.panel_border};
-                border-radius: 6px;
+                border-radius: 8px;
                 color: {c.foreground};
+            }}
+            QListWidget::item {{
+                padding: 4px 6px;
+                border-radius: 6px;
+                margin: 1px 3px;
             }}
             QListWidget::item:selected {{
                 background-color: {c.tree_item_selected};
                 color: {c.foreground};
             }}
+            QListWidget::item:hover {{
+                background-color: {c.tree_item_hover};
+            }}
+            QLineEdit#signalFilterEdit {{
+                background-color: {c.input_background};
+                color: {c.foreground};
+                border: 1px solid {c.input_border};
+                border-radius: 7px;
+                padding: 4px 8px;
+                font-size: 10px;
+            }}
+            QLineEdit#signalFilterEdit:hover {{
+                border-color: {c.input_focus_border};
+            }}
         """)
         self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
+        for i in range(self._list_widget.count()):
+            item = self._list_widget.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == "__category_header__":
+                self._apply_category_header_style(item)
         self._update_compact_height()
 
     def get_signal_color(self, signal_name: str) -> tuple | None:
@@ -696,6 +849,12 @@ class SignalListPanel(QFrame):
                 item.set_visible(False)
                 self.signal_visibility_changed.emit(name, False)
 
+    def _on_filter_changed(self, text: str) -> None:
+        """Filter list items by name."""
+        flt = text.strip().lower()
+        for name, item in self._signal_items.items():
+            item.setHidden(bool(flt) and flt not in name.lower())
+
     def clear(self) -> None:
         """Clear all signals."""
         self._list_widget.clear()
@@ -753,6 +912,12 @@ class WaveformViewer(QWidget):
         self._pending_updates = False
         self._last_displayed_index = 0  # Track how much data we've shown
 
+        # Stats overlay text item (top-right corner of plot)
+        self._stats_overlay: pg.TextItem | None = None
+        # Hover line and tooltip for mouse-over inspection
+        self._hover_vline: pg.InfiniteLine | None = None
+        self._hover_tooltip: pg.TextItem | None = None
+
         # Configure pyqtgraph
         pg.setConfigOptions(antialias=False)
 
@@ -762,50 +927,94 @@ class WaveformViewer(QWidget):
             self.apply_theme(self._theme_service.current_theme)
 
     def _setup_ui(self) -> None:
-        """Set up the widget UI."""
+        """Set up the widget UI — 3-column layout: signal list | plot | measurements."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Main splitter for plot and measurements panel
+        # ── Main 3-column splitter ────────────────────────────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
-        # Plot container
+        # ── LEFT: Signal list panel ───────────────────────────────────────────
+        self._signal_list_panel = SignalListPanel()
+        self._signal_list_panel.setMinimumWidth(165)
+        self._signal_list_panel.setMaximumWidth(300)
+        self._signal_list_panel.signal_visibility_changed.connect(
+            self._on_signal_visibility_changed
+        )
+        self._signal_list_panel.signal_selected.connect(self._on_signal_list_selected)
+        splitter.addWidget(self._signal_list_panel)
+
+        # ── CENTER: Plot container ────────────────────────────────────────────
         plot_container = QWidget()
+        plot_container.setObjectName("waveformPlotCard")
         plot_layout = QVBoxLayout(plot_container)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setContentsMargins(10, 10, 10, 10)
+        plot_layout.setSpacing(10)
 
-        # Create plot widget
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setLabel("left", "Value")
         self._plot_widget.setLabel("bottom", "Time", units="s")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self._plot_widget.setBackground("w")
 
-        # Configure view box for mouse interactions
         view_box = self._plot_widget.getViewBox()
         view_box.setMouseMode(pg.ViewBox.RectMode)
-
-        # Connect range change signal for zoom history
         view_box.sigRangeChanged.connect(self._on_range_changed)
+        view_box.sigRangeChanged.connect(self._reanchor_stats_overlay)
 
-        # Add legend
-        self._legend = self._plot_widget.addLegend(offset=(10, 10))
+        # Stats overlay (top-right of plot)
+        self._stats_overlay = pg.TextItem(
+            text="",
+            anchor=(1, 0),
+            color="#374151",
+            fill=pg.mkBrush(255, 255, 255, 200),
+        )
+        self._stats_overlay.setFont(pg.QtGui.QFont("Courier New", 10))
+        self._stats_overlay.setZValue(100)
+        self._plot_widget.addItem(self._stats_overlay)
+        self._stats_overlay.setVisible(False)
+
+        # Hover vertical line + tooltip
+        self._hover_vline = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(color="#6b7280", width=1, style=Qt.PenStyle.DashLine),
+        )
+        self._hover_vline.setZValue(90)
+        self._hover_vline.setVisible(False)
+        self._plot_widget.addItem(self._hover_vline)
+
+        self._hover_tooltip = pg.TextItem(
+            text="",
+            anchor=(0, 1),
+            fill=pg.mkBrush(30, 30, 30, 215),
+        )
+        self._hover_tooltip.setFont(pg.QtGui.QFont("Courier New", 9))
+        self._hover_tooltip.setZValue(101)
+        self._hover_tooltip.setVisible(False)
+        self._plot_widget.addItem(self._hover_tooltip)
+
+        # Connect mouse move to hover handler
+        self._plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+        # Legend
+        self._legend = self._plot_widget.addLegend(offset=(12, 10))
         self._legend.setLabelTextColor("#111827")
 
         plot_layout.addWidget(self._plot_widget)
 
-        # Controls bar
+        # ── Controls bar ─────────────────────────────────────────────────────
         controls = QWidget()
         controls.setObjectName("waveformControlsBar")
         controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(3, 2, 3, 2)
-        controls_layout.setSpacing(4)
+        controls_layout.setContentsMargins(10, 8, 10, 8)
+        controls_layout.setSpacing(8)
 
-        # Signal selector
-        self._add_signal_label = QLabel("Add Signal:")
+        self._add_signal_label = QLabel("Signal:")
         controls_layout.addWidget(self._add_signal_label)
         self._signal_combo = QComboBox()
-        self._signal_combo.setMinimumWidth(120)
+        self._signal_combo.setMinimumWidth(160)
         self._signal_combo.currentTextChanged.connect(self._on_signal_selected)
         controls_layout.addWidget(self._signal_combo)
 
@@ -813,85 +1022,70 @@ class WaveformViewer(QWidget):
         self._add_signal_btn.clicked.connect(self._on_add_signal)
         controls_layout.addWidget(self._add_signal_btn)
 
-        self._clear_btn = QPushButton("Clear All")
+        self._clear_btn = QPushButton("Clear")
         self._clear_btn.clicked.connect(self.clear_traces)
         controls_layout.addWidget(self._clear_btn)
 
-        controls_layout.addStretch()
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.VLine)
+        sep1.setFixedWidth(1)
+        controls_layout.addWidget(sep1)
 
-        # Auto-scroll toggle for streaming mode
-        self._auto_scroll_checkbox = QCheckBox("Auto-scroll")
-        self._auto_scroll_checkbox.setChecked(True)
-        self._auto_scroll_checkbox.setToolTip("Automatically scroll to show latest data during simulation")
-        self._auto_scroll_checkbox.toggled.connect(self._toggle_auto_scroll)
-        controls_layout.addWidget(self._auto_scroll_checkbox)
-
-        # Cursor toggle
-        self._cursor_checkbox = QCheckBox("Cursors")
-        self._cursor_checkbox.setChecked(False)
-        self._cursor_checkbox.toggled.connect(self._toggle_cursors)
-        controls_layout.addWidget(self._cursor_checkbox)
-
-        # Navigation buttons
-        self._back_btn = QPushButton("<")
-        self._back_btn.setToolTip("Previous zoom level")
-        self._back_btn.setMaximumWidth(24)
+        self._back_btn = QPushButton("\u25c0")
+        self._back_btn.setToolTip("Previous zoom")
+        self._back_btn.setMaximumWidth(30)
         self._back_btn.setEnabled(False)
         self._back_btn.clicked.connect(self._zoom_back)
         controls_layout.addWidget(self._back_btn)
 
-        self._forward_btn = QPushButton(">")
-        self._forward_btn.setToolTip("Next zoom level")
-        self._forward_btn.setMaximumWidth(24)
+        self._forward_btn = QPushButton("\u25b6")
+        self._forward_btn.setToolTip("Next zoom")
+        self._forward_btn.setMaximumWidth(30)
         self._forward_btn.setEnabled(False)
         self._forward_btn.clicked.connect(self._zoom_forward)
         controls_layout.addWidget(self._forward_btn)
 
-        # Grid toggle
+        auto_btn = QPushButton("Fit")
+        auto_btn.setToolTip("Zoom to fit all")
+        auto_btn.clicked.connect(self._auto_range)
+        controls_layout.addWidget(auto_btn)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setFixedWidth(1)
+        controls_layout.addWidget(sep2)
+
         self._grid_checkbox = QCheckBox("Grid")
         self._grid_checkbox.setChecked(True)
         self._grid_checkbox.toggled.connect(self._toggle_grid)
         controls_layout.addWidget(self._grid_checkbox)
 
-        # Auto-range button
-        auto_btn = QPushButton("Fit")
-        auto_btn.setToolTip("Zoom to fit all data")
-        auto_btn.clicked.connect(self._auto_range)
-        controls_layout.addWidget(auto_btn)
+        self._cursor_checkbox = QCheckBox("Cursors")
+        self._cursor_checkbox.setChecked(False)
+        self._cursor_checkbox.toggled.connect(self._toggle_cursors)
+        controls_layout.addWidget(self._cursor_checkbox)
+
+        self._auto_scroll_checkbox = QCheckBox("Auto-scroll")
+        self._auto_scroll_checkbox.setChecked(True)
+        self._auto_scroll_checkbox.setToolTip("Auto-scroll during simulation")
+        self._auto_scroll_checkbox.toggled.connect(self._toggle_auto_scroll)
+        controls_layout.addWidget(self._auto_scroll_checkbox)
+
+        controls_layout.addStretch()
 
         plot_layout.addWidget(controls)
         splitter.addWidget(plot_container)
 
-        # Right side container with signal list and measurements
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(5)
-
-        # Signal list panel
-        self._signal_list_panel = SignalListPanel()
-        self._signal_list_panel.setMinimumWidth(180)
-        self._signal_list_panel.setMaximumWidth(320)
-        self._signal_list_panel.signal_visibility_changed.connect(
-            self._on_signal_visibility_changed
-        )
-        self._signal_list_panel.signal_selected.connect(self._on_signal_list_selected)
-        right_layout.addWidget(self._signal_list_panel, stretch=1)
-
-        # Measurements panel
+        # ── RIGHT: Measurements panel ─────────────────────────────────────────
         self._measurements_panel = MeasurementsPanel()
-        self._measurements_panel.setMinimumWidth(260)
+        self._measurements_panel.setMinimumWidth(240)
         self._measurements_panel.setMaximumWidth(460)
-        right_layout.addWidget(self._measurements_panel, stretch=2)
+        splitter.addWidget(self._measurements_panel)
 
-        splitter.addWidget(right_container)
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, False)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 2)
-
-        # Set splitter sizes
-        splitter.setSizes([820, 360])
+        splitter.setStretchFactor(0, 0)   # signal list: fixed
+        splitter.setStretchFactor(1, 1)   # plot: expands
+        splitter.setStretchFactor(2, 0)   # measurements: fixed
+        splitter.setSizes([200, 700, 280])
 
         layout.addWidget(splitter)
         self._update_manual_signal_add_controls()
@@ -940,6 +1134,92 @@ class WaveformViewer(QWidget):
             color = style.get("color")
             if isinstance(color, tuple) and len(color) == 3:
                 self._signal_list_panel.set_signal_color(signal_name, color)
+
+    def _on_mouse_moved(self, scene_pos) -> None:
+        """Handle mouse movement over the plot — update hover line and tooltip."""
+        if self._hover_vline is None or self._hover_tooltip is None:
+            return
+        vb = self._plot_widget.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self._hover_vline.setVisible(False)
+            self._hover_tooltip.setVisible(False)
+            return
+
+        mouse_point = vb.mapSceneToView(scene_pos)
+        t = mouse_point.x()
+
+        self._hover_vline.setPos(t)
+        self._hover_vline.setVisible(True)
+
+        # Build tooltip text
+        if self._time_array is not None and len(self._time_array) > 0:
+            lines = [f"Time: {self._fmt_time(t)}"]
+            for name, values in self._signal_arrays.items():
+                if name not in self._traces:
+                    continue
+                val = self._interpolate_value(self._time_array, values, t)
+                if val is not None:
+                    color = self._signal_list_panel.get_signal_color(name)
+                    lines.append(f"{name}: {val:.6g}")
+            self._hover_tooltip.setText("\n".join(lines))
+
+            # Position tooltip near the top of the view near the cursor
+            x_range, y_range = vb.viewRange()
+            y_top = y_range[1] - (y_range[1] - y_range[0]) * 0.03
+            x_pos = t
+            # Keep tooltip from going off right edge
+            if (t - x_range[0]) / max(x_range[1] - x_range[0], 1e-12) > 0.65:
+                self._hover_tooltip.setAnchor((1, 1))
+            else:
+                self._hover_tooltip.setAnchor((0, 1))
+            self._hover_tooltip.setPos(x_pos, y_top)
+            self._hover_tooltip.setVisible(True)
+        else:
+            self._hover_tooltip.setVisible(False)
+
+    @staticmethod
+    def _fmt_time(t: float) -> str:
+        """Format time value with appropriate unit."""
+        abs_t = abs(t)
+        if abs_t >= 1.0:
+            return f"{t:.4f} s"
+        if abs_t >= 1e-3:
+            return f"{t * 1e3:.4f} ms"
+        if abs_t >= 1e-6:
+            return f"{t * 1e6:.4f} \u03bcs"
+        return f"{t * 1e9:.4f} ns"
+
+    def _update_stats_overlay(self, signal_name: str | None, stats: dict | None) -> None:
+        """Update the floating stats text item in the top-right of the plot."""
+        if self._stats_overlay is None:
+            return
+        if stats is None or signal_name is None:
+            self._stats_overlay.setVisible(False)
+            return
+
+        fmt = "{:.6g}"
+        lines = [
+            f"{signal_name}",
+            f"RMS:   {fmt.format(stats.get('rms', 0))}",
+            f"Peak:  {fmt.format(stats.get('max', 0))}",
+            f"Avg:   {fmt.format(stats.get('mean', 0))}",
+            f"Min:   {fmt.format(stats.get('min', 0))}",
+            f"Max:   {fmt.format(stats.get('max', 0))}",
+        ]
+        self._stats_overlay.setText("\n".join(lines))
+        self._stats_overlay.setVisible(True)
+        self._reanchor_stats_overlay()
+
+    def _reanchor_stats_overlay(self) -> None:
+        """Position stats overlay in the top-right corner of the current view."""
+        if self._stats_overlay is None or not self._stats_overlay.isVisible():
+            return
+        vb = self._plot_widget.getViewBox()
+        x_range, y_range = vb.viewRange()
+        # Anchor to top-right, with a small margin
+        margin_x = (x_range[1] - x_range[0]) * 0.01
+        margin_y = (y_range[1] - y_range[0]) * 0.02
+        self._stats_overlay.setPos(x_range[1] - margin_x, y_range[1] - margin_y)
 
     @staticmethod
     def _extract_pen_color(trace: pg.PlotDataItem) -> tuple[int, int, int] | None:
@@ -1077,6 +1357,7 @@ class WaveformViewer(QWidget):
         """Apply active theme to plot surfaces and side panels."""
         self._theme = theme
         c = theme.colors
+        is_dark = theme.is_dark
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor(c.background))
         self.setPalette(palette)
@@ -1085,7 +1366,11 @@ class WaveformViewer(QWidget):
             self._trace_palette = self._theme_service.get_trace_palette(theme)
             self._cursor_palette = self._theme_service.get_cursor_palette(theme)
 
-        self._plot_widget.setBackground(c.plot_background)
+        plot_bg = QColor(c.plot_background)
+        if not is_dark:
+            plot_bg = plot_bg.darker(104)
+        self._plot_widget.setBackground(plot_bg)
+        self._plot_widget.showGrid(x=self._grid_checkbox.isChecked(), y=self._grid_checkbox.isChecked(), alpha=0.18 if is_dark else 0.28)
         plot_item = self._plot_widget.getPlotItem()
         for axis_name in ("left", "bottom"):
             axis = plot_item.getAxis(axis_name)
@@ -1093,7 +1378,9 @@ class WaveformViewer(QWidget):
             axis.setTickPen(pg.mkPen(c.plot_axis))
             axis.setTextPen(pg.mkPen(c.plot_text))
         self._legend.setLabelTextColor(c.plot_text)
-        self._legend.setBrush(pg.mkBrush(c.plot_legend_background))
+        legend_bg = QColor(c.plot_legend_background)
+        legend_bg.setAlpha(210 if is_dark else 235)
+        self._legend.setBrush(pg.mkBrush(legend_bg))
         self._legend.setPen(pg.mkPen(c.plot_legend_border))
 
         self._refresh_signal_list_colors()
@@ -1104,28 +1391,49 @@ class WaveformViewer(QWidget):
             QWidget#WaveformViewerRoot {{
                 background-color: {c.background};
             }}
+            QWidget#waveformPlotCard {{
+                background-color: {c.background};
+                border: 1px solid {c.panel_border};
+                border-radius: 12px;
+            }}
             QFrame {{
                 color: {c.foreground};
             }}
+            QWidget#waveformControlsBar {{
+                background-color: {c.background_alt};
+                border: 1px solid {c.panel_border};
+                border-radius: 10px;
+            }}
             QWidget#waveformControlsBar QLabel {{
                 color: {c.foreground_muted};
-                font-size: 11px;
+                font-size: 10px;
+                font-weight: 600;
             }}
             QWidget#waveformControlsBar QComboBox,
             QWidget#waveformControlsBar QPushButton {{
                 background-color: {c.input_background};
                 color: {c.foreground};
                 border: 1px solid {c.input_border};
-                border-radius: 4px;
-                padding: 1px 6px;
-                min-height: 20px;
-                max-height: 22px;
+                border-radius: 7px;
+                padding: 3px 8px;
+                min-height: 24px;
+                max-height: 26px;
+            }}
+            QWidget#waveformControlsBar QPushButton:hover,
+            QWidget#waveformControlsBar QComboBox:hover {{
+                border-color: {c.input_focus_border};
+            }}
+            QWidget#waveformControlsBar QPushButton:pressed {{
+                background-color: {c.primary};
+                color: {c.primary_foreground};
+                border-color: {c.primary};
             }}
             QWidget#waveformControlsBar QCheckBox {{
                 color: {c.foreground};
                 spacing: 4px;
                 margin: 0;
                 padding: 0;
+                font-size: 11px;
             }}
         """)
 
@@ -1135,6 +1443,30 @@ class WaveformViewer(QWidget):
             self._cursor1.set_color(self._cursor_palette[0])
         if self._cursor2 is not None:
             self._cursor2.set_color(self._cursor_palette[1])
+
+        # Update stats overlay colors for the new theme
+        if self._stats_overlay is not None:
+            is_dark = getattr(theme, "is_dark", False)
+            if is_dark:
+                self._stats_overlay.setColor(c.plot_text)
+                self._stats_overlay.fill = pg.mkBrush(30, 30, 30, 210)
+            else:
+                self._stats_overlay.setColor(c.plot_axis)
+                self._stats_overlay.fill = pg.mkBrush(255, 255, 255, 210)
+            self._stats_overlay.update()
+
+        # Update hover tooltip colors for the new theme
+        if self._hover_tooltip is not None:
+            is_dark = getattr(theme, "is_dark", False)
+            if is_dark:
+                self._hover_tooltip.setColor("#e5e7eb")
+                self._hover_tooltip.fill = pg.mkBrush(24, 24, 24, 220)
+            else:
+                self._hover_tooltip.setColor("#1f2937")
+                self._hover_tooltip.fill = pg.mkBrush(255, 255, 255, 220)
+            self._hover_tooltip.update()
+        if self._hover_vline is not None:
+            self._hover_vline.setPen(pg.mkPen(color=c.plot_axis, width=1, style=Qt.PenStyle.DashLine))
 
     def set_result(self, result: SimulationResult) -> None:
         """Set the simulation result to display."""
@@ -1322,6 +1654,8 @@ class WaveformViewer(QWidget):
         self._measurements_panel.clear_statistics()
         self._measurements_panel.clear_cursor_measurements()
         self._measurements_panel.set_multi_signal_measurements({})
+        if self._stats_overlay is not None:
+            self._stats_overlay.setVisible(False)
 
         # Sync with signal list panel - uncheck all signals
         for signal_name in list(self._signal_list_panel.get_visible_signals()):
@@ -1495,6 +1829,7 @@ class WaveformViewer(QWidget):
         stats = self._signal_statistics.get(signal_name)
         if stats is None:
             self._measurements_panel.clear_statistics()
+            self._update_stats_overlay(None, None)
             return
 
         self._measurements_panel.update_statistics(
@@ -1503,6 +1838,7 @@ class WaveformViewer(QWidget):
             stats["mean"],
             stats["rms"],
         )
+        self._update_stats_overlay(signal_name, stats)
 
     def _auto_range(self) -> None:
         """Auto-range the plot to fit all data."""

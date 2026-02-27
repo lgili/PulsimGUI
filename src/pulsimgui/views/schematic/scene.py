@@ -7,6 +7,12 @@ from PySide6.QtGui import QPen, QColor, QPainter, QBrush, QPainterPath
 from PySide6.QtWidgets import QGraphicsScene
 
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    CONNECTION_DOMAIN_SIGNAL,
+    CONNECTION_DOMAIN_THERMAL,
+    pin_connection_domain,
+)
 from pulsimgui.models.wire import WireConnection
 
 
@@ -409,13 +415,18 @@ class SchematicScene(QGraphicsScene):
         # Update connection indicators for all wires
         self._update_wire_connection_indicators()
 
+    def refresh_wire_connection_overlays(self) -> None:
+        """Recompute wire endpoint indicators and wire-wire junction dots."""
+        self._update_wire_connection_indicators()
+        self.update()
+
     def _update_wire_connection_indicators(self) -> None:
         """Update connection indicators for all wires in the scene.
 
         Finds wire endpoints that are connected to component pins and marks
         them with visual indicators.
         """
-        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+        from pulsimgui.views.schematic.items import WireItem
 
         if self._circuit is None:
             return
@@ -429,11 +440,62 @@ class SchematicScene(QGraphicsScene):
                 pos = component.get_pin_position(pin_idx)
                 pin_positions.append(pos)
 
-        # For each wire item, find endpoints that are connected to pins
-        for item in self.items():
-            if not isinstance(item, WireItem):
-                continue
+        wire_items = [item for item in self.items() if isinstance(item, WireItem)]
+        if not wire_items:
+            return
 
+        # Recompute wire-wire junction points (for explicit T branches only).
+        junctions_by_wire_id: dict[object, set[tuple[float, float]]] = {
+            item.wire.id: set() for item in wire_items
+        }
+        wire_domains = {item.wire.id: self._wire_domain(item.wire) for item in wire_items}
+        candidate_points: set[tuple[float, float]] = set()
+
+        # Endpoints are candidates for branched nodes.
+        for item in wire_items:
+            for seg in item.wire.segments:
+                candidate_points.add(self._normalized_point(seg.x1, seg.y1))
+                candidate_points.add(self._normalized_point(seg.x2, seg.y2))
+
+        # Draw junction dots only when the node has branching (3+ legs).
+        for point in candidate_points:
+            legs_by_domain = {
+                CONNECTION_DOMAIN_CIRCUIT: 0,
+                CONNECTION_DOMAIN_SIGNAL: 0,
+                CONNECTION_DOMAIN_THERMAL: 0,
+            }
+            wires_by_domain = {
+                CONNECTION_DOMAIN_CIRCUIT: set(),
+                CONNECTION_DOMAIN_SIGNAL: set(),
+                CONNECTION_DOMAIN_THERMAL: set(),
+            }
+            for item in wire_items:
+                wire_touches = False
+                wire_legs = 0
+                for seg in item.wire.segments:
+                    relation = self._point_segment_relation(point, seg, tolerance=0.1)
+                    if relation <= 0:
+                        continue
+                    wire_legs += relation
+                    wire_touches = True
+                if wire_touches:
+                    domain = wire_domains.get(item.wire.id, CONNECTION_DOMAIN_CIRCUIT)
+                    legs_by_domain[domain] += wire_legs
+                    wires_by_domain[domain].add(item.wire.id)
+
+            for domain in (CONNECTION_DOMAIN_CIRCUIT, CONNECTION_DOMAIN_SIGNAL, CONNECTION_DOMAIN_THERMAL):
+                if legs_by_domain[domain] < 3 or len(wires_by_domain[domain]) < 2:
+                    continue
+                for wire_id in wires_by_domain[domain]:
+                    junctions_by_wire_id[wire_id].add(point)
+
+        for item in wire_items:
+            points = junctions_by_wire_id.get(item.wire.id, set())
+            # Keep ordering deterministic for stable project serialization.
+            item.wire.junctions = sorted(points, key=lambda point: (point[1], point[0]))
+
+        # For each wire item, find endpoints that are connected to pins.
+        for item in wire_items:
             wire = item.wire
             connected: set[tuple[float, float]] = set()
 
@@ -449,6 +511,198 @@ class SchematicScene(QGraphicsScene):
                             break
 
             item.set_connected_endpoints(connected)
+
+    def _wire_domain(self, wire) -> str:
+        """Resolve wire domain from its endpoint pin metadata."""
+        if self._circuit is None:
+            return CONNECTION_DOMAIN_CIRCUIT
+        domains: set[str] = set()
+        for connection in (wire.start_connection, wire.end_connection):
+            if connection is None:
+                continue
+            component = self._circuit.components.get(connection.component_id)
+            if component is None:
+                continue
+            pin_index = connection.pin_index
+            if pin_index < 0 or pin_index >= len(component.pins):
+                continue
+            domains.add(pin_connection_domain(component, pin_index))
+
+        # Backward compatibility for wires without endpoint metadata.
+        if not domains:
+            points: list[tuple[float, float]] = []
+            for segment in wire.segments:
+                points.append((segment.x1, segment.y1))
+                points.append((segment.x2, segment.y2))
+            points.extend(wire.junctions or [])
+
+            for component in self._circuit.components.values():
+                for pin_index in range(len(component.pins)):
+                    pin_x, pin_y = component.get_pin_position(pin_index)
+                    for px, py in points:
+                        if abs(pin_x - px) < 5.0 and abs(pin_y - py) < 5.0:
+                            domains.add(pin_connection_domain(component, pin_index))
+                            break
+
+        if CONNECTION_DOMAIN_THERMAL in domains:
+            return CONNECTION_DOMAIN_THERMAL
+        if CONNECTION_DOMAIN_SIGNAL in domains:
+            return CONNECTION_DOMAIN_SIGNAL
+        return CONNECTION_DOMAIN_CIRCUIT
+
+    def _wire_intersection_points(self, left_wire, right_wire) -> set[tuple[float, float]]:
+        """Return normalized wire-wire junction points between two wires."""
+        intersections: set[tuple[float, float]] = set()
+
+        for left_seg in left_wire.segments:
+            for right_seg in right_wire.segments:
+                intersections.update(self._segment_intersection_points(left_seg, right_seg))
+
+        return intersections
+
+    def _segment_intersection_points(self, left_seg, right_seg) -> set[tuple[float, float]]:
+        """Return candidate junction points between two segments."""
+        tol = 0.1
+        points: set[tuple[float, float]] = set()
+
+        left_endpoints = ((left_seg.x1, left_seg.y1), (left_seg.x2, left_seg.y2))
+        right_endpoints = ((right_seg.x1, right_seg.y1), (right_seg.x2, right_seg.y2))
+
+        # T-junctions: endpoint of one segment lands on interior of the other.
+        for point in left_endpoints:
+            if self._point_on_segment(point, right_seg, include_endpoints=False, tolerance=tol):
+                points.add(self._normalized_point(point[0], point[1]))
+        for point in right_endpoints:
+            if self._point_on_segment(point, left_seg, include_endpoints=False, tolerance=tol):
+                points.add(self._normalized_point(point[0], point[1]))
+
+        left_horizontal = abs(left_seg.y1 - left_seg.y2) <= tol
+        left_vertical = abs(left_seg.x1 - left_seg.x2) <= tol
+        right_horizontal = abs(right_seg.y1 - right_seg.y2) <= tol
+        right_vertical = abs(right_seg.x1 - right_seg.x2) <= tol
+
+        # Orthogonal crossing.
+        if (left_horizontal and right_vertical) or (left_vertical and right_horizontal):
+            if left_horizontal:
+                ix, iy = right_seg.x1, left_seg.y1
+            else:
+                ix, iy = left_seg.x1, right_seg.y1
+
+            if (
+                self._between(ix, left_seg.x1, left_seg.x2, tol)
+                and self._between(iy, left_seg.y1, left_seg.y2, tol)
+                and self._between(ix, right_seg.x1, right_seg.x2, tol)
+                and self._between(iy, right_seg.y1, right_seg.y2, tol)
+            ):
+                point = (ix, iy)
+                # Skip pure endpoint-to-endpoint touch; keep only true branch/cross points.
+                if not (
+                    self._is_segment_endpoint(point, left_seg, tol)
+                    and self._is_segment_endpoint(point, right_seg, tol)
+                ):
+                    points.add(self._normalized_point(ix, iy))
+
+        # Collinear overlap: use interior endpoints as junction anchors.
+        if left_horizontal and right_horizontal and abs(left_seg.y1 - right_seg.y1) <= tol:
+            for point in left_endpoints:
+                if self._point_on_segment(point, right_seg, include_endpoints=False, tolerance=tol):
+                    points.add(self._normalized_point(point[0], point[1]))
+            for point in right_endpoints:
+                if self._point_on_segment(point, left_seg, include_endpoints=False, tolerance=tol):
+                    points.add(self._normalized_point(point[0], point[1]))
+        elif left_vertical and right_vertical and abs(left_seg.x1 - right_seg.x1) <= tol:
+            for point in left_endpoints:
+                if self._point_on_segment(point, right_seg, include_endpoints=False, tolerance=tol):
+                    points.add(self._normalized_point(point[0], point[1]))
+            for point in right_endpoints:
+                if self._point_on_segment(point, left_seg, include_endpoints=False, tolerance=tol):
+                    points.add(self._normalized_point(point[0], point[1]))
+
+        return points
+
+    def _normalized_point(self, x: float, y: float) -> tuple[float, float]:
+        """Normalize point coordinates to schematic grid for stable matching."""
+        return (
+            self._snap_value_to_grid(float(x)),
+            self._snap_value_to_grid(float(y)),
+        )
+
+    @staticmethod
+    def _between(value: float, bound_a: float, bound_b: float, tolerance: float) -> bool:
+        low = min(bound_a, bound_b) - tolerance
+        high = max(bound_a, bound_b) + tolerance
+        return low <= value <= high
+
+    @staticmethod
+    def _is_segment_endpoint(point: tuple[float, float], segment, tolerance: float) -> bool:
+        px, py = point
+        return (
+            (abs(px - segment.x1) <= tolerance and abs(py - segment.y1) <= tolerance)
+            or (abs(px - segment.x2) <= tolerance and abs(py - segment.y2) <= tolerance)
+        )
+
+    def _point_on_segment(
+        self,
+        point: tuple[float, float],
+        segment,
+        *,
+        include_endpoints: bool,
+        tolerance: float,
+    ) -> bool:
+        """Check if a point is on a segment within tolerance."""
+        px, py = point
+        x1, y1, x2, y2 = float(segment.x1), float(segment.y1), float(segment.x2), float(segment.y2)
+
+        if not self._between(px, x1, x2, tolerance) or not self._between(py, y1, y2, tolerance):
+            return False
+
+        horizontal = abs(y1 - y2) <= tolerance
+        vertical = abs(x1 - x2) <= tolerance
+
+        if horizontal:
+            if abs(py - y1) > tolerance:
+                return False
+            if not include_endpoints and (abs(px - x1) <= tolerance or abs(px - x2) <= tolerance):
+                return False
+            return True
+
+        if vertical:
+            if abs(px - x1) > tolerance:
+                return False
+            if not include_endpoints and (abs(py - y1) <= tolerance or abs(py - y2) <= tolerance):
+                return False
+            return True
+
+        # Fallback for non-orthogonal segments.
+        dx = x2 - x1
+        dy = y2 - y1
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            return abs(px - x1) <= tolerance and abs(py - y1) <= tolerance
+
+        cross = abs((px - x1) * dy - (py - y1) * dx)
+        length = (dx**2 + dy**2) ** 0.5
+        if length < 1e-12:
+            return False
+        if cross / length > tolerance:
+            return False
+
+        if not include_endpoints and self._is_segment_endpoint(point, segment, tolerance):
+            return False
+        return True
+
+    def _point_segment_relation(
+        self,
+        point: tuple[float, float],
+        segment,
+        *,
+        tolerance: float,
+    ) -> int:
+        """Return how a point touches a segment: 0 none, 1 endpoint, 2 interior."""
+        if not self._point_on_segment(point, segment, include_endpoints=True, tolerance=tolerance):
+            return 0
+        if self._is_segment_endpoint(point, segment, tolerance):
+            return 1
+        return 2
 
     def add_component(self, component) -> None:
         """Add a component to the scene."""
@@ -621,6 +875,8 @@ class SchematicScene(QGraphicsScene):
                 pin_index = wire.end_connection.pin_index
                 new_pin_pos = component_item.get_pin_position(pin_index)
                 wire_item.update_endpoint_position('end', new_pin_pos)
+
+        self._update_wire_connection_indicators()
 
     def load_circuit(self, circuit) -> None:
         """Load a circuit and rebuild connections."""

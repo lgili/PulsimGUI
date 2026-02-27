@@ -319,10 +319,14 @@ def test_build_node_map_merges_split_wires_on_shared_endpoint() -> None:
     circuit.add_component(r1)
     circuit.add_component(r2)
 
-    # R1 pin 1 is at (130, 100), R2 pin 0 is at (190, 100).
-    # Two wire objects meet at (160, 100), so they should form one net.
-    wire_a = Wire(segments=[WireSegment(130.0, 100.0, 160.0, 100.0)])
-    wire_b = Wire(segments=[WireSegment(160.0, 100.0, 190.0, 100.0)])
+    r1_out_x, r1_out_y = r1.get_pin_position(1)
+    r2_in_x, r2_in_y = r2.get_pin_position(0)
+    mid_x = (r1_out_x + r2_in_x) / 2.0
+    mid_y = (r1_out_y + r2_in_y) / 2.0
+
+    # Two wire objects meet at midpoint, so they should form one net.
+    wire_a = Wire(segments=[WireSegment(r1_out_x, r1_out_y, mid_x, mid_y)])
+    wire_b = Wire(segments=[WireSegment(mid_x, mid_y, r2_in_x, r2_in_y)])
     circuit.add_wire(wire_a)
     circuit.add_wire(wire_b)
 
@@ -331,3 +335,42 @@ def test_build_node_map_merges_split_wires_on_shared_endpoint() -> None:
     r1_out = node_map[(str(r1.id), 1)]
     r2_in = node_map[(str(r2.id), 0)]
     assert r1_out == r2_in
+
+
+def test_build_node_map_does_not_merge_cross_domain_shared_points() -> None:
+    """Coincident points from different wiring domains must not short together."""
+
+    circuit = Circuit(name="domain-split")
+
+    resistor = Component(
+        type=ComponentType.RESISTOR,
+        name="R1",
+        x=100.0,
+        y=100.0,
+        parameters={"resistance": 1000.0},
+    )
+    controller = Component(
+        type=ComponentType.PI_CONTROLLER,
+        name="PI1",
+        x=220.0,
+        y=100.0,
+        parameters={"kp": 1.0, "ki": 100.0},
+    )
+    circuit.add_component(resistor)
+    circuit.add_component(controller)
+
+    # Resistor OUT and PI IN are bridged to the same geometric point (160, 100),
+    # but through wires with different domains, so they must remain isolated.
+    r_out_x, r_out_y = resistor.get_pin_position(1)
+    pi_in_x, pi_in_y = controller.get_pin_position(0)
+    shared_x = (r_out_x + pi_in_x) / 2.0
+    shared_y = (r_out_y + pi_in_y) / 2.0
+
+    circuit.add_wire(Wire(segments=[WireSegment(r_out_x, r_out_y, shared_x, shared_y)]))
+    circuit.add_wire(Wire(segments=[WireSegment(pi_in_x, pi_in_y, shared_x, shared_y)]))
+
+    node_map = build_node_map(circuit)
+
+    resistor_node = node_map[(str(resistor.id), 1)]
+    controller_node = node_map[(str(controller.id), 0)]
+    assert resistor_node != controller_node

@@ -63,10 +63,13 @@ class TestComponent:
 
     def test_pin_position_with_rotation(self):
         comp = Component(type=ComponentType.RESISTOR, x=0, y=0, rotation=90)
-        # Pin at (-30, 0) rotated 90 degrees should be at (0, -30)
+        # 90-degree rotation maps local (x, y) -> (-y, x).
+        pin = comp.pins[0]
+        expected_x = -pin.y
+        expected_y = pin.x
         x, y = comp.get_pin_position(0)
-        assert abs(x - 0) < 0.001
-        assert abs(y - (-30)) < 0.001
+        assert abs(x - expected_x) < 0.001
+        assert abs(y - expected_y) < 0.001
 
     def test_serialization(self):
         comp = Component(
@@ -100,7 +103,7 @@ class TestComponent:
 
     def test_control_blocks_have_defaults(self):
         pi = Component(type=ComponentType.PI_CONTROLLER)
-        assert len(pi.pins) == 3
+        assert len(pi.pins) == 2
         assert "kp" in pi.parameters and "ki" in pi.parameters
 
         pid = Component(type=ComponentType.PID_CONTROLLER)
@@ -110,7 +113,20 @@ class TestComponent:
         assert math_block.parameters["operation"] == "sum"
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
+        assert len(pwm.pins) == 1
         assert pwm.parameters["frequency"] == 10000.0
+
+        gain = Component(type=ComponentType.GAIN)
+        assert len(gain.pins) == 2
+        assert gain.parameters["gain"] == 1.0
+
+        summing = Component(type=ComponentType.SUM)
+        assert len(summing.pins) == 3
+        assert summing.parameters["input_count"] == 2
+
+        subtractor = Component(type=ComponentType.SUBTRACTOR)
+        assert len(subtractor.pins) == 3
+        assert subtractor.parameters["signs"] == ["+", "-"]
 
     def test_thermal_port_default_is_disabled(self):
         resistor = Component(type=ComponentType.RESISTOR)

@@ -21,78 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import ThemeService, Theme
 
 
-# Component metadata for library display
-COMPONENT_LIBRARY = {
-    "Passive": [
-        {"type": ComponentType.RESISTOR, "name": "Resistor", "shortcut": "R"},
-        {"type": ComponentType.CAPACITOR, "name": "Capacitor", "shortcut": "C"},
-        {"type": ComponentType.INDUCTOR, "name": "Inductor", "shortcut": "L"},
-        {"type": ComponentType.TRANSFORMER, "name": "Transformer", "shortcut": "T"},
-    ],
-    "Sources": [
-        {"type": ComponentType.VOLTAGE_SOURCE, "name": "Voltage", "shortcut": "V"},
-        {"type": ComponentType.CURRENT_SOURCE, "name": "Current", "shortcut": "I"},
-        {"type": ComponentType.GROUND, "name": "Ground", "shortcut": "G"},
-    ],
-    "Semiconductors": [
-        {"type": ComponentType.DIODE, "name": "Diode", "shortcut": "D"},
-        {"type": ComponentType.ZENER_DIODE, "name": "Zener", "shortcut": "Z"},
-        {"type": ComponentType.LED, "name": "LED", "shortcut": ""},
-        {"type": ComponentType.MOSFET_N, "name": "NMOS", "shortcut": "M"},
-        {"type": ComponentType.MOSFET_P, "name": "PMOS", "shortcut": "Shift+M"},
-        {"type": ComponentType.BJT_NPN, "name": "NPN", "shortcut": "Q"},
-        {"type": ComponentType.BJT_PNP, "name": "PNP", "shortcut": "Shift+Q"},
-        {"type": ComponentType.IGBT, "name": "IGBT", "shortcut": "B"},
-        {"type": ComponentType.THYRISTOR, "name": "SCR", "shortcut": ""},
-        {"type": ComponentType.TRIAC, "name": "TRIAC", "shortcut": ""},
-        {"type": ComponentType.SWITCH, "name": "Switch", "shortcut": "S"},
-    ],
-    "Analog": [
-        {"type": ComponentType.OP_AMP, "name": "Op-Amp", "shortcut": "O"},
-        {"type": ComponentType.COMPARATOR, "name": "Comparator", "shortcut": ""},
-    ],
-    "Protection": [
-        {"type": ComponentType.FUSE, "name": "Fuse", "shortcut": "F"},
-        {"type": ComponentType.CIRCUIT_BREAKER, "name": "Breaker", "shortcut": ""},
-        {"type": ComponentType.RELAY, "name": "Relay", "shortcut": ""},
-    ],
-    "Control": [
-        {"type": ComponentType.PI_CONTROLLER, "name": "PI", "shortcut": "Ctrl+P"},
-        {"type": ComponentType.PID_CONTROLLER, "name": "PID", "shortcut": "Ctrl+Shift+P"},
-        {"type": ComponentType.MATH_BLOCK, "name": "Math", "shortcut": "Ctrl+M"},
-        {"type": ComponentType.PWM_GENERATOR, "name": "PWM", "shortcut": "Ctrl+W"},
-        {"type": ComponentType.INTEGRATOR, "name": "Integrator", "shortcut": ""},
-        {"type": ComponentType.DIFFERENTIATOR, "name": "d/dt", "shortcut": ""},
-        {"type": ComponentType.LIMITER, "name": "Limiter", "shortcut": ""},
-        {"type": ComponentType.RATE_LIMITER, "name": "Rate Lim.", "shortcut": ""},
-        {"type": ComponentType.HYSTERESIS, "name": "Hysteresis", "shortcut": ""},
-        {"type": ComponentType.LOOKUP_TABLE, "name": "Lookup", "shortcut": ""},
-        {"type": ComponentType.TRANSFER_FUNCTION, "name": "H(s)", "shortcut": ""},
-        {"type": ComponentType.DELAY_BLOCK, "name": "Delay", "shortcut": ""},
-        {"type": ComponentType.SAMPLE_HOLD, "name": "S/H", "shortcut": ""},
-        {"type": ComponentType.STATE_MACHINE, "name": "FSM", "shortcut": ""},
-    ],
-    "Measurement": [
-        {"type": ComponentType.VOLTAGE_PROBE, "name": "V Probe", "shortcut": ""},
-        {"type": ComponentType.CURRENT_PROBE, "name": "I Probe", "shortcut": ""},
-        {"type": ComponentType.POWER_PROBE, "name": "P Probe", "shortcut": ""},
-        {"type": ComponentType.ELECTRICAL_SCOPE, "name": "Scope", "shortcut": "Ctrl+E"},
-        {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal", "shortcut": "Ctrl+Shift+E"},
-        {"type": ComponentType.SIGNAL_MUX, "name": "Mux", "shortcut": "Ctrl+Alt+M"},
-        {"type": ComponentType.SIGNAL_DEMUX, "name": "Demux", "shortcut": "Ctrl+Alt+D"},
-    ],
-    "Magnetic": [
-        {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Ind.", "shortcut": ""},
-        {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled L", "shortcut": ""},
-    ],
-    "Networks": [
-        {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
-    ],
-}
+# Component metadata for library display.
+# Keep this list aligned with backend-supported + GUI-functional blocks only.
+COMPONENT_LIBRARY = SUPPORTED_COMPONENT_LIBRARY
 
 COMPONENT_META: dict[ComponentType, dict[str, str]] = {
     comp["type"]: {"name": comp["name"], "shortcut": comp["shortcut"]}
@@ -102,15 +38,9 @@ COMPONENT_META: dict[ComponentType, dict[str, str]] = {
 
 # Category colors for visual distinction
 CATEGORY_COLORS = {
-    "Passive": "#3b82f6",      # Blue
-    "Sources": "#f59e0b",      # Amber
-    "Semiconductors": "#10b981",  # Emerald
-    "Analog": "#06b6d4",       # Cyan
-    "Protection": "#ef4444",   # Red
-    "Control": "#8b5cf6",      # Purple
-    "Measurement": "#ec4899",  # Pink
-    "Magnetic": "#78716c",     # Stone
-    "Networks": "#84cc16",     # Lime
+    "Circuit": "#0f766e",
+    "Signal & Control": "#2563eb",
+    "Thermal": "#ea580c",
 }
 
 
