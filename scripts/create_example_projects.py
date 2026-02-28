@@ -74,6 +74,7 @@ def create_wire(
 def create_project(name: str, circuit_name: str, components: list, wires: list) -> dict:
     """Create a complete project dictionary."""
     now = datetime.now().isoformat()
+    dt = 1e-6
     return {
         "version": "1.0",
         "name": name,
@@ -82,11 +83,25 @@ def create_project(name: str, circuit_name: str, components: list, wires: list) 
         "active_circuit": circuit_name,
         "simulation_settings": {
             "tstop": 0.005,
-            "dt": 1e-6,
+            "dt": dt,
+            "max_step": dt,
             "tstart": 0.0,
-            "abstol": 1e-12,
+            "abstol": 1e-10,
             "reltol": 0.001,
+            "solver": "auto",
+            "step_mode": "fixed",
+            "output_points": 10000,
+            "enable_events": True,
+            "max_step_retries": 8,
             "max_iterations": 50,
+            "enable_voltage_limiting": False,
+            "max_voltage_step": 5.0,
+            "dc_strategy": "auto",
+            "gmin_initial": 1e-3,
+            "gmin_final": 1e-12,
+            "dc_source_steps": 10,
+            "transient_robust_mode": True,
+            "transient_auto_regularize": True,
         },
         "circuits": {
             circuit_name: {

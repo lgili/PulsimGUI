@@ -169,6 +169,7 @@ class WireItem(QGraphicsPathItem):
     def hoverLeaveEvent(self, event) -> None:
         """Handle hover leave."""
         self._hovered = False
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
         super().hoverLeaveEvent(event)
 
@@ -348,6 +349,19 @@ class WireItem(QGraphicsPathItem):
             # Find which segment was clicked
             seg_idx = self._find_segment_at(pos)
             if seg_idx is not None:
+                # Respect the same pin-lock rules used during fluid movement
+                last_idx = len(self._wire.segments) - 1
+                is_first_locked = (
+                    seg_idx == 0 and self._wire.start_connection is not None
+                )
+                is_last_locked = (
+                    seg_idx == last_idx and self._wire.end_connection is not None
+                )
+                if is_first_locked or is_last_locked:
+                    # Let Qt handle selection but do not start a drag
+                    super().mousePressEvent(event)
+                    return
+
                 self._drag_snapshot = [
                     (seg.x1, seg.y1, seg.x2, seg.y2)
                     for seg in self._wire.segments
@@ -358,9 +372,10 @@ class WireItem(QGraphicsPathItem):
                 # Determine if segment is horizontal or vertical
                 if abs(seg.x2 - seg.x1) > abs(seg.y2 - seg.y1):
                     self._drag_orientation = 'horizontal'
+                    self.setCursor(Qt.CursorShape.SizeVerCursor)
                 else:
                     self._drag_orientation = 'vertical'
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -443,6 +458,33 @@ class WireItem(QGraphicsPathItem):
         dist = ((x - proj_x) ** 2 + (y - proj_y) ** 2) ** 0.5
         return dist <= tolerance
 
+    def hoverMoveEvent(self, event) -> None:
+        """Update cursor shape based on which segment is hovered."""
+        seg_idx = self._find_segment_at(event.pos())
+        if seg_idx is not None:
+            seg = self._wire.segments[seg_idx]
+            is_h = abs(seg.x2 - seg.x1) >= abs(seg.y2 - seg.y1)
+
+            # Pin-locked segments cannot be dragged – show plain arrow
+            is_first_locked = (
+                seg_idx == 0 and self._wire.start_connection is not None
+            )
+            is_last_locked = (
+                seg_idx == len(self._wire.segments) - 1
+                and self._wire.end_connection is not None
+            )
+            if is_first_locked or is_last_locked:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            elif is_h:
+                # Horizontal segment → user slides it up/down
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+            else:
+                # Vertical segment → user slides it left/right
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().hoverMoveEvent(event)
+
     def _move_segment_fluid(self, seg_idx: int, delta: QPointF) -> None:
         """
         Move a segment fluidly (no grid snapping) and stretch adjacent segments.
@@ -451,8 +493,20 @@ class WireItem(QGraphicsPathItem):
         - Horizontal segments move vertically (up/down)
         - Vertical segments move horizontally (left/right)
         Adjacent segments stretch to stay connected.
-        """
+
+        Pin-connected first / last segments cannot be dragged to prevent
+        disconnecting the wire endpoint from its component pin.
+        """        
         if seg_idx < 0 or seg_idx >= len(self._wire.segments):
+            return
+
+        # Do not allow dragging a pin-connected first or last segment – the
+        # endpoint is locked to the component pin and moving it would create
+        # a disconnected diagonal stub.
+        last_idx = len(self._wire.segments) - 1
+        if seg_idx == 0 and self._wire.start_connection is not None:
+            return
+        if seg_idx == last_idx and self._wire.end_connection is not None:
             return
 
         seg = self._wire.segments[seg_idx]
@@ -511,6 +565,10 @@ class WireItem(QGraphicsPathItem):
             next_seg = self._wire.segments[i + 1]
             next_seg.x1 = curr_seg.x2
             next_seg.y1 = curr_seg.y2
+
+        # After snapping + connectivity fix, re-orthogonalize so floating point
+        # rounding deltas don't leave any segment slightly diagonal.
+        self._ensure_orthogonal()
 
         # Keep endpoints locked to component pins when connection metadata exists.
         if self._wire.segments and start_pin_pos is not None:
@@ -576,91 +634,163 @@ class WireItem(QGraphicsPathItem):
 
         self._wire.segments = cleaned
 
+    # ------------------------------------------------------------------
+    # Smart endpoint rerouting (used when a connected component is moved)
+    # ------------------------------------------------------------------
+
+    def _route_two_points(
+        self,
+        start: QPointF,
+        end: QPointF,
+        prefer_h_first: bool,
+        grid_size: float = 20.0,
+    ) -> "list[WireSegment]":
+        """Return 1 or 2 strictly orthogonal segments from *start* to *end*.
+
+        Both endpoints are first snapped to the grid.  When an L-shape is
+        needed the *prefer_h_first* flag chooses between
+        horizontal-then-vertical (True) or vertical-then-horizontal (False).
+        """
+        sx = round(start.x() / grid_size) * grid_size
+        sy = round(start.y() / grid_size) * grid_size
+        ex = round(end.x() / grid_size) * grid_size
+        ey = round(end.y() / grid_size) * grid_size
+
+        dx = abs(ex - sx)
+        dy = abs(ey - sy)
+
+        if dx < 0.1 and dy < 0.1:
+            # Coincident – return a zero-length stub (will be cleaned up)
+            return [WireSegment(sx, sy, ex, ey)]
+
+        if dx < 0.1:
+            # Same column → single vertical segment
+            return [WireSegment(sx, sy, ex, ey)]
+
+        if dy < 0.1:
+            # Same row → single horizontal segment
+            return [WireSegment(sx, sy, ex, ey)]
+
+        # Need an L-bend
+        if prefer_h_first:
+            return [
+                WireSegment(sx, sy, ex, sy),  # horizontal leg
+                WireSegment(ex, sy, ex, ey),  # vertical leg
+            ]
+        else:
+            return [
+                WireSegment(sx, sy, sx, ey),  # vertical leg
+                WireSegment(sx, ey, ex, ey),  # horizontal leg
+            ]
+
     def update_endpoint_position(self, endpoint: str, new_pos: QPointF) -> None:
         """
-        Update a wire endpoint position when connected component moves.
-        Maintains orthogonal routing by adjusting adjacent segments.
+        Update a wire endpoint position when a connected component moves.
+
+        The first two (or last two) segments are replaced with a freshly
+        computed orthogonal route so the wire can never become diagonal,
+        even after large component displacements.  Segments beyond the
+        rerouted pair are preserved intact.
 
         Args:
-            endpoint: 'start' or 'end'
-            new_pos: New position for the endpoint
+            endpoint: ``'start'`` or ``'end'``
+            new_pos:  New scene position for the endpoint (will be grid-snapped)
         """
         if not self._wire.segments:
             return
 
+        scene = self.scene()
+        grid_size = 20.0
+        if scene is not None and hasattr(scene, 'grid_size'):
+            grid_size = scene.grid_size
+
+        # Snap the incoming position so routing math stays on-grid
+        snapped = QPointF(
+            round(new_pos.x() / grid_size) * grid_size,
+            round(new_pos.y() / grid_size) * grid_size,
+        )
+
+        n = len(self._wire.segments)
+
         if endpoint == 'start':
-            first_seg = self._wire.segments[0]
-            old_x, old_y = first_seg.x1, first_seg.y1
-            new_x, new_y = new_pos.x(), new_pos.y()
+            # How many segments at the beginning to replace with the new route
+            replace_count = min(2, n)
 
-            # Update start point
-            first_seg.x1 = new_x
-            first_seg.y1 = new_y
-
-            # Determine if first segment is horizontal or vertical
-            is_horizontal = abs(first_seg.x2 - old_x) > abs(first_seg.y2 - old_y)
-
-            if is_horizontal:
-                # First segment is horizontal - update its Y to match new start
-                first_seg.y2 = new_y
-                # If there's a next segment, update its start Y
-                if len(self._wire.segments) > 1:
-                    self._wire.segments[1].y1 = new_y
+            # The "anchor" is the first point that stays fixed:
+            # - 3+ segments: start of segment[2]
+            # - 1-2 segments: end of the last segment
+            if n >= 3:
+                anchor = QPointF(
+                    self._wire.segments[2].x1,
+                    self._wire.segments[2].y1,
+                )
             else:
-                # First segment is vertical - update its X to match new start
-                first_seg.x2 = new_x
-                # If there's a next segment, update its start X
-                if len(self._wire.segments) > 1:
-                    self._wire.segments[1].x1 = new_x
+                anchor = QPointF(
+                    self._wire.segments[-1].x2,
+                    self._wire.segments[-1].y2,
+                )
+
+            # Preserve the original bend orientation of the first segment
+            orig = self._wire.segments[0]
+            prefer_h = abs(orig.x2 - orig.x1) >= abs(orig.y2 - orig.y1)
+
+            new_segs = self._route_two_points(snapped, anchor, prefer_h, grid_size)
+            self._wire.segments = new_segs + self._wire.segments[replace_count:]
 
         elif endpoint == 'end':
-            last_seg = self._wire.segments[-1]
-            old_x, old_y = last_seg.x2, last_seg.y2
-            new_x, new_y = new_pos.x(), new_pos.y()
+            replace_count = min(2, n)
 
-            # Update end point
-            last_seg.x2 = new_x
-            last_seg.y2 = new_y
-
-            # Determine if last segment is horizontal or vertical
-            is_horizontal = abs(old_x - last_seg.x1) > abs(old_y - last_seg.y1)
-
-            if is_horizontal:
-                # Last segment is horizontal - update its Y to match new end
-                last_seg.y1 = new_y
-                # If there's a previous segment, update its end Y
-                if len(self._wire.segments) > 1:
-                    self._wire.segments[-2].y2 = new_y
+            if n >= 3:
+                anchor = QPointF(
+                    self._wire.segments[-3].x2,
+                    self._wire.segments[-3].y2,
+                )
             else:
-                # Last segment is vertical - update its X to match new end
-                last_seg.x1 = new_x
-                # If there's a previous segment, update its end X
-                if len(self._wire.segments) > 1:
-                    self._wire.segments[-2].x2 = new_x
+                anchor = QPointF(
+                    self._wire.segments[0].x1,
+                    self._wire.segments[0].y1,
+                )
 
-        self._ensure_orthogonal()
+            orig = self._wire.segments[-1]
+            prefer_h = abs(orig.x2 - orig.x1) >= abs(orig.y2 - orig.y1)
+
+            new_segs = self._route_two_points(anchor, snapped, prefer_h, grid_size)
+            self._wire.segments = self._wire.segments[:-replace_count] + new_segs
+
+        # Remove any zero-length artifacts and re-render
+        self._cleanup_segments()
         self._rebuild_path()
 
     def _ensure_orthogonal(self) -> None:
-        """Ensure all segments are strictly horizontal or vertical."""
-        for seg in self._wire.segments:
-            # If segment is more horizontal, make it perfectly horizontal
-            if abs(seg.x2 - seg.x1) >= abs(seg.y2 - seg.y1):
-                # Horizontal - average Y coordinates
-                avg_y = (seg.y1 + seg.y2) / 2
-                seg.y1 = avg_y
-                seg.y2 = avg_y
-            else:
-                # Vertical - average X coordinates
-                avg_x = (seg.x1 + seg.x2) / 2
-                seg.x1 = avg_x
-                seg.x2 = avg_x
+        """Ensure all segments are strictly horizontal or vertical.
 
-        # Fix connectivity between segments
+        After forcing H/V orientation the snapped coordinate is also rounded to
+        the nearest grid cell so floating-point drift cannot accumulate into
+        visible diagonals.
+        """
+        scene = self.scene()
+        grid_size = 20.0
+        if scene is not None and hasattr(scene, 'grid_size'):
+            grid_size = scene.grid_size
+
+        for seg in self._wire.segments:
+            if abs(seg.x2 - seg.x1) >= abs(seg.y2 - seg.y1):
+                # Horizontal – snap the shared Y to the nearest grid row
+                avg_y = (seg.y1 + seg.y2) / 2
+                snapped_y = round(avg_y / grid_size) * grid_size
+                seg.y1 = snapped_y
+                seg.y2 = snapped_y
+            else:
+                # Vertical – snap the shared X to the nearest grid column
+                avg_x = (seg.x1 + seg.x2) / 2
+                snapped_x = round(avg_x / grid_size) * grid_size
+                seg.x1 = snapped_x
+                seg.x2 = snapped_x
+
+        # Restore point-to-point continuity after orthogonalization
         for i in range(len(self._wire.segments) - 1):
             curr_seg = self._wire.segments[i]
             next_seg = self._wire.segments[i + 1]
-            # End of current should match start of next
             next_seg.x1 = curr_seg.x2
             next_seg.y1 = curr_seg.y2
 
@@ -800,17 +930,13 @@ def calculate_orthogonal_path(
         # Horizontal line only
         pass
     else:
-        # Need corners
+        # Need a single corner (clean L-shape)
         if go_horizontal_first:
-            # L-shape: horizontal then vertical
-            mid_x = start.x() + dx / 2
-            points.append(QPointF(mid_x, start.y()))
-            points.append(QPointF(mid_x, end.y()))
+            # Horizontal then vertical: corner is at (end.x, start.y)
+            points.append(QPointF(end.x(), start.y()))
         else:
-            # L-shape: vertical then horizontal
-            mid_y = start.y() + dy / 2
-            points.append(QPointF(start.x(), mid_y))
-            points.append(QPointF(end.x(), mid_y))
+            # Vertical then horizontal: corner is at (start.x, end.y)
+            points.append(QPointF(start.x(), end.y()))
 
     points.append(end)
     return points

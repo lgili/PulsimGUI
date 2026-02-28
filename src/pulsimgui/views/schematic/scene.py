@@ -35,7 +35,7 @@ class SchematicScene(QGraphicsScene):
 
     # Grid settings - 20px is good for schematics
     GRID_SIZE = 20.0  # pixels
-    GRID_DOT_SIZE = 3.0  # dot diameter in pixels
+    GRID_DOT_SIZE = 2.4  # dot diameter in pixels
     PIN_CAPTURE_DISTANCE = 22.0  # pixels
     COMPONENT_COLLISION_PADDING = 2.0  # minimum spacing between component bodies
     COMPONENT_COLLISION_SEARCH_RADIUS = 16  # in grid cells
@@ -344,16 +344,20 @@ class SchematicScene(QGraphicsScene):
         # Major grid every 5 cells (100px with 20px grid)
         major_interval = 5
 
-        # Dot sizes
-        dot_radius = self.GRID_DOT_SIZE / 2.0
-        major_dot_radius = self.GRID_DOT_SIZE
+        # Dot sizes and contrast tuned for smoother "web-like" canvas.
+        minor_dot_size = self.GRID_DOT_SIZE
+        major_dot_radius = self.GRID_DOT_SIZE * 0.92
 
-        # Create colors for major dots (slightly darker/more visible)
+        minor_color = QColor(self._grid_color)
+        minor_color.setAlpha(122 if self._dark_mode else 108)
+
         major_color = QColor(self._grid_color)
         if self._dark_mode:
-            major_color = major_color.lighter(140)
+            major_color = major_color.lighter(124)
+            major_color.setAlpha(178)
         else:
-            major_color = major_color.darker(120)
+            major_color = major_color.darker(118)
+            major_color.setAlpha(152)
 
         # Collect points in batches for efficient drawing
         minor_points = []
@@ -377,8 +381,8 @@ class SchematicScene(QGraphicsScene):
 
         # Batch draw minor dots using drawPoints (faster than individual drawEllipse)
         if minor_points:
-            pen = QPen(self._grid_color)
-            pen.setWidthF(self.GRID_DOT_SIZE)
+            pen = QPen(minor_color)
+            pen.setWidthF(minor_dot_size)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawPoints(minor_points)

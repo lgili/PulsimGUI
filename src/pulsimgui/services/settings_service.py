@@ -130,7 +130,7 @@ class SettingsService:
             "target_version": str(raw_target or DEFAULT_BACKEND_TARGET_VERSION),
             "source": self._settings.value("backend/runtime_source", "pypi"),
             "local_path": self._settings.value("backend/runtime_local_path", ""),
-            "auto_sync": self._settings.value("backend/runtime_auto_sync", False, type=bool),
+            "auto_sync": self._settings.value("backend/runtime_auto_sync", True, type=bool),
         }
 
     def set_backend_runtime_settings(self, settings: dict) -> None:
@@ -138,7 +138,7 @@ class SettingsService:
         self._settings.setValue("backend/runtime_target_version", settings.get("target_version", ""))
         self._settings.setValue("backend/runtime_source", settings.get("source", "pypi"))
         self._settings.setValue("backend/runtime_local_path", settings.get("local_path", ""))
-        self._settings.setValue("backend/runtime_auto_sync", bool(settings.get("auto_sync", False)))
+        self._settings.setValue("backend/runtime_auto_sync", bool(settings.get("auto_sync", True)))
 
     # Component value labels
     def get_show_value_labels(self) -> bool:
@@ -156,10 +156,13 @@ class SettingsService:
             "t_stop": float(self._settings.value("simulation/t_stop", 1e-3)),
             "t_step": float(self._settings.value("simulation/t_step", 1e-6)),
             "solver": self._settings.value("simulation/solver", "auto"),
+            "step_mode": self._settings.value("simulation/step_mode", "fixed"),
             "max_step": float(self._settings.value("simulation/max_step", 1e-6)),
             "rel_tol": float(self._settings.value("simulation/rel_tol", 1e-4)),
             "abs_tol": float(self._settings.value("simulation/abs_tol", 1e-6)),
             "output_points": int(self._settings.value("simulation/output_points", 10000)),
+            "enable_events": self._settings.value("simulation/enable_events", True, type=bool),
+            "max_step_retries": int(self._settings.value("simulation/max_step_retries", 8)),
         }
 
     def set_simulation_settings(self, settings: dict) -> None:

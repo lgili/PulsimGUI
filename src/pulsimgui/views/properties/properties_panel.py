@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.models.component import (
     Component,
     ComponentType,
+    HIDDEN_PARAMS,
     SCOPE_CHANNEL_LIMITS,
     MUX_CHANNEL_LIMITS,
     THERMAL_PORT_PARAMETER,
@@ -806,7 +807,10 @@ class PropertiesPanel(QWidget):
 
         params = self._component.parameters
 
+        _hidden = HIDDEN_PARAMS.get(comp_type, frozenset())
         for name, value in params.items():
+            if name in _hidden:
+                continue
             widget = self._create_widget_for_value(name, value)
             if widget:
                 label = name.replace("_", " ").title()

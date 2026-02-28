@@ -182,14 +182,16 @@ class MathSignalDialog(QDialog):
             self.setStyleSheet(f"""
                 QDialog {{
                     background-color: {c.panel_background};
+                    border: 1px solid {c.panel_border};
+                    border-radius: 12px;
                 }}
                 QLabel#mathSignalDialogTitle {{
-                    font-size: 14px;
+                    font-size: 18px;
                     font-weight: 700;
                     color: {c.foreground};
                 }}
                 QLabel#mathSignalDialogSubtitle {{
-                    font-size: 11px;
+                    font-size: 12px;
                     color: {c.foreground_muted};
                 }}
                 QLabel#mathSignalSection {{
@@ -204,27 +206,35 @@ class MathSignalDialog(QDialog):
                     color: {c.primary};
                     background-color: {c.background_alt};
                     border: 1px solid {c.panel_border};
-                    border-radius: 7px;
-                    padding: 6px 8px;
+                    border-radius: 10px;
+                    padding: 7px 10px;
                 }}
                 QComboBox, QDoubleSpinBox, QLineEdit {{
                     background-color: {c.input_background};
                     color: {c.foreground};
                     border: 1px solid {c.input_border};
-                    border-radius: 7px;
-                    padding: 4px 8px;
-                    min-height: 24px;
+                    border-radius: 10px;
+                    padding: 5px 9px;
+                    min-height: 28px;
                 }}
                 QPushButton {{
-                    background-color: {c.panel_background};
+                    background-color: {c.secondary};
                     color: {c.foreground};
-                    border: 1px solid {c.panel_border};
-                    border-radius: 7px;
-                    padding: 4px 12px;
-                    min-height: 24px;
+                    border: 1px solid {c.border};
+                    border-radius: 10px;
+                    padding: 6px 12px;
+                    min-height: 28px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: {c.secondary_hover};
+                    border-color: {c.primary};
                 }}
                 QPushButton#mathSignalSwapBtn {{
                     min-width: 108px;
+                }}
+                QDialogButtonBox QPushButton {{
+                    min-width: 94px;
                 }}
             """)
 
@@ -698,6 +708,7 @@ class ScopeWindow(QWidget):
         bottom_layout.addWidget(self._timeline_range_label)
 
         self._stacked_add_scope_btn = QPushButton("Add Scope")
+        self._stacked_add_scope_btn.setObjectName("scopeStackedAddScopeBtn")
         self._stacked_add_scope_btn.clicked.connect(self._on_add_scope_clicked)
         bottom_layout.addWidget(self._stacked_add_scope_btn)
 
@@ -873,9 +884,9 @@ class ScopeWindow(QWidget):
         self._stacked_measurements.apply_theme(theme, cursor_palette=self._cursor_palette())
         self.setStyleSheet(f"""
             QWidget#scopePlotSurface {{
-                background: {c.panel_background};
+                background: {c.background};
                 border: 1px solid {c.panel_border};
-                border-radius: 10px;
+                border-radius: 12px;
             }}
             QWidget#scopeLeftPanel,
             QWidget#scopeRightPanel,
@@ -883,45 +894,48 @@ class ScopeWindow(QWidget):
             QScrollArea#scopeStackedScroll,
             QScrollArea#scopeStackedScroll > QWidget,
             QScrollArea#scopeStackedScroll > QWidget > QWidget {{
-                background-color: {c.background};
+                background-color: {c.panel_background};
             }}
             QWidget#scopeBottomControlBar {{
-                background-color: {c.background_alt};
+                background-color: {c.panel_background};
                 border: 1px solid {c.panel_border};
-                border-radius: 8px;
+                border-radius: 12px;
             }}
             QWidget#scopeBottomControlBar QLabel {{
                 color: {c.foreground_muted};
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 600;
             }}
             QLabel#scopeSliderInfoLabel {{
                 color: {c.foreground};
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 600;
             }}
             QPushButton#scopeSliderStepBtn {{
-                padding: 0;
-                min-height: 23px;
+                min-width: 26px;
+                max-width: 26px;
+                min-height: 26px;
+                max-height: 26px;
+                padding: 0px;
             }}
             QSlider#scopeTimelineSlider::groove:horizontal,
             QSlider#scopeZoomSlider::groove:horizontal {{
-                border: 1px solid {c.input_border};
-                height: 6px;
-                background: {c.input_background};
-                border-radius: 3px;
+                border: none;
+                height: 4px;
+                background: {c.divider};
+                border-radius: 2px;
             }}
             QSlider#scopeTimelineSlider::handle:horizontal,
             QSlider#scopeZoomSlider::handle:horizontal {{
                 background: {c.primary};
                 border: 1px solid {c.primary};
-                width: 10px;
-                margin: -3px 0;
-                border-radius: 5px;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
             }}
             QLabel#scopeMappingLabel {{
                 color: {c.foreground_muted};
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 500;
             }}
             QLabel#scopeMessageLabel {{
@@ -933,23 +947,35 @@ class ScopeWindow(QWidget):
                 background-color: {c.input_background};
                 color: {c.foreground};
                 border: 1px solid {c.input_border};
-                border-radius: 7px;
-                padding: 4px 9px;
-                min-height: 25px;
+                border-radius: 10px;
+                padding: 5px 10px;
+                min-height: 28px;
             }}
             QComboBox:hover, QDoubleSpinBox:hover {{
                 border-color: {c.input_focus_border};
             }}
             QPushButton {{
-                background-color: {c.panel_background};
-                color: {c.foreground};
-                border: 1px solid {c.panel_border};
-                border-radius: 7px;
-                padding: 4px 12px;
-                min-height: 25px;
+                background-color: {c.secondary};
+                color: {c.secondary_foreground};
+                border: 1px solid {c.border};
+                border-radius: 10px;
+                padding: 5px 12px;
+                min-height: 28px;
+                font-weight: 600;
             }}
             QPushButton:hover {{
+                background-color: {c.secondary_hover};
                 border-color: {c.input_focus_border};
+            }}
+            QPushButton#scopeMathSignalBtn,
+            QPushButton#scopeStackedAddScopeBtn {{
+                background-color: {c.primary};
+                color: {c.primary_foreground};
+                border-color: {c.primary};
+            }}
+            QPushButton#scopeMathSignalBtn:hover,
+            QPushButton#scopeStackedAddScopeBtn:hover {{
+                background-color: {c.primary_hover};
             }}
             QWidget#scopeRightControlBar QCheckBox {{
                 spacing: 4px;
@@ -958,7 +984,7 @@ class ScopeWindow(QWidget):
             QWidget#scopeRightControlBar {{
                 background-color: {c.background_alt};
                 border: 1px solid {c.panel_border};
-                border-radius: 8px;
+                border-radius: 10px;
             }}
             QWidget#scopeRightControlBar QLabel {{
                 color: {c.foreground_muted};
@@ -986,10 +1012,10 @@ class ScopeWindow(QWidget):
             }}
         """)
         self._timeline_slider.set_theme_colors(
-            track_bg=QColor(c.input_background),
-            track_border=QColor(c.input_border),
+            track_bg=QColor(c.divider),
+            track_border=QColor(c.border),
             selected_fill=QColor(c.primary),
-            handle_fill=QColor(c.panel_background),
+            handle_fill=QColor(c.input_background),
             handle_border=QColor(c.primary),
         )
         self._sync_trace_style_controls()
@@ -2202,21 +2228,21 @@ class ScopeWindow(QWidget):
                 )
                 if sig_stats:
                     stats_lbl.setStyleSheet(
-                        f"color: {c.foreground_muted}; font-size: 10px; font-family: monospace;"
+                        f"color: {c.foreground_muted}; font-size: 10px; font-family: monospace; font-weight: 500;"
                     )
-                # Panel border: colored left accent + overall border
+                # Panel border: slim left accent + softer card fill.
                 panel.setStyleSheet(
                     f"""
                     QFrame {{
-                        background-color: {c.background};
+                        background-color: {c.panel_background};
                         border: 1px solid {c.panel_border};
-                        border-left: 4px solid {hex_color};
-                        border-radius: 8px;
+                        border-left: 3px solid {hex_color};
+                        border-radius: 10px;
                     }}
                     """
                 )
                 header_widget.setStyleSheet(
-                    f"background-color: {header_bg}; border-radius: 4px; margin: 0;"
+                    f"background-color: {header_bg}; border-radius: 7px; margin: 0; border: 1px solid {c.panel_border};"
                 )
             else:
                 dot_and_name.setStyleSheet(f"color: {hex_color}; font-weight: 600; font-size: 12px;")

@@ -582,6 +582,229 @@ class PulsimBackend(SimulationBackend):
             return name
         return f"V({name})"
 
+    @staticmethod
+    def _normalize_integration_method(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw == "rk4" or raw == "rk45":
+            return "trapezoidal"
+        if raw == "bdf":
+            return "bdf2"
+        if not raw:
+            return "auto"
+        return raw
+
+    @staticmethod
+    def _normalize_step_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        return raw if raw in {"fixed", "variable"} else "fixed"
+
+    def _integrator_enum_name(self, method: str) -> str:
+        mapping = {
+            # "auto" maps to BDF1: first-order implicit method is the most stable
+            # default for switching power converters (proven by benchmark tests).
+            "auto": "BDF1",
+            "trapezoidal": "Trapezoidal",
+            "bdf1": "BDF1",
+            "bdf2": "BDF2",
+            "bdf3": "BDF3",
+            "bdf4": "BDF4",
+            "bdf5": "BDF5",
+            "gear": "Gear",
+            "trbdf2": "TRBDF2",
+            "rosenbrockw": "RosenbrockW",
+            "sdirk2": "SDIRK2",
+        }
+        return mapping.get(method, "BDF1")
+
+    def _should_use_simulation_options(self, settings: "SimulationSettings") -> bool:
+        # Always prefer the full SimulationOptions path when the backend supports it.
+        # This enables Newton damping, fallback gmin policy, and other features
+        # that are critical for switching power converter convergence.
+        return hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")
+
+    def _build_dc_convergence_config(self, settings: "SimulationSettings") -> Any | None:
+        config_cls = getattr(self._module, "DCConvergenceConfig", None)
+        if config_cls is None:
+            return None
+        config = config_cls()
+        strategy = str(getattr(settings, "dc_strategy", "auto")).lower()
+        strategy_enum = getattr(self._module, "DCStrategy", None)
+        if strategy_enum is not None:
+            if strategy == "gmin" and hasattr(strategy_enum, "GminStepping"):
+                config.strategy = strategy_enum.GminStepping
+            elif strategy == "source" and hasattr(strategy_enum, "SourceStepping"):
+                config.strategy = strategy_enum.SourceStepping
+            elif strategy == "pseudo" and hasattr(strategy_enum, "PseudoTransient"):
+                config.strategy = strategy_enum.PseudoTransient
+            elif strategy == "direct" and hasattr(strategy_enum, "Direct"):
+                config.strategy = strategy_enum.Direct
+            elif hasattr(strategy_enum, "Auto"):
+                config.strategy = strategy_enum.Auto
+
+        if strategy == "gmin" and hasattr(config, "gmin_config"):
+            config.gmin_config.initial_gmin = float(getattr(settings, "gmin_initial", 1e-3))
+            config.gmin_config.final_gmin = float(getattr(settings, "gmin_final", 1e-12))
+        if strategy == "source" and hasattr(config, "source_config"):
+            source_steps = max(1, int(getattr(settings, "dc_source_steps", 10)))
+            if hasattr(config.source_config, "max_steps"):
+                config.source_config.max_steps = source_steps
+        return config
+
+    def _build_simulation_options(
+        self,
+        settings: "SimulationSettings",
+        dt: float,
+        newton_opts: Any,
+        linear_solver: Any | None,
+    ) -> Any:
+        opts = self._module.SimulationOptions()
+        method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
+        step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
+        dt_max = float(getattr(settings, "max_step", dt))
+        if dt_max <= 0.0:
+            dt_max = dt
+        if step_mode == "variable":
+            dt_min = max(min(dt, dt_max) * 1e-3, 1e-15)
+        else:
+            dt_min = max(min(dt, dt_max), 1e-15)
+
+        for attr, value in (
+            ("tstart", float(settings.t_start)),
+            ("t_stop", float(settings.t_stop)),
+            ("tstop", float(settings.t_stop)),
+            ("dt", float(dt)),
+            ("dt_min", float(dt_min)),
+            ("dtmax", float(dt_max)),
+            ("dt_max", float(dt_max)),
+        ):
+            if hasattr(opts, attr):
+                try:
+                    setattr(opts, attr, value)
+                except Exception:
+                    pass
+
+        if hasattr(opts, "newton_options"):
+            opts.newton_options = newton_opts
+        elif hasattr(opts, "newton_opts"):
+            opts.newton_opts = newton_opts
+
+        if linear_solver is not None:
+            if hasattr(opts, "linear_solver"):
+                opts.linear_solver = linear_solver
+            elif hasattr(opts, "linear_solver_config"):
+                opts.linear_solver_config = linear_solver
+
+        dc_config = self._build_dc_convergence_config(settings)
+        if dc_config is not None:
+            if hasattr(opts, "dc_config"):
+                opts.dc_config = dc_config
+            elif hasattr(opts, "dc_options"):
+                opts.dc_options = dc_config
+
+        if hasattr(opts, "adaptive_timestep"):
+            opts.adaptive_timestep = step_mode == "variable"
+        if hasattr(opts, "step_mode") and hasattr(self._module, "StepMode"):
+            enum_name = "Variable" if step_mode == "variable" else "Fixed"
+            if hasattr(self._module.StepMode, enum_name):
+                opts.step_mode = getattr(self._module.StepMode, enum_name)
+
+        if hasattr(opts, "integrator") and hasattr(self._module, "Integrator"):
+            enum_name = self._integrator_enum_name(method)
+            if hasattr(self._module.Integrator, enum_name):
+                opts.integrator = getattr(self._module.Integrator, enum_name)
+
+        if hasattr(opts, "enable_events"):
+            opts.enable_events = bool(getattr(settings, "enable_events", True))
+        if hasattr(opts, "max_step_retries"):
+            opts.max_step_retries = max(0, int(getattr(settings, "max_step_retries", 8)))
+
+        # Fallback policy: enable transient gmin stepping for switching circuit convergence.
+        # These settings match the validated PulsimCore buck converter benchmark.
+        if hasattr(opts, "fallback_policy"):
+            fp = opts.fallback_policy
+            if hasattr(fp, "enable_transient_gmin"):
+                fp.enable_transient_gmin = True
+            if hasattr(fp, "gmin_retry_threshold"):
+                fp.gmin_retry_threshold = 1
+            if hasattr(fp, "gmin_initial"):
+                fp.gmin_initial = 1e-8
+            if hasattr(fp, "gmin_max"):
+                fp.gmin_max = 1e-4
+            if hasattr(fp, "gmin_growth"):
+                fp.gmin_growth = 10
+            if hasattr(fp, "trace_retries"):
+                fp.trace_retries = True
+
+        return opts
+
+    def _run_transient_via_simulator(
+        self,
+        circuit: Any,
+        settings: "SimulationSettings",
+        callbacks: BackendCallbacks,
+        signal_names: list[str],
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any | None,
+    ) -> BackendRunResult:
+        result = BackendRunResult()
+        for name in signal_names:
+            result.signals[name] = []
+
+        callbacks.progress(5.0, "Running transient with SimulationOptions...")
+        options = self._build_simulation_options(settings, dt, newton_opts, linear_solver)
+        simulator = self._module.Simulator(circuit, options)
+        native_result = simulator.run_transient(x0) if x0 is not None else simulator.run_transient()
+
+        success = getattr(native_result, "success", True)
+        if callable(success):
+            success = success()
+        message = str(getattr(native_result, "message", "") or "")
+
+        # Respect explicit solver status when available.
+        status_value = getattr(native_result, "final_status", None)
+        if status_value is not None and hasattr(self._module, "SolverStatus"):
+            try:
+                status = self._module.SolverStatus(status_value)
+                if status != self._module.SolverStatus.Success:
+                    success = False
+                    if not message:
+                        message = getattr(native_result, "status_message", status.name)
+            except Exception:
+                pass
+
+        if not success:
+            result.error_message = message or "Transient failed"
+            return result
+
+        times = list(getattr(native_result, "time", []))
+        states = list(getattr(native_result, "states", []))
+        if not signal_names:
+            native_signal_names = list(getattr(native_result, "signal_names", []))
+            if native_signal_names:
+                signal_names = [self._normalize_signal_name(name) for name in native_signal_names]
+                for name in signal_names:
+                    result.signals.setdefault(name, [])
+
+        for t, state in zip(times, states):
+            result.time.append(float(t))
+            for idx, name in enumerate(signal_names):
+                if idx < len(state):
+                    result.signals.setdefault(name, []).append(float(state[idx]))
+
+        if result.time:
+            final_sample = {
+                name: values[-1]
+                for name, values in result.signals.items()
+                if values
+            }
+            callbacks.data_point(result.time[-1], final_sample)
+
+        result.statistics["execution_path"] = "simulator_options"
+        callbacks.progress(100.0, "Simulation complete")
+        return result
+
     def _run_transient_once(
         self,
         circuit: Any,
@@ -598,6 +821,34 @@ class PulsimBackend(SimulationBackend):
         result.time = []
         for name in signal_names:
             result.signals[name] = []
+
+        if self._should_use_simulation_options(settings):
+            try:
+                simulator_result = self._run_transient_via_simulator(
+                    circuit,
+                    settings,
+                    callbacks,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not simulator_result.error_message:
+                    return simulator_result
+                result.statistics["simulator_options_error"] = simulator_result.error_message
+                if "cancel" in simulator_result.error_message.lower():
+                    return simulator_result
+                callbacks.progress(
+                    5.0,
+                    "SimulationOptions path failed; retrying compatibility transient...",
+                )
+            except Exception as exc:
+                result.statistics["simulator_options_exception"] = str(exc)
+                callbacks.progress(
+                    5.0,
+                    "SimulationOptions unavailable; retrying compatibility transient...",
+                )
 
         # Prefer robust run_transient path first to match notebook behavior.
         if hasattr(self._module, "run_transient"):
@@ -2022,7 +2273,9 @@ class PulsimBackend(SimulationBackend):
             opts = self._module.NewtonOptions()
         else:  # pragma: no cover - defensive fallback for older adapters
             opts = type("NewtonOptions", (), {})()
-        opts.max_iterations = settings.max_newton_iterations
+
+        base_max_iter = int(getattr(settings, "max_newton_iterations", 100))
+        opts.max_iterations = base_max_iter
         opts.enable_limiting = settings.enable_voltage_limiting
         opts.max_voltage_step = settings.max_voltage_step
 
@@ -2035,6 +2288,15 @@ class PulsimBackend(SimulationBackend):
             if hasattr(tolerances, "residual_tol"):
                 tolerances.residual_tol = max(settings.abs_tol, 1e-12)
             opts.tolerances = tolerances
+
+        # Newton damping: critical for MOSFET/diode switching circuit convergence.
+        # These match the values from the validated buck converter benchmark.
+        if hasattr(opts, "initial_damping"):
+            opts.initial_damping = 0.5
+        if hasattr(opts, "min_damping"):
+            opts.min_damping = 1e-4
+        if hasattr(opts, "auto_damping"):
+            opts.auto_damping = True
 
         if hasattr(circuit, "num_nodes"):
             opts.num_nodes = circuit.num_nodes()

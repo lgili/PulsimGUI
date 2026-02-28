@@ -29,7 +29,22 @@ from pulsimgui.services.backend_runtime_service import (
     BackendRuntimeConfig,
 )
 from pulsimgui.services.settings_service import SettingsService
-from pulsimgui.services.simulation_service import SimulationService
+from pulsimgui.services.simulation_service import (
+    SimulationService,
+    normalize_integration_method,
+)
+
+
+_INTEGRATION_METHOD_OPTIONS = [
+    ("Auto (TRBDF2)", "auto"),
+    ("Trapezoidal", "trapezoidal"),
+    ("BDF1", "bdf1"),
+    ("BDF2", "bdf2"),
+    ("TRBDF2", "trbdf2"),
+    ("Gear", "gear"),
+    ("RosenbrockW", "rosenbrockw"),
+    ("SDIRK2", "sdirk2"),
+]
 
 
 class PreferencesDialog(QDialog):
@@ -243,7 +258,8 @@ class PreferencesDialog(QDialog):
         solver_layout = QFormLayout(solver_group)
 
         self._solver_combo = QComboBox()
-        self._solver_combo.addItems(["Auto", "RK4", "RK45", "BDF"])
+        for label, value in _INTEGRATION_METHOD_OPTIONS:
+            self._solver_combo.addItem(label, value)
         solver_layout.addRow("Default solver:", self._solver_combo)
 
         self._max_step_spin = QDoubleSpinBox()
@@ -419,8 +435,16 @@ class PreferencesDialog(QDialog):
 
         # Simulation defaults
         sim_settings = self._settings.get_simulation_settings()
-        solver_map = {"auto": 0, "rk4": 1, "rk45": 2, "bdf": 3}
-        self._solver_combo.setCurrentIndex(solver_map.get(sim_settings.get("solver", "auto"), 0))
+        solver_value = normalize_integration_method(sim_settings.get("solver", "auto"))
+        solver_index = next(
+            (
+                idx
+                for idx in range(self._solver_combo.count())
+                if self._solver_combo.itemData(idx) == solver_value
+            ),
+            0,
+        )
+        self._solver_combo.setCurrentIndex(solver_index)
         self._max_step_spin.setValue(float(sim_settings.get("max_step", 1e-6)) * 1e6)
         self._output_points_spin.setValue(int(sim_settings.get("output_points", 10000)))
 
@@ -456,10 +480,11 @@ class PreferencesDialog(QDialog):
         self._settings.set_grid_size(self._grid_size_spin.value())
 
         # Simulation defaults
-        solver_map = {0: "auto", 1: "rk4", 2: "rk45", 3: "bdf"}
         self._settings.set_simulation_settings(
             {
-                "solver": solver_map.get(self._solver_combo.currentIndex(), "auto"),
+                "solver": normalize_integration_method(
+                    self._solver_combo.currentData() or "auto"
+                ),
                 "max_step": self._max_step_spin.value() * 1e-6,
                 "output_points": self._output_points_spin.value(),
             }

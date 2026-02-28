@@ -167,95 +167,100 @@ LIGHT_THEME = Theme(
     display_name="Light",
     is_dark=False,
     colors=ThemeColors(
-        # Base colors - clean, professional look
-        background="#ffffff",
-        background_alt="#f9fafb",
-        foreground="#1f2937",
-        foreground_muted="#6b7280",
-        # Primary accent - professional blue
-        primary="#2563eb",
-        primary_hover="#1d4ed8",
-        primary_pressed="#1e40af",
+        # Base colors - airy web-app feel
+        background="#f5f7fb",
+        background_alt="#edf2fa",
+        foreground="#0b1220",
+        foreground_muted="#4f627a",
+        # Primary accent
+        primary="#1d4ed8",
+        primary_hover="#1e40af",
+        primary_pressed="#1e3a8a",
         primary_foreground="#ffffff",
-        # Secondary
-        secondary="#6b7280",
-        secondary_hover="#4b5563",
-        secondary_foreground="#ffffff",
-        # Status colors - refined
+        # Secondary (neutral action)
+        secondary="#e2e8f0",
+        secondary_hover="#cbd5e1",
+        secondary_foreground="#1e293b",
+        # Status colors
         success="#059669",
         success_background="#d1fae5",
         error="#dc2626",
         error_background="#fee2e2",
         warning="#d97706",
-        warning_background="#fef3c7",
+        warning_background="#ffedd5",
         info="#0284c7",
         info_background="#e0f2fe",
-        # Borders - subtle
-        border="#e5e7eb",
+        # Borders and dividers
+        border="#cdd9e8",
         border_focus="#2563eb",
-        divider="#f3f4f6",
+        divider="#dfe7f2",
         # Input
         input_background="#ffffff",
-        input_border="#d1d5db",
+        input_border="#bcc9db",
         input_focus_border="#2563eb",
-        input_placeholder="#9ca3af",
+        input_placeholder="#7f93ac",
         # Toolbar
-        toolbar_background="#f9fafb",
-        toolbar_border="#e5e7eb",
+        toolbar_background="#f8fbff",
+        toolbar_border="#cdd9e8",
         menu_background="#ffffff",
-        menu_hover="#f3f4f6",
-        menu_separator="#e5e7eb",
+        menu_hover="#eff6ff",
+        menu_separator="#d6e1ed",
         # Panel
-        panel_background="#f9fafb",
-        panel_header="#f3f4f6",
-        panel_border="#e5e7eb",
+        panel_background="#f8fbff",
+        panel_header="#eef3fb",
+        panel_border="#cfdceb",
         # Tree
-        tree_background="#ffffff",
-        tree_item_hover="#f3f4f6",
+        tree_background="#f8fbff",
+        tree_item_hover="#eff6ff",
         tree_item_selected="#dbeafe",
-        tree_item_selected_inactive="#e5e7eb",
+        tree_item_selected_inactive="#d8e2ef",
         # Tabs
-        tab_background="#f3f4f6",
+        tab_background="#edf2fa",
         tab_active="#ffffff",
-        tab_hover="#e5e7eb",
-        tab_border="#e5e7eb",
-        # Status bar - professional blue
-        statusbar_background="#2563eb",
-        statusbar_foreground="#ffffff",
+        tab_hover="#e2e8f0",
+        tab_border="#cfdceb",
+        # Status bar
+        statusbar_background="#eaf1ff",
+        statusbar_foreground="#1e3a8a",
         # Scrollbar
-        scrollbar_background="#f3f4f6",
-        scrollbar_handle="#d1d5db",
-        scrollbar_handle_hover="#9ca3af",
+        scrollbar_background="#edf2fa",
+        scrollbar_handle="#b5c7de",
+        scrollbar_handle_hover="#8fa9c6",
         # Schematic
-        schematic_background="#ffffff",
-        schematic_grid="#e5e7eb",
-        schematic_wire="#059669",
+        schematic_background="#f9fbff",
+        schematic_grid="#c5d3e4",
+        schematic_wire="#0d9488",
         schematic_wire_preview="#2563eb",
-        schematic_component="#1f2937",
+        schematic_component="#0f172a",
         schematic_component_fill="#ffffff",
         schematic_pin="#dc2626",
         schematic_selection="#2563eb",
-        schematic_text="#1f2937",
+        schematic_text="#0f172a",
         # Simulation
         sim_running="#059669",
         sim_paused="#d97706",
-        sim_stopped="#6b7280",
+        sim_stopped="#64748b",
         sim_error="#dc2626",
-        # Context and overlays
-        context_icon="#374151",
+        # Icons/context/overlays
+        icon_default="#25364d",
+        icon_hover="#0f172a",
+        icon_active="#ffffff",
+        icon_disabled="#94a3b8",
+        icon_accent="#1d4ed8",
+        context_icon="#334155",
         overlay_pin_highlight="#16a34a",
         overlay_alignment_guides="#dc2626",
-        overlay_drop_preview_fill="#2563eb33",
-        overlay_drop_preview_border="#2563ebcc",
-        overlay_minimap_viewport_fill="#2563eb33",
-        overlay_minimap_viewport_border="#2563ebcc",
+        overlay_drop_preview_fill="#1d4ed833",
+        overlay_drop_preview_border="#1d4ed8cc",
+        overlay_minimap_viewport_fill="#1d4ed833",
+        overlay_minimap_viewport_border="#1d4ed8cc",
         # Plot surfaces
         plot_background="#ffffff",
-        plot_grid="#d1d5db",
-        plot_axis="#374151",
-        plot_text="#374151",
+        plot_grid="#becbdb",
+        plot_axis="#3b4f67",
+        plot_text="#26384e",
         plot_legend_background="#ffffff",
-        plot_legend_border="#e5e7eb",
+        plot_legend_border="#dbe4f0",
     ),
 )
 
@@ -264,101 +269,100 @@ DARK_THEME = Theme(
     display_name="Dark",
     is_dark=True,
     colors=ThemeColors(
-        # Base colors - VS Code style
-        background="#1e1e1e",
-        background_alt="#252526",
-        foreground="#e0e0e0",
-        foreground_muted="#b0b0b0",  # Brighter for labels
-        # Primary accent - brighter blue
-        primary="#4fc3f7",
-        primary_hover="#29b6f6",
-        primary_pressed="#0288d1",
-        primary_foreground="#000000",
-        # Secondary - lighter for visibility
-        secondary="#4a4a4a",
-        secondary_hover="#5a5a5a",
-        secondary_foreground="#ffffff",
+        # Base colors - neutral deep slate
+        background="#11151c",
+        background_alt="#171d26",
+        foreground="#f1f6ff",
+        foreground_muted="#b3c3d8",
+        # Primary accent
+        primary="#2ea8ff",
+        primary_hover="#4ab4ff",
+        primary_pressed="#1485d6",
+        primary_foreground="#041322",
+        # Secondary actions
+        secondary="#1f2a37",
+        secondary_hover="#2b3a4b",
+        secondary_foreground="#e9f1ff",
         # Status colors
-        success="#4ec9b0",
-        success_background="#1e3a34",
-        error="#f14c4c",
-        error_background="#3a1e1e",
-        warning="#ffca28",
-        warning_background="#3a3a1e",
-        info="#4fc3f7",
-        info_background="#1e2a3a",
-        # Borders - slightly lighter
-        border="#4a4a4a",
-        border_focus="#4fc3f7",
-        divider="#404040",
-        # Input - more visible
-        input_background="#2d2d2d",
-        input_border="#4a4a4a",
-        input_focus_border="#4fc3f7",
-        input_placeholder="#808080",
+        success="#22c55e",
+        success_background="#113222",
+        error="#ff5d5d",
+        error_background="#3c161b",
+        warning="#fbbf24",
+        warning_background="#3a2c09",
+        info="#38bdf8",
+        info_background="#102d42",
+        # Borders/dividers
+        border="#33465e",
+        border_focus="#38bdf8",
+        divider="#223042",
+        # Input
+        input_background="#141c27",
+        input_border="#3a4f69",
+        input_focus_border="#38bdf8",
+        input_placeholder="#8ea2bc",
         # Toolbar
-        toolbar_background="#2d2d2d",
-        toolbar_border="#404040",
-        menu_background="#2d2d2d",
-        menu_hover="#3d3d3d",
-        menu_separator="#404040",
+        toolbar_background="#121a24",
+        toolbar_border="#2b3e56",
+        menu_background="#17202b",
+        menu_hover="#202c3a",
+        menu_separator="#263548",
         # Panel
-        panel_background="#252526",
-        panel_header="#2d2d2d",
-        panel_border="#404040",
-        # Tree - better contrast
-        tree_background="#252526",
-        tree_item_hover="#323232",
-        tree_item_selected="#37373d",
-        tree_item_selected_inactive="#2d2d2d",
+        panel_background="#121a24",
+        panel_header="#182334",
+        panel_border="#2d435c",
+        # Tree
+        tree_background="#101824",
+        tree_item_hover="#1a2738",
+        tree_item_selected="#1d4ed866",
+        tree_item_selected_inactive="#273a52",
         # Tabs
-        tab_background="#2d2d2d",
-        tab_active="#1e1e1e",
-        tab_hover="#3d3d3d",
-        tab_border="#404040",
+        tab_background="#121b27",
+        tab_active="#0f141c",
+        tab_hover="#1b2838",
+        tab_border="#2d435c",
         # Status bar
-        statusbar_background="#007acc",
-        statusbar_foreground="#ffffff",
-        # Scrollbar - more visible
+        statusbar_background="#111a24",
+        statusbar_foreground="#a7c0dc",
+        # Scrollbar
         scrollbar_background="transparent",
-        scrollbar_handle="#5a5a5a",
-        scrollbar_handle_hover="#6a6a6a",
+        scrollbar_handle="#2f435a",
+        scrollbar_handle_hover="#3f5978",
         # Schematic
-        schematic_background="#1e1e1e",
-        schematic_grid="#404040",
-        schematic_wire="#4ec9b0",
-        schematic_wire_preview="#4fc3f7",
-        schematic_component="#e0e0e0",
-        schematic_component_fill="#2d2d2d",
-        schematic_pin="#ff8a80",
-        schematic_selection="#4fc3f7",
-        schematic_text="#e0e0e0",
+        schematic_background="#101722",
+        schematic_grid="#314055",
+        schematic_wire="#25c8a8",
+        schematic_wire_preview="#38bdf8",
+        schematic_component="#edf3ff",
+        schematic_component_fill="#162131",
+        schematic_pin="#ff7b7b",
+        schematic_selection="#2ea8ff",
+        schematic_text="#edf3ff",
         # Simulation
-        sim_running="#4ec9b0",
-        sim_paused="#ffca28",
-        sim_stopped="#808080",
-        sim_error="#f14c4c",
-        # Icons - much brighter for visibility
-        icon_default="#d0d0d0",
-        icon_hover="#e8e8e8",
+        sim_running="#22c55e",
+        sim_paused="#fbbf24",
+        sim_stopped="#7f95b2",
+        sim_error="#ff5d5d",
+        # Icons/context/overlays
+        icon_default="#d2dff1",
+        icon_hover="#e8f1ff",
         icon_active="#ffffff",
-        icon_disabled="#707070",
-        icon_accent="#4fc3f7",
-        # Context and overlays
-        context_icon="#e8e8e8",
-        overlay_pin_highlight="#4ec9b0",
-        overlay_alignment_guides="#ff8a80",
-        overlay_drop_preview_fill="#4fc3f744",
-        overlay_drop_preview_border="#4fc3f7cc",
-        overlay_minimap_viewport_fill="#4fc3f744",
-        overlay_minimap_viewport_border="#4fc3f7cc",
+        icon_disabled="#62748a",
+        icon_accent="#2ea8ff",
+        context_icon="#d3e2f4",
+        overlay_pin_highlight="#25c8a8",
+        overlay_alignment_guides="#ff7b7b",
+        overlay_drop_preview_fill="#2ea8ff44",
+        overlay_drop_preview_border="#2ea8ffcc",
+        overlay_minimap_viewport_fill="#2ea8ff44",
+        overlay_minimap_viewport_border="#2ea8ffcc",
         # Plot surfaces
-        plot_background="#1e1e1e",
-        plot_grid="#4a4a4a",
-        plot_axis="#d0d0d0",
-        plot_text="#e8e8e8",
-        plot_legend_background="#252526",
-        plot_legend_border="#404040",
+        plot_background="#101722",
+        plot_grid="#2c3b4f",
+        plot_axis="#9ab0c8",
+        plot_text="#d5e4f6",
+        plot_legend_background="#141e2b",
+        plot_legend_border="#26364a",
     ),
 )
 
@@ -367,101 +371,100 @@ MODERN_DARK_THEME = Theme(
     display_name="Modern Dark",
     is_dark=True,
     colors=ThemeColors(
-        # Base - slightly purple tinted
-        background="#0d1117",
-        background_alt="#161b22",
-        foreground="#c9d1d9",
-        foreground_muted="#8b949e",
-        # Primary - GitHub-style blue
-        primary="#58a6ff",
-        primary_hover="#79b8ff",
-        primary_pressed="#388bfd",
-        primary_foreground="#0d1117",
+        # Base - inky background with bright data accents
+        background="#0b1018",
+        background_alt="#121927",
+        foreground="#dbe7f8",
+        foreground_muted="#8ea2bf",
+        # Primary
+        primary="#33b1ff",
+        primary_hover="#57c0ff",
+        primary_pressed="#0f8ae0",
+        primary_foreground="#04111c",
         # Secondary
-        secondary="#30363d",
-        secondary_hover="#484f58",
-        secondary_foreground="#c9d1d9",
+        secondary="#1a2433",
+        secondary_hover="#253346",
+        secondary_foreground="#dce8f8",
         # Status colors
-        success="#3fb950",
-        success_background="#1b4721",
-        error="#f85149",
-        error_background="#490202",
-        warning="#d29922",
-        warning_background="#3d2d00",
-        info="#58a6ff",
-        info_background="#0c2d6b",
+        success="#24d18a",
+        success_background="#11382b",
+        error="#ff6b6b",
+        error_background="#431a20",
+        warning="#f7c948",
+        warning_background="#3d310f",
+        info="#50c6ff",
+        info_background="#123249",
         # Borders
-        border="#30363d",
-        border_focus="#58a6ff",
-        divider="#21262d",
-        # Input - visible borders
-        input_background="#161b22",
-        input_border="#3d444d",
-        input_focus_border="#58a6ff",
-        input_placeholder="#6e7681",
+        border="#2a3b55",
+        border_focus="#50c6ff",
+        divider="#1d2b3d",
+        # Input
+        input_background="#121b2a",
+        input_border="#32465f",
+        input_focus_border="#50c6ff",
+        input_placeholder="#7085a4",
         # Toolbar
-        toolbar_background="#161b22",
-        toolbar_border="#30363d",
-        menu_background="#1c2128",
-        menu_hover="#2d333b",
-        menu_separator="#30363d",
+        toolbar_background="#0f1826",
+        toolbar_border="#213248",
+        menu_background="#141f2f",
+        menu_hover="#1e2d42",
+        menu_separator="#25364d",
         # Panel
-        panel_background="#0d1117",
-        panel_header="#161b22",
-        panel_border="#30363d",
+        panel_background="#0d1624",
+        panel_header="#142033",
+        panel_border="#22364d",
         # Tree
-        tree_background="#0d1117",
-        tree_item_hover="#161b22",
-        tree_item_selected="#1f6feb44",
-        tree_item_selected_inactive="#30363d",
+        tree_background="#0d1624",
+        tree_item_hover="#162539",
+        tree_item_selected="#33b1ff55",
+        tree_item_selected_inactive="#223248",
         # Tabs
-        tab_background="#010409",
-        tab_active="#0d1117",
-        tab_hover="#161b22",
-        tab_border="#30363d",
-        # Status bar - accent color
-        statusbar_background="#238636",
-        statusbar_foreground="#ffffff",
+        tab_background="#0f1825",
+        tab_active="#0b1018",
+        tab_hover="#16253a",
+        tab_border="#22364d",
+        # Status bar
+        statusbar_background="#11253f",
+        statusbar_foreground="#9bd8ff",
         # Scrollbar
-        scrollbar_background="#0d1117",
-        scrollbar_handle="#30363d",
-        scrollbar_handle_hover="#484f58",
+        scrollbar_background="transparent",
+        scrollbar_handle="#304760",
+        scrollbar_handle_hover="#426383",
         # Schematic
-        schematic_background="#0d1117",
-        schematic_grid="#21262d",
-        schematic_wire="#3fb950",
-        schematic_wire_preview="#58a6ff",
-        schematic_component="#c9d1d9",
-        schematic_component_fill="#161b22",
-        schematic_pin="#f85149",
-        schematic_selection="#58a6ff",
-        schematic_text="#c9d1d9",
+        schematic_background="#0b1018",
+        schematic_grid="#213047",
+        schematic_wire="#22d3a6",
+        schematic_wire_preview="#50c6ff",
+        schematic_component="#dbe7f8",
+        schematic_component_fill="#121b2a",
+        schematic_pin="#ff7878",
+        schematic_selection="#33b1ff",
+        schematic_text="#dbe7f8",
         # Simulation
-        sim_running="#3fb950",
-        sim_paused="#d29922",
-        sim_stopped="#6e7681",
-        sim_error="#f85149",
-        # Icons
-        icon_default="#c9d1d9",
-        icon_hover="#f0f6fc",
+        sim_running="#22d3a6",
+        sim_paused="#f7c948",
+        sim_stopped="#7f95b2",
+        sim_error="#ff6b6b",
+        # Icons/context/overlays
+        icon_default="#c4d6ec",
+        icon_hover="#eef6ff",
         icon_active="#ffffff",
-        icon_disabled="#6e7681",
-        icon_accent="#58a6ff",
-        # Context and overlays
-        context_icon="#c9d1d9",
-        overlay_pin_highlight="#3fb950",
-        overlay_alignment_guides="#f85149",
-        overlay_drop_preview_fill="#58a6ff44",
-        overlay_drop_preview_border="#58a6ffcc",
-        overlay_minimap_viewport_fill="#58a6ff44",
-        overlay_minimap_viewport_border="#58a6ffcc",
+        icon_disabled="#7085a4",
+        icon_accent="#33b1ff",
+        context_icon="#c4d6ec",
+        overlay_pin_highlight="#22d3a6",
+        overlay_alignment_guides="#ff7878",
+        overlay_drop_preview_fill="#33b1ff44",
+        overlay_drop_preview_border="#33b1ffcc",
+        overlay_minimap_viewport_fill="#33b1ff44",
+        overlay_minimap_viewport_border="#33b1ffcc",
         # Plot surfaces
-        plot_background="#0d1117",
-        plot_grid="#30363d",
-        plot_axis="#8b949e",
-        plot_text="#c9d1d9",
-        plot_legend_background="#161b22",
-        plot_legend_border="#30363d",
+        plot_background="#0a1018",
+        plot_grid="#293d57",
+        plot_axis="#93abc7",
+        plot_text="#dbe7f8",
+        plot_legend_background="#121b2a",
+        plot_legend_border="#263a52",
     ),
 )
 
@@ -611,19 +614,20 @@ QMainWindow, QDialog {{
 QWidget {{
     color: {c.foreground};
     font-size: 13px;
+    font-family: "SF Pro Text", "Segoe UI", "Noto Sans";
 }}
 
 /* ===== Menu Bar ===== */
 QMenuBar {{
     background-color: {c.toolbar_background};
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 4px 8px;
+    padding: 6px 10px;
     spacing: 4px;
 }}
 
 QMenuBar::item {{
-    padding: 6px 12px;
-    border-radius: 6px;
+    padding: 7px 12px;
+    border-radius: 8px;
     margin: 2px;
 }}
 
@@ -634,13 +638,15 @@ QMenuBar::item:selected {{
 QMenu {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
-    border-radius: 8px;
-    padding: 6px;
+    border-radius: 10px;
+    background-clip: padding;
+    padding: 8px;
 }}
 
 QMenu::item {{
     padding: 8px 32px 8px 12px;
-    border-radius: 6px;
+    border-radius: 8px;
+    background-clip: padding;
     margin: 2px;
 }}
 
@@ -663,8 +669,8 @@ QToolBar {{
     background-color: {c.toolbar_background};
     border: none;
     border-bottom: 1px solid {c.toolbar_border};
-    padding: 6px 12px;
-    spacing: 2px;
+    padding: 8px 12px;
+    spacing: 4px;
 }}
 
 QToolBar::separator {{
@@ -675,24 +681,29 @@ QToolBar::separator {{
 
 QToolButton {{
     background-color: transparent;
-    border: none;
-    border-radius: 8px;
-    padding: 8px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background-clip: padding;
+    padding: 7px 10px;
     margin: 2px;
+    font-weight: 500;
 }}
 
 QToolButton:hover {{
     background-color: {c.menu_hover};
+    border-color: {c.border};
 }}
 
 QToolButton:pressed {{
-    background-color: {c.primary};
-    color: {c.primary_foreground};
+    background-color: {c.primary}20;
+    color: {c.primary};
+    border-color: {c.primary}66;
 }}
 
 QToolButton:checked {{
-    background-color: {c.primary};
-    color: {c.primary_foreground};
+    background-color: {c.primary}24;
+    color: {c.primary};
+    border-color: {c.primary}66;
 }}
 
 /* ===== Dock Widgets - Clean panel design ===== */
@@ -705,11 +716,9 @@ QDockWidget {{
 
 QDockWidget::title {{
     background-color: {c.panel_header};
-    padding: 10px 12px;
+    padding: 11px 12px;
     border-bottom: 1px solid {c.panel_border};
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: {c.foreground_muted};
 }}
@@ -728,16 +737,16 @@ QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
 /* ===== Scroll Bars - Thin modern style ===== */
 QScrollBar:vertical {{
     background-color: transparent;
-    width: 10px;
+    width: 12px;
     border: none;
     margin: 2px;
 }}
 
 QScrollBar::handle:vertical {{
     background-color: {c.scrollbar_handle};
-    border-radius: 4px;
+    border-radius: 6px;
     min-height: 40px;
-    margin: 0px 2px;
+    margin: 0px 3px;
 }}
 
 QScrollBar::handle:vertical:hover {{
@@ -752,16 +761,16 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 
 QScrollBar:horizontal {{
     background-color: transparent;
-    height: 10px;
+    height: 12px;
     border: none;
     margin: 2px;
 }}
 
 QScrollBar::handle:horizontal {{
     background-color: {c.scrollbar_handle};
-    border-radius: 4px;
+    border-radius: 6px;
     min-width: 40px;
-    margin: 2px 0px;
+    margin: 3px 0px;
 }}
 
 QScrollBar::handle:horizontal:hover {{
@@ -772,6 +781,10 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
     background: transparent;
     width: 0;
+}}
+
+QAbstractScrollArea::corner {{
+    background: transparent;
 }}
 
 /* ===== Tree View - Component library style ===== */
@@ -785,7 +798,8 @@ QTreeView, QTreeWidget {{
 
 QTreeView::item, QTreeWidget::item {{
     padding: 8px 8px;
-    border-radius: 6px;
+    border: 1px solid transparent;
+    border-radius: 8px;
     margin: 1px 4px;
 }}
 
@@ -794,19 +808,19 @@ QTreeView::item:hover, QTreeWidget::item:hover {{
 }}
 
 QTreeView::item:selected, QTreeWidget::item:selected {{
-    background-color: {c.primary}20;
+    background-color: {c.primary}24;
     color: {c.foreground};
-    border-left: 3px solid {c.primary};
+    border: 1px solid {c.primary}66;
 }}
 
 QTreeView::item:selected:active, QTreeWidget::item:selected:active {{
-    background-color: {c.primary}25;
+    background-color: {c.primary}2b;
     color: {c.foreground};
 }}
 
 QTreeView::item:selected:!active, QTreeWidget::item:selected:!active {{
     background-color: {c.tree_item_selected_inactive};
-    border-left: 3px solid {c.border};
+    border: 1px solid {c.border};
 }}
 
 QTreeView::branch {{
@@ -837,20 +851,24 @@ QHeaderView::section {{
 /* ===== Tab Widget ===== */
 QTabWidget::pane {{
     border: 1px solid {c.tab_border};
-    border-radius: 4px;
+    border-radius: 10px;
+    background-clip: padding;
     background-color: {c.background};
 }}
 
 QTabBar::tab {{
     background-color: {c.tab_background};
     border: 1px solid {c.tab_border};
-    padding: 8px 16px;
-    margin-right: 2px;
+    border-radius: 9px;
+    background-clip: padding;
+    padding: 8px 14px;
+    margin-right: 4px;
+    font-weight: 500;
 }}
 
 QTabBar::tab:selected {{
     background-color: {c.tab_active};
-    border-bottom-color: {c.tab_active};
+    border-color: {c.primary}66;
 }}
 
 QTabBar::tab:hover:!selected {{
@@ -861,10 +879,11 @@ QTabBar::tab:hover:!selected {{
 QPushButton {{
     background-color: {c.secondary};
     color: {c.secondary_foreground};
-    border: none;
-    border-radius: 8px;
-    padding: 10px 20px;
-    font-weight: 500;
+    border: 1px solid {c.border};
+    border-radius: 10px;
+    background-clip: padding;
+    padding: 9px 16px;
+    font-weight: 600;
     font-size: 13px;
 }}
 
@@ -873,22 +892,26 @@ QPushButton:hover {{
 }}
 
 QPushButton:pressed {{
-    background-color: {c.primary_pressed};
+    background-color: {c.menu_hover};
 }}
 
 QPushButton:disabled {{
-    background-color: {c.border};
+    background-color: {c.background_alt};
     color: {c.foreground_muted};
-    opacity: 0.6;
 }}
 
 QPushButton[primary="true"] {{
     background-color: {c.primary};
     color: {c.primary_foreground};
+    border: 1px solid {c.primary};
 }}
 
 QPushButton[primary="true"]:hover {{
     background-color: {c.primary_hover};
+}}
+
+QPushButton[primary="true"]:pressed {{
+    background-color: {c.primary_pressed};
 }}
 
 /* Small variant for dialogs */
@@ -901,8 +924,9 @@ QPushButton[size="small"] {{
 QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 8px;
-    padding: 8px 12px;
+    border-radius: 10px;
+    background-clip: padding;
+    padding: 9px 12px;
     selection-background-color: {c.primary};
     selection-color: {c.primary_foreground};
     font-size: 13px;
@@ -910,7 +934,7 @@ QLineEdit, QTextEdit, QPlainTextEdit {{
 
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     border-color: {c.input_focus_border};
-    border-width: 2px;
+    border-width: 1px;
 }}
 
 QLineEdit:disabled {{
@@ -926,14 +950,15 @@ QLineEdit::placeholder {{
 QSpinBox, QDoubleSpinBox {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 8px;
-    padding: 6px 8px;
+    border-radius: 10px;
+    background-clip: padding;
+    padding: 7px 9px;
     font-size: 13px;
 }}
 
 QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {c.input_focus_border};
-    border-width: 2px;
+    border-width: 1px;
 }}
 
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
@@ -941,7 +966,7 @@ QSpinBox::up-button, QDoubleSpinBox::up-button {{
     subcontrol-position: right;
     width: 20px;
     border: none;
-    border-radius: 0 8px 0 0;
+    border-radius: 0 10px 0 0;
 }}
 
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
@@ -949,14 +974,15 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {{
     subcontrol-position: right;
     width: 20px;
     border: none;
-    border-radius: 0 0 8px 0;
+    border-radius: 0 0 10px 0;
 }}
 
 /* ===== Combo Box - Modern dropdown ===== */
 QComboBox {{
     background-color: {c.input_background};
     border: 1px solid {c.input_border};
-    border-radius: 8px;
+    border-radius: 10px;
+    background-clip: padding;
     padding: 8px 12px;
     min-width: 120px;
     font-size: 13px;
@@ -964,7 +990,7 @@ QComboBox {{
 
 QComboBox:focus {{
     border-color: {c.input_focus_border};
-    border-width: 2px;
+    border-width: 1px;
 }}
 
 QComboBox:hover {{
@@ -974,8 +1000,8 @@ QComboBox:hover {{
 QComboBox::drop-down {{
     border: none;
     width: 28px;
-    border-top-right-radius: 8px;
-    border-bottom-right-radius: 8px;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
 }}
 
 QComboBox::down-arrow {{
@@ -986,7 +1012,8 @@ QComboBox::down-arrow {{
 QComboBox QAbstractItemView {{
     background-color: {c.menu_background};
     border: 1px solid {c.border};
-    border-radius: 8px;
+    border-radius: 10px;
+    background-clip: padding;
     padding: 4px;
     selection-background-color: {c.menu_hover};
     outline: none;
@@ -994,7 +1021,8 @@ QComboBox QAbstractItemView {{
 
 QComboBox QAbstractItemView::item {{
     padding: 8px 12px;
-    border-radius: 6px;
+    border-radius: 8px;
+    background-clip: padding;
     margin: 2px;
 }}
 
@@ -1007,27 +1035,28 @@ QGroupBox {{
     font-weight: 600;
     font-size: 12px;
     border: 1px solid {c.border};
-    border-radius: 10px;
-    margin-top: 16px;
-    padding: 16px 12px 12px 12px;
+    border-radius: 12px;
+    background-clip: padding;
+    margin-top: 14px;
+    padding: 14px 12px 12px 12px;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 4px 12px;
-    color: {c.foreground};
-    background-color: {c.background};
-    border-radius: 4px;
+    padding: 2px 10px;
+    color: {c.foreground_muted};
+    background-color: {c.background_alt};
+    border-radius: 6px;
     left: 12px;
 }}
 
-/* ===== Status Bar - Accent bar ===== */
+/* ===== Status Bar ===== */
 QStatusBar {{
     background-color: {c.statusbar_background};
     color: {c.statusbar_foreground};
-    border: none;
-    min-height: 28px;
+    border-top: 1px solid {c.border};
+    min-height: 30px;
     padding: 0 8px;
 }}
 
@@ -1042,15 +1071,15 @@ QStatusBar QLabel {{
 }}
 
 QStatusBar QProgressBar {{
-    background-color: rgba(255, 255, 255, 0.2);
-    border: none;
+    background-color: {c.background_alt};
+    border: 1px solid {c.border};
     border-radius: 4px;
     max-height: 6px;
     min-height: 6px;
 }}
 
 QStatusBar QProgressBar::chunk {{
-    background-color: rgba(255, 255, 255, 0.9);
+    background-color: {c.primary};
     border-radius: 3px;
 }}
 
@@ -1060,17 +1089,17 @@ QSplitter::handle {{
 }}
 
 QSplitter::handle:horizontal {{
-    width: 2px;
+    width: 1px;
 }}
 
 QSplitter::handle:vertical {{
-    height: 2px;
+    height: 1px;
 }}
 
 /* ===== Progress Bar ===== */
 QProgressBar {{
     background-color: {c.background_alt};
-    border: none;
+    border: 1px solid {c.border};
     border-radius: 4px;
     text-align: center;
     height: 8px;
@@ -1086,7 +1115,8 @@ QToolTip {{
     background-color: {c.menu_background};
     color: {c.foreground};
     border: 1px solid {c.border};
-    border-radius: 4px;
+    border-radius: 8px;
+    background-clip: padding;
     padding: 6px 10px;
 }}
 
@@ -1130,8 +1160,9 @@ QCheckBox {{
 QCheckBox::indicator {{
     width: 18px;
     height: 18px;
-    border: 2px solid {c.border};
-    border-radius: 4px;
+    border: 1px solid {c.border};
+    border-radius: 5px;
+    background-clip: padding;
     background-color: {c.input_background};
 }}
 
@@ -1152,8 +1183,9 @@ QRadioButton {{
 QRadioButton::indicator {{
     width: 18px;
     height: 18px;
-    border: 2px solid {c.border};
+    border: 1px solid {c.border};
     border-radius: 10px;
+    background-clip: padding;
     background-color: {c.input_background};
 }}
 
@@ -1162,23 +1194,25 @@ QRadioButton::indicator:hover {{
 }}
 
 QRadioButton::indicator:checked {{
-    background-color: {c.primary};
+    background-color: {c.input_background};
+    border: 5px solid {c.primary};
     border-color: {c.primary};
 }}
 
 /* ===== Slider ===== */
 QSlider::groove:horizontal {{
-    background-color: {c.background_alt};
-    height: 6px;
-    border-radius: 3px;
+    background-color: {c.divider};
+    height: 4px;
+    border-radius: 2px;
 }}
 
 QSlider::handle:horizontal {{
     background-color: {c.primary};
-    width: 16px;
-    height: 16px;
-    margin: -5px 0;
-    border-radius: 8px;
+    border: 2px solid {c.background};
+    width: 14px;
+    height: 14px;
+    margin: -6px 0;
+    border-radius: 7px;
 }}
 
 QSlider::handle:horizontal:hover {{

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-DEFAULT_BACKEND_TARGET_VERSION = "v0.5.0"
+DEFAULT_BACKEND_TARGET_VERSION = "v0.5.1"
 
 
 def normalize_backend_version(version: str | None) -> str:
@@ -33,7 +33,7 @@ class BackendRuntimeConfig:
     target_version: str = DEFAULT_BACKEND_TARGET_VERSION
     source: str = "pypi"  # pypi | local
     local_path: str = ""
-    auto_sync: bool = False
+    auto_sync: bool = True
 
     @property
     def normalized_target_version(self) -> str:
@@ -61,7 +61,7 @@ class BackendRuntimeConfig:
             target_version=target_version,
             source=str(data.get("source", "pypi") or "pypi"),
             local_path=str(data.get("local_path", "") or ""),
-            auto_sync=bool(data.get("auto_sync", False)),
+            auto_sync=bool(data.get("auto_sync", True)),
         )
 
 

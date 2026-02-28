@@ -378,3 +378,101 @@ def test_transient_uses_signal_names_when_available() -> None:
     assert result.error_message == ""
     assert result.signals["V(OUT)"] == [0.0, 1.0]
     assert result.signals["I(V1)"] == [-0.001, -0.002]
+
+
+def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
+    """Adapter should use SimulationOptions path when advanced controls are requested."""
+    seen: dict[str, Any] = {"run_transient_calls": 0}
+
+    class _StepMode:
+        Fixed = "fixed"
+        Variable = "variable"
+
+    class _Integrator:
+        Trapezoidal = "trap"
+        TRBDF2 = "trbdf2"
+
+    class _SimulationOptions:
+        def __init__(self) -> None:
+            self.tstart = 0.0
+            self.tstop = 0.0
+            self.dt = 0.0
+            self.dt_min = 0.0
+            self.dt_max = 0.0
+            self.newton_options = None
+            self.linear_solver = None
+            self.adaptive_timestep = False
+            self.step_mode = _StepMode.Fixed
+            self.integrator = _Integrator.TRBDF2
+            self.enable_events = True
+            self.max_step_retries = 8
+
+    class _Simulator:
+        def __init__(self, circuit, options) -> None:  # noqa: ANN001
+            _ = circuit
+            seen["options"] = options
+
+        def run_transient(self, x0=None):  # noqa: ANN001
+            _ = x0
+            return SimpleNamespace(
+                time=[0.0, 1e-6],
+                states=[[0.0], [1.25]],
+                success=True,
+                message="",
+            )
+
+    def run_transient(*_args, **_kwargs):  # noqa: ANN001
+        seen["run_transient_calls"] += 1
+        return [], [], False, "legacy path should not be used"
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+        StepMode=_StepMode,
+        Integrator=_Integrator,
+        run_transient=run_transient,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        solver="trapezoidal",
+        step_mode="variable",
+        enable_events=False,
+        max_step_retries=12,
+        t_start=0.0,
+        t_stop=1e-3,
+        t_step=1e-6,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert result.signals["V(OUT)"] == [0.0, 1.25]
+    assert seen["run_transient_calls"] == 0
+    assert seen["options"].adaptive_timestep is True
+    assert seen["options"].step_mode == _StepMode.Variable
+    assert seen["options"].integrator == _Integrator.Trapezoidal
+    assert seen["options"].enable_events is False
+    assert seen["options"].max_step_retries == 12

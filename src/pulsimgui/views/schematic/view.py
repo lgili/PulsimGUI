@@ -758,6 +758,10 @@ class SchematicView(QGraphicsView):
             elif key == Qt.Key.Key_W:
                 self.current_tool = Tool.WIRE
                 return
+            elif key == Qt.Key.Key_H:
+                self.cancel_wire()
+                self.current_tool = Tool.SELECT
+                return
             elif key == Qt.Key.Key_G:
                 # Toggle grid visibility
                 self.grid_toggle_requested.emit()

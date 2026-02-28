@@ -5,12 +5,26 @@
   "modified": "2025-12-07T22:05:05.730452",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.001,
+    "tstop": 0.02,
     "dt": 1e-06,
+    "max_step": 1e-06,
     "tstart": 0.0,
     "abstol": 1e-12,
     "reltol": 0.001,
-    "max_iterations": 50
+    "solver": "auto",
+    "step_mode": "fixed",
+    "output_points": 10000,
+    "enable_events": true,
+    "max_step_retries": 8,
+    "max_iterations": 50,
+    "enable_voltage_limiting": false,
+    "max_voltage_step": 5.0,
+    "dc_strategy": "auto",
+    "gmin_initial": 0.001,
+    "gmin_final": 1e-12,
+    "dc_source_steps": 10,
+    "transient_robust_mode": true,
+    "transient_auto_regularize": true
   },
   "circuits": {
     "main": {
@@ -26,20 +40,21 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 1.0
+            "resistance": 1.0,
+            "enable_thermal_port": false
           },
           "pins": [
             {
               "index": 0,
               "name": "1",
-              "x": -30,
-              "y": 0
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
               "name": "2",
-              "x": 30,
-              "y": 0
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -56,20 +71,21 @@
             "waveform": {
               "type": "dc",
               "value": 5.0
-            }
+            },
+            "enable_thermal_port": false
           },
           "pins": [
             {
               "index": 0,
               "name": "+",
-              "x": 0,
-              "y": -25
+              "x": 0.0,
+              "y": -20.0
             },
             {
               "index": 1,
               "name": "-",
-              "x": 0,
-              "y": 25
+              "x": 0.0,
+              "y": 20.0
             }
           ]
         },
@@ -87,8 +103,8 @@
             {
               "index": 0,
               "name": "gnd",
-              "x": 0,
-              "y": -10
+              "x": 0.0,
+              "y": -20.0
             }
           ]
         }

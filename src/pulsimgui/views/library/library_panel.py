@@ -787,7 +787,7 @@ class ComponentCard(QFrame):
                 QFrame#ComponentCard {{
                     background-color: {self._hover_fill};
                     border: 1px solid {self._hover_border};
-                    border-radius: 8px;
+                    border-radius: 10px;
                 }}
             """)
         else:
@@ -795,7 +795,7 @@ class ComponentCard(QFrame):
                 QFrame#ComponentCard {
                     background-color: transparent;
                     border: 1px solid transparent;
-                    border-radius: 8px;
+                    border-radius: 10px;
                 }
             """)
 
@@ -825,16 +825,16 @@ class ComponentCard(QFrame):
         )
         self._name_color = c.foreground
         self._name_label.setStyleSheet(f"color: {self._name_color};")
-        badge_bg = QColor(c.tree_item_selected)
+        badge_bg = QColor(c.background_alt)
         badge_fg = QColor(c.foreground_muted)
-        badge_alpha = 115 if theme.is_dark else 150
+        badge_alpha = 188 if theme.is_dark else 230
         self._badge_bg = (
             f"rgba({badge_bg.red()}, {badge_bg.green()}, {badge_bg.blue()}, {badge_alpha})"
         )
         self._badge_text = badge_fg.name()
         self._shortcut_label.setStyleSheet(
             f"color: {self._badge_text}; background: {self._badge_bg}; "
-            "border-radius: 6px; padding: 1px 6px;"
+            "border-radius: 7px; padding: 1px 7px;"
         )
         self._update_icon()
         self._update_style()
@@ -1001,12 +1001,12 @@ class CategorySection(QWidget):
             self._toggle_btn.setText("▾" if self._expanded else "▸")
 
     def eventFilter(self, watched, event):
-        if event.type() == QEvent.Type.MouseButtonRelease and watched in {
-            self._header,
-            self._title_label,
-            self._count_label,
-            self._color_bar,
-        }:
+        if event.type() == QEvent.Type.MouseButtonRelease and (
+            watched is self._header
+            or watched is self._title_label
+            or watched is self._count_label
+            or watched is self._color_bar
+        ):
             if event.button() == Qt.MouseButton.LeftButton:
                 self._toggle_expanded()
                 return True
@@ -1035,13 +1035,13 @@ class CategorySection(QWidget):
         c = theme.colors
         self._theme = theme
         self._header.setStyleSheet(
-            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 6px;"
+            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 9px;"
         )
         self._title_label.setStyleSheet(f"color: {c.foreground};")
         if self._count_label is not None:
             self._count_label.setStyleSheet(
                 f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
-                "border-radius: 5px; padding: 0 5px; font-size: 10px;"
+                "border-radius: 6px; padding: 0 6px; font-size: 10px;"
             )
         if self._toggle_btn is not None:
             self._toggle_btn.setStyleSheet(
@@ -1242,19 +1242,19 @@ class LibraryPanel(QWidget):
             QWidget#LibraryTitleRow {{
                 background-color: {c.panel_header};
                 border: 1px solid {c.panel_border};
-                border-radius: 6px;
-                padding: 4px 6px;
+                border-radius: 10px;
+                padding: 5px 8px;
             }}
             QLabel#LibraryPanelTitle {{
                 color: {c.foreground};
                 font-weight: 600;
-                font-size: 12px;
+                font-size: 13px;
             }}
             QLabel#LibrarySummaryLabel {{
                 color: {c.foreground_muted};
                 background-color: {c.tree_item_hover};
-                border-radius: 5px;
-                padding: 1px 7px;
+                border-radius: 7px;
+                padding: 2px 8px;
                 font-size: 10px;
                 font-weight: 500;
             }}
@@ -1264,8 +1264,8 @@ class LibraryPanel(QWidget):
             QLineEdit {{
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
-                border-radius: 6px;
-                padding: 7px 8px;
+                border-radius: 10px;
+                padding: 8px 10px;
                 color: {c.foreground};
             }}
             QLineEdit:focus {{

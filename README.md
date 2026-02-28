@@ -1,125 +1,91 @@
+<div align="center">
+
+<img src="docs/imgs/dashboard_dark.png" alt="PulsimGui — Dark Theme" width="100%" />
+
 # PulsimGui
 
-Cross-platform GUI for the [Pulsim](https://github.com/lgili/pulsimcore) power electronics simulator.
+**Professional power electronics simulation — beautifully simple.**
+
+[![Release](https://img.shields.io/github/v/release/lgili/PulsimGui?label=latest&color=brightgreen)](https://github.com/lgili/PulsimGui/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](https://github.com/lgili/PulsimGui/releases)
+
+[**Download Latest Release**](https://github.com/lgili/PulsimGui/releases/latest) · [Documentation](https://lgili.github.io/PulsimGui) · [Report a Bug](https://github.com/lgili/PulsimGui/issues)
+
+</div>
+
+---
+
+PulsimGui is a **cross-platform graphical interface** for the [Pulsim](https://github.com/lgili/PulsimCore) power electronics simulator. Design switching converter circuits visually, run transient simulations in seconds, and analyse waveforms in an interactive oscilloscope — all without writing a single line of netlist code.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><b>Dark</b></td>
+    <td align="center"><b>Modern Dark</b></td>
+    <td align="center"><b>Light</b></td>
+  </tr>
+  <tr>
+    <td><img src="docs/imgs/dashboard_dark.png" alt="Dark theme" /></td>
+    <td><img src="docs/imgs/dashboard_moderndark.png" alt="Modern Dark theme" /></td>
+    <td><img src="docs/imgs/dashboard_light.png" alt="Light theme" /></td>
+  </tr>
+</table>
+
+## Why PulsimGui?
+
+- ⚡ **Native power electronics focus** — MOSFETs, IGBTs, diodes, buck/boost converters all first-class citizens
+- 🎛️ **Schematic-first workflow** — drag-and-drop components, automatic node merging, instant netlist generation
+- 📊 **Interactive waveform viewer** — multi-channel oscilloscope with cursor measurements and signal labels
+- 🔁 **Unlimited undo/redo** — full command history for every schematic and parameter change
+- 🎨 **Three built-in themes** — Dark, Modern Dark, and Light — switchable from Preferences
+- 🖥️ **Truly cross-platform** — the same app runs on Windows, macOS, and Linux
+
 
 ## Features
 
-- **Schematic Editor**: Drag-and-drop circuit design with component rotation and wire routing
-- **Component Library**: Hierarchical library with power electronics components (MOSFETs, IGBTs, diodes, etc.)
-- **Waveform Viewer**: Interactive oscilloscope-like display with cursors and measurements
-- **Simulation Control**: Run transient, DC, and AC analysis with real-time progress
-- **Project Management**: Save/load projects with auto-save and backup
+| Category | Highlights |
+|----------|------------|
+| **Schematic Editor** | Drag-and-drop, component rotation, smart wire routing, multi-select |
+| **Component Library** | MOSFETs, IGBTs, diodes, passive network elements, PWM generators, probes |
+| **Simulation Engine** | Powered by PulsimCore — BDF1/TRBDF2 solver with adaptive Newton damping |
+| **Waveform Viewer** | Multi-channel display, cursors, measurements, real-time streaming |
+| **Analysis Modes** | Transient, DC operating point, parameter sweep |
+| **Project System** | `.pulsim` files, auto-save, backup, example projects included |
 
-## Prerequisites
+---
 
-Before installing PulsimGui, you need to install some system dependencies required by PySide6 (Qt6).
+## Download
 
-### macOS
+### ⬇️ Pre-built installers (no Python required)
 
-```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+Go to the [**Releases page**](https://github.com/lgili/PulsimGui/releases/latest) and download the installer for your platform:
 
-# Install Python 3.10+ (if not already installed)
-brew install python@3.12
+| Platform | File | Notes |
+|----------|------|-------|
+| **Windows** | `PulsimGui-*-windows-x64.zip` | Extract and run `PulsimGui.exe` |
+| **macOS** | `PulsimGui-*-macos.dmg` | Open DMG, drag to Applications |
+| **Linux** | `PulsimGui-*-linux-x86_64.tar.gz` | Extract and run `./PulsimGui` |
 
-# Install Qt6 dependencies (optional, PySide6 includes Qt binaries)
-brew install qt6
-```
+> **Note:** Standalone builds include all dependencies (Python, Qt, PulsimCore). Nothing else to install.
 
-### Windows
-
-1. **Install Python 3.10+**
-   - Download from [python.org](https://www.python.org/downloads/windows/)
-   - During installation, check "Add Python to PATH"
-   - Check "Install pip"
-
-2. **Install Visual C++ Redistributable** (required for PySide6)
-   - Download and install [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-
-3. **Optional: Install Git**
-   - Download from [git-scm.com](https://git-scm.com/download/win)
-
-### Linux (Ubuntu/Debian)
-
-```bash
-# Update package list
-sudo apt update
-
-# Install Python 3.10+ and pip
-sudo apt install python3 python3-pip python3-venv
-
-# Install Qt6 dependencies required by PySide6
-sudo apt install -y \
-    libgl1-mesa-glx \
-    libegl1-mesa \
-    libxkbcommon0 \
-    libxcb-xinerama0 \
-    libxcb-cursor0 \
-    libxcb-icccm4 \
-    libxcb-image0 \
-    libxcb-keysyms1 \
-    libxcb-randr0 \
-    libxcb-render-util0 \
-    libxcb-shape0 \
-    libxcb-xfixes0 \
-    libxcb-xinput0 \
-    libfontconfig1 \
-    libfreetype6 \
-    libx11-xcb1 \
-    libdbus-1-3
-
-# For OpenGL support (required for some visualizations)
-sudo apt install -y libgl1-mesa-dev
-```
-
-### Linux (Fedora/RHEL/CentOS)
-
-```bash
-# Install Python 3.10+ and pip
-sudo dnf install python3 python3-pip
-
-# Install Qt6 dependencies
-sudo dnf install -y \
-    mesa-libGL \
-    mesa-libEGL \
-    libxkbcommon \
-    xcb-util-wm \
-    xcb-util-image \
-    xcb-util-keysyms \
-    xcb-util-renderutil \
-    xcb-util-cursor \
-    fontconfig \
-    freetype \
-    dbus-libs
-```
-
-### Linux (Arch Linux)
-
-```bash
-# Install Python and pip
-sudo pacman -S python python-pip
-
-# Install Qt6 dependencies
-sudo pacman -S \
-    qt6-base \
-    libxcb \
-    xcb-util-wm \
-    xcb-util-image \
-    xcb-util-keysyms \
-    xcb-util-renderutil \
-    xcb-util-cursor
-```
+---
 
 ## Installation
 
-### Option 1: Install from PyPI (Recommended)
+### Option 1: Pre-built binary (Recommended for testers)
+
+Download the latest installer from the [Releases page](https://github.com/lgili/PulsimGui/releases/latest) — no Python needed.
+
+### Option 2: Install via pip
 
 ```bash
 pip install pulsimgui
 ```
 
-### Option 2: Install from Source
+### Option 3: Install from source
 
 ```bash
 # Clone the repository
@@ -128,24 +94,20 @@ cd PulsimGui
 
 # Create virtual environment
 python3 -m venv .venv
-
-# Activate virtual environment
-# On macOS/Linux:
-source .venv/bin/activate
-# On Windows (Command Prompt):
-.venv\Scripts\activate.bat
-# On Windows (PowerShell):
-.venv\Scripts\Activate.ps1
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # Install in development mode
 pip install -e ".[dev]"
 ```
 
-### Option 3: Install from GitHub directly
+### Option 4: Install directly from GitHub
 
 ```bash
 pip install git+https://github.com/lgili/PulsimGui.git
 ```
+
+---
+
 
 ## Running the Application
 
@@ -216,18 +178,9 @@ export DISPLAY=:0  # If X server is available
 If you get DLL errors on Windows, install the Visual C++ Redistributable:
 - Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
 
-## Python Dependencies
+## Dependencies
 
-PulsimGui requires:
-
-| Package | Version | Description |
-|---------|---------|-------------|
-| Python | >= 3.10 | Programming language |
-| PySide6 | >= 6.5.0 | Qt6 bindings for Python |
-| pyqtgraph | >= 0.13.0 | Scientific graphics library |
-| numpy | >= 1.24.0 | Numerical computing |
-| qtawesome | >= 1.3.0 | Icon fonts for Qt |
-| pulsim | >= 0.4.0 | Power electronics simulation engine |
+All Python dependencies are declared in [`pyproject.toml`](pyproject.toml) and installed automatically by `pip`. The key runtime requirements are **Python ≥ 3.10**, **PySide6**, **pyqtgraph**, **numpy**, **qtawesome**, and **pulsim**.
 
 ## Development
 
@@ -269,10 +222,24 @@ PulsimGui/
 └── openspec/            # Specifications and requirements
 ```
 
+## Contributing and Bug Reports
+
+This is an early-access beta. Your feedback is invaluable! If something breaks:
+
+1. Open an [issue on GitHub](https://github.com/lgili/PulsimGui/issues/new) with:
+   - PulsimGui version (`Help → About`)
+   - OS and Python version
+   - Steps to reproduce + error message or screenshot
+2. Attach your `.pulsim` project file when relevant
+
+---
+
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Luiz Gili (luizcarlosgili@gmail.com)
+**Luiz Gili** — [luizcarlosgili@gmail.com](mailto:luizcarlosgili@gmail.com)
+
+[GitHub](https://github.com/lgili) · [Issues](https://github.com/lgili/PulsimGui/issues) · [Releases](https://github.com/lgili/PulsimGui/releases)

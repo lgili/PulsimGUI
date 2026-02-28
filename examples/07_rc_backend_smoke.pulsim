@@ -5,12 +5,26 @@
   "modified": "2026-02-21T00:00:00",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.005,
+    "tstop": 0.02,
     "dt": 1e-06,
+    "max_step": 1e-06,
     "tstart": 0.0,
     "abstol": 1e-12,
     "reltol": 0.001,
-    "max_iterations": 50
+    "solver": "auto",
+    "step_mode": "fixed",
+    "output_points": 10000,
+    "enable_events": true,
+    "max_step_retries": 8,
+    "max_iterations": 50,
+    "enable_voltage_limiting": false,
+    "max_voltage_step": 5.0,
+    "dc_strategy": "auto",
+    "gmin_initial": 0.001,
+    "gmin_final": 1e-12,
+    "dc_source_steps": 10,
+    "transient_robust_mode": true,
+    "transient_auto_regularize": true
   },
   "circuits": {
     "main": {
@@ -42,14 +56,14 @@
             {
               "index": 0,
               "name": "+",
-              "x": 0,
-              "y": -25
+              "x": 0.0,
+              "y": -20.0
             },
             {
               "index": 1,
               "name": "-",
-              "x": 0,
-              "y": 25
+              "x": 0.0,
+              "y": 20.0
             }
           ]
         },
@@ -70,14 +84,14 @@
             {
               "index": 0,
               "name": "1",
-              "x": -30,
-              "y": 0
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
               "name": "2",
-              "x": 30,
-              "y": 0
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -99,14 +113,14 @@
             {
               "index": 0,
               "name": "+",
-              "x": -20,
-              "y": 0
+              "x": -20.0,
+              "y": 0.0
             },
             {
               "index": 1,
               "name": "-",
-              "x": 20,
-              "y": 0
+              "x": 20.0,
+              "y": 0.0
             }
           ]
         },
@@ -124,8 +138,8 @@
             {
               "index": 0,
               "name": "gnd",
-              "x": 0,
-              "y": -10
+              "x": 0.0,
+              "y": -20.0
             }
           ]
         },
@@ -155,14 +169,14 @@
             {
               "index": 0,
               "name": "CH1",
-              "x": -40,
-              "y": -9.0
+              "x": -40.0,
+              "y": -20.0
             },
             {
               "index": 1,
               "name": "CH2",
-              "x": -40,
-              "y": 9.0
+              "x": -40.0,
+              "y": 20.0
             }
           ]
         }
@@ -173,14 +187,14 @@
           "segments": [
             {
               "x1": 100.0,
-              "y1": 175.0,
+              "y1": 180.0,
               "x2": 190.0,
               "y2": 175.0
             },
             {
               "x1": 190.0,
               "y1": 175.0,
-              "x2": 190.0,
+              "x2": 180.0,
               "y2": 180.0
             }
           ],
@@ -200,7 +214,7 @@
           "id": "4ff9d51f-6e56-431c-a5ef-257728c18466",
           "segments": [
             {
-              "x1": 250.0,
+              "x1": 260.0,
               "y1": 180.0,
               "x2": 300.0,
               "y2": 180.0
@@ -223,9 +237,9 @@
           "segments": [
             {
               "x1": 100.0,
-              "y1": 225.0,
+              "y1": 220.0,
               "x2": 100.0,
-              "y2": 310.0
+              "y2": 300.0
             }
           ],
           "start_connection": {
@@ -259,7 +273,7 @@
               "x1": 100.0,
               "y1": 320.0,
               "x2": 100.0,
-              "y2": 310.0
+              "y2": 300.0
             }
           ],
           "start_connection": {
@@ -287,7 +301,7 @@
               "x1": 400.0,
               "y1": 180.0,
               "x2": 400.0,
-              "y2": 189.0
+              "y2": 200.0
             }
           ],
           "start_connection": {

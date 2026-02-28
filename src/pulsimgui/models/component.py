@@ -338,6 +338,19 @@ CONNECTION_DOMAIN_CIRCUIT = "circuit"
 CONNECTION_DOMAIN_SIGNAL = "signal"
 CONNECTION_DOMAIN_THERMAL = "thermal"
 
+# Map switching-device component types to their gate/base/control pin indices.
+# These pins accept signal-domain connections (e.g. PWM output).
+_CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
+    ComponentType.MOSFET_N:  {1},   # G
+    ComponentType.MOSFET_P:  {1},   # G
+    ComponentType.IGBT:      {1},   # G
+    ComponentType.BJT_NPN:   {1},   # B
+    ComponentType.BJT_PNP:   {1},   # B
+    ComponentType.THYRISTOR: {2},   # G
+    ComponentType.TRIAC:     {2},   # G
+    ComponentType.SWITCH:    {2},   # CTL
+}
+
 SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.ELECTRICAL_SCOPE,
     ComponentType.VOLTAGE_PROBE,
@@ -406,6 +419,10 @@ def pin_connection_domain(component: "Component", pin_index: int) -> str:
     if is_electrical_probe_output_pin(component, pin_index):
         return CONNECTION_DOMAIN_SIGNAL
 
+    # Gate / base / control pins of switching devices accept signal-domain drives.
+    if pin_index in _CONTROL_PIN_INDICES.get(component.type, set()):
+        return CONNECTION_DOMAIN_SIGNAL
+
     return component_connection_domain(component.type)
 
 
@@ -436,7 +453,7 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 10)],
 
     # Switching
-    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
+    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0), Pin(2, "CTL", 0, -20)],
 
     # Transformer
     ComponentType.TRANSFORMER: [
@@ -652,7 +669,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "frequency": 10000.0,
         "duty_cycle": 0.5,
         "carrier": "sawtooth",
-        "amplitude": 1.0,
+        "amplitude": 20.0,
     },
     ComponentType.GAIN: {
         "gain": 1.0,
@@ -774,6 +791,16 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "resistance": 100.0,
         "capacitance": 100e-9,
     },
+}
+
+# Parameters that are intentionally hidden from the default properties UI.
+# They keep their default values unless the user edits the .pulsim file directly.
+# RATIONALE - PWM amplitude: all supported switching devices (MOSFET, IGBT,
+# VoltageControlledSwitch) operate correctly with the 20 V default. Exposing
+# the amplitude invites users to lower it below the device threshold, breaking
+# simulation convergence without obvious explanation.
+HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
+    ComponentType.PWM_GENERATOR: frozenset({"amplitude"}),
 }
 
 

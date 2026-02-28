@@ -2028,14 +2028,38 @@ class WaveformViewer(QWidget):
         if not isinstance(self._streaming_time, list):
             self._streaming_time = []
 
+        current_length = len(self._streaming_time)
+        # Keep existing series length-aligned with time before appending.
+        for series in self._streaming_signals.values():
+            missing = current_length - len(series)
+            if missing > 0:
+                series.extend([np.nan] * missing)
+
         self._streaming_time.append(time)
+        for series in self._streaming_signals.values():
+            series.append(np.nan)
+
         for name, value in signals.items():
             if not name.startswith("_"):
+                numeric_value = self._coerce_stream_value(value)
+                if numeric_value is None:
+                    continue
                 if name not in self._streaming_signals:
-                    self._streaming_signals[name] = []
-                self._streaming_signals[name].append(value)
+                    self._streaming_signals[name] = [np.nan] * current_length
+                    self._streaming_signals[name].append(numeric_value)
+                else:
+                    self._streaming_signals[name][-1] = numeric_value
 
         self._pending_updates = True
+
+    @staticmethod
+    def _coerce_stream_value(value: object) -> float | None:
+        """Convert supported scalar-like values to float for plotting."""
+        if np.isscalar(value):
+            return float(value)
+        if isinstance(value, np.ndarray) and value.size == 1:
+            return float(value.reshape(-1)[0])
+        return None
 
     def _start_animated_display(
         self,
@@ -2161,18 +2185,26 @@ class WaveformViewer(QWidget):
 
         # Update or create traces for each signal
         for name, values in self._streaming_signals.items():
-            values_array = np.asarray(values, dtype=np.float64)
+            values_array = np.asarray(values, dtype=np.float64).reshape(-1)
+            if values_array.size == 0:
+                continue
+
+            if values_array.size < time_array.size:
+                aligned_values = np.full(time_array.size, np.nan, dtype=np.float64)
+                aligned_values[-values_array.size:] = values_array
+            else:
+                aligned_values = values_array[: time_array.size]
 
             if name in self._streaming_traces:
                 # Fast update - just set new data
-                self._streaming_traces[name].setData(time_array, values_array)
+                self._streaming_traces[name].setData(time_array, aligned_values)
             else:
                 # Create new trace (only happens once per signal)
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
                 pen = self._resolve_trace_pen(name, color)
                 trace = self._plot_widget.plot(
-                    time_array, values_array, pen=pen, name=name,
+                    time_array, aligned_values, pen=pen, name=name,
                     skipFiniteCheck=True,
                 )
                 self._configure_trace_performance(trace, len(time_array))

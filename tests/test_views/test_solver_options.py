@@ -25,6 +25,7 @@ class TestUIValueChanges:
 
         # Check solver settings
         assert dialog._solver_combo.currentIndex() == 0  # auto
+        assert dialog._step_mode_combo.currentData() == "fixed"
         assert dialog._max_iterations_spin.value() == 50
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 5.0
@@ -43,6 +44,8 @@ class TestUIValueChanges:
 
         # Check output
         assert dialog._output_points_spin.value() == 10000
+        assert dialog._enable_events_check.isChecked()
+        assert dialog._max_step_retries_spin.value() == 8
 
     def test_dialog_loads_custom_settings(self, qapp) -> None:
         """Test that dialog loads custom settings correctly."""
@@ -50,7 +53,8 @@ class TestUIValueChanges:
             t_start=1e-6,
             t_stop=5e-3,
             t_step=5e-6,
-            solver="rk4",
+            solver="trapezoidal",
+            step_mode="variable",
             max_newton_iterations=100,
             enable_voltage_limiting=False,
             max_voltage_step=10.0,
@@ -63,6 +67,8 @@ class TestUIValueChanges:
             rel_tol=1e-5,
             abs_tol=1e-9,
             output_points=5000,
+            enable_events=False,
+            max_step_retries=17,
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -72,7 +78,8 @@ class TestUIValueChanges:
         assert dialog._t_step_edit.value == 5e-6
 
         # Check solver settings
-        assert dialog._solver_combo.currentIndex() == 1  # rk4
+        assert dialog._solver_combo.currentData() == "trapezoidal"
+        assert dialog._step_mode_combo.currentData() == "variable"
         assert dialog._max_iterations_spin.value() == 100
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 10.0
@@ -93,6 +100,8 @@ class TestUIValueChanges:
 
         # Check output
         assert dialog._output_points_spin.value() == 5000
+        assert not dialog._enable_events_check.isChecked()
+        assert dialog._max_step_retries_spin.value() == 17
 
     def test_dialog_saves_settings_on_accept(self, qapp) -> None:
         """Test that dialog saves UI values back to settings."""
@@ -103,7 +112,8 @@ class TestUIValueChanges:
         dialog._t_start_edit.value = 0.0
         dialog._t_stop_edit.value = 10e-3
         dialog._t_step_edit.value = 10e-6
-        dialog._solver_combo.setCurrentIndex(2)  # rk45
+        dialog._solver_combo.setCurrentIndex(3)  # bdf2
+        dialog._step_mode_combo.setCurrentIndex(1)  # variable
         dialog._max_iterations_spin.setValue(75)
         dialog._voltage_limiting_check.setChecked(False)
         dialog._max_voltage_step_spin.setValue(8.0)
@@ -116,6 +126,8 @@ class TestUIValueChanges:
         dialog._rel_tol_spin.setValue(1e-6)
         dialog._abs_tol_spin.setValue(1e-8)
         dialog._output_points_spin.setValue(20000)
+        dialog._enable_events_check.setChecked(False)
+        dialog._max_step_retries_spin.setValue(12)
 
         # Simulate accept
         dialog._on_accept()
@@ -123,7 +135,8 @@ class TestUIValueChanges:
         # Check settings were updated
         assert settings.t_stop == pytest.approx(10e-3)
         assert settings.t_step == pytest.approx(10e-6)
-        assert settings.solver == "rk45"
+        assert settings.solver == "bdf2"
+        assert settings.step_mode == "variable"
         assert settings.max_newton_iterations == 75
         assert settings.enable_voltage_limiting is False
         assert settings.max_voltage_step == 8.0
@@ -136,6 +149,25 @@ class TestUIValueChanges:
         assert settings.rel_tol == 1e-6
         assert settings.abs_tol == 1e-8
         assert settings.output_points == 20000
+        assert settings.enable_events is False
+        assert settings.max_step_retries == 12
+
+    def test_dialog_apply_emits_signal_and_keeps_dialog_open(self, qapp) -> None:
+        """Apply should store settings and emit settings_applied without closing dialog."""
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+        applied = []
+        dialog.settings_applied.connect(lambda: applied.append(True))
+
+        dialog._t_stop_edit.value = 2e-3
+        dialog._solver_combo.setCurrentIndex(1)  # trapezoidal
+
+        dialog._on_apply()
+
+        assert settings.t_stop == pytest.approx(2e-3)
+        assert settings.solver == "trapezoidal"
+        assert len(applied) == 1
+        assert dialog.result() == 0
 
     def test_accept_commits_pending_si_text_without_focus_change(self, qapp) -> None:
         """OK should commit edited SI text even if the field still has focus."""
@@ -153,11 +185,20 @@ class TestUIValueChanges:
 
     def test_all_solver_types_load_correctly(self, qapp) -> None:
         """Test that all solver types are loaded correctly."""
-        solver_map = {"auto": 0, "rk4": 1, "rk45": 2, "bdf": 3}
+        solver_map = {
+            "auto": "auto",
+            "trapezoidal": "trapezoidal",
+            "bdf1": "bdf1",
+            "bdf2": "bdf2",
+            "trbdf2": "trbdf2",
+            "rk4": "trapezoidal",   # legacy alias
+            "rk45": "trapezoidal",  # legacy alias
+            "bdf": "bdf2",          # legacy alias
+        }
         for solver_name, expected_index in solver_map.items():
             settings = SimulationSettings(solver=solver_name)
             dialog = SimulationSettingsDialog(settings)
-            assert dialog._solver_combo.currentIndex() == expected_index
+            assert dialog._solver_combo.currentData() == expected_index
 
     def test_all_dc_strategies_load_correctly(self, qapp) -> None:
         """Test that all DC strategies are loaded correctly."""
@@ -240,20 +281,20 @@ class TestPersistence:
         """Test that settings survive dialog close and reopen."""
         # Create initial settings
         settings = SimulationSettings(
-            solver="bdf",
+            solver="bdf2",
             max_newton_iterations=80,
             dc_strategy="pseudo",
         )
 
         # Open dialog, modify, and accept
         dialog1 = SimulationSettingsDialog(settings)
-        dialog1._solver_combo.setCurrentIndex(1)  # rk4
+        dialog1._solver_combo.setCurrentIndex(1)  # trapezoidal
         dialog1._max_iterations_spin.setValue(120)
         dialog1._dc_strategy_combo.setCurrentIndex(1)  # direct
         dialog1._on_accept()
 
         # Check settings updated
-        assert settings.solver == "rk4"
+        assert settings.solver == "trapezoidal"
         assert settings.max_newton_iterations == 120
         assert settings.dc_strategy == "direct"
 
@@ -261,7 +302,7 @@ class TestPersistence:
         dialog2 = SimulationSettingsDialog(settings)
 
         # Values should persist
-        assert dialog2._solver_combo.currentIndex() == 1  # rk4
+        assert dialog2._solver_combo.currentData() == "trapezoidal"
         assert dialog2._max_iterations_spin.value() == 120
         assert dialog2._dc_strategy_combo.currentIndex() == 1  # direct
 

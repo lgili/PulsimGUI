@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.project import Project
 from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.services.circuit_converter import CircuitConverter
 from pulsimgui.utils.net_utils import build_node_map
@@ -158,6 +160,33 @@ def test_converter_ignores_scope_components_during_build() -> None:
 
     assert converted.nodes == {"OUT": 1}
     assert converted.devices == [("R1", 1, 0, 1000.0)]
+
+
+def test_converter_does_not_predeclare_auxiliary_component_pins() -> None:
+    """Auxiliary pins (e.g., thermal ports) must not become electrical nodes."""
+
+    fake_module = SimpleNamespace(Circuit=_CircuitNoAddNode)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 1000.0, "enable_thermal_port": True},
+                # Pin 2 is a thermal auxiliary pin in GUI projects.
+                "pin_nodes": ["1", "0", "2"],
+            }
+        ],
+        "node_map": {"r1": ["1", "0", "2"]},
+        "node_aliases": {"1": "OUT", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert converted.devices == [("R1", 1, 0, 1000.0)]
+    assert converted.nodes == {"OUT": 1}
 
 
 def test_converter_uses_virtual_component_for_unmapped_types() -> None:
@@ -374,3 +403,30 @@ def test_build_node_map_does_not_merge_cross_domain_shared_points() -> None:
     resistor_node = node_map[(str(resistor.id), 1)]
     controller_node = node_map[(str(controller.id), 0)]
     assert resistor_node != controller_node
+
+
+def test_buck_example_keeps_vin_sw_and_vout_as_distinct_nets() -> None:
+    """Buck example should preserve distinct input, switch and output electrical nets."""
+
+    project_path = Path(__file__).resolve().parents[2] / "examples" / "buck_converter.pulsim"
+    project = Project.load(project_path)
+    circuit = project.get_active_circuit()
+    node_map = build_node_map(circuit)
+
+    components_by_name = {comp.name: comp for comp in circuit.components.values()}
+    vin = components_by_name["Vin"]
+    m1 = components_by_name["M1"]
+    l1 = components_by_name["L1"]
+    xsw = components_by_name["Xsw"]
+    xout = components_by_name["Xout"]
+
+    vin_node = node_map[(str(vin.id), 0)]
+    switch_node = node_map[(str(m1.id), 2)]
+    vout_node = node_map[(str(l1.id), 1)]
+
+    assert node_map[(str(m1.id), 0)] == vin_node
+    assert node_map[(str(xsw.id), 0)] == switch_node
+    assert node_map[(str(xout.id), 0)] == vout_node
+    assert vin_node != switch_node
+    assert switch_node != vout_node
+    assert vin_node != vout_node

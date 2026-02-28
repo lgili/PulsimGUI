@@ -1,10 +1,11 @@
 """Main application window."""
 
+import math
 from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
     QDockWidget,
@@ -16,7 +17,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QApplication,
-    QMenu,
 )
 
 from pulsimgui.commands.base import CommandStack
@@ -50,6 +50,8 @@ from pulsimgui.services.simulation_service import (
     SimulationService,
     SimulationState,
     ParameterSweepResult,
+    normalize_integration_method,
+    normalize_step_mode,
 )
 from pulsimgui.services.thermal_service import ThermalAnalysisService
 from pulsimgui.services.theme_service import ThemeService, Theme
@@ -74,7 +76,7 @@ from pulsimgui.services.template_service import TemplateService
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
-from pulsimgui.views.schematic import SchematicScene, SchematicView
+from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
@@ -285,6 +287,22 @@ class MainWindow(QMainWindow):
         self.action_zoom_fit.setToolTip("Zoom to Fit (Ctrl+0)")
         self.action_zoom_fit.triggered.connect(self._on_zoom_fit)
 
+        self.action_wire_tool = QAction("&Wire Tool", self)
+        self.action_wire_tool.setCheckable(True)
+        self.action_wire_tool.setToolTip("Wire Tool (W)")
+        self.action_wire_tool.triggered.connect(self._on_wire_tool_selected)
+
+        self.action_hand_tool = QAction("&Hand Tool", self)
+        self.action_hand_tool.setCheckable(True)
+        self.action_hand_tool.setToolTip("Hand Tool (H)")
+        self.action_hand_tool.triggered.connect(self._on_hand_tool_selected)
+
+        self._toolbar_tool_group = QActionGroup(self)
+        self._toolbar_tool_group.setExclusive(True)
+        self._toolbar_tool_group.addAction(self.action_wire_tool)
+        self._toolbar_tool_group.addAction(self.action_hand_tool)
+        self.action_hand_tool.setChecked(True)
+
         self.action_toggle_grid = QAction("Show &Grid", self)
         self.action_toggle_grid.setCheckable(True)
         self.action_toggle_grid.setChecked(self._settings.get_show_grid())
@@ -402,7 +420,6 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
-        edit_menu.addAction(self.action_preferences)
         edit_menu.addAction(self.action_keyboard_shortcuts)
 
         # View menu
@@ -416,6 +433,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
+        self.panels_menu.setEnabled(False)
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("&Theme")
         theme_menu.addAction(self.action_theme_light)
@@ -442,7 +460,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
-        from PySide6.QtWidgets import QToolButton, QSizePolicy
+        from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QSizePolicy
 
         self._toolbar = QToolBar("Main Toolbar")
         self._toolbar.setObjectName("MainToolbar")
@@ -468,38 +486,34 @@ class MainWindow(QMainWindow):
         self._toolbar.addAction(self.action_zoom_fit)
         self._toolbar.addSeparator()
 
-        # Simulation actions (high-frequency workflow group)
-        self._toolbar.addAction(self.action_run)
-        self._toolbar.addAction(self.action_pause)
-        self._toolbar.addAction(self.action_stop)
-        self._toolbar.addAction(self.action_dc_op)
-        self._toolbar.addAction(self.action_ac)
+        # Left tool selectors
+        self._toolbar.addAction(self.action_wire_tool)
+        self._toolbar.addAction(self.action_hand_tool)
 
         # Add flexible spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toolbar.addWidget(spacer)
 
-        # Overflow menu button for additional actions
-        self._overflow_btn = QToolButton()
-        self._overflow_btn.setIcon(IconService.get_icon("menu", self._theme_service.current_theme.colors.icon_default))
-        self._overflow_btn.setToolTip("More actions")
-        self._overflow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._overflow_btn.setAutoRaise(True)
-
-        overflow_menu = QMenu(self._overflow_btn)
-        overflow_menu.addAction(self.action_toggle_grid)
-        overflow_menu.addAction(self.action_toggle_dc_overlay)
-        overflow_menu.addAction(self.action_toggle_minimap)
-        overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_parameter_sweep)
-        overflow_menu.addAction(self.action_thermal_viewer)
-        overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_sim_settings)
-        overflow_menu.addAction(self.action_preferences)
-
-        self._overflow_btn.setMenu(overflow_menu)
-        self._toolbar.addWidget(self._overflow_btn)
+        # Simulation actions grouped on the right for faster recognition
+        self._simulation_toolbar_group = QFrame(self._toolbar)
+        self._simulation_toolbar_group.setObjectName("SimulationToolbarGroup")
+        sim_layout = QHBoxLayout(self._simulation_toolbar_group)
+        sim_layout.setContentsMargins(8, 4, 8, 4)
+        sim_layout.setSpacing(2)
+        for action in (
+            self.action_run,
+            self.action_pause,
+            self.action_stop,
+            self.action_dc_op,
+            self.action_ac,
+        ):
+            button = QToolButton(self._simulation_toolbar_group)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setAutoRaise(True)
+            button.setDefaultAction(action)
+            sim_layout.addWidget(button)
+        self._toolbar.addWidget(self._simulation_toolbar_group)
 
     def _create_status_bar(self) -> None:
         """Create the status bar with icons."""
@@ -537,6 +551,8 @@ class MainWindow(QMainWindow):
         self._sim_progress = QProgressBar()
         self._sim_progress.setMinimumWidth(150)
         self._sim_progress.setMaximumWidth(200)
+        self._sim_progress.setRange(0, 100)
+        self._sim_progress.setValue(0)
         self._sim_progress.setVisible(False)
         status_bar.addPermanentWidget(self._sim_progress)
 
@@ -626,6 +642,8 @@ class MainWindow(QMainWindow):
         )
         self._simulation_service.error.connect(self._on_simulation_error)
         self._simulation_service.backend_changed.connect(self._on_backend_changed)
+        self._schematic_view.tool_changed.connect(self._sync_toolbar_tool_actions)
+        self._sync_toolbar_tool_actions(self._schematic_view.current_tool)
 
         # Hierarchy service signals
         self._hierarchy_service.hierarchy_changed.connect(self._on_hierarchy_changed)
@@ -740,6 +758,35 @@ class MainWindow(QMainWindow):
 
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
+        self._update_toolbar_group_styles()
+
+    def _update_toolbar_group_styles(self) -> None:
+        """Apply dedicated visual styling for grouped toolbar controls."""
+        if not hasattr(self, "_simulation_toolbar_group"):
+            return
+        colors = self._theme_service.current_theme.colors
+        self._simulation_toolbar_group.setStyleSheet(
+            f"""
+            QFrame#SimulationToolbarGroup {{
+                border: 1px solid {colors.primary}66;
+                border-radius: 11px;
+                background-color: {colors.primary}16;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton {{
+                border-radius: 8px;
+                padding: 6px 8px;
+                margin: 1px;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton:hover {{
+                background-color: {colors.primary}30;
+                border: 1px solid {colors.primary}55;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton:checked {{
+                background-color: {colors.primary}44;
+                border: 1px solid {colors.primary}88;
+            }}
+            """
+        )
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -756,16 +803,34 @@ class MainWindow(QMainWindow):
             self.action_zoom_in: "zoom-in",
             self.action_zoom_out: "zoom-out",
             self.action_zoom_fit: "maximize",
-            self.action_run: "play",
-            self.action_pause: "pause",
-            self.action_stop: "square",
+            self.action_wire_tool: "wire",
+            self.action_hand_tool: "hand",
             self.action_dc_op: "activity",
             self.action_ac: "zap",
         }
 
         for action, icon_name in icon_map.items():
             action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
-        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 16))
+        self.action_run.setIcon(IconService.get_icon("play", theme.colors.sim_running, 16))
+        self.action_pause.setIcon(IconService.get_icon("pause", theme.colors.sim_paused, 16))
+        self.action_stop.setIcon(IconService.get_icon("square", theme.colors.sim_error, 16))
+
+    def _sync_toolbar_tool_actions(self, tool: Tool) -> None:
+        """Reflect current schematic tool state in toolbar actions."""
+        is_wire_mode = tool == Tool.WIRE
+        self.action_wire_tool.setChecked(is_wire_mode)
+        self.action_hand_tool.setChecked(not is_wire_mode)
+
+    def _on_wire_tool_selected(self, checked: bool = False) -> None:
+        """Activate wire drawing mode from toolbar."""
+        if checked:
+            self._schematic_view.current_tool = Tool.WIRE
+
+    def _on_hand_tool_selected(self, checked: bool = False) -> None:
+        """Activate hand/select mode and cancel any pending wire operation."""
+        if checked:
+            self._schematic_view.cancel_wire()
+            self._schematic_view.current_tool = Tool.SELECT
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -1052,10 +1117,25 @@ class MainWindow(QMainWindow):
         runtime_settings.t_start = float(project_settings.tstart)
         runtime_settings.t_stop = float(project_settings.tstop)
         runtime_settings.t_step = float(project_settings.dt)
-        runtime_settings.max_step = float(project_settings.dt)
+        runtime_settings.max_step = float(getattr(project_settings, "max_step", project_settings.dt))
         # Extremely small abs_tol values from legacy files can destabilize switching solves.
         runtime_settings.abs_tol = max(float(project_settings.abstol), 1e-10)
         runtime_settings.rel_tol = float(project_settings.reltol)
+        runtime_settings.solver = normalize_integration_method(
+            getattr(project_settings, "solver", runtime_settings.solver)
+        )
+        runtime_settings.step_mode = normalize_step_mode(
+            getattr(project_settings, "step_mode", runtime_settings.step_mode)
+        )
+        runtime_settings.output_points = int(
+            getattr(project_settings, "output_points", runtime_settings.output_points)
+        )
+        runtime_settings.enable_events = bool(
+            getattr(project_settings, "enable_events", runtime_settings.enable_events)
+        )
+        runtime_settings.max_step_retries = int(
+            getattr(project_settings, "max_step_retries", runtime_settings.max_step_retries)
+        )
         runtime_settings.max_newton_iterations = int(project_settings.max_iterations)
         runtime_settings.enable_voltage_limiting = bool(project_settings.enable_voltage_limiting)
         runtime_settings.max_voltage_step = float(project_settings.max_voltage_step)
@@ -1073,8 +1153,14 @@ class MainWindow(QMainWindow):
         project_settings.tstart = float(runtime_settings.t_start)
         project_settings.tstop = float(runtime_settings.t_stop)
         project_settings.dt = float(runtime_settings.t_step)
+        project_settings.max_step = float(runtime_settings.max_step)
         project_settings.abstol = float(runtime_settings.abs_tol)
         project_settings.reltol = float(runtime_settings.rel_tol)
+        project_settings.solver = normalize_integration_method(runtime_settings.solver)
+        project_settings.step_mode = normalize_step_mode(runtime_settings.step_mode)
+        project_settings.output_points = int(runtime_settings.output_points)
+        project_settings.enable_events = bool(runtime_settings.enable_events)
+        project_settings.max_step_retries = int(runtime_settings.max_step_retries)
         project_settings.max_iterations = int(runtime_settings.max_newton_iterations)
         project_settings.enable_voltage_limiting = bool(runtime_settings.enable_voltage_limiting)
         project_settings.max_voltage_step = float(runtime_settings.max_voltage_step)
@@ -1119,8 +1205,8 @@ class MainWindow(QMainWindow):
                     self._project = Project(name=circuit.name)
                     self._latest_electrical_result = None
                     self._latest_thermal_waveform = None
-                    self._project._circuits = {circuit.id: circuit}
-                    self._project._active_circuit_id = circuit.id
+                    self._project.circuits = {"main": circuit}
+                    self._project.active_circuit = "main"
                     self._command_stack.clear()
                     self._load_project_to_scene()
                     self._project.mark_dirty()
@@ -2033,18 +2119,26 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
+        self._apply_project_simulation_settings_to_service()
         dialog = SimulationSettingsDialog(
             self._simulation_service.settings,
             backend_info=self._simulation_service.backend_info,
             backend_warning=self._simulation_service.backend_issue_message,
+            theme=self._theme_service.current_theme,
             parent=self,
         )
-        if dialog.exec():
+
+        def apply_dialog_settings() -> None:
             self._simulation_service.settings = dialog.get_settings()
             self._apply_simulation_service_settings_to_project()
             self._project.mark_dirty()
             self._update_title()
             self._update_modified_indicator()
+
+        dialog.settings_applied.connect(apply_dialog_settings)
+
+        if dialog.exec():
+            apply_dialog_settings()
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
@@ -2124,8 +2218,21 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_progress(self, value: float, message: str) -> None:
         """Handle simulation progress update."""
-        self._sim_progress.setValue(int(value))
-        self._sim_status_widget.setStatus(message, is_running=True)
+        if not math.isfinite(value):
+            return
+
+        if value < 0:
+            if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 0:
+                self._sim_progress.setRange(0, 0)
+        else:
+            if self._sim_progress.minimum() == 0 and self._sim_progress.maximum() == 0:
+                self._sim_progress.setRange(0, 100)
+            clamped = max(0, min(100, int(value)))
+            if clamped != self._sim_progress.value():
+                self._sim_progress.setValue(clamped)
+
+        if message and message != self._sim_status_widget.text():
+            self._sim_status_widget.setStatus(message, is_running=True)
 
     def _on_simulation_data_point(self, time: float, signals: dict) -> None:
         """Handle streaming data point during simulation."""

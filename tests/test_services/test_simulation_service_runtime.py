@@ -97,7 +97,7 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
 
     assert fake_settings.sim_settings is not None
     assert fake_settings.sim_settings["t_stop"] == 5e-3
-    assert fake_settings.sim_settings["solver"] == "rk45"
+    assert fake_settings.sim_settings["solver"] == "trapezoidal"
     assert fake_settings.sim_settings["output_points"] == 5000
 
     assert fake_settings.solver_settings is not None
