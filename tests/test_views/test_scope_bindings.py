@@ -96,8 +96,8 @@ def test_electrical_scope_resolves_voltage_probe_output_signal() -> None:
     assert bindings[0].signals[0].signal_key == format_signal_key("VP", "VP1")
 
 
-def test_electrical_scope_accepts_legacy_voltage_probe_pin_connection() -> None:
-    """Backward compatibility: old projects may connect scope directly to + or - pin."""
+def test_electrical_scope_rejects_legacy_voltage_probe_pin_connection() -> None:
+    """Legacy VP + / - to scope wiring should be ignored due domain mismatch."""
     circuit = Circuit(name="electrical-scope-voltage-probe-legacy")
     probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1", x=120.0, y=100.0)
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
@@ -107,8 +107,7 @@ def test_electrical_scope_accepts_legacy_voltage_probe_pin_connection() -> None:
 
     bindings = build_scope_channel_bindings(scope, circuit)
     assert bindings
-    assert bindings[0].signals
-    assert bindings[0].signals[0].signal_key == format_signal_key("VP", "VP1")
+    assert bindings[0].signals == []
 
 
 def test_electrical_scope_ignores_direct_non_probe_connections() -> None:
@@ -141,8 +140,8 @@ def test_electrical_scope_resolves_current_probe_output_signal() -> None:
     assert bindings[0].signals[0].signal_key == format_signal_key("IP", "IP1")
 
 
-def test_electrical_scope_accepts_legacy_current_probe_out_connection() -> None:
-    """Backward compatibility: old projects may connect scope directly to current probe OUT."""
+def test_electrical_scope_rejects_legacy_current_probe_out_connection() -> None:
+    """Legacy IP OUT to scope wiring should be ignored due domain mismatch."""
     circuit = Circuit(name="electrical-scope-current-probe-legacy")
     probe = Component(type=ComponentType.CURRENT_PROBE, name="IP1", x=120.0, y=100.0)
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
@@ -152,5 +151,4 @@ def test_electrical_scope_accepts_legacy_current_probe_out_connection() -> None:
 
     bindings = build_scope_channel_bindings(scope, circuit)
     assert bindings
-    assert bindings[0].signals
-    assert bindings[0].signals[0].signal_key == format_signal_key("IP", "IP1")
+    assert bindings[0].signals == []

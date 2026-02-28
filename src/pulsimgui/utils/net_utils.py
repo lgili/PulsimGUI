@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    CONNECTION_DOMAIN_SIGNAL,
+    CONNECTION_DOMAIN_THERMAL,
+    ComponentType,
+    pin_connection_domain,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from pulsimgui.models.circuit import Circuit
@@ -59,6 +65,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
 
     uf = _UnionFind()
     point_positions: dict[str, tuple[float, float]] = {}
+    point_domains: dict[str, str] = {}
     pin_refs: list[tuple[str, int, str]] = []
     ground_pin_refs: set[str] = set()
 
@@ -69,16 +76,23 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
             pin_ref = f"pin:{comp_id}:{pin_idx}"
             uf.add(pin_ref)
             point_positions[pin_ref] = comp.get_pin_position(pin_idx)
+            point_domains[pin_ref] = pin_connection_domain(comp, pin_idx)
             pin_refs.append((comp_id, pin_idx, pin_ref))
             if comp.type == ComponentType.GROUND:
                 ground_pin_refs.add(pin_ref)
 
     # Register wire endpoints/junctions and preserve explicit segment connectivity
     for wire in circuit.wires.values():
-        _register_wire_points(wire, uf, point_positions)
+        _register_wire_points(
+            wire,
+            uf,
+            point_positions,
+            point_domains,
+            _wire_domain(circuit, wire),
+        )
 
     # Merge points that are geometrically coincident (within tolerance)
-    _merge_nearby_points(point_positions, uf)
+    _merge_nearby_points(point_positions, point_domains, uf)
 
     # Any net touching a ground component pin is forced to node "0"
     ground_roots = {uf.find(pin_ref) for pin_ref in ground_pin_refs}
@@ -175,6 +189,8 @@ def _register_wire_points(
     wire: Wire,
     uf: _UnionFind,
     point_positions: dict[str, tuple[float, float]],
+    point_domains: dict[str, str],
+    wire_domain: str,
 ) -> None:
     """Register wire points and explicit wire-internal connectivity."""
 
@@ -186,6 +202,8 @@ def _register_wire_points(
         uf.add(end_ref)
         point_positions[start_ref] = (seg.x1, seg.y1)
         point_positions[end_ref] = (seg.x2, seg.y2)
+        point_domains[start_ref] = wire_domain
+        point_domains[end_ref] = wire_domain
         uf.union(start_ref, end_ref)
 
     # Junctions are explicit connection points that may split crossing wires.
@@ -193,6 +211,7 @@ def _register_wire_points(
         j_ref = f"wire:{wire.id}:junction:{j_idx}"
         uf.add(j_ref)
         point_positions[j_ref] = (jx, jy)
+        point_domains[j_ref] = wire_domain
 
         # If the junction lies on a segment, connect it to that segment net.
         for seg_idx, seg in enumerate(wire.segments):
@@ -203,6 +222,7 @@ def _register_wire_points(
 
 def _merge_nearby_points(
     point_positions: dict[str, tuple[float, float]],
+    point_domains: dict[str, str],
     uf: _UnionFind,
 ) -> None:
     """Merge points that are within PIN_HIT_TOLERANCE using a spatial hash."""
@@ -219,6 +239,8 @@ def _merge_nearby_points(
             for dy in (-1, 0, 1):
                 neighbor_key = (key[0] + dx, key[1] + dy)
                 for other_ref, ox, oy in buckets.get(neighbor_key, []):
+                    if point_domains.get(point_ref) != point_domains.get(other_ref):
+                        continue
                     if abs(px - ox) < PIN_HIT_TOLERANCE and abs(py - oy) < PIN_HIT_TOLERANCE:
                         uf.union(point_ref, other_ref)
 
@@ -250,3 +272,44 @@ def _point_on_segment(point: tuple[float, float], segment: WireSegment) -> bool:
     length = (dx**2 + dy**2) ** 0.5
     distance = area / length
     return distance < PIN_HIT_TOLERANCE
+
+
+def _wire_domain(circuit: Circuit, wire: Wire) -> str:
+    """Infer wire domain from endpoint pin metadata."""
+    domains: set[str] = set()
+    for connection in (wire.start_connection, wire.end_connection):
+        if connection is None:
+            continue
+        component = circuit.components.get(connection.component_id)
+        if component is None:
+            continue
+        pin_index = connection.pin_index
+        if pin_index < 0 or pin_index >= len(component.pins):
+            continue
+        domains.add(pin_connection_domain(component, pin_index))
+
+    # Backward compatibility: infer domain from geometric pin touches when
+    # explicit endpoint metadata is missing (legacy projects/tests).
+    if not domains:
+        wire_points: list[tuple[float, float]] = []
+        for segment in wire.segments:
+            wire_points.append((segment.x1, segment.y1))
+            wire_points.append((segment.x2, segment.y2))
+        wire_points.extend(wire.junctions or [])
+
+        for component in circuit.components.values():
+            for pin_index in range(len(component.pins)):
+                pin_x, pin_y = component.get_pin_position(pin_index)
+                for point_x, point_y in wire_points:
+                    if (
+                        abs(pin_x - point_x) < PIN_HIT_TOLERANCE
+                        and abs(pin_y - point_y) < PIN_HIT_TOLERANCE
+                    ):
+                        domains.add(pin_connection_domain(component, pin_index))
+                        break
+
+    if CONNECTION_DOMAIN_THERMAL in domains:
+        return CONNECTION_DOMAIN_THERMAL
+    if CONNECTION_DOMAIN_SIGNAL in domains:
+        return CONNECTION_DOMAIN_SIGNAL
+    return CONNECTION_DOMAIN_CIRCUIT

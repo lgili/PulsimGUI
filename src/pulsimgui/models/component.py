@@ -55,6 +55,9 @@ class ComponentType(Enum):
     PID_CONTROLLER = auto()
     MATH_BLOCK = auto()
     PWM_GENERATOR = auto()
+    GAIN = auto()
+    SUM = auto()
+    SUBTRACTOR = auto()
 
     # Control blocks - signal processing
     INTEGRATOR = auto()
@@ -200,6 +203,18 @@ def _default_demux_pins(output_count: int) -> list[Pin]:
     return pins
 
 
+def _default_unary_block_pins() -> list[Pin]:
+    """Create IN/OUT pin pair for unary signal blocks."""
+    return [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)]
+
+
+def _default_sum_pins(input_count: int) -> list[Pin]:
+    """Create stacked input pins plus single output pin for sum/sub blocks."""
+    pins = _generate_stacked_pins(input_count, -35, "IN")
+    pins.append(Pin(len(pins), "OUT", 35, 0))
+    return pins
+
+
 def _scope_label_prefix(comp_type: ComponentType) -> str:
     """Get default label prefix for scope channels based on component type."""
 
@@ -319,6 +334,98 @@ def can_connect_measurement_pins(
     return True
 
 
+CONNECTION_DOMAIN_CIRCUIT = "circuit"
+CONNECTION_DOMAIN_SIGNAL = "signal"
+CONNECTION_DOMAIN_THERMAL = "thermal"
+
+# Map switching-device component types to their gate/base/control pin indices.
+# These pins accept signal-domain connections (e.g. PWM output).
+_CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
+    ComponentType.MOSFET_N:  {1},   # G
+    ComponentType.MOSFET_P:  {1},   # G
+    ComponentType.IGBT:      {1},   # G
+    ComponentType.BJT_NPN:   {1},   # B
+    ComponentType.BJT_PNP:   {1},   # B
+    ComponentType.THYRISTOR: {2},   # G
+    ComponentType.TRIAC:     {2},   # G
+    ComponentType.SWITCH:    {2},   # CTL
+}
+
+SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.ELECTRICAL_SCOPE,
+    ComponentType.VOLTAGE_PROBE,
+    ComponentType.CURRENT_PROBE,
+    ComponentType.POWER_PROBE,
+    ComponentType.SIGNAL_MUX,
+    ComponentType.SIGNAL_DEMUX,
+    ComponentType.PI_CONTROLLER,
+    ComponentType.PID_CONTROLLER,
+    ComponentType.MATH_BLOCK,
+    ComponentType.PWM_GENERATOR,
+    ComponentType.GAIN,
+    ComponentType.SUM,
+    ComponentType.SUBTRACTOR,
+    ComponentType.INTEGRATOR,
+    ComponentType.DIFFERENTIATOR,
+    ComponentType.LIMITER,
+    ComponentType.RATE_LIMITER,
+    ComponentType.HYSTERESIS,
+    ComponentType.LOOKUP_TABLE,
+    ComponentType.TRANSFER_FUNCTION,
+    ComponentType.DELAY_BLOCK,
+    ComponentType.SAMPLE_HOLD,
+    ComponentType.STATE_MACHINE,
+    ComponentType.OP_AMP,
+    ComponentType.COMPARATOR,
+}
+
+THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.THERMAL_SCOPE,
+}
+
+
+def component_connection_domain(component_type: ComponentType) -> str:
+    """Return the default wiring domain used by a component family."""
+    if component_type in THERMAL_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_THERMAL
+    if component_type in SIGNAL_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_SIGNAL
+    return CONNECTION_DOMAIN_CIRCUIT
+
+
+def pin_connection_domain(component: "Component", pin_index: int) -> str:
+    """Return the effective connection domain for a specific pin."""
+    if component.type == ComponentType.THERMAL_SCOPE:
+        return CONNECTION_DOMAIN_THERMAL
+    if is_thermal_output_pin(component, pin_index):
+        return CONNECTION_DOMAIN_THERMAL
+
+    if component.type == ComponentType.VOLTAGE_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_voltage_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if component.type == ComponentType.CURRENT_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_current_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if is_scope_input_pin(component, pin_index):
+        return CONNECTION_DOMAIN_SIGNAL
+    if is_electrical_probe_output_pin(component, pin_index):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    # Gate / base / control pins of switching devices accept signal-domain drives.
+    if pin_index in _CONTROL_PIN_INDICES.get(component.type, set()):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    return component_connection_domain(component.type)
+
+
 # Default pin configurations for each component type
 DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Basic passive
@@ -346,7 +453,7 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 10)],
 
     # Switching
-    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
+    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0), Pin(2, "CTL", 0, -20)],
 
     # Transformer
     ComponentType.TRANSFORMER: [
@@ -385,9 +492,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # Control blocks - basic
     ComponentType.PI_CONTROLLER: [
-        Pin(0, "IN", -35, -12),
-        Pin(1, "FB", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "IN", -35, 0),
+        Pin(1, "OUT", 35, 0),
     ],
     ComponentType.PID_CONTROLLER: [
         Pin(0, "IN", -35, -12),
@@ -400,10 +506,11 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "OUT", 35, 0),
     ],
     ComponentType.PWM_GENERATOR: [
-        Pin(0, "CTRL", -35, -12),
-        Pin(1, "CLK", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "OUT", 35, 0),
     ],
+    ComponentType.GAIN: _default_unary_block_pins(),
+    ComponentType.SUM: _default_sum_pins(2),
+    ComponentType.SUBTRACTOR: _default_sum_pins(2),
 
     # Control blocks - signal processing
     ComponentType.INTEGRATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
@@ -429,8 +536,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: [
-        Pin(0, "+", -20, -10),
-        Pin(1, "-", -20, 10),
+        Pin(0, "+", 0, -20),
+        Pin(1, "-", 0, 20),
         Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
     ],
     ComponentType.CURRENT_PROBE: [
@@ -562,7 +669,18 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "frequency": 10000.0,
         "duty_cycle": 0.5,
         "carrier": "sawtooth",
-        "amplitude": 1.0,
+        "amplitude": 20.0,
+    },
+    ComponentType.GAIN: {
+        "gain": 1.0,
+    },
+    ComponentType.SUM: {
+        "input_count": 2,
+        "signs": ["+", "+"],
+    },
+    ComponentType.SUBTRACTOR: {
+        "input_count": 2,
+        "signs": ["+", "-"],
     },
 
     # Control blocks - signal processing
@@ -675,6 +793,16 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     },
 }
 
+# Parameters that are intentionally hidden from the default properties UI.
+# They keep their default values unless the user edits the .pulsim file directly.
+# RATIONALE - PWM amplitude: all supported switching devices (MOSFET, IGBT,
+# VoltageControlledSwitch) operate correctly with the 20 V default. Exposing
+# the amplitude invites users to lower it below the device threshold, breaking
+# simulation convergence without obvious explanation.
+HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
+    ComponentType.PWM_GENERATOR: frozenset({"amplitude"}),
+}
+
 
 @dataclass
 class Component:
@@ -763,6 +891,7 @@ class Component:
 
 SCOPE_CHANNEL_LIMITS = (1, 8)
 MUX_CHANNEL_LIMITS = (2, 16)
+SUM_INPUT_LIMITS = (2, 16)
 
 
 def _clamp(value: int, min_value: int, max_value: int) -> int:
@@ -776,10 +905,31 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
+        _synchronize_sum_like_block(component)
+    elif component.type in (ComponentType.PI_CONTROLLER, ComponentType.PWM_GENERATOR, ComponentType.GAIN):
+        _synchronize_default_pin_layout(component)
     elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.CURRENT_PROBE):
         _synchronize_measurement_probe_pins(component)
     else:
         _synchronize_thermal_port(component)
+
+
+def _synchronize_default_pin_layout(component: Component) -> None:
+    """Synchronize components that always follow their default pin map."""
+    default_pins = DEFAULT_PINS.get(component.type, [])
+    if not default_pins:
+        return
+    if len(component.pins) == len(default_pins):
+        names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
+        coords_match = all(
+            abs(component.pins[idx].x - default_pins[idx].x) < 0.1
+            and abs(component.pins[idx].y - default_pins[idx].y) < 0.1
+            for idx in range(len(default_pins))
+        )
+        if names_match and coords_match:
+            return
+    component.pins = _snap_pin_layout([Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins])
 
 
 def _synchronize_measurement_probe_pins(component: Component) -> None:
@@ -789,9 +939,38 @@ def _synchronize_measurement_probe_pins(component: Component) -> None:
         return
     if len(component.pins) == len(default_pins):
         names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
-        if names_match:
+        coords_match = all(
+            abs(component.pins[idx].x - default_pins[idx].x) < 0.1
+            and abs(component.pins[idx].y - default_pins[idx].y) < 0.1
+            for idx in range(len(default_pins))
+        )
+        if names_match and coords_match:
             return
     component.pins = _snap_pin_layout([Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins])
+
+
+def _synchronize_sum_like_block(component: Component, force_count: int | None = None) -> None:
+    """Synchronize SUM/SUBTRACTOR pin layout and signs list."""
+    params = component.parameters
+    requested = force_count or params.get("input_count") or 2
+    input_count = _clamp(int(requested), *SUM_INPUT_LIMITS)
+    params["input_count"] = input_count
+
+    if component.type == ComponentType.SUBTRACTOR:
+        default_signs = ["+"] + ["-"] * max(input_count - 1, 0)
+    else:
+        default_signs = ["+"] * input_count
+
+    signs = list(params.get("signs") or [])
+    if not signs:
+        signs = default_signs
+    while len(signs) < input_count:
+        signs.append(default_signs[len(signs)])
+    if len(signs) > input_count:
+        del signs[input_count:]
+    params["signs"] = signs
+
+    component.pins = _snap_pin_layout(_default_sum_pins(input_count))
 
 
 def _synchronize_thermal_port(component: Component) -> None:
@@ -904,6 +1083,14 @@ def set_demux_output_count(component: Component, count: int) -> None:
     """Update a demux component's output count and pin layout."""
 
     _synchronize_demux(component, force_count=count)
+
+
+def set_sum_input_count(component: Component, count: int) -> None:
+    """Update SUM/SUBTRACTOR input count and pin layout."""
+
+    if component.type not in (ComponentType.SUM, ComponentType.SUBTRACTOR):
+        return
+    _synchronize_sum_like_block(component, force_count=count)
 
 
 def set_thermal_port_enabled(component: Component, enabled: bool) -> None:

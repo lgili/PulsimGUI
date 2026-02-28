@@ -51,6 +51,44 @@ class SimulationState(Enum):
     ERROR = auto()
 
 
+_LEGACY_SOLVER_ALIASES = {
+    "rk4": "trapezoidal",
+    "rk45": "trapezoidal",
+    "bdf": "bdf2",
+}
+
+_SUPPORTED_INTEGRATION_METHODS = {
+    "auto",
+    "trapezoidal",
+    "bdf1",
+    "bdf2",
+    "bdf3",
+    "bdf4",
+    "bdf5",
+    "gear",
+    "trbdf2",
+    "rosenbrockw",
+    "sdirk2",
+}
+
+
+def normalize_integration_method(value: str | None) -> str:
+    """Normalize persisted method names to supported backend identifiers."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "auto"
+    normalized = _LEGACY_SOLVER_ALIASES.get(raw, raw)
+    return normalized if normalized in _SUPPORTED_INTEGRATION_METHODS else "auto"
+
+
+def normalize_step_mode(value: str | None) -> str:
+    """Normalize transient step mode setting."""
+    raw = (value or "").strip().lower()
+    if raw in {"fixed", "variable"}:
+        return raw
+    return "fixed"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -60,14 +98,17 @@ class SimulationSettings:
     t_stop: float = 1e-3  # 1ms default
     t_step: float = 1e-6  # 1us default
 
-    # Solver settings
-    solver: str = "auto"  # auto, rk4, rk45, bdf
+    # Integration settings
+    solver: str = "auto"  # auto, trapezoidal, bdf1..bdf5, gear, trbdf2, rosenbrockw, sdirk2
+    step_mode: str = "fixed"  # fixed, variable
     max_step: float = 1e-6
     rel_tol: float = 1e-4
     abs_tol: float = 1e-6
+    enable_events: bool = True
+    max_step_retries: int = 8
 
     # Newton solver settings
-    max_newton_iterations: int = 50
+    max_newton_iterations: int = 100
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
 
@@ -75,6 +116,11 @@ class SimulationSettings:
     dc_strategy: str = "auto"  # auto, direct, gmin, source, pseudo
     gmin_initial: float = 1e-3
     gmin_final: float = 1e-12
+    dc_source_steps: int = 10
+
+    # Transient stability settings
+    transient_robust_mode: bool = True
+    transient_auto_regularize: bool = True
 
     # Output settings
     output_points: int = 10000
@@ -488,20 +534,43 @@ class SimulationService(QObject):
             sim_settings = settings_service.get_simulation_settings()
             self._settings.t_stop = sim_settings.get("t_stop", self._settings.t_stop)
             self._settings.t_step = sim_settings.get("t_step", self._settings.t_step)
-            self._settings.solver = sim_settings.get("solver", self._settings.solver)
+            self._settings.solver = normalize_integration_method(
+                sim_settings.get("solver", self._settings.solver)
+            )
+            self._settings.step_mode = normalize_step_mode(
+                sim_settings.get("step_mode", self._settings.step_mode)
+            )
             self._settings.max_step = sim_settings.get("max_step", self._settings.max_step)
             self._settings.rel_tol = sim_settings.get("rel_tol", self._settings.rel_tol)
             self._settings.abs_tol = sim_settings.get("abs_tol", self._settings.abs_tol)
             self._settings.output_points = sim_settings.get("output_points", self._settings.output_points)
+            self._settings.enable_events = bool(
+                sim_settings.get("enable_events", self._settings.enable_events)
+            )
+            self._settings.max_step_retries = int(
+                sim_settings.get("max_step_retries", self._settings.max_step_retries)
+            )
 
             # Load persisted solver settings
             solver_settings = settings_service.get_solver_settings()
             self._settings.max_newton_iterations = solver_settings.get("max_newton_iterations", self._settings.max_newton_iterations)
-            self._settings.enable_voltage_limiting = False
+            self._settings.enable_voltage_limiting = solver_settings.get(
+                "enable_voltage_limiting",
+                self._settings.enable_voltage_limiting,
+            )
             self._settings.max_voltage_step = solver_settings.get("max_voltage_step", self._settings.max_voltage_step)
             self._settings.dc_strategy = solver_settings.get("dc_strategy", self._settings.dc_strategy)
             self._settings.gmin_initial = solver_settings.get("gmin_initial", self._settings.gmin_initial)
             self._settings.gmin_final = solver_settings.get("gmin_final", self._settings.gmin_final)
+            self._settings.dc_source_steps = solver_settings.get("dc_source_steps", self._settings.dc_source_steps)
+            self._settings.transient_robust_mode = solver_settings.get(
+                "transient_robust_mode",
+                self._settings.transient_robust_mode,
+            )
+            self._settings.transient_auto_regularize = solver_settings.get(
+                "transient_auto_regularize",
+                self._settings.transient_auto_regularize,
+            )
 
             # Load backend runtime settings
             runtime_settings = settings_service.get_backend_runtime_settings()
@@ -533,6 +602,8 @@ class SimulationService(QObject):
     def settings(self, value: SimulationSettings) -> None:
         """Set simulation settings."""
         self._settings = value
+        self._settings.solver = normalize_integration_method(self._settings.solver)
+        self._settings.step_mode = normalize_step_mode(self._settings.step_mode)
         self._persist_simulation_settings()
 
     @property
@@ -672,11 +743,14 @@ class SimulationService(QObject):
             {
                 "t_stop": self._settings.t_stop,
                 "t_step": self._settings.t_step,
-                "solver": self._settings.solver,
+                "solver": normalize_integration_method(self._settings.solver),
+                "step_mode": normalize_step_mode(self._settings.step_mode),
                 "max_step": self._settings.max_step,
                 "rel_tol": self._settings.rel_tol,
                 "abs_tol": self._settings.abs_tol,
                 "output_points": self._settings.output_points,
+                "enable_events": self._settings.enable_events,
+                "max_step_retries": self._settings.max_step_retries,
             }
         )
         self._settings_service.set_solver_settings(
@@ -687,6 +761,9 @@ class SimulationService(QObject):
                 "dc_strategy": self._settings.dc_strategy,
                 "gmin_initial": self._settings.gmin_initial,
                 "gmin_final": self._settings.gmin_final,
+                "dc_source_steps": self._settings.dc_source_steps,
+                "transient_robust_mode": self._settings.transient_robust_mode,
+                "transient_auto_regularize": self._settings.transient_auto_regularize,
             }
         )
 
@@ -749,6 +826,7 @@ class SimulationService(QObject):
                 max_voltage_step=self._settings.max_voltage_step,
                 gmin_initial=self._settings.gmin_initial,
                 gmin_final=self._settings.gmin_final,
+                source_steps=self._settings.dc_source_steps,
             )
 
         result = DCResult()
@@ -854,35 +932,11 @@ class SimulationService(QObject):
                     self.progress.emit(100, "AC analysis complete")
                     self._set_state(SimulationState.COMPLETED)
             else:
-                # Fallback to placeholder
-                import math
-
-                # Generate frequency points (logarithmic)
-                decades = math.log10(f_stop / f_start)
-                num_points = int(decades * points_per_decade)
-
-                result.frequencies = []
-                result.magnitude = {"V(out)/V(in)": []}
-                result.phase = {"V(out)/V(in)": []}
-
-                for i in range(num_points + 1):
-                    f = f_start * (10 ** (i * decades / num_points))
-                    result.frequencies.append(f)
-
-                    # Placeholder: Generate dummy Bode plot data
-                    # This simulates a simple RC low-pass filter response
-                    fc = 1000  # cutoff frequency
-                    mag_db = -10 * math.log10(1 + (f / fc) ** 2)
-                    phase_deg = -math.degrees(math.atan(f / fc))
-
-                    result.magnitude["V(out)/V(in)"].append(mag_db)
-                    result.phase["V(out)/V(in)"].append(phase_deg)
-
-                    progress = (i / num_points) * 100
-                    self.progress.emit(progress, f"Frequency: {f:.1f}Hz")
-
-                self.progress.emit(100, "AC analysis complete (placeholder)")
-                self._set_state(SimulationState.COMPLETED)
+                result.error_message = (
+                    f"AC analysis is not available in backend {self._backend.info.label()}."
+                )
+                self._set_state(SimulationState.ERROR)
+                self.error.emit(result.error_message)
 
             self.ac_finished.emit(result)
 
