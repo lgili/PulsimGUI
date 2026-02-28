@@ -6,7 +6,11 @@
 - `pip`
 - Ambiente virtual recomendado (`venv`)
 
-## Instalar a partir do PyPI
+## Opção 1: Release (recomendado)
+
+Baixe o pacote da sua plataforma em [Releases](https://github.com/lgili/PulsimGui/releases/latest).
+
+## Opção 2: Instalação via pip
 
 ```bash
 python3 -m pip install --upgrade pip
@@ -25,7 +29,7 @@ ou:
 python3 -m pulsimgui
 ```
 
-## Rodar localmente a partir do repositório
+## Opção 3: Rodar do código-fonte
 
 ```bash
 git clone https://github.com/lgili/PulsimGui.git
@@ -37,19 +41,25 @@ python3 -m pip install -e ".[dev]"
 python3 -m pulsimgui
 ```
 
-## Diagnóstico rápido de ambiente
-
-Se quiser validar o backend instalado no mesmo Python:
+## Validar backend ativo
 
 ```bash
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
+Valor esperado no projeto: `0.5.0`.
+
+## Configuração recomendada no app
+
+Abra `Preferences → Simulation → Backend Runtime`:
+
+- `Source`: `PyPI`
+- `Target version`: `v0.5.0`
+- `Auto-sync backend on startup`: habilitado
+
 ## Problemas comuns
 
 ### Erro de plugin Qt
-
-Se ocorrer erro de plataforma Qt, execute com plugin explícito:
 
 ```bash
 QT_QPA_PLATFORM=cocoa python3 -m pulsimgui
@@ -61,6 +71,7 @@ No Linux headless:
 QT_QPA_PLATFORM=offscreen python3 -m pulsimgui
 ```
 
-### Backend não encontrado
+### Backend indisponível
 
-Abra `Preferences > Simulation > Backend Runtime` e rode **Install / Update Backend** com alvo `v0.4.0`.
+- Confirme a instalação do `pulsim` no mesmo Python usado pelo app.
+- Reabra o app e use `Install / Update Backend` na tela de runtime.

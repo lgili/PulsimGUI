@@ -1,20 +1,19 @@
-# Circuito RC de Teste
+# Primeiro Circuito RC
 
-Este tutorial cria um circuito **RC passa-baixa** para validar:
+Tutorial rápido para validar instalação, conectividade do esquema e fluxo de simulação.
 
-- conexões no editor
-- envio correto do circuito ao backend
-- configuração da simulação
-- visualização da resposta no viewer
+![Exemplo de resposta RC](../assets/images/rc-waveform.svg)
 
-![Exemplo de saída RC](../assets/images/rc-waveform.svg)
+## Objetivo
+
+Montar um passa-baixa RC simples e confirmar a curva exponencial em `Vout`.
 
 ## Topologia
 
-- Fonte de tensão (`Vin`)
-- Resistor `R1 = 1k`
-- Capacitor `C1 = 1u`
-- Terra `GND`
+- `Vin` (fonte)
+- `R1 = 1kΩ`
+- `C1 = 1uF`
+- `GND`
 
 Conexões:
 
@@ -26,32 +25,27 @@ Conexões:
 
 ## Passo a passo na GUI
 
-1. Crie projeto novo.
-2. Arraste `Voltage Source`, `Resistor`, `Capacitor` e `Ground`.
-3. Faça as ligações conforme a topologia.
-4. Configure parâmetros:
-   - `R1 = 1k`
-   - `C1 = 1u`
-   - Fonte: degrau/pulso para enxergar transitório.
-5. Abra `Simulation Settings`:
-   - `t_start = 0`
-   - `t_stop = 10ms`
-   - `t_step = 1us`
-   - `solver = auto` (ou `rk45`)
-   - `output_points = 10000`
-6. Clique em **Run**.
-7. No viewer, plote `V(vout)` e `V(vin)`.
+1. Crie um projeto novo.
+2. Insira `Voltage Source`, `Resistor`, `Capacitor` e `Ground`.
+3. Faça as conexões da topologia acima.
+4. Ajuste os parâmetros de `R1` e `C1`.
+5. Configure a fonte como degrau ou pulso.
+6. Abra `Simulation Settings` e use:
+   - `Start time = 0`
+   - `Stop time = 10ms`
+   - `Step size = 1us`
+   - `Output points = 10000`
+7. Clique em **Run**.
+8. No viewer, plote `V(vout)` e `V(vin)`.
 
 ## Resultado esperado
 
-- `V(vout)` sobe de forma exponencial.
-- Constante de tempo aproximada:
-  - `tau = R * C = 1k * 1u = 1ms`
-- Em ~`5 ms`, a saída deve estar próxima do valor final (para entrada em degrau).
+- `V(vout)` cresce exponencialmente.
+- `τ = R × C = 1k × 1u = 1ms`.
+- Em ~`5τ` (aprox. `5ms`), a saída fica próxima do valor final.
 
-## Checklist de validação rápida
+## Checklist de validação
 
-- Sem erro de parse de netlist/circuito.
-- Simulação completa sem `Simulation failed`.
-- Curva de `V(vout)` coerente com resposta de 1ª ordem.
-- Alterar `R` ou `C` muda `tau` como esperado.
+- Simulação finaliza sem erro.
+- `V(vout)` tem curva de 1ª ordem coerente.
+- Alterar `R` ou `C` desloca `τ` como esperado.
