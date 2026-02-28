@@ -5,11 +5,14 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from importlib import import_module, metadata
+import logging
 from pathlib import Path
 import math
 import threading
 import time
 from typing import Any, Callable, Protocol, TYPE_CHECKING
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -17,6 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
+from pulsim.signal_evaluator import AlgebraicLoopError, SignalEvaluator
 from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
@@ -493,6 +497,18 @@ class PulsimBackend(SimulationBackend):
                 result.error_message = str(exc)
                 return result
 
+            # --- Signal-flow evaluator for closed-loop control blocks ---
+            try:
+                sig_evaluator = SignalEvaluator(circuit_data)
+                sig_evaluator.build()
+                if sig_evaluator.has_signal_blocks():
+                    self._attach_signal_evaluator(circuit, sig_evaluator, circuit_data)
+            except AlgebraicLoopError as exc:
+                result.error_message = str(exc)
+                return result
+            except Exception as exc:
+                log.warning("Signal evaluator setup failed (ignored): %s", exc)
+
             attempt_settings = self._apply_transient_retry_profile(settings, profile)
             dt = base_dt * profile.dt_scale
 
@@ -540,6 +556,69 @@ class PulsimBackend(SimulationBackend):
         if retry_errors:
             result.error_message = retry_errors[-1]
         return result
+
+    # ------------------------------------------------------------------
+    # Signal evaluator helpers
+    # ------------------------------------------------------------------
+
+    def _attach_signal_evaluator(
+        self,
+        circuit: Any,
+        evaluator: "SignalEvaluator",
+        circuit_data: dict,
+    ) -> None:
+        """Wire closed-loop PWM duty callbacks from the signal evaluator.
+
+        For each PWM_GENERATOR that has a DUTY_IN signal wire connected,
+        registers a ``set_pwm_duty_callback`` on the C++ circuit so the
+        computed duty is applied every simulation step.
+        """
+        if not hasattr(circuit, "set_pwm_duty_callback"):
+            # Backend version does not support dynamic duty – fall back to
+            # a one-shot static duty computed from the initial signal chain.
+            for comp_id, pwm_name in evaluator.pwm_components().items():
+                if hasattr(circuit, "set_pwm_duty"):
+                    duty = evaluator.step(0.0).get(comp_id, 0.5)
+                    circuit.set_pwm_duty(
+                        pwm_name, max(0.0, min(1.0, duty))
+                    )
+            return
+
+        # Build a name look-up from component id → backend name
+        # (same logic as CircuitConverter._component_name)
+        def _comp_backend_name(comp: dict) -> str:
+            name = (comp.get("name") or "").strip()
+            if name:
+                return name
+            comp_id = comp.get("id", "")
+            suffix = comp_id[:6] if comp_id else comp.get("type", "")
+            return f"{comp.get('type', 'COMP')}_{suffix}"
+
+        id_to_name: dict[str, str] = {
+            str(c["id"]): _comp_backend_name(c)
+            for c in circuit_data.get("components", [])
+        }
+
+        for comp_id in evaluator.pwm_components():
+            pwm_name = id_to_name.get(comp_id, comp_id)
+            try:
+                circuit.set_pwm_duty_callback(
+                    pwm_name,
+                    lambda t, pid=comp_id, ev=evaluator: max(
+                        0.0, min(1.0, ev.step(t).get(pid, 0.5))
+                    ),
+                )
+                log.debug(
+                    "Attached duty callback to PWM '%s' (comp_id=%s)",
+                    pwm_name,
+                    comp_id,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Failed to attach duty callback to PWM '%s': %s",
+                    pwm_name,
+                    exc,
+                )
 
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
         """Resolve labels for transient state-vector signals."""

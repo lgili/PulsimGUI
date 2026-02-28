@@ -22,6 +22,7 @@ class CircuitConverter:
         self._sl = pulsim_module
 
     _INSTRUMENTATION_COMPONENTS = {
+        # Measurement / visualization – GUI-only, no backend counterpart
         ComponentType.VOLTAGE_PROBE,
         ComponentType.CURRENT_PROBE,
         ComponentType.POWER_PROBE,
@@ -29,6 +30,27 @@ class CircuitConverter:
         ComponentType.THERMAL_SCOPE,
         ComponentType.SIGNAL_MUX,
         ComponentType.SIGNAL_DEMUX,
+        # Signal-domain control blocks – evaluated by SignalEvaluator in Python;
+        # they do not map to any C++ circuit element.
+        ComponentType.CONSTANT,
+        ComponentType.GAIN,
+        ComponentType.SUM,
+        ComponentType.SUBTRACTOR,
+        ComponentType.LIMITER,
+        ComponentType.RATE_LIMITER,
+        ComponentType.PI_CONTROLLER,
+        ComponentType.PID_CONTROLLER,
+        ComponentType.INTEGRATOR,
+        ComponentType.DIFFERENTIATOR,
+        ComponentType.HYSTERESIS,
+        ComponentType.SAMPLE_HOLD,
+        ComponentType.MATH_BLOCK,
+    }
+
+    # Map GUI ComponentType enum names to the lowercase backend type strings.
+    # Most types follow the simple .name.lower() convention; exceptions are listed here.
+    _BACKEND_TYPE_MAP: dict[ComponentType, str] = {
+        ComponentType.SUBTRACTOR: "subtraction",
     }
 
     def build(self, circuit_data: dict) -> Any:
@@ -571,9 +593,10 @@ class CircuitConverter:
             except TypeError:
                 metadata[param_name] = str(value)
 
+        backend_type = self._BACKEND_TYPE_MAP.get(comp_type, comp_type.name.lower())
         try:
             circuit.add_virtual_component(
-                comp_type.name,
+                backend_type,
                 name,
                 node_indices,
                 numeric_params,
