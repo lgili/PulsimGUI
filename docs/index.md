@@ -1,26 +1,32 @@
-# PulsimGui Documentation
+# PulsimGui
 
-Bem-vindo à documentação oficial do **PulsimGui**, interface gráfica para construir circuitos e rodar simulações com o backend **Pulsim**.
+Interface gráfica para modelagem e simulação de conversores de potência com backend **Pulsim**.
 
-![Tela principal do PulsimGui](assets/images/gui-main.svg)
+![Dashboard do PulsimGui](imgs/dashboard_moderndark.png)
 
-## O que você encontra aqui
+## O que você consegue fazer
 
-- Guia rápido de instalação e execução em desenvolvimento.
-- Tour visual da interface.
-- Configuração completa de simulação e backend.
-- Tutorial prático de circuito **RC** para validar seu ambiente.
+- Montar esquemas elétricos com componentes de eletrônica de potência.
+- Executar simulações transitórias com configuração completa de solver.
+- Acompanhar formas de onda em tempo real no viewer integrado.
+- Validar topologias com exemplos prontos (RC, buck, boost e outros).
 
-## Fluxo recomendado para começar
+## Fluxo recomendado
 
-1. Abra [Instalação e Execução](instalacao.md).
-2. Configure o backend em [Configuração de Simulação](gui/configuracao-simulacao.md).
-3. Rode o passo a passo de [Circuito RC de Teste](tutoriais/circuito-rc.md).
+1. Instale e execute o app em [Instalação e Execução](instalacao.md).
+2. Rode o primeiro tutorial em [Primeiro Circuito RC](tutoriais/circuito-rc.md).
+3. Evolua para o exemplo de [Buck](tutoriais/conversor-buck.md).
+4. Ajuste solver e tolerâncias em [Configuração de Simulação](gui/configuracao-simulacao.md).
 
-## Estado do backend padrão
+## Backend padrão do projeto
 
-Atualmente o GUI está configurado para usar o backend padrão:
+O runtime de simulação padrão está alinhado para **`pulsim v0.5.0`**.
 
-- `pulsim v0.4.0`
+!!! tip "Ambiente reprodutível"
+    Em `Preferences → Simulation`, mantenha `Source = PyPI`, `Target version = v0.5.0` e `Auto-sync` habilitado para garantir consistência entre máquinas.
 
-Isso garante alinhamento entre interface e runtime de simulação em novas instalações.
+## Links úteis
+
+- Repositório: [github.com/lgili/PulsimGui](https://github.com/lgili/PulsimGui)
+- Releases: [github.com/lgili/PulsimGui/releases](https://github.com/lgili/PulsimGui/releases)
+- Issues: [github.com/lgili/PulsimGui/issues](https://github.com/lgili/PulsimGui/issues)

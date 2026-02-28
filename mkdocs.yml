@@ -1,5 +1,5 @@
 site_name: PulsimGui
-site_description: GUI para simulação de eletrônica de potência com Pulsim
+site_description: Interface gráfica profissional para simulação de eletrônica de potência com Pulsim.
 site_url: https://lgili.github.io/PulsimGui/
 repo_url: https://github.com/lgili/PulsimGui
 repo_name: lgili/PulsimGui
@@ -12,7 +12,9 @@ theme:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - toc.follow
     - content.code.copy
+    - content.action.edit
     - search.highlight
     - search.suggest
   palette:
@@ -55,14 +57,16 @@ extra_css:
 
 nav:
   - Início: index.md
-  - Instalação e Execução: instalacao.md
-  - GUI:
-      - Visão Geral: gui/visao-geral.md
+  - Começar:
+      - Instalação e Execução: instalacao.md
+      - Primeiro Circuito RC: tutoriais/circuito-rc.md
+      - Exemplo de Buck: tutoriais/conversor-buck.md
+  - Guias:
+      - Visão Geral da GUI: gui/visao-geral.md
       - Configuração de Simulação: gui/configuracao-simulacao.md
-  - Tutoriais:
-      - Circuito RC de Teste: tutoriais/circuito-rc.md
-  - Referência:
       - Manual do Usuário: user-manual.md
+  - Referência Técnica:
       - Backend Adapter: backend-adapter.md
       - Guia do Desenvolvedor: developer-guide.md
-      - Roteiros de Vídeo: tutorials.md
+  - Suporte:
+      - FAQ e Troubleshooting: faq.md
