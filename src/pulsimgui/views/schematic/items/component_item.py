@@ -1061,6 +1061,23 @@ class SubtractorItem(SumBaseItem):
     ACCENT_COLOR = QColor(224, 110, 72)
 
 
+class ConstantItem(BlockComponentItem):
+    """Item for constant source block – displays the numeric value in its body."""
+
+    ACCENT_COLOR = QColor(103, 58, 183)  # Deep purple
+
+    def block_label(self) -> str:
+        value = self._component.parameters.get("value", 0.0)
+        try:
+            fval = float(value)
+        except (TypeError, ValueError):
+            fval = 0.0
+        return f"{fval:g}"
+
+    def _get_value_text(self) -> str:
+        return ""
+
+
 class ScopeItemBase(ComponentItem):
     """Base class for electrical/thermal scope blocks."""
 
@@ -1757,6 +1774,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,
+        ComponentType.CONSTANT: ConstantItem,
 
         # Control blocks - signal processing
         ComponentType.INTEGRATOR: IntegratorItem,

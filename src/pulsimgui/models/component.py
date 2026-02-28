@@ -58,6 +58,7 @@ class ComponentType(Enum):
     GAIN = auto()
     SUM = auto()
     SUBTRACTOR = auto()
+    CONSTANT = auto()
 
     # Control blocks - signal processing
     INTEGRATOR = auto()
@@ -365,6 +366,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.GAIN,
     ComponentType.SUM,
     ComponentType.SUBTRACTOR,
+    ComponentType.CONSTANT,
     ComponentType.INTEGRATOR,
     ComponentType.DIFFERENTIATOR,
     ComponentType.LIMITER,
@@ -507,10 +509,12 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ],
     ComponentType.PWM_GENERATOR: [
         Pin(0, "OUT", 35, 0),
+        Pin(1, "DUTY_IN", -35, 20),
     ],
     ComponentType.GAIN: _default_unary_block_pins(),
     ComponentType.SUM: _default_sum_pins(2),
     ComponentType.SUBTRACTOR: _default_sum_pins(2),
+    ComponentType.CONSTANT: [Pin(0, "OUT", 40, 0)],
 
     # Control blocks - signal processing
     ComponentType.INTEGRATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
@@ -681,6 +685,9 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.SUBTRACTOR: {
         "input_count": 2,
         "signs": ["+", "-"],
+    },
+    ComponentType.CONSTANT: {
+        "value": 0.0,
     },
 
     # Control blocks - signal processing

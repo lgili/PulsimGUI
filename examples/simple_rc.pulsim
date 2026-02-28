@@ -2,14 +2,14 @@
   "version": "1.0",
   "name": "Simple RC Circuit",
   "created": "2024-01-01T00:00:00",
-  "modified": "2024-01-01T00:00:00",
+  "modified": "2026-02-28T16:09:08.517741",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.02,
+    "tstop": 0.001,
     "dt": 1e-06,
     "max_step": 1e-06,
     "tstart": 0.0,
-    "abstol": 1e-12,
+    "abstol": 1e-10,
     "reltol": 0.001,
     "solver": "auto",
     "step_mode": "fixed",
@@ -124,7 +124,7 @@
           "type": "GROUND",
           "name": "GND",
           "x": 100.0,
-          "y": 240.0,
+          "y": 280.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -142,8 +142,8 @@
           "id": "3602e54a-ef72-41ad-9442-69ce30f2a8e0",
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope1",
-          "x": 480.0,
-          "y": 180.0,
+          "x": 540.0,
+          "y": 220.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -174,6 +174,40 @@
               "y": 20.0
             }
           ]
+        },
+        {
+          "id": "6d786556-eaa1-45c7-a3e4-9ac760895c56",
+          "type": "VOLTAGE_PROBE",
+          "name": "X1",
+          "x": 420.0,
+          "y": 200.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "V",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0.0,
+              "y": 20.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
         }
       ],
       "wires": [
@@ -183,12 +217,12 @@
             {
               "x1": 100.0,
               "y1": 180.0,
-              "x2": 210.0,
-              "y2": 175.0
+              "x2": 200.0,
+              "y2": 180.0
             },
             {
-              "x1": 210.0,
-              "y1": 175.0,
+              "x1": 200.0,
+              "y1": 180.0,
               "x2": 200.0,
               "y2": 180.0
             }
@@ -257,37 +291,94 @@
             "component_id": "00000000-0000-0000-0000-000000000001",
             "pin_index": 1
           },
+          "junctions": [
+            [
+              360.0,
+              260.0
+            ]
+          ],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "52a27da0-b6f0-4502-8a2b-8ebabd078e4a",
+          "segments": [
+            {
+              "x1": 420.0,
+              "y1": 180.0,
+              "x2": 360.0,
+              "y2": 180.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6d786556-eaa1-45c7-a3e4-9ac760895c56",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "00000000-0000-0000-0000-000000000003",
+            "pin_index": 0
+          },
           "junctions": [],
           "node_name": "",
           "alias": ""
         },
         {
-          "id": "76322902-badb-42e2-9030-62edc083c44e",
+          "id": "396c5657-4b87-4dbd-99bf-bfe9be16ff75",
           "segments": [
             {
-              "x1": 360.0,
-              "y1": 180.0,
-              "x2": 440.0,
-              "y2": 180.0
+              "x1": 420.0,
+              "y1": 220.0,
+              "x2": 420.0,
+              "y2": 260.0
             },
             {
+              "x1": 420.0,
+              "y1": 260.0,
+              "x2": 360.0,
+              "y2": 260.0
+            },
+            {
+              "x1": 360.0,
+              "y1": 260.0,
+              "x2": 360.0,
+              "y2": 260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6d786556-eaa1-45c7-a3e4-9ac760895c56",
+            "pin_index": 1
+          },
+          "end_connection": null,
+          "junctions": [
+            [
+              360.0,
+              260.0
+            ]
+          ],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "999ac6a0-f394-4eaf-8cab-e5e20b12669f",
+          "segments": [
+            {
               "x1": 440.0,
-              "y1": 180.0,
-              "x2": 440.0,
+              "y1": 200.0,
+              "x2": 500.0,
               "y2": 200.0
             }
           ],
           "start_connection": {
-            "component_id": "00000000-0000-0000-0000-000000000003",
-            "pin_index": 0
+            "component_id": "6d786556-eaa1-45c7-a3e4-9ac760895c56",
+            "pin_index": 2
           },
           "end_connection": {
             "component_id": "3602e54a-ef72-41ad-9442-69ce30f2a8e0",
-            "pin_index": 1
+            "pin_index": 0
           },
           "junctions": [],
-          "node_name": "out",
-          "alias": "out"
+          "node_name": "",
+          "alias": ""
         }
       ]
     }
