@@ -462,7 +462,6 @@ jobs:
       - name: Sync project version with release tag
         shell: bash
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
           python - <<'PY'
           from pathlib import Path
           import os
@@ -490,7 +489,11 @@ jobs:
           if not match:
               raise RuntimeError("Could not find [project].version in pyproject.toml")
 
-          updated = pattern.sub(rf'\1{tag_version}\3', content, count=1)
+          updated = pattern.sub(
+              lambda m: f'{m.group(1)}{tag_version}{m.group(3)}',
+              content,
+              count=1,
+          )
           pyproject_path.write_text(updated, encoding="utf-8")
           print(f"Updated pyproject version to: {tag_version}")
           PY
