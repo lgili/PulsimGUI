@@ -53,4 +53,4 @@ Operational guide for day-to-day PulsimGui usage.
 - Start with a minimal topology and validate incrementally.
 - Avoid changing many parameters at once.
 - For convergence issues, tune `step size`, `max step`, and transient robustness first.
-- Keep backend pinned to `v0.5.3` in shared environments.
+- Keep backend pinned to `v0.5.2` in shared environments.
