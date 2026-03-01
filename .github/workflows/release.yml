@@ -459,17 +459,41 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Validate tag matches project version
+      - name: Sync project version with release tag
         shell: bash
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PROJECT_VERSION="$(python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])")"
-          echo "Tag version: $TAG_VERSION"
-          echo "Project version: $PROJECT_VERSION"
-          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "Tag version and pyproject version must match for PyPI publish."
-            exit 1
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          tag_version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          pyproject_path = Path("pyproject.toml")
+          content = pyproject_path.read_text(encoding="utf-8")
+
+          project_version = tomllib.loads(content)["project"]["version"]
+          print(f"Tag version: {tag_version}")
+          print(f"Project version (before sync): {project_version}")
+
+          if project_version == tag_version:
+              print("Project version already matches tag.")
+              raise SystemExit(0)
+
+          # Update only the [project] version field.
+          pattern = re.compile(
+              r'(^\[project\]\n(?:.*?\n)*?^version\s*=\s*")([^"]+)(")',
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(content)
+          if not match:
+              raise RuntimeError("Could not find [project].version in pyproject.toml")
+
+          updated = pattern.sub(rf'\1{tag_version}\3', content, count=1)
+          pyproject_path.write_text(updated, encoding="utf-8")
+          print(f"Updated pyproject version to: {tag_version}")
+          PY
 
       - name: Build sdist and wheel
         shell: bash
