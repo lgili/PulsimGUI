@@ -29,4 +29,5 @@ The recommended runtime baseline is **`pulsim v0.5.2`**.
 
 - Repository: [github.com/lgili/PulsimGUI](https://github.com/lgili/PulsimGUI)
 - Releases: [github.com/lgili/PulsimGUI/releases](https://github.com/lgili/PulsimGUI/releases)
+- PyPI: [pypi.org/project/pulsimgui](https://pypi.org/project/pulsimgui/)
 - Issues: [github.com/lgili/PulsimGUI/issues](https://github.com/lgili/PulsimGUI/issues)

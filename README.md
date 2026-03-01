@@ -7,11 +7,12 @@
 **Professional GUI for power electronics simulation with Pulsim.**
 
 [![Release](https://img.shields.io/github/v/release/lgili/PulsimGUI?label=latest&color=brightgreen)](https://github.com/lgili/PulsimGUI/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/pulsimgui?label=PyPI&color=orange)](https://pypi.org/project/pulsimgui/)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0ea5e9)](https://lgili.github.io/PulsimGUI/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
-[**Download latest release**](https://github.com/lgili/PulsimGUI/releases/latest) · [**Documentation**](https://lgili.github.io/PulsimGUI/) · [**Report a bug**](https://github.com/lgili/PulsimGUI/issues)
+[**Download latest release**](https://github.com/lgili/PulsimGUI/releases/latest) · [**Install from PyPI**](https://pypi.org/project/pulsimgui/) · [**Documentation**](https://lgili.github.io/PulsimGUI/) · [**Report a bug**](https://github.com/lgili/PulsimGUI/issues)
 
 </div>
 
@@ -59,6 +60,8 @@ Run:
 ```bash
 pulsimgui
 ```
+
+The `pulsimgui` package is published to PyPI by the release pipeline (`.github/workflows/release.yml`) whenever a new tag `v*` is released.
 
 ### 3. Development setup (source code)
 
