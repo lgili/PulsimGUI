@@ -31,7 +31,9 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 | File | Description |
 |------|-------------|
 | `buck_converter.pulsim` | Buck converter |
+| `buck_converter_closed_loop.pulsim` | Buck converter with closed-loop control |
 | `boost_converter.pulsim` | Boost converter |
+| `flyback_converter.pulsim` | Flyback converter |
 
 ## How to Run
 
