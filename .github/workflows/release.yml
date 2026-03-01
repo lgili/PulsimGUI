@@ -126,13 +126,28 @@ jobs:
 
       - name: Install NSIS
         shell: pwsh
-        run: choco install nsis -y
+        run: choco install nsis -y --no-progress
 
       - name: Build installer
         shell: pwsh
         run: |
           (Get-Content packaging/windows/installer.nsi) -replace '!define APP_VERSION ".*"', "!define APP_VERSION `"$env:PULSIMGUI_VERSION`"" | Set-Content packaging/windows/installer.nsi
-          makensis packaging/windows/installer.nsi
+          $cmd = Get-Command makensis -ErrorAction SilentlyContinue
+          $candidates = @(
+            if ($cmd) { $cmd.Source }
+            "$env:ChocolateyInstall\bin\makensis.exe"
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+          if (-not $candidates) {
+            throw "makensis.exe not found after NSIS installation"
+          }
+          $makensis = $candidates[0]
+          Write-Host "Using makensis at: $makensis"
+          & $makensis packaging/windows/installer.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw "NSIS build failed with exit code $LASTEXITCODE"
+          }
           $installer = Get-ChildItem -Path packaging/windows -Filter "PulsimGui-*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $installer) {
             throw "NSIS did not generate installer output"
