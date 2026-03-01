@@ -1,0 +1,210 @@
+{
+  "version": "1.0",
+  "name": "Untitled Project",
+  "created": "2025-12-07T22:02:30.456535",
+  "modified": "2025-12-07T22:05:05.730452",
+  "active_circuit": "main",
+  "simulation_settings": {
+    "tstop": 0.001,
+    "dt": 1e-06,
+    "tstart": 0.0,
+    "abstol": 1e-12,
+    "reltol": 0.001,
+    "max_iterations": 50
+  },
+  "circuits": {
+    "main": {
+      "name": "main",
+      "components": [
+        {
+          "id": "0f4662dc-e91c-4f78-ba55-1a437dc1206e",
+          "type": "RESISTOR",
+          "name": "R1",
+          "x": 200.0,
+          "y": -60.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -30,
+              "y": 0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 30,
+              "y": 0
+            }
+          ]
+        },
+        {
+          "id": "00ce3c24-9459-4ebe-b2cb-605f60f9aac0",
+          "type": "VOLTAGE_SOURCE",
+          "name": "V1",
+          "x": 60.0,
+          "y": -40.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 5.0
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0,
+              "y": -25
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0,
+              "y": 25
+            }
+          ]
+        },
+        {
+          "id": "303aed9f-73ff-47c6-acb9-97f47c91471e",
+          "type": "GROUND",
+          "name": "GND1",
+          "x": 140.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0,
+              "y": -10
+            }
+          ]
+        }
+      ],
+      "wires": [
+        {
+          "id": "89d096e3-2103-457c-902e-57aa56687aa4",
+          "segments": [
+            {
+              "x1": 60.0,
+              "y1": -65.0,
+              "x2": 115.0,
+              "y2": -65.0
+            },
+            {
+              "x1": 115.0,
+              "y1": -65.0,
+              "x2": 115.0,
+              "y2": -60.0
+            },
+            {
+              "x1": 115.0,
+              "y1": -60.0,
+              "x2": 170.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "VIN",
+          "alias": ""
+        },
+        {
+          "id": "3c8d2c79-da48-49ed-aa06-e3d955a929f1",
+          "segments": [
+            {
+              "x1": 230.0,
+              "y1": -60.0,
+              "x2": 235.0,
+              "y2": -60.0
+            },
+            {
+              "x1": 235.0,
+              "y1": -60.0,
+              "x2": 235.0,
+              "y2": 80.0
+            },
+            {
+              "x1": 235.0,
+              "y1": 80.0,
+              "x2": 240.0,
+              "y2": 80.0
+            },
+            {
+              "x1": 240.0,
+              "y1": 80.0,
+              "x2": 190.0,
+              "y2": 80.0
+            },
+            {
+              "x1": 190.0,
+              "y1": 80.0,
+              "x2": 190.0,
+              "y2": 90.0
+            },
+            {
+              "x1": 190.0,
+              "y1": 90.0,
+              "x2": 140.0,
+              "y2": 90.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        },
+        {
+          "id": "88121c07-d81c-45a4-a826-1be35ca1dfc0",
+          "segments": [
+            {
+              "x1": 140.0,
+              "y1": 90.0,
+              "x2": 100.0,
+              "y2": 90.0
+            },
+            {
+              "x1": 100.0,
+              "y1": 90.0,
+              "x2": 100.0,
+              "y2": 40.0
+            },
+            {
+              "x1": 100.0,
+              "y1": 40.0,
+              "x2": 60.0,
+              "y2": 40.0
+            },
+            {
+              "x1": 60.0,
+              "y1": 40.0,
+              "x2": 60.0,
+              "y2": -15.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "0",
+          "alias": ""
+        }
+      ]
+    }
+  },
+  "subcircuits": [],
+  "scope_windows": {}
+}

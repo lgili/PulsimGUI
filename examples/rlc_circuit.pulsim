@@ -1,0 +1,134 @@
+{
+  "version": "1.0",
+  "name": "RLC Resonant Circuit",
+  "description": "Series RLC circuit demonstrating resonance and damping",
+  "created": "2024-01-01T00:00:00Z",
+  "modified": "2024-01-01T00:00:00Z",
+  "circuits": {
+    "main": {
+      "id": "main",
+      "name": "RLC Circuit",
+      "components": {
+        "V1": {
+          "id": "V1",
+          "type": "voltage_source",
+          "name": "V1",
+          "position": [100, 250],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "waveform": {
+              "type": "pulse",
+              "v1": 0,
+              "v2": 10,
+              "delay": 0.0001,
+              "rise_time": 1e-9,
+              "fall_time": 1e-9,
+              "pulse_width": 0.01,
+              "period": 0.02
+            }
+          }
+        },
+        "R1": {
+          "id": "R1",
+          "type": "resistor",
+          "name": "R1",
+          "position": [250, 100],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "resistance": 10
+          }
+        },
+        "L1": {
+          "id": "L1",
+          "type": "inductor",
+          "name": "L1",
+          "position": [400, 100],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "inductance": 1e-3,
+            "initial_current": 0
+          }
+        },
+        "C1": {
+          "id": "C1",
+          "type": "capacitor",
+          "name": "C1",
+          "position": [550, 250],
+          "rotation": 90,
+          "mirrored": false,
+          "parameters": {
+            "capacitance": 10e-6,
+            "initial_voltage": 0
+          }
+        },
+        "GND1": {
+          "id": "GND1",
+          "type": "ground",
+          "name": "GND",
+          "position": [325, 450],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {}
+        }
+      },
+      "wires": {
+        "W1": {
+          "id": "W1",
+          "points": [[100, 150], [100, 100], [200, 100]],
+          "connections": [
+            {"component_id": "V1", "pin_index": 0},
+            {"component_id": "R1", "pin_index": 0}
+          ]
+        },
+        "W2": {
+          "id": "W2",
+          "points": [[300, 100], [350, 100]],
+          "connections": [
+            {"component_id": "R1", "pin_index": 1},
+            {"component_id": "L1", "pin_index": 0}
+          ]
+        },
+        "W3": {
+          "id": "W3",
+          "points": [[450, 100], [550, 100], [550, 200]],
+          "connections": [
+            {"component_id": "L1", "pin_index": 1},
+            {"component_id": "C1", "pin_index": 0}
+          ]
+        },
+        "W4": {
+          "id": "W4",
+          "points": [[100, 350], [100, 450], [325, 450]],
+          "connections": [
+            {"component_id": "V1", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W5": {
+          "id": "W5",
+          "points": [[550, 300], [550, 450], [325, 450]],
+          "connections": [
+            {"component_id": "C1", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        }
+      }
+    }
+  },
+  "active_circuit": "main",
+  "simulation_settings": {
+    "transient": {
+      "stop_time": 0.005,
+      "time_step": 1e-6,
+      "start_time": 0
+    },
+    "solver": {
+      "type": "rk4",
+      "relative_tolerance": 1e-4,
+      "absolute_tolerance": 1e-6
+    }
+  }
+}

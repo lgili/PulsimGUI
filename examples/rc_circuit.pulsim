@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "name": "RC Low-Pass Filter",
+  "description": "Simple RC low-pass filter demonstrating step response",
+  "created": "2024-01-01T00:00:00Z",
+  "modified": "2024-01-01T00:00:00Z",
+  "circuits": {
+    "main": {
+      "id": "main",
+      "name": "RC Circuit",
+      "components": {
+        "V1": {
+          "id": "V1",
+          "type": "voltage_source",
+          "name": "V1",
+          "position": [100, 200],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "waveform": {
+              "type": "pulse",
+              "v1": 0,
+              "v2": 5,
+              "delay": 0.001,
+              "rise_time": 1e-9,
+              "fall_time": 1e-9,
+              "pulse_width": 0.01,
+              "period": 0.02
+            }
+          }
+        },
+        "R1": {
+          "id": "R1",
+          "type": "resistor",
+          "name": "R1",
+          "position": [250, 100],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {
+            "resistance": 1000
+          }
+        },
+        "C1": {
+          "id": "C1",
+          "type": "capacitor",
+          "name": "C1",
+          "position": [400, 200],
+          "rotation": 90,
+          "mirrored": false,
+          "parameters": {
+            "capacitance": 1e-6,
+            "initial_voltage": 0
+          }
+        },
+        "GND1": {
+          "id": "GND1",
+          "type": "ground",
+          "name": "GND",
+          "position": [250, 350],
+          "rotation": 0,
+          "mirrored": false,
+          "parameters": {}
+        }
+      },
+      "wires": {
+        "W1": {
+          "id": "W1",
+          "points": [[100, 100], [250, 100]],
+          "connections": [
+            {"component_id": "V1", "pin_index": 0},
+            {"component_id": "R1", "pin_index": 0}
+          ]
+        },
+        "W2": {
+          "id": "W2",
+          "points": [[350, 100], [400, 100], [400, 150]],
+          "connections": [
+            {"component_id": "R1", "pin_index": 1},
+            {"component_id": "C1", "pin_index": 0}
+          ]
+        },
+        "W3": {
+          "id": "W3",
+          "points": [[100, 300], [100, 350], [250, 350]],
+          "connections": [
+            {"component_id": "V1", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        },
+        "W4": {
+          "id": "W4",
+          "points": [[400, 250], [400, 350], [250, 350]],
+          "connections": [
+            {"component_id": "C1", "pin_index": 1},
+            {"component_id": "GND1", "pin_index": 0}
+          ]
+        }
+      }
+    }
+  },
+  "active_circuit": "main",
+  "simulation_settings": {
+    "transient": {
+      "stop_time": 0.02,
+      "time_step": 1e-6,
+      "start_time": 0
+    },
+    "solver": {
+      "type": "rk4",
+      "relative_tolerance": 1e-4,
+      "absolute_tolerance": 1e-6
+    }
+  }
+}

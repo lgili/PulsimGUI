@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PulsimGui
+Comment=Power Electronics Circuit Simulator
+Exec=pulsimgui %F
+Icon=pulsimgui
+Terminal=false
+Categories=Science;Electronics;Engineering;
+MimeType=application/x-pulsim;
+Keywords=circuit;simulation;power;electronics;converter;
+StartupNotify=true
+StartupWMClass=pulsimgui
