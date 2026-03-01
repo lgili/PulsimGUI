@@ -8,7 +8,7 @@
 
 ## Opção 1: Release (recomendado)
 
-Baixe o pacote da sua plataforma em [Releases](https://github.com/lgili/PulsimGui/releases/latest).
+Baixe o pacote da sua plataforma em [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
 
 ## Opção 2: Instalação via pip
 
@@ -32,7 +32,7 @@ python3 -m pulsimgui
 ## Opção 3: Rodar do código-fonte
 
 ```bash
-git clone https://github.com/lgili/PulsimGui.git
+git clone https://github.com/lgili/PulsimGUI.git
 cd PulsimGui
 python3 -m venv .venv
 source .venv/bin/activate

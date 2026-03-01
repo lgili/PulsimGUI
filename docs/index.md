@@ -27,6 +27,6 @@ O runtime de simulação padrão está alinhado para **`pulsim v0.5.0`**.
 
 ## Links úteis
 
-- Repositório: [github.com/lgili/PulsimGui](https://github.com/lgili/PulsimGui)
-- Releases: [github.com/lgili/PulsimGui/releases](https://github.com/lgili/PulsimGui/releases)
-- Issues: [github.com/lgili/PulsimGui/issues](https://github.com/lgili/PulsimGui/issues)
+- Repositório: [github.com/lgili/PulsimGUI](https://github.com/lgili/PulsimGUI)
+- Releases: [github.com/lgili/PulsimGUI/releases](https://github.com/lgili/PulsimGUI/releases)
+- Issues: [github.com/lgili/PulsimGUI/issues](https://github.com/lgili/PulsimGUI/issues)

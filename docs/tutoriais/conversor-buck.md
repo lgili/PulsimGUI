@@ -45,5 +45,5 @@ Este tutorial foca em validação de fluxo para topologia buck usando template d
 
 ## Referências internas
 
-- Exemplos de projeto: [`examples/`](https://github.com/lgili/PulsimGui/tree/main/examples)
+- Exemplos de projeto: [`examples/`](https://github.com/lgili/PulsimGUI/tree/main/examples)
 - Configuração detalhada do solver: [Configuração de Simulação](../gui/configuracao-simulacao.md)

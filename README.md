@@ -6,12 +6,12 @@
 
 **GUI profissional para simulação de eletrônica de potência com Pulsim.**
 
-[![Release](https://img.shields.io/github/v/release/lgili/PulsimGui?label=latest&color=brightgreen)](https://github.com/lgili/PulsimGui/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0ea5e9)](https://lgili.github.io/PulsimGui/)
+[![Release](https://img.shields.io/github/v/release/lgili/PulsimGUI?label=latest&color=brightgreen)](https://github.com/lgili/PulsimGUI/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0ea5e9)](https://lgili.github.io/PulsimGUI/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
-[**Baixar última release**](https://github.com/lgili/PulsimGui/releases/latest) · [**Documentação**](https://lgili.github.io/PulsimGui/) · [**Reportar bug**](https://github.com/lgili/PulsimGui/issues)
+[**Baixar última release**](https://github.com/lgili/PulsimGUI/releases/latest) · [**Documentação**](https://lgili.github.io/PulsimGUI/) · [**Reportar bug**](https://github.com/lgili/PulsimGUI/issues)
 
 </div>
 
@@ -31,7 +31,7 @@ O **PulsimGui** é uma interface gráfica cross-platform para o [Pulsim](https:/
 
 A documentação completa está em:
 
-- [https://lgili.github.io/PulsimGui/](https://lgili.github.io/PulsimGui/)
+- [https://lgili.github.io/PulsimGUI/](https://lgili.github.io/PulsimGUI/)
 
 Conteúdo principal:
 
@@ -45,7 +45,7 @@ Conteúdo principal:
 
 ### 1. Release (recomendado)
 
-Use os instaladores em [Releases](https://github.com/lgili/PulsimGui/releases/latest).
+Use os instaladores em [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
 
 ### 2. Via pip
 
@@ -63,7 +63,7 @@ pulsimgui
 ### 3. Desenvolvimento (código-fonte)
 
 ```bash
-git clone https://github.com/lgili/PulsimGui.git
+git clone https://github.com/lgili/PulsimGUI.git
 cd PulsimGui
 python3 -m venv .venv
 source .venv/bin/activate
