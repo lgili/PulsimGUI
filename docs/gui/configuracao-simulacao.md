@@ -1,19 +1,19 @@
-# Configuração de Simulação
+# Simulation Configuration
 
-Esta página descreve os parâmetros reais expostos na janela **Simulation Settings** e no runtime de backend.
+This page describes the actual parameters exposed in **Simulation Settings** and backend runtime configuration.
 
-![Tela de Simulation Settings](../assets/images/simulation-settings.svg)
+![Simulation Settings screen](../assets/images/simulation-settings.svg)
 
 ## Solver & Time
 
-Parâmetros principais da análise transitória:
+Core transient analysis parameters:
 
 - `Integration method`:
   - `Auto (Backend default)`
   - `Trapezoidal`
   - `BDF1`, `BDF2`, `BDF3`, `BDF4`, `BDF5`
   - `Gear`, `TRBDF2`, `RosenbrockW`, `SDIRK2`
-- `Step mode`: `Fixed step` ou `Variable step`
+- `Step mode`: `Fixed step` or `Variable step`
 - `Start time`
 - `Step size`
 - `Stop time`
@@ -26,14 +26,14 @@ Parâmetros principais da análise transitória:
 - `Enable simulation event detection`
 - `Max step retries`
 - `Output points`
-- `Effective step` (calculado automaticamente)
-- Presets de duração: `1us` até `100ms`
+- `Effective step` (calculated automatically)
+- Duration presets: `1us` to `100ms`
 
 ## Advanced Section
 
 ### Transient Robustness
 
-- `Max iterations` (Newton por passo)
+- `Max iterations` (Newton iterations per step)
 - `Enable voltage limiting`
 - `Max voltage step`
 - `Enable robust transient retries`
@@ -47,29 +47,29 @@ Parâmetros principais da análise transitória:
   - `GMIN Stepping`
   - `Source Stepping`
   - `Pseudo-Transient`
-- `GMIN initial` / `GMIN final` (quando `GMIN Stepping`)
-- `Source steps` (quando `Source Stepping`)
+- `GMIN initial` / `GMIN final` (when using `GMIN Stepping`)
+- `Source steps` (when using `Source Stepping`)
 
 ## Backend Runtime (Preferences)
 
-![Tela de Backend Runtime](../assets/images/backend-runtime.svg)
+![Backend Runtime screen](../assets/images/backend-runtime.svg)
 
-No caminho `Preferences → Simulation`:
+Path: `Preferences → Simulation`
 
 - `Active backend`
 - `Version`, `Status`, `Location`, `Capabilities`
-- `Source`: `PyPI` ou `Local`
+- `Source`: `PyPI` or `Local`
 - `Target version`
 - `Local path`
 - `Auto-sync backend on startup`
 - `Install / Update Backend`
 
-## Perfil recomendado para começar
+## Recommended Starter Profile
 
-- Integração: `Auto`
+- Integration: `Auto`
 - `Step mode`: `Fixed step`
 - `Relative tolerance`: `1e-4`
 - `Absolute tolerance`: `1e-6`
 - `Output points`: `10000`
-- Robustez transitória: habilitada
-- Backend target: `v0.5.0`
+- Transient robustness: enabled
+- Backend target: `v0.5.2`

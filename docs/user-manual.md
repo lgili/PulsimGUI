@@ -1,56 +1,56 @@
-# Manual do Usuário
+# User Manual
 
-Guia operacional do PulsimGui para uso diário.
+Operational guide for day-to-day PulsimGui usage.
 
-## 1. Criar e editar esquemas
+## 1. Create and Edit Schematics
 
-### Inserção de componentes
+### Insert components
 
-- Arraste da biblioteca para a área central.
-- Ou use atalhos de teclado quando disponíveis (ex.: `R`, `C`, `L`, `V`, `G`).
+- Drag components from the library into the schematic canvas.
+- Or use keyboard shortcuts when available (for example: `R`, `C`, `L`, `V`, `G`).
 
-### Conexões
+### Wiring
 
-- Ative ferramenta de fio (`W`).
-- Clique no pino de origem, roteie e finalize no pino de destino.
-- Use junções para derivar nós.
+- Enable the wire tool (`W`).
+- Click the source pin, route the wire, and finish on the destination pin.
+- Use junctions to branch nodes.
 
-### Edição rápida
+### Quick editing
 
-- Seleção múltipla: `Ctrl + clique` ou caixa de seleção.
-- Mover: arraste.
-- Rotacionar: comando de rotação no esquema.
-- Excluir: `Delete`.
+- Multi-select: `Ctrl + click` or selection box.
+- Move: drag.
+- Rotate: use rotate action in the schematic.
+- Delete: `Delete`.
 
-## 2. Configurar parâmetros dos componentes
+## 2. Configure Component Parameters
 
-- Selecione o componente.
-- Edite no **Properties Panel**.
-- Use notação com prefixos SI quando aplicável (`k`, `m`, `u`, `n`).
+- Select a component.
+- Edit values in the **Properties Panel**.
+- Use SI prefixes when applicable (`k`, `m`, `u`, `n`).
 
-## 3. Executar simulação
+## 3. Run Simulation
 
-1. Abra `Simulation Settings`.
-2. Configure janela de tempo, método de integração e tolerâncias.
-3. Clique em **Run** (`F5`).
-4. Acompanhe progresso na barra de status.
+1. Open `Simulation Settings`.
+2. Configure time window, integration method, and tolerances.
+3. Click **Run** (`F5`).
+4. Monitor progress in the status bar.
 
-## 4. Analisar formas de onda
+## 4. Analyze Waveforms
 
-- Plote sinais de tensão/corrente no viewer.
-- Use zoom e pan para inspeção local.
-- Use cursores para medições de delta de tempo e amplitude.
-- Compare múltiplos sinais para análise de fase e dinâmica.
+- Plot voltage/current signals in the viewer.
+- Use zoom and pan for local inspection.
+- Use cursors for delta-time and amplitude measurements.
+- Compare multiple traces for phase and dynamic analysis.
 
-## 5. Gerenciar projetos
+## 5. Manage Projects
 
-- `File → Save` para persistir `.pulsim`.
-- Use exemplos como base para novos estudos.
-- Mantenha nomes de componentes/nós descritivos para facilitar debugging.
+- Use `File → Save` to persist `.pulsim` projects.
+- Use examples as starting points for new studies.
+- Keep descriptive component/node names to simplify debugging.
 
-## 6. Boas práticas
+## 6. Best Practices
 
-- Comece com topologia mínima e valide progressivamente.
-- Evite alterar muitos parâmetros de uma vez.
-- Ao investigar convergência, ajuste primeiro `step size`, `max step` e robustez transitória.
-- Mantenha backend fixado em `v0.5.0` em ambientes compartilhados.
+- Start with a minimal topology and validate incrementally.
+- Avoid changing many parameters at once.
+- For convergence issues, tune `step size`, `max step`, and transient robustness first.
+- Keep backend pinned to `v0.5.2` in shared environments.

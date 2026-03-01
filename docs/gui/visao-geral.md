@@ -1,39 +1,39 @@
-# Visão Geral da GUI
+# GUI Overview
 
-![Visão geral da GUI](../assets/images/gui-main.svg)
+![GUI overview](../assets/images/gui-main.svg)
 
-## Painéis principais
+## Main Panels
 
-1. **Library Panel**: catálogo de componentes e busca.
-2. **Schematic Editor**: área central para montagem do circuito.
-3. **Properties Panel**: edição de parâmetros do item selecionado.
-4. **Waveform Viewer**: inspeção de sinais e medições.
-5. **Status Bar**: estado de simulação, backend e mensagens.
+1. **Library Panel**: component catalog and search.
+2. **Schematic Editor**: central workspace to build the circuit.
+3. **Properties Panel**: parameter editing for the selected item.
+4. **Waveform Viewer**: signal inspection and measurements.
+5. **Status Bar**: simulation state, backend status, and messages.
 
-## Fluxo de trabalho típico
+## Typical Workflow
 
-1. Inserir componentes pela biblioteca.
-2. Conectar os pinos no esquema.
-3. Ajustar parâmetros elétricos.
-4. Configurar simulação.
-5. Executar e analisar formas de onda.
+1. Insert components from the library.
+2. Connect pins in the schematic.
+3. Configure electrical parameters.
+4. Configure simulation settings.
+5. Run and analyze waveforms.
 
-## Atalhos úteis
+## Useful Shortcuts
 
-| Ação | Atalho |
+| Action | Shortcut |
 | --- | --- |
-| Novo projeto | `Ctrl+N` |
-| Abrir projeto | `Ctrl+O` |
-| Salvar | `Ctrl+S` |
-| Rodar simulação | `F5` |
-| Parar simulação | `Shift+F5` |
-| Desfazer / Refazer | `Ctrl+Z` / `Ctrl+Y` |
-| Zoom para ajustar | `Ctrl+0` |
-| Ferramenta de fio | `W` |
+| New project | `Ctrl+N` |
+| Open project | `Ctrl+O` |
+| Save | `Ctrl+S` |
+| Run simulation | `F5` |
+| Stop simulation | `Shift+F5` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Zoom to fit | `Ctrl+0` |
+| Wire tool | `W` |
 
-## Janelas de configuração mais usadas
+## Most Used Configuration Windows
 
-- **Simulation Settings**: tempos, integração, tolerâncias e robustez.
-- **Preferences > Simulation**: backend ativo, runtime e versão alvo.
+- **Simulation Settings**: time window, integration, tolerances, and robustness.
+- **Preferences > Simulation**: active backend runtime and target version.
 
-![Tela de configuração de simulação](../assets/images/simulation-settings.svg)
+![Simulation settings screen](../assets/images/simulation-settings.svg)

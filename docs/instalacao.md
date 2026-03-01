@@ -1,35 +1,35 @@
-# Instalação e Execução
+# Installation and Run
 
-## Requisitos
+## Requirements
 
 - Python `>= 3.10`
 - `pip`
-- Ambiente virtual recomendado (`venv`)
+- Virtual environment recommended (`venv`)
 
-## Opção 1: Release (recomendado)
+## Option 1: Release (Recommended)
 
-Baixe o pacote da sua plataforma em [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
+Download your platform package from [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
 
-## Opção 2: Instalação via pip
+## Option 2: Install via pip
 
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install pulsimgui
 ```
 
-Executar:
+Run:
 
 ```bash
 pulsimgui
 ```
 
-ou:
+or:
 
 ```bash
 python3 -m pulsimgui
 ```
 
-## Opção 3: Rodar do código-fonte
+## Option 3: Run from source
 
 ```bash
 git clone https://github.com/lgili/PulsimGUI.git
@@ -41,37 +41,37 @@ python3 -m pip install -e ".[dev]"
 python3 -m pulsimgui
 ```
 
-## Validar backend ativo
+## Validate Active Backend
 
 ```bash
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-Valor esperado no projeto: `0.5.0`.
+Expected project baseline: `0.5.2`.
 
-## Configuração recomendada no app
+## Recommended In-App Runtime Settings
 
-Abra `Preferences → Simulation → Backend Runtime`:
+Open `Preferences → Simulation → Backend Runtime`:
 
 - `Source`: `PyPI`
-- `Target version`: `v0.5.0`
-- `Auto-sync backend on startup`: habilitado
+- `Target version`: `v0.5.2`
+- `Auto-sync backend on startup`: enabled
 
-## Problemas comuns
+## Common Issues
 
-### Erro de plugin Qt
+### Qt plugin error
 
 ```bash
 QT_QPA_PLATFORM=cocoa python3 -m pulsimgui
 ```
 
-No Linux headless:
+For headless Linux:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python3 -m pulsimgui
 ```
 
-### Backend indisponível
+### Backend unavailable
 
-- Confirme a instalação do `pulsim` no mesmo Python usado pelo app.
-- Reabra o app e use `Install / Update Backend` na tela de runtime.
+- Confirm `pulsim` is installed in the same Python environment used by the app.
+- Reopen the app and use `Install / Update Backend` in runtime settings.
