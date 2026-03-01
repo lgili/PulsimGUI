@@ -217,7 +217,7 @@ def test_converter_uses_virtual_component_for_unmapped_types() -> None:
 
     assert len(converted.virtual_components) == 1
     comp_type, name, nodes, numeric_params, metadata = converted.virtual_components[0]
-    assert comp_type == "BJT_NPN"
+    assert comp_type == "bjt_npn"
     assert name == "Q1"
     assert len(nodes) == 3
     assert numeric_params["beta"] == 120.0

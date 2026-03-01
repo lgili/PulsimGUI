@@ -113,7 +113,7 @@ class TestComponent:
         assert math_block.parameters["operation"] == "sum"
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
-        assert len(pwm.pins) == 1
+        assert len(pwm.pins) == 2
         assert pwm.parameters["frequency"] == 10000.0
 
         gain = Component(type=ComponentType.GAIN)
@@ -127,6 +127,10 @@ class TestComponent:
         subtractor = Component(type=ComponentType.SUBTRACTOR)
         assert len(subtractor.pins) == 3
         assert subtractor.parameters["signs"] == ["+", "-"]
+
+        # PWM exposes DUTY_IN for closed-loop signal control.
+        assert pwm.pins[0].name == "OUT"
+        assert pwm.pins[1].name == "DUTY_IN"
 
     def test_thermal_port_default_is_disabled(self):
         resistor = Component(type=ComponentType.RESISTOR)
