@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 from pulsimgui.models.component import ComponentType
 
@@ -12,29 +12,71 @@ class CircuitConversionError(RuntimeError):
 
 
 class CircuitConverter:
-    """Build Pulsim circuit objects from serialized GUI data."""
+    """Build Pulsim circuit objects from serialized GUI data.
+
+    Builds circuits directly using the Pulsim runtime Circuit API.
+    """
 
     def __init__(self, pulsim_module: Any) -> None:
         self._sl = pulsim_module
 
-    def build(self, circuit_data: dict) -> Any:
-        """Create a ``pulsim.Circuit`` instance from serialized schematic data."""
+    _INSTRUMENTATION_COMPONENTS = {
+        ComponentType.VOLTAGE_PROBE,
+        ComponentType.CURRENT_PROBE,
+        ComponentType.POWER_PROBE,
+        ComponentType.ELECTRICAL_SCOPE,
+        ComponentType.THERMAL_SCOPE,
+        ComponentType.SIGNAL_MUX,
+        ComponentType.SIGNAL_DEMUX,
+    }
 
-        circuit = self._sl.Circuit()
+    def build(self, circuit_data: dict) -> Any:
+        """Create a ``pulsim.Circuit`` instance from serialized schematic data.
+
+        Converts the GUI circuit data to Pulsim's runtime Circuit API.
+        """
         alias_map: dict[str, str] = circuit_data.get("node_aliases", {}) or {}
         components: list[dict] = circuit_data.get("components", []) or []
         node_map: dict[str, list[str]] = circuit_data.get("node_map", {}) or {}
 
         if not components:
-            return circuit
+            return self._sl.Circuit()
+
+        circuit = self._sl.Circuit()
+        node_cache: dict[str, int] = {}
+        positions_to_apply = []
+        resolved_components: list[tuple[dict, ComponentType, str, list[str]]] = []
 
         for component in components:
             comp_type = self._component_type(component.get("type"))
+            if self._should_skip_component(comp_type):
+                continue
             nodes = self._resolve_nodes(component, node_map, alias_map)
-            self._add_component(circuit, comp_type, component, nodes)
+            name = self._component_name(component, comp_type)
+            resolved_components.append((component, comp_type, name, nodes))
 
-        self._apply_positions(circuit, components)
+        # Some Pulsim versions expect all non-ground nodes to exist before devices are added.
+        self._predeclare_nodes(circuit, resolved_components, node_cache)
+
+        for component, comp_type, name, nodes in resolved_components:
+            if comp_type == ComponentType.GROUND:
+                continue
+
+            self._add_component(circuit, comp_type, name, component, nodes, node_cache)
+
+            if name and (component.get("x") is not None or component.get("y") is not None):
+                positions_to_apply.append((name, component))
+
+        self._apply_positions_from_list(circuit, positions_to_apply)
         return circuit
+
+    def _should_skip_component(self, comp_type: ComponentType) -> bool:
+        """Return True for GUI-only instrumentation components.
+
+        These blocks are used for measurement/visualization and should not
+        become physical devices in the backend netlist.
+        """
+        return comp_type in self._INSTRUMENTATION_COMPONENTS
 
     def _component_type(self, raw_type: str | None) -> ComponentType:
         if not raw_type:
@@ -81,94 +123,256 @@ class CircuitConverter:
         suffix = comp_id[:6] if comp_id else comp_type.name
         return f"{comp_type.name}_{suffix}"
 
+    def _node_name(self, node: str) -> str:
+        """Normalize node name for pulsim (ground is '0')."""
+        if node.lower() in ("0", "gnd"):
+            return "0"
+        return node
+
+    def _declare_node(self, circuit: Any, normalized: str) -> int:
+        if hasattr(circuit, "add_node"):
+            return circuit.add_node(normalized)
+        if hasattr(circuit, "get_node"):
+            idx = circuit.get_node(normalized)
+            if idx in (-1, None):
+                raise CircuitConversionError(
+                    "Backend Circuit API does not support creating new nodes dynamically."
+                )
+            return idx
+        raise CircuitConversionError(
+            "Backend Circuit API is missing both 'add_node' and 'get_node'."
+        )
+
+    def _predeclare_nodes(
+        self,
+        circuit: Any,
+        components: list[tuple[dict, ComponentType, str, list[str]]],
+        cache: dict[str, int],
+    ) -> None:
+        for _component, comp_type, _name, nodes in components:
+            if comp_type == ComponentType.GROUND:
+                continue
+            for node in nodes:
+                normalized = self._node_name(node)
+                if normalized == "0" or normalized in cache:
+                    continue
+                cache[normalized] = self._declare_node(circuit, normalized)
+
+    def _node_index(self, circuit: Any, name: str, cache: dict[str, int]) -> int:
+        """Resolve a node name into a Circuit node index, caching as needed."""
+        normalized = self._node_name(name)
+        if normalized == "0":
+            ground = getattr(circuit, "ground", None)
+            if callable(ground):
+                return int(ground())
+            if isinstance(ground, int):
+                return int(ground)
+            raise CircuitConversionError("Backend Circuit API does not expose a ground node.")
+        if normalized in cache:
+            return cache[normalized]
+        idx = self._declare_node(circuit, normalized)
+        cache[normalized] = idx
+        return idx
+
     def _add_component(
         self,
         circuit: Any,
         comp_type: ComponentType,
+        name: str,
         component: dict,
         nodes: list[str],
+        node_cache: dict[str, int],
     ) -> None:
-        name = self._component_name(component, comp_type)
         params = component.get("parameters", {}) or {}
 
         if comp_type == ComponentType.RESISTOR:
             n1, n2 = self._require_nodes(name, nodes, 2)
-            resistance = self._as_float(params.get("resistance"), default=1.0)
-            circuit.add_resistor(name, n1, n2, resistance)
+            circuit.add_resistor(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                self._as_float(params.get("resistance"), default=1.0),
+            )
             return
 
         if comp_type == ComponentType.CAPACITOR:
             n1, n2 = self._require_nodes(name, nodes, 2)
-            capacitance = self._as_float(params.get("capacitance"), default=1e-6)
-            ic = self._as_float(params.get("initial_voltage"), default=0.0)
-            circuit.add_capacitor(name, n1, n2, capacitance, ic=ic)
+            circuit.add_capacitor(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                self._as_float(params.get("capacitance"), default=1e-6),
+                self._as_float(params.get("initial_voltage"), default=0.0),
+            )
             return
 
         if comp_type == ComponentType.INDUCTOR:
             n1, n2 = self._require_nodes(name, nodes, 2)
-            inductance = self._as_float(params.get("inductance"), default=1e-3)
-            ic = self._as_float(params.get("initial_current"), default=0.0)
-            circuit.add_inductor(name, n1, n2, inductance, ic=ic)
+            circuit.add_inductor(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                self._as_float(params.get("inductance"), default=1e-3),
+                self._as_float(params.get("initial_current"), default=0.0),
+            )
             return
 
         if comp_type == ComponentType.VOLTAGE_SOURCE:
-            n_pos, n_neg = self._require_nodes(name, nodes, 2)
-            waveform = self._build_waveform(params.get("waveform"))
-            circuit.add_voltage_source(name, n_pos, n_neg, waveform)
+            npos, nneg = self._require_nodes(name, nodes, 2)
+            self._add_voltage_source(
+                circuit,
+                name,
+                self._node_index(circuit, npos, node_cache),
+                self._node_index(circuit, nneg, node_cache),
+                params.get("waveform") or {},
+            )
             return
 
         if comp_type == ComponentType.CURRENT_SOURCE:
-            n_pos, n_neg = self._require_nodes(name, nodes, 2)
-            waveform = self._build_waveform(params.get("waveform"))
-            circuit.add_current_source(name, n_pos, n_neg, waveform)
+            npos, nneg = self._require_nodes(name, nodes, 2)
+            self._add_current_source(
+                circuit,
+                name,
+                self._node_index(circuit, npos, node_cache),
+                self._node_index(circuit, nneg, node_cache),
+                params.get("waveform") or {},
+            )
             return
 
-        if comp_type == ComponentType.DIODE:
+        if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
-            diode_params = self._sl.DiodeParams()
-            self._assign_attributes(diode_params, params)
-            circuit.add_diode(name, n_anode, n_cathode, diode_params)
+            circuit.add_diode(
+                name,
+                self._node_index(circuit, n_anode, node_cache),
+                self._node_index(circuit, n_cathode, node_cache),
+            )
             return
 
         if comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
             drain, gate, source = self._require_nodes(name, nodes, 3)
             mosfet_params = self._sl.MOSFETParams()
-            mosfet_params.type = (
-                self._sl.MOSFETType.NMOS if comp_type == ComponentType.MOSFET_N else self._sl.MOSFETType.PMOS
-            )
+            mosfet_params.is_nmos = comp_type == ComponentType.MOSFET_N
             self._assign_attributes(mosfet_params, params)
-            circuit.add_mosfet(name, drain, gate, source, mosfet_params)
+            circuit.add_mosfet(
+                name,
+                self._node_index(circuit, gate, node_cache),
+                self._node_index(circuit, drain, node_cache),
+                self._node_index(circuit, source, node_cache),
+                mosfet_params,
+            )
             return
 
         if comp_type == ComponentType.IGBT:
             collector, gate, emitter = self._require_nodes(name, nodes, 3)
             igbt_params = self._sl.IGBTParams()
             self._assign_attributes(igbt_params, params)
-            circuit.add_igbt(name, collector, gate, emitter, igbt_params)
+            circuit.add_igbt(
+                name,
+                self._node_index(circuit, gate, node_cache),
+                self._node_index(circuit, collector, node_cache),
+                self._node_index(circuit, emitter, node_cache),
+                igbt_params,
+            )
             return
 
         if comp_type == ComponentType.TRANSFORMER:
             p1, p2, s1, s2 = self._require_nodes(name, nodes, 4)
-            transformer_params = self._sl.TransformerParams()
-            self._assign_attributes(transformer_params, params)
-            circuit.add_transformer(name, p1, p2, s1, s2, transformer_params)
-            return
-
-        if comp_type == ComponentType.GROUND:
-            # Ground symbols are implicit through node mapping (node "0").
+            circuit.add_transformer(
+                name,
+                self._node_index(circuit, p1, node_cache),
+                self._node_index(circuit, p2, node_cache),
+                self._node_index(circuit, s1, node_cache),
+                self._node_index(circuit, s2, node_cache),
+                self._as_float(params.get("turns_ratio"), default=1.0),
+            )
             return
 
         raise CircuitConversionError(
             f"Backend converter does not yet support component '{comp_type.name}'"
         )
 
-    def _apply_positions(self, circuit: Any, components: Iterable[dict]) -> None:
+    def _add_voltage_source(
+        self,
+        circuit: Any,
+        name: str,
+        npos: int,
+        nneg: int,
+        waveform: dict,
+    ) -> None:
+        kind = (waveform.get("type") or "dc").lower()
+
+        if kind == "dc":
+            circuit.add_voltage_source(
+                name,
+                npos,
+                nneg,
+                self._as_float(waveform.get("value"), default=0.0),
+            )
+            return
+
+        if kind == "sine":
+            params = self._sl.SineParams()
+            params.offset = self._as_float(waveform.get("offset"), default=0.0)
+            params.amplitude = self._as_float(waveform.get("amplitude"), default=1.0)
+            params.frequency = self._as_float(waveform.get("frequency"), default=60.0)
+            params.phase = self._as_float(waveform.get("phase"), default=0.0)
+            circuit.add_sine_voltage_source(name, npos, nneg, params)
+            return
+
+        if kind == "pulse":
+            params = self._sl.PulseParams()
+            params.v_initial = self._as_float(waveform.get("v1"), default=0.0)
+            params.v_pulse = self._as_float(waveform.get("v2"), default=5.0)
+            params.t_delay = self._as_float(waveform.get("delay"), default=0.0)
+            params.t_rise = self._as_float(waveform.get("rise_time"), default=1e-9)
+            params.t_fall = self._as_float(waveform.get("fall_time"), default=1e-9)
+            params.t_width = self._as_float(waveform.get("pulse_width"), default=1e-6)
+            params.period = self._as_float(waveform.get("period"), default=2e-6)
+            circuit.add_pulse_voltage_source(name, npos, nneg, params)
+            return
+
+        if kind == "pwm":
+            params = self._sl.PWMParams()
+            params.v_low = self._as_float(waveform.get("v_off"), default=0.0)
+            params.v_high = self._as_float(waveform.get("v_on"), default=5.0)
+            params.frequency = self._as_float(waveform.get("frequency"), default=1000.0)
+            params.duty = self._as_float(waveform.get("duty_cycle"), default=0.5)
+            params.dead_time = self._as_float(waveform.get("dead_time"), default=0.0)
+            params.phase = self._as_float(waveform.get("phase"), default=0.0)
+            params.rise_time = self._as_float(waveform.get("rise_time"), default=0.0)
+            params.fall_time = self._as_float(waveform.get("fall_time"), default=0.0)
+            circuit.add_pwm_voltage_source(name, npos, nneg, params)
+            return
+
+        raise CircuitConversionError(f"Unsupported voltage waveform '{kind}'")
+
+    def _add_current_source(
+        self,
+        circuit: Any,
+        name: str,
+        npos: int,
+        nneg: int,
+        waveform: dict,
+    ) -> None:
+        kind = (waveform.get("type") or "dc").lower()
+        if kind != "dc":
+            raise CircuitConversionError(
+                f"Current source waveform '{kind}' is not supported by the backend"
+            )
+        circuit.add_current_source(
+            name,
+            npos,
+            nneg,
+            self._as_float(waveform.get("value"), default=0.0),
+        )
+
+    def _apply_positions_from_list(
+        self, circuit: Any, positions: list[tuple[str, dict]]
+    ) -> None:
+        """Apply schematic positions to components."""
         if not hasattr(circuit, "set_position"):
             return
-        for component in components:
-            name = (component.get("name") or "").strip()
-            if not name:
-                continue
+        for name, component in positions:
             mirrored = bool(component.get("mirrored_h")) or bool(component.get("mirrored_v"))
             position = self._sl.SchematicPosition(
                 self._as_float(component.get("x"), default=0.0),
@@ -184,45 +388,6 @@ class CircuitConverter:
                 f"Component '{name}' expects {count} pins but only {len(nodes)} nodes were provided"
             )
         return nodes[:count]
-
-    def _build_waveform(self, spec: dict | None) -> Any:
-        if not spec:
-            return 0.0
-        kind = (spec.get("type") or "dc").lower()
-        if kind == "dc":
-            return self._as_float(spec.get("value"), default=0.0)
-        if kind == "sine":
-            wf = self._sl.SineWaveform()
-            wf.offset = self._as_float(spec.get("offset"), default=0.0)
-            wf.amplitude = self._as_float(spec.get("amplitude"), default=1.0)
-            wf.frequency = self._as_float(spec.get("frequency"), default=1000.0)
-            wf.phase = self._as_float(spec.get("phase"), default=0.0)
-            return wf
-        if kind == "pulse":
-            wf = self._sl.PulseWaveform()
-            wf.v1 = self._as_float(spec.get("v1"), default=0.0)
-            wf.v2 = self._as_float(spec.get("v2"), default=5.0)
-            wf.td = self._as_float(spec.get("delay"), default=0.0)
-            wf.tr = self._as_float(spec.get("rise_time"), default=1e-9)
-            wf.tf = self._as_float(spec.get("fall_time"), default=1e-9)
-            wf.pw = self._as_float(spec.get("pulse_width"), default=1e-6)
-            wf.period = self._as_float(spec.get("period"), default=2e-6)
-            return wf
-        if kind == "pwl":
-            wf = self._sl.PWLWaveform()
-            wf.points = [tuple(point) for point in spec.get("points", [])]
-            return wf
-        if kind == "pwm":
-            wf = self._sl.PWMWaveform()
-            wf.v_off = self._as_float(spec.get("v_off"), default=0.0)
-            wf.v_on = self._as_float(spec.get("v_on"), default=5.0)
-            wf.frequency = self._as_float(spec.get("frequency"), default=1000.0)
-            wf.duty = self._as_float(spec.get("duty_cycle"), default=0.5)
-            wf.dead_time = self._as_float(spec.get("dead_time"), default=0.0)
-            wf.phase = self._as_float(spec.get("phase"), default=0.0)
-            wf.complementary = bool(spec.get("complementary", False))
-            return wf
-        raise CircuitConversionError(f"Unsupported waveform type '{kind}'")
 
     def _assign_attributes(self, target: Any, values: dict) -> None:
         for key, value in values.items():

@@ -1,0 +1,46 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#1F2937"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="760" rx="18" fill="url(#bg)"/>
+  <rect x="24" y="24" width="1152" height="58" rx="10" fill="#0D9488"/>
+  <text x="44" y="60" fill="#F8FAFC" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700">Preferences - Simulation</text>
+
+  <rect x="24" y="98" width="1152" height="290" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="46" y="136" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="20" font-weight="700">Backend</text>
+  <text x="46" y="180" fill="#93C5FD" font-family="monospace" font-size="14">Active backend:</text>
+  <rect x="226" y="160" width="360" height="32" rx="7" fill="#1F2937"/>
+  <text x="242" y="181" fill="#E2E8F0" font-family="monospace" font-size="14">pulsim (python)</text>
+  <text x="46" y="220" fill="#93C5FD" font-family="monospace" font-size="14">Version: 0.3.3</text>
+  <text x="46" y="250" fill="#93C5FD" font-family="monospace" font-size="14">Status: available</text>
+  <text x="46" y="280" fill="#93C5FD" font-family="monospace" font-size="14">Location: /.../.venv/lib/python...</text>
+  <text x="46" y="310" fill="#93C5FD" font-family="monospace" font-size="14">Capabilities: transient, dc, ac, thermal</text>
+
+  <rect x="24" y="406" width="1152" height="330" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="46" y="444" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="20" font-weight="700">Backend Runtime</text>
+
+  <text x="46" y="488" fill="#93C5FD" font-family="monospace" font-size="14">Source:</text>
+  <rect x="226" y="468" width="220" height="32" rx="7" fill="#1F2937"/>
+  <text x="242" y="489" fill="#E2E8F0" font-family="monospace" font-size="14">PyPI</text>
+
+  <text x="46" y="530" fill="#93C5FD" font-family="monospace" font-size="14">Target version:</text>
+  <rect x="226" y="510" width="220" height="32" rx="7" fill="#1F2937"/>
+  <text x="242" y="531" fill="#E2E8F0" font-family="monospace" font-size="14">v0.3.3</text>
+
+  <text x="46" y="572" fill="#93C5FD" font-family="monospace" font-size="14">Local path:</text>
+  <rect x="226" y="552" width="620" height="32" rx="7" fill="#1F2937"/>
+  <text x="242" y="573" fill="#64748B" font-family="monospace" font-size="14">Path to PulsimCore checkout</text>
+  <rect x="858" y="552" width="96" height="32" rx="7" fill="#334155"/>
+  <text x="886" y="573" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="14">Browse</text>
+
+  <rect x="226" y="596" width="20" height="20" rx="4" fill="#0D9488"/>
+  <text x="256" y="612" fill="#E2E8F0" font-family="Helvetica, Arial, sans-serif" font-size="14">Auto-sync backend on startup</text>
+
+  <rect x="226" y="632" width="240" height="40" rx="8" fill="#0D9488"/>
+  <text x="262" y="657" fill="#ECFEFF" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Install / Update Backend</text>
+
+  <text x="486" y="657" fill="#94A3B8" font-family="monospace" font-size="14">Runtime status: Backend installed successfully.</text>
+</svg>

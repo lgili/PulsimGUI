@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from pulsimgui.services.theme_service import Theme
+
 
 class MinimapWidget(QFrame):
     """Minimap showing overview of schematic with viewport indicator."""
@@ -18,37 +20,90 @@ class MinimapWidget(QFrame):
     navigation_requested = Signal(float, float)  # Scene x, y coordinates
 
     # Minimap settings
-    SIZE = 150  # Widget size in pixels
-    PADDING = 4
-    VIEWPORT_COLOR = QColor(0, 120, 215, 80)
-    VIEWPORT_BORDER = QColor(0, 120, 215, 200)
-    COMPONENT_COLOR = QColor(100, 100, 100)
-    WIRE_COLOR = QColor(0, 120, 80, 150)
-    BACKGROUND = QColor(250, 250, 250)
+    SIZE = 160  # Widget size in pixels
+    PADDING = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("MinimapWidgetRoot")
         self._source_view: QGraphicsView | None = None
         self._scene_rect = QRectF()
         self._viewport_rect = QRectF()
         self._scale = 1.0
         self._offset = QPointF()
         self._dragging = False
+        self._dark_mode = False
+        self._theme: Theme | None = None
+
+        # Theme-aware colors (will be updated)
+        self._update_colors()
 
         self.setFixedSize(self.SIZE, self.SIZE)
-        self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Sunken)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._apply_styles()
 
+    def _update_colors(self) -> None:
+        """Update colors based on dark mode setting."""
+        if self._theme is not None:
+            c = self._theme.colors
+            self.VIEWPORT_COLOR = QColor(c.overlay_minimap_viewport_fill)
+            self.VIEWPORT_BORDER = QColor(c.overlay_minimap_viewport_border)
+            self.COMPONENT_COLOR = QColor(c.foreground_muted)
+            self.WIRE_COLOR = QColor(c.schematic_wire)
+            self.WIRE_COLOR.setAlpha(160)
+            self.BACKGROUND = QColor(c.plot_background)
+            self.BORDER_COLOR = QColor(c.panel_border)
+            self.PLACEHOLDER_TEXT = QColor(c.foreground_muted)
+            return
+
+        if self._dark_mode:
+            self.VIEWPORT_COLOR = QColor(88, 166, 255, 60)
+            self.VIEWPORT_BORDER = QColor(88, 166, 255, 180)
+            self.COMPONENT_COLOR = QColor(180, 180, 180)
+            self.WIRE_COLOR = QColor(63, 185, 80, 150)
+            self.BACKGROUND = QColor(22, 27, 34)
+            self.BORDER_COLOR = QColor(48, 54, 61)
+        else:
+            self.VIEWPORT_COLOR = QColor(37, 99, 235, 50)
+            self.VIEWPORT_BORDER = QColor(37, 99, 235, 180)
+            self.COMPONENT_COLOR = QColor(120, 120, 120)
+            self.WIRE_COLOR = QColor(5, 150, 105, 150)
+            self.BACKGROUND = QColor(255, 255, 255)
+            self.BORDER_COLOR = QColor(229, 231, 235)
+        self.PLACEHOLDER_TEXT = QColor(180, 180, 180) if self._dark_mode else QColor(120, 120, 120)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply the active theme directly to minimap visuals."""
+        self._theme = theme
+        self._dark_mode = theme.is_dark
+        self._update_colors()
+        self._apply_styles()
+        self.update()
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Set dark mode and update colors."""
+        self._theme = None
+        self._dark_mode = dark
+        self._update_colors()
+        self._apply_styles()
+        self.update()
+
     def _apply_styles(self) -> None:
         """Apply modern styling."""
-        self.setStyleSheet("""
-            MinimapWidget {
-                background-color: #fafafa;
-                border: 1px solid #e5e7eb;
-                border-radius: 6px;
-            }
+        if self._theme is not None:
+            bg = self._theme.colors.plot_background
+            border = self._theme.colors.panel_border
+        else:
+            bg = "#161b22" if self._dark_mode else "#ffffff"
+            border = "#30363d" if self._dark_mode else "#e5e7eb"
+        self.setStyleSheet(f"""
+            QFrame#MinimapWidgetRoot {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
         """)
 
     def set_source_view(self, view: QGraphicsView) -> None:
@@ -106,7 +161,7 @@ class MinimapWidget(QFrame):
 
         if not self._source_view or not self._source_view.scene():
             # Draw placeholder
-            painter.setPen(QPen(QColor(200, 200, 200)))
+            painter.setPen(QPen(self.PLACEHOLDER_TEXT))
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
@@ -199,6 +254,9 @@ class MinimapOverlay(QWidget):
         self._minimap.navigation_requested.connect(self.navigation_requested)
         layout.addWidget(self._minimap)
 
+        # Adjust size to account for shadow/border
+        self.setFixedSize(MinimapWidget.SIZE + 4, MinimapWidget.SIZE + 4)
+
     def set_source_view(self, view: QGraphicsView) -> None:
         """Set the source graphics view."""
         self._minimap.set_source_view(view)
@@ -206,3 +264,11 @@ class MinimapOverlay(QWidget):
     def update_minimap(self) -> None:
         """Update the minimap display."""
         self._minimap.update_minimap()
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Set dark mode for the minimap."""
+        self._minimap.set_dark_mode(dark)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme to the embedded minimap widget."""
+        self._minimap.apply_theme(theme)

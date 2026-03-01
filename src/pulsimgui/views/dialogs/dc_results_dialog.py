@@ -1,10 +1,15 @@
 """DC operating point results dialog."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
+    QFormLayout,
     QTabWidget,
     QWidget,
     QTableWidget,
@@ -21,13 +26,22 @@ from pulsimgui.services.simulation_service import DCResult
 from pulsimgui.utils.si_prefix import format_si_value
 from pulsimgui.views.widgets import StatusBanner
 
+if TYPE_CHECKING:
+    from pulsimgui.services.backend_types import ConvergenceInfo
+
 
 class DCResultsDialog(QDialog):
     """Dialog for displaying DC operating point results."""
 
-    def __init__(self, result: DCResult, parent=None):
+    def __init__(
+        self,
+        result: DCResult,
+        convergence_info: "ConvergenceInfo | None" = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._result = result
+        self._convergence_info = convergence_info
 
         self.setWindowTitle("DC Operating Point Results")
         self.setMinimumSize(500, 400)
@@ -88,12 +102,41 @@ class DCResultsDialog(QDialog):
 
         self._tabs.addTab(power_widget, "Power Dissipation")
 
+        # Convergence info tab (when available)
+        if self._convergence_info is not None:
+            convergence_widget = self._create_convergence_tab()
+            self._tabs.addTab(convergence_widget, "Convergence")
+
         # Buttons
         button_layout = QHBoxLayout()
 
         export_btn = QPushButton("Export to CSV...")
         export_btn.clicked.connect(self._export_csv)
         button_layout.addWidget(export_btn)
+
+        # Diagnostics button (shown when convergence info is available)
+        if self._convergence_info is not None:
+            diagnostics_btn = QPushButton("Diagnostics...")
+            diagnostics_btn.setToolTip("View detailed convergence diagnostics")
+            diagnostics_btn.clicked.connect(self._show_diagnostics)
+
+            # Style differently for failed convergence
+            if not self._convergence_info.converged:
+                diagnostics_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #fef2f2;
+                        border: 1px solid #fca5a5;
+                        color: #991b1b;
+                        font-weight: 600;
+                        padding: 6px 12px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #fee2e2;
+                        border-color: #f87171;
+                    }
+                """)
+            button_layout.addWidget(diagnostics_btn)
 
         button_layout.addStretch()
 
@@ -145,6 +188,85 @@ class DCResultsDialog(QDialog):
             }
         """)
         return table
+
+    def _create_convergence_tab(self) -> QWidget:
+        """Create the convergence info tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        if self._convergence_info is None:
+            return widget
+
+        info = self._convergence_info
+
+        # Key metrics group
+        metrics_group = QGroupBox("Solver Metrics")
+        metrics_layout = QFormLayout(metrics_group)
+
+        # Status
+        status_label = QLabel()
+        if info.converged:
+            status_label.setText("<span style='color: #16a34a; font-weight: 600;'>Converged</span>")
+        else:
+            status_label.setText("<span style='color: #dc2626; font-weight: 600;'>Did Not Converge</span>")
+        metrics_layout.addRow("Status:", status_label)
+
+        # Iterations
+        metrics_layout.addRow("Iterations:", QLabel(str(info.iterations)))
+
+        # Final residual
+        metrics_layout.addRow("Final Residual:", QLabel(f"{info.final_residual:.2e}"))
+
+        # Strategy
+        strategy_display = info.strategy_used.replace("_", " ").title()
+        metrics_layout.addRow("Strategy:", QLabel(strategy_display))
+
+        # Trend (if available)
+        if info.history:
+            trend = info.trend
+            trend_colors = {
+                "converging": "#16a34a",
+                "stalling": "#ca8a04",
+                "diverging": "#dc2626",
+                "unknown": "#6b7280",
+            }
+            color = trend_colors.get(trend, "#6b7280")
+            trend_label = QLabel(f"<span style='color: {color};'>{trend.title()}</span>")
+            metrics_layout.addRow("Trend:", trend_label)
+
+        layout.addWidget(metrics_group)
+
+        # Summary card
+        if info.converged:
+            summary_text = f"DC operating point found in {info.iterations} iterations."
+            summary_style = """
+                QLabel {
+                    background-color: #f0fdf4;
+                    border: 1px solid #86efac;
+                    border-radius: 6px;
+                    padding: 12px;
+                    color: #166534;
+                }
+            """
+        else:
+            summary_text = info.failure_reason or "Solver did not converge within iteration limit."
+            summary_style = """
+                QLabel {
+                    background-color: #fef2f2;
+                    border: 1px solid #fecaca;
+                    border-radius: 6px;
+                    padding: 12px;
+                    color: #991b1b;
+                }
+            """
+
+        summary_label = QLabel(summary_text)
+        summary_label.setWordWrap(True)
+        summary_label.setStyleSheet(summary_style)
+        layout.addWidget(summary_label)
+
+        layout.addStretch()
+        return widget
 
     def _populate_tables(self) -> None:
         """Populate all result tables."""
@@ -203,3 +325,15 @@ class DCResultsDialog(QDialog):
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.critical(self, "Export Error", f"Failed to export: {e}")
+
+    def _show_diagnostics(self) -> None:
+        """Show the convergence diagnostics dialog."""
+        if self._convergence_info is None:
+            return
+
+        from pulsimgui.views.dialogs.convergence_diagnostics_dialog import (
+            ConvergenceDiagnosticsDialog,
+        )
+
+        dialog = ConvergenceDiagnosticsDialog(self._convergence_info, parent=self)
+        dialog.exec()

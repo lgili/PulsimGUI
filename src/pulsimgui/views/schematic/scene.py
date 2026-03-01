@@ -78,14 +78,8 @@ class SchematicScene(QGraphicsScene):
         self.update()
 
     def set_dark_mode(self, dark: bool) -> None:
-        """Set dark mode for grid colors and update all components."""
+        """Set dark-mode-dependent rendering behavior for scene items."""
         self._dark_mode = dark
-        if dark:
-            self._background_color = QColor(30, 30, 30)
-            self._grid_color = QColor(60, 60, 60)
-        else:
-            self._background_color = QColor(255, 255, 255)
-            self._grid_color = QColor(180, 180, 180)
 
         # Update all component items
         from pulsimgui.views.schematic.items import ComponentItem, WireItem
@@ -206,6 +200,50 @@ class SchematicScene(QGraphicsScene):
             wire_item = WireItem(wire)
             wire_item.set_dark_mode(self._dark_mode)
             self.addItem(wire_item)
+
+        # Update connection indicators for all wires
+        self._update_wire_connection_indicators()
+
+    def _update_wire_connection_indicators(self) -> None:
+        """Update connection indicators for all wires in the scene.
+
+        Finds wire endpoints that are connected to component pins and marks
+        them with visual indicators.
+        """
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+
+        if self._circuit is None:
+            return
+
+        PIN_HIT_TOLERANCE = 5.0
+
+        # Collect all component pin positions
+        pin_positions: list[tuple[float, float]] = []
+        for component in self._circuit.components.values():
+            for pin_idx in range(len(component.pins)):
+                pos = component.get_pin_position(pin_idx)
+                pin_positions.append(pos)
+
+        # For each wire item, find endpoints that are connected to pins
+        for item in self.items():
+            if not isinstance(item, WireItem):
+                continue
+
+            wire = item.wire
+            connected: set[tuple[float, float]] = set()
+
+            # Check all wire segment endpoints
+            for seg in wire.segments:
+                for pos in ((seg.x1, seg.y1), (seg.x2, seg.y2)):
+                    # Check if this position is near any pin
+                    for pin_pos in pin_positions:
+                        dx = abs(pos[0] - pin_pos[0])
+                        dy = abs(pos[1] - pin_pos[1])
+                        if dx < PIN_HIT_TOLERANCE and dy < PIN_HIT_TOLERANCE:
+                            connected.add((pos[0], pos[1]))
+                            break
+
+            item.set_connected_endpoints(connected)
 
     def add_component(self, component) -> None:
         """Add a component to the scene."""

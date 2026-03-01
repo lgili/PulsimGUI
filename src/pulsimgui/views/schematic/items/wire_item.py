@@ -18,21 +18,24 @@ class WireItem(QGraphicsPathItem):
     Features:
     - Orthogonal (right-angle) routing
     - Junction dots where wires connect
+    - Connection indicators at component pins
     - Selection highlighting with glow
     - Hover effects
     """
 
-    LINE_WIDTH = 2.0
-    LINE_WIDTH_HOVER = 3.0
-    LINE_WIDTH_SELECTED = 2.5
-    LINE_COLOR = QColor(0, 120, 80)  # Teal green - more visible
-    LINE_COLOR_DARK = QColor(80, 200, 140)  # Light teal for dark mode
-    HOVER_COLOR = QColor(0, 180, 120)  # Brighter on hover
-    HOVER_COLOR_DARK = QColor(100, 230, 160)
-    SELECTED_COLOR = QColor(0, 120, 215)
-    SELECTED_GLOW = QColor(0, 120, 215, 60)  # Semi-transparent for glow
-    JUNCTION_RADIUS = 4.0
-    JUNCTION_RADIUS_HOVER = 5.0
+    LINE_WIDTH = 2.5  # Slightly thicker for better visibility
+    LINE_WIDTH_HOVER = 3.5
+    LINE_WIDTH_SELECTED = 3.0
+    LINE_COLOR = QColor(16, 185, 129)  # Emerald green - modern and visible
+    LINE_COLOR_DARK = QColor(52, 211, 153)  # Light emerald for dark mode
+    HOVER_COLOR = QColor(5, 150, 105)  # Darker on hover
+    HOVER_COLOR_DARK = QColor(110, 231, 183)
+    SELECTED_COLOR = QColor(59, 130, 246)  # Blue to match component selection
+    SELECTED_GLOW = QColor(59, 130, 246, 60)  # Semi-transparent for glow
+    JUNCTION_RADIUS = 6.0
+    JUNCTION_RADIUS_HOVER = 7.0
+    CONNECTION_RADIUS = 5.0  # Connection indicator circles
+    CONNECTION_RADIUS_HOVER = 6.5
 
     def __init__(self, wire: Wire, parent=None):
         super().__init__(parent)
@@ -40,6 +43,9 @@ class WireItem(QGraphicsPathItem):
         self._wire = wire
         self._dark_mode = False
         self._hovered = False
+
+        # Connected endpoints - positions where wire connects to component pins
+        self._connected_endpoints: set[tuple[float, float]] = set()
 
         # Segment dragging state
         self._dragging_segment: int | None = None  # Index of segment being dragged
@@ -64,6 +70,25 @@ class WireItem(QGraphicsPathItem):
     def set_dark_mode(self, dark: bool) -> None:
         """Set dark mode colors."""
         self._dark_mode = dark
+        self.update()
+
+    def set_connected_endpoints(self, endpoints: set[tuple[float, float]]) -> None:
+        """Set the positions where this wire connects to component pins.
+
+        These positions will be marked with a small circle to indicate
+        a valid connection.
+        """
+        self._connected_endpoints = endpoints
+        self.update()
+
+    def add_connected_endpoint(self, x: float, y: float) -> None:
+        """Add a single connected endpoint position."""
+        self._connected_endpoints.add((x, y))
+        self.update()
+
+    def clear_connected_endpoints(self) -> None:
+        """Clear all connected endpoint indicators."""
+        self._connected_endpoints.clear()
         self.update()
 
     def _rebuild_path(self) -> None:
@@ -95,6 +120,27 @@ class WireItem(QGraphicsPathItem):
         self._hovered = False
         self.update()
         super().hoverLeaveEvent(event)
+
+    def boundingRect(self) -> QRectF:
+        """Return bounding rect that includes connection indicators and junctions.
+
+        The default QGraphicsPathItem bounding rect only covers the path itself.
+        We need to expand it to include the circles drawn at connection points
+        and junctions, plus the glow effects.
+        """
+        base_rect = super().boundingRect()
+        if base_rect.isEmpty():
+            return base_rect
+
+        # Calculate maximum radius we might draw (connection indicator + shadow)
+        max_radius = max(
+            self.CONNECTION_RADIUS_HOVER + 2,  # Connection + shadow
+            self.JUNCTION_RADIUS_HOVER + 2,     # Junction + shadow
+            self.LINE_WIDTH_HOVER + 6           # Selection glow
+        )
+
+        # Expand rect to include circles and glows
+        return base_rect.adjusted(-max_radius, -max_radius, max_radius, max_radius)
 
     def shape(self) -> QPainterPath:
         """Return a wider shape for easier selection."""
@@ -156,16 +202,23 @@ class WireItem(QGraphicsPathItem):
         painter.setPen(main_pen)
         painter.drawPath(self.path())
 
-        # Draw junction dots
+        # Draw junction dots with shadow effect
         junction_radius = self.JUNCTION_RADIUS_HOVER if (is_hovered or is_selected) else self.JUNCTION_RADIUS
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.PenStyle.NoPen)
         for junction in self._wire.junctions:
-            painter.drawEllipse(
-                QPointF(junction[0], junction[1]),
-                junction_radius,
-                junction_radius,
-            )
+            jpt = QPointF(junction[0], junction[1])
+            # Draw subtle shadow/outline (darker color behind)
+            shadow_color = QColor(color)
+            shadow_color.setAlpha(80)
+            painter.setBrush(QBrush(shadow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(jpt, junction_radius + 2, junction_radius + 2)
+            # Draw main junction dot
+            painter.setBrush(QBrush(color))
+            painter.setPen(QPen(color.darker(120), 1.5))
+            painter.drawEllipse(jpt, junction_radius, junction_radius)
+
+        # Draw connection indicators at wire-to-pin connections (always visible)
+        self._draw_connection_indicators(painter, color, is_hovered or is_selected)
 
         # Draw endpoint dots for better visibility
         if is_hovered or is_selected:
@@ -191,6 +244,42 @@ class WireItem(QGraphicsPathItem):
         painter.drawEllipse(start, radius, radius)
         painter.drawEllipse(end, radius, radius)
 
+    def _draw_connection_indicators(
+        self, painter: QPainter, color: QColor, is_highlighted: bool
+    ) -> None:
+        """Draw connection indicator circles at points where wire connects to component pins.
+
+        These indicators help users see when a wire is actually connected to a component
+        versus just passing near it. Uses a distinctive white center with colored ring
+        style for maximum visibility.
+        """
+        if not self._connected_endpoints:
+            return
+
+        radius = self.CONNECTION_RADIUS_HOVER if is_highlighted else self.CONNECTION_RADIUS
+
+        for endpoint in self._connected_endpoints:
+            pt = QPointF(endpoint[0], endpoint[1])
+
+            # Draw outer glow/shadow for depth
+            glow_color = QColor(color)
+            glow_color.setAlpha(80)
+            painter.setBrush(QBrush(glow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(pt, radius + 3, radius + 3)
+
+            # Draw colored ring (the main visible element)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(color, 2.5))
+            painter.drawEllipse(pt, radius, radius)
+
+            # Draw white/bright center dot for contrast
+            inner_radius = max(2.0, radius - 2.5)
+            center_color = QColor(255, 255, 255) if not self._dark_mode else QColor(240, 240, 240)
+            painter.setBrush(QBrush(center_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(pt, inner_radius, inner_radius)
+
     def add_junction(self, x: float, y: float) -> None:
         """Add a junction point to the wire."""
         self._wire.junctions.append((x, y))
@@ -215,19 +304,13 @@ class WireItem(QGraphicsPathItem):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        """Drag the wire segment."""
+        """Drag the wire segment - fluid movement without grid snapping."""
         if self._dragging_segment is not None and self._drag_start_pos is not None:
             pos = event.pos()
             delta = pos - self._drag_start_pos
 
-            # Snap delta to grid
-            scene = self.scene()
-            grid_size = 20.0
-            if scene is not None and hasattr(scene, 'grid_size'):
-                grid_size = scene.grid_size
-
-            # Move the segment based on its orientation
-            self._move_segment(self._dragging_segment, delta, grid_size)
+            # Move segment fluidly (no grid snapping during drag)
+            self._move_segment_fluid(self._dragging_segment, delta)
             self._drag_start_pos = pos
             self._rebuild_path()
             self.update()
@@ -235,13 +318,15 @@ class WireItem(QGraphicsPathItem):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        """Finish dragging."""
+        """Finish dragging - snap to grid on release."""
         if event.button() == Qt.MouseButton.LeftButton:
             if self._dragging_segment is not None:
                 self._dragging_segment = None
                 self._drag_start_pos = None
                 self._drag_orientation = None
                 self.setCursor(Qt.CursorShape.ArrowCursor)
+                # Snap all points to grid on release
+                self._snap_all_to_grid()
                 # Clean up any zero-length segments
                 self._cleanup_segments()
                 self._rebuild_path()
@@ -279,14 +364,14 @@ class WireItem(QGraphicsPathItem):
         dist = ((x - proj_x) ** 2 + (y - proj_y) ** 2) ** 0.5
         return dist <= tolerance
 
-    def _move_segment(self, seg_idx: int, delta: QPointF, grid_size: float) -> None:
+    def _move_segment_fluid(self, seg_idx: int, delta: QPointF) -> None:
         """
-        Move a segment and adjust adjacent segments to maintain connectivity.
+        Move a segment fluidly (no grid snapping) and stretch adjacent segments.
 
-        For orthogonal wires:
-        - Moving a horizontal segment changes its Y position
-        - Moving a vertical segment changes its X position
-        - Adjacent segments stretch/shrink to stay connected
+        The segment moves in the direction the user drags:
+        - Horizontal segments move vertically (up/down)
+        - Vertical segments move horizontally (left/right)
+        Adjacent segments stretch to stay connected.
         """
         if seg_idx < 0 or seg_idx >= len(self._wire.segments):
             return
@@ -295,41 +380,55 @@ class WireItem(QGraphicsPathItem):
         is_horizontal = abs(seg.x2 - seg.x1) > abs(seg.y2 - seg.y1)
 
         if is_horizontal:
-            # Horizontal segment - move in Y direction only
-            dy = round(delta.y() / grid_size) * grid_size
-            if dy == 0:
-                return
-
+            # Horizontal segment - move in Y direction
+            dy = delta.y()
             seg.y1 += dy
             seg.y2 += dy
 
-            # Adjust previous segment's end point (if exists)
+            # Stretch previous segment (if exists)
             if seg_idx > 0:
                 prev_seg = self._wire.segments[seg_idx - 1]
                 prev_seg.y2 = seg.y1
 
-            # Adjust next segment's start point (if exists)
+            # Stretch next segment (if exists)
             if seg_idx < len(self._wire.segments) - 1:
                 next_seg = self._wire.segments[seg_idx + 1]
                 next_seg.y1 = seg.y2
         else:
-            # Vertical segment - move in X direction only
-            dx = round(delta.x() / grid_size) * grid_size
-            if dx == 0:
-                return
-
+            # Vertical segment - move in X direction
+            dx = delta.x()
             seg.x1 += dx
             seg.x2 += dx
 
-            # Adjust previous segment's end point (if exists)
+            # Stretch previous segment (if exists)
             if seg_idx > 0:
                 prev_seg = self._wire.segments[seg_idx - 1]
                 prev_seg.x2 = seg.x1
 
-            # Adjust next segment's start point (if exists)
+            # Stretch next segment (if exists)
             if seg_idx < len(self._wire.segments) - 1:
                 next_seg = self._wire.segments[seg_idx + 1]
                 next_seg.x1 = seg.x2
+
+    def _snap_all_to_grid(self) -> None:
+        """Snap all segment points to the grid."""
+        scene = self.scene()
+        grid_size = 20.0
+        if scene is not None and hasattr(scene, 'grid_size'):
+            grid_size = scene.grid_size
+
+        for seg in self._wire.segments:
+            seg.x1 = round(seg.x1 / grid_size) * grid_size
+            seg.y1 = round(seg.y1 / grid_size) * grid_size
+            seg.x2 = round(seg.x2 / grid_size) * grid_size
+            seg.y2 = round(seg.y2 / grid_size) * grid_size
+
+        # Fix connectivity after snapping
+        for i in range(len(self._wire.segments) - 1):
+            curr_seg = self._wire.segments[i]
+            next_seg = self._wire.segments[i + 1]
+            next_seg.x1 = curr_seg.x2
+            next_seg.y1 = curr_seg.y2
 
     def _cleanup_segments(self) -> None:
         """Remove zero-length segments and merge collinear segments."""
@@ -612,7 +711,7 @@ def calculate_orthogonal_path(
 class WireInProgressItem(QGraphicsPathItem):
     """Item showing confirmed wire segments while still drawing."""
 
-    CONFIRMED_COLOR = QColor(0, 150, 100)  # Teal for confirmed segments
+    CONFIRMED_COLOR = QColor(5, 150, 105)  # Darker emerald for confirmed segments
     CONFIRMED_WIDTH = 2.5
 
     def __init__(self, parent=None):
@@ -723,8 +822,8 @@ def calculate_all_route_options(
 class WirePreviewItem(QGraphicsPathItem):
     """Preview item shown while drawing a wire."""
 
-    PREVIEW_COLOR = QColor(80, 140, 255)  # Brighter blue
-    PREVIEW_WIDTH = 2.0
+    PREVIEW_COLOR = QColor(16, 185, 129)  # Match wire emerald green
+    PREVIEW_WIDTH = 2.5
 
     def __init__(self, start: QPointF, parent=None):
         super().__init__(parent)

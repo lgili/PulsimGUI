@@ -10,6 +10,7 @@ No additional installation is required on the target machine.
 """
 
 import argparse
+import os
 import platform
 import shutil
 import subprocess
@@ -26,6 +27,10 @@ HOOKS_DIR = PROJECT_ROOT / "hooks"
 
 def get_version() -> str:
     """Get version from pyproject.toml."""
+    env_version = os.environ.get("PULSIMGUI_VERSION", "").strip()
+    if env_version:
+        return env_version.lstrip("v")
+
     pyproject = PROJECT_ROOT / "pyproject.toml"
     with open(pyproject) as f:
         for line in f:
@@ -106,17 +111,8 @@ def build_macos_dmg(app_path: Path) -> Path:
     version = get_version()
     dmg_path = DIST_DIR / f"PulsimGui-{version}-macos.dmg"
 
-    # Use dmgbuild if available, otherwise use hdiutil
-    try:
-        import dmgbuild
-        settings = PACKAGING_DIR / "macos" / "dmg_settings.json"
-        dmgbuild.build_dmg(
-            str(dmg_path),
-            "PulsimGui",
-            settings=str(settings) if settings.exists() else None,
-        )
-    except ImportError:
-        # Fallback to hdiutil
+    def _build_with_hdiutil() -> None:
+        """Fallback DMG creation using macOS native tooling."""
         subprocess.run([
             "hdiutil", "create",
             "-volname", "PulsimGui",
@@ -125,6 +121,20 @@ def build_macos_dmg(app_path: Path) -> Path:
             "-format", "UDZO",
             str(dmg_path),
         ], check=True)
+
+    # Use dmgbuild when correctly configured, otherwise fall back to hdiutil.
+    try:
+        import dmgbuild
+        settings_file = PACKAGING_DIR / "macos" / "dmg_settings.py"
+        if settings_file.exists():
+            # Third positional arg is the settings-file path expected by dmgbuild.
+            dmgbuild.build_dmg(str(dmg_path), "PulsimGui", str(settings_file))
+        else:
+            print("  dmgbuild settings file not found, using hdiutil fallback.")
+            _build_with_hdiutil()
+    except Exception as exc:
+        print(f"  dmgbuild failed ({exc!s}), using hdiutil fallback.")
+        _build_with_hdiutil()
 
     print(f"Created: {dmg_path}")
     return dmg_path
@@ -202,15 +212,74 @@ exec "${HERE}/usr/bin/pulsimgui" "$@"
     appimagetool = BUILD_DIR / "appimagetool"
     if not appimagetool.exists():
         print("  Downloading appimagetool...")
-        subprocess.run([
-            "wget", "-q",
+
+        def _download_with_available_tool(url: str, destination: Path) -> None:
+            """Download a file using curl/wget, whichever is available."""
+            commands: list[list[str]] = []
+            if shutil.which("curl"):
+                commands.append([
+                    "curl",
+                    "-fL",
+                    "--retry", "5",
+                    "--retry-delay", "2",
+                    "--connect-timeout", "20",
+                    url,
+                    "-o",
+                    str(destination),
+                ])
+            if shutil.which("wget"):
+                commands.append([
+                    "wget",
+                    "-q",
+                    "--tries=5",
+                    "--timeout=20",
+                    "-O",
+                    str(destination),
+                    url,
+                ])
+
+            if not commands:
+                raise RuntimeError("Neither curl nor wget is available for downloading appimagetool.")
+
+            last_error: Exception | None = None
+            for command in commands:
+                try:
+                    subprocess.run(command, check=True)
+                    return
+                except Exception as exc:  # pragma: no cover - tool availability depends on host
+                    last_error = exc
+            raise RuntimeError(f"Failed to download appimagetool from {url}: {last_error}")
+
+        download_urls = [
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage",
+            # Legacy fallback URL
             "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage",
-            "-O", str(appimagetool),
-        ], check=True)
+        ]
+
+        download_error: Exception | None = None
+        for url in download_urls:
+            try:
+                _download_with_available_tool(url, appimagetool)
+                download_error = None
+                break
+            except Exception as exc:  # pragma: no cover - depends on remote availability
+                download_error = exc
+                if appimagetool.exists():
+                    appimagetool.unlink()
+                print(f"  Download from {url} failed: {exc}")
+
+        if download_error is not None:
+            raise RuntimeError(
+                "Unable to download appimagetool from all known sources."
+            ) from download_error
+
         appimagetool.chmod(0o755)
 
     # Create AppImage
     env = {"ARCH": "x86_64"}
+    # GitHub-hosted runners often don't allow FUSE mounts for AppImage execution.
+    # This flag makes appimagetool run in extract mode and avoids mount errors.
+    env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
     subprocess.run([
         str(appimagetool), str(appdir), str(DIST_DIR / appimage_name)
     ], env={**subprocess.os.environ, **env}, check=True)

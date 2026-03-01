@@ -1,848 +1,1355 @@
-"""Component library panel with drag-and-drop support."""
+"""Component library panel with grid card layout and drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize
-from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QPen, QIcon
+from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize, QEvent
+from PySide6.QtGui import (
+    QDrag, QPixmap, QPainter, QColor, QPen, QBrush, QLinearGradient,
+    QFont, QPainterPath, QCursor,
+)
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QTreeWidget,
-    QTreeWidgetItem,
+    QGridLayout,
     QLineEdit,
-    QPushButton,
     QLabel,
-    QHeaderView,
-    QAbstractItemView,
+    QScrollArea,
+    QFrame,
     QApplication,
+    QSizePolicy,
+    QStyleOptionGraphicsItem,
+    QToolButton,
 )
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import ThemeService, Theme
 
 
-def create_component_drag_pixmap(
-    comp_type: ComponentType, size: int = 36, color: str = "#1f2937"
+# Component metadata for library display
+COMPONENT_LIBRARY = {
+    "Passive": [
+        {"type": ComponentType.RESISTOR, "name": "Resistor", "shortcut": "R"},
+        {"type": ComponentType.CAPACITOR, "name": "Capacitor", "shortcut": "C"},
+        {"type": ComponentType.INDUCTOR, "name": "Inductor", "shortcut": "L"},
+        {"type": ComponentType.TRANSFORMER, "name": "Transformer", "shortcut": "T"},
+    ],
+    "Sources": [
+        {"type": ComponentType.VOLTAGE_SOURCE, "name": "Voltage", "shortcut": "V"},
+        {"type": ComponentType.CURRENT_SOURCE, "name": "Current", "shortcut": "I"},
+        {"type": ComponentType.GROUND, "name": "Ground", "shortcut": "G"},
+    ],
+    "Semiconductors": [
+        {"type": ComponentType.DIODE, "name": "Diode", "shortcut": "D"},
+        {"type": ComponentType.ZENER_DIODE, "name": "Zener", "shortcut": "Z"},
+        {"type": ComponentType.LED, "name": "LED", "shortcut": ""},
+        {"type": ComponentType.MOSFET_N, "name": "NMOS", "shortcut": "M"},
+        {"type": ComponentType.MOSFET_P, "name": "PMOS", "shortcut": "Shift+M"},
+        {"type": ComponentType.BJT_NPN, "name": "NPN", "shortcut": "Q"},
+        {"type": ComponentType.BJT_PNP, "name": "PNP", "shortcut": "Shift+Q"},
+        {"type": ComponentType.IGBT, "name": "IGBT", "shortcut": "B"},
+        {"type": ComponentType.THYRISTOR, "name": "SCR", "shortcut": ""},
+        {"type": ComponentType.TRIAC, "name": "TRIAC", "shortcut": ""},
+        {"type": ComponentType.SWITCH, "name": "Switch", "shortcut": "S"},
+    ],
+    "Analog": [
+        {"type": ComponentType.OP_AMP, "name": "Op-Amp", "shortcut": "O"},
+        {"type": ComponentType.COMPARATOR, "name": "Comparator", "shortcut": ""},
+    ],
+    "Protection": [
+        {"type": ComponentType.FUSE, "name": "Fuse", "shortcut": "F"},
+        {"type": ComponentType.CIRCUIT_BREAKER, "name": "Breaker", "shortcut": ""},
+        {"type": ComponentType.RELAY, "name": "Relay", "shortcut": ""},
+    ],
+    "Control": [
+        {"type": ComponentType.PI_CONTROLLER, "name": "PI", "shortcut": "Ctrl+P"},
+        {"type": ComponentType.PID_CONTROLLER, "name": "PID", "shortcut": "Ctrl+Shift+P"},
+        {"type": ComponentType.MATH_BLOCK, "name": "Math", "shortcut": "Ctrl+M"},
+        {"type": ComponentType.PWM_GENERATOR, "name": "PWM", "shortcut": "Ctrl+W"},
+        {"type": ComponentType.INTEGRATOR, "name": "Integrator", "shortcut": ""},
+        {"type": ComponentType.DIFFERENTIATOR, "name": "d/dt", "shortcut": ""},
+        {"type": ComponentType.LIMITER, "name": "Limiter", "shortcut": ""},
+        {"type": ComponentType.RATE_LIMITER, "name": "Rate Lim.", "shortcut": ""},
+        {"type": ComponentType.HYSTERESIS, "name": "Hysteresis", "shortcut": ""},
+        {"type": ComponentType.LOOKUP_TABLE, "name": "Lookup", "shortcut": ""},
+        {"type": ComponentType.TRANSFER_FUNCTION, "name": "H(s)", "shortcut": ""},
+        {"type": ComponentType.DELAY_BLOCK, "name": "Delay", "shortcut": ""},
+        {"type": ComponentType.SAMPLE_HOLD, "name": "S/H", "shortcut": ""},
+        {"type": ComponentType.STATE_MACHINE, "name": "FSM", "shortcut": ""},
+    ],
+    "Measurement": [
+        {"type": ComponentType.VOLTAGE_PROBE, "name": "V Probe", "shortcut": ""},
+        {"type": ComponentType.CURRENT_PROBE, "name": "I Probe", "shortcut": ""},
+        {"type": ComponentType.POWER_PROBE, "name": "P Probe", "shortcut": ""},
+        {"type": ComponentType.ELECTRICAL_SCOPE, "name": "Scope", "shortcut": "Ctrl+E"},
+        {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal", "shortcut": "Ctrl+Shift+E"},
+        {"type": ComponentType.SIGNAL_MUX, "name": "Mux", "shortcut": "Ctrl+Alt+M"},
+        {"type": ComponentType.SIGNAL_DEMUX, "name": "Demux", "shortcut": "Ctrl+Alt+D"},
+    ],
+    "Magnetic": [
+        {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Ind.", "shortcut": ""},
+        {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled L", "shortcut": ""},
+    ],
+    "Networks": [
+        {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
+    ],
+}
+
+COMPONENT_META: dict[ComponentType, dict[str, str]] = {
+    comp["type"]: {"name": comp["name"], "shortcut": comp["shortcut"]}
+    for comps in COMPONENT_LIBRARY.values()
+    for comp in comps
+}
+
+# Category colors for visual distinction
+CATEGORY_COLORS = {
+    "Passive": "#3b82f6",      # Blue
+    "Sources": "#f59e0b",      # Amber
+    "Semiconductors": "#10b981",  # Emerald
+    "Analog": "#06b6d4",       # Cyan
+    "Protection": "#ef4444",   # Red
+    "Control": "#8b5cf6",      # Purple
+    "Measurement": "#ec4899",  # Pink
+    "Magnetic": "#78716c",     # Stone
+    "Networks": "#84cc16",     # Lime
+}
+
+
+def _infer_dark_mode_from_color(color: str) -> bool:
+    """Infer dark-mode rendering intent from icon tone."""
+    value = QColor(color)
+    if not value.isValid():
+        return False
+    luminance = (0.2126 * value.red()) + (0.7152 * value.green()) + (0.0722 * value.blue())
+    return luminance > 140
+
+
+def create_component_icon(
+    comp_type: ComponentType,
+    size: int = 48,
+    color: str = "#374151",
+    dark_mode: bool | None = None,
 ) -> QPixmap:
-    """Create a pixmap with the component symbol for drag preview."""
-    # Get device pixel ratio for HiDPI support
+    """Render a component icon using the same drawing engine as schematic items."""
+    from pulsimgui.views.schematic.items import create_component_item
+
+    dark_mode = _infer_dark_mode_from_color(color) if dark_mode is None else dark_mode
+    dpr = 2.0
     app = QApplication.instance()
     if app:
         screen = app.primaryScreen()
         dpr = screen.devicePixelRatio() if screen else 2.0
-    else:
-        dpr = 2.0
-
-    # Create pixmap at the logical size (Qt handles HiDPI scaling)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    # Scale factor to fit symbols (drawn at ~50px) into target size
-    # Symbols are drawn with coords roughly -25 to +25, so ~50px span
-    symbol_scale = size / 60.0  # Leave some margin
-
-    # Set up pen for drawing with theme color (scale pen width too)
-    pen = QPen(QColor(color), max(1.0, 2.0 * symbol_scale))
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-
-    # Center the drawing and apply scale
-    painter.translate(size / 2, size / 2)
-    painter.scale(symbol_scale, symbol_scale)
-
-    # Draw symbol based on component type
-    if comp_type == ComponentType.RESISTOR:
-        _draw_resistor(painter)
-    elif comp_type == ComponentType.CAPACITOR:
-        _draw_capacitor(painter)
-    elif comp_type == ComponentType.INDUCTOR:
-        _draw_inductor(painter)
-    elif comp_type == ComponentType.VOLTAGE_SOURCE:
-        _draw_voltage_source(painter)
-    elif comp_type == ComponentType.CURRENT_SOURCE:
-        _draw_current_source(painter)
-    elif comp_type == ComponentType.GROUND:
-        _draw_ground(painter)
-    elif comp_type == ComponentType.DIODE:
-        _draw_diode(painter)
-    elif comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
-        _draw_mosfet(painter, comp_type == ComponentType.MOSFET_N)
-    elif comp_type == ComponentType.IGBT:
-        _draw_igbt(painter)
-    elif comp_type == ComponentType.SWITCH:
-        _draw_switch(painter)
-    elif comp_type == ComponentType.TRANSFORMER:
-        _draw_transformer(painter)
-    elif comp_type == ComponentType.PI_CONTROLLER:
-        _draw_block(painter, "PI")
-    elif comp_type == ComponentType.PID_CONTROLLER:
-        _draw_block(painter, "PID")
-    elif comp_type == ComponentType.MATH_BLOCK:
-        _draw_block(painter, "Σ")
-    elif comp_type == ComponentType.PWM_GENERATOR:
-        _draw_block(painter, "PWM")
-    elif comp_type == ComponentType.ELECTRICAL_SCOPE:
-        _draw_scope_block(painter, label="SCOPE")
-    elif comp_type == ComponentType.THERMAL_SCOPE:
-        _draw_scope_block(painter, label="THERM")
-    elif comp_type == ComponentType.SIGNAL_MUX:
-        _draw_mux_block(painter)
-    elif comp_type == ComponentType.SIGNAL_DEMUX:
-        _draw_demux_block(painter)
-    else:
-        # Fallback: draw a simple box
-        painter.drawRect(-15, -15, 30, 30)
-
-    painter.end()
-    return pixmap
-
-
-def _draw_resistor(painter: QPainter) -> None:
-    """Draw resistor zigzag symbol."""
-    points = [
-        (-25, 0), (-18, 0), (-15, -8), (-9, 8), (-3, -8),
-        (3, 8), (9, -8), (15, 8), (18, 0), (25, 0)
-    ]
-    for i in range(len(points) - 1):
-        painter.drawLine(
-            QPointF(points[i][0], points[i][1]),
-            QPointF(points[i + 1][0], points[i + 1][1])
-        )
-
-
-def _draw_capacitor(painter: QPainter) -> None:
-    """Draw capacitor symbol (two parallel plates)."""
-    # Lead lines
-    painter.drawLine(QPointF(-20, 0), QPointF(-5, 0))
-    painter.drawLine(QPointF(5, 0), QPointF(20, 0))
-    # Plates
-    painter.drawLine(QPointF(-5, -12), QPointF(-5, 12))
-    painter.drawLine(QPointF(5, -12), QPointF(5, 12))
-
-
-def _draw_inductor(painter: QPainter) -> None:
-    """Draw inductor coil symbol."""
-    # Lead lines
-    painter.drawLine(QPointF(-25, 0), QPointF(-18, 0))
-    painter.drawLine(QPointF(18, 0), QPointF(25, 0))
-    # Coil arcs
-    for i in range(4):
-        x = -13 + i * 9
-        painter.drawArc(QRectF(x, -6, 9, 12), 0 * 16, 180 * 16)
-
-
-def _draw_voltage_source(painter: QPainter) -> None:
-    """Draw voltage source circle with +/-."""
-    # Circle
-    painter.drawEllipse(QPointF(0, 0), 15, 15)
-    # Lead lines
-    painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
-    painter.drawLine(QPointF(15, 0), QPointF(25, 0))
-    # Plus sign
-    painter.drawLine(QPointF(-8, 0), QPointF(-3, 0))
-    painter.drawLine(QPointF(-5.5, -3), QPointF(-5.5, 3))
-    # Minus sign
-    painter.drawLine(QPointF(3, 0), QPointF(8, 0))
-
-
-def _draw_current_source(painter: QPainter) -> None:
-    """Draw current source circle with arrow."""
-    # Circle
-    painter.drawEllipse(QPointF(0, 0), 15, 15)
-    # Lead lines
-    painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
-    painter.drawLine(QPointF(15, 0), QPointF(25, 0))
-    # Arrow inside
-    painter.drawLine(QPointF(-8, 0), QPointF(8, 0))
-    painter.drawLine(QPointF(4, -4), QPointF(8, 0))
-    painter.drawLine(QPointF(4, 4), QPointF(8, 0))
-
-
-def _draw_ground(painter: QPainter) -> None:
-    """Draw ground symbol."""
-    # Vertical line
-    painter.drawLine(QPointF(0, -15), QPointF(0, 0))
-    # Horizontal lines
-    painter.drawLine(QPointF(-12, 0), QPointF(12, 0))
-    painter.drawLine(QPointF(-8, 5), QPointF(8, 5))
-    painter.drawLine(QPointF(-4, 10), QPointF(4, 10))
-
-
-def _draw_diode(painter: QPainter) -> None:
-    """Draw diode symbol."""
-    # Lead lines
-    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-    painter.drawLine(QPointF(8, 0), QPointF(20, 0))
-    # Triangle
-    triangle = [QPointF(-8, 0), QPointF(8, -10), QPointF(8, 10)]
-    painter.drawPolygon(triangle)
-    # Bar
-    painter.drawLine(QPointF(8, -10), QPointF(8, 10))
-
-
-def _draw_mosfet(painter: QPainter, is_nmos: bool) -> None:
-    """Draw MOSFET symbol."""
-    # Gate line
-    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-    painter.drawLine(QPointF(-8, -10), QPointF(-8, 10))
-    # Channel
-    painter.drawLine(QPointF(-4, -10), QPointF(-4, -5))
-    painter.drawLine(QPointF(-4, -2), QPointF(-4, 2))
-    painter.drawLine(QPointF(-4, 5), QPointF(-4, 10))
-    # Drain and Source
-    painter.drawLine(QPointF(-4, -7), QPointF(8, -7))
-    painter.drawLine(QPointF(8, -7), QPointF(8, -15))
-    painter.drawLine(QPointF(-4, 7), QPointF(8, 7))
-    painter.drawLine(QPointF(8, 7), QPointF(8, 15))
-    # Body connection
-    painter.drawLine(QPointF(-4, 0), QPointF(8, 0))
-    painter.drawLine(QPointF(8, 0), QPointF(8, 7))
-    # Arrow (direction depends on N or P)
-    if is_nmos:
-        painter.drawLine(QPointF(2, 0), QPointF(6, -3))
-        painter.drawLine(QPointF(2, 0), QPointF(6, 3))
-    else:
-        painter.drawLine(QPointF(-2, -3), QPointF(2, 0))
-        painter.drawLine(QPointF(-2, 3), QPointF(2, 0))
-
-
-def _draw_igbt(painter: QPainter) -> None:
-    """Draw IGBT symbol."""
-    # Similar to MOSFET but with collector bar
-    _draw_mosfet(painter, True)
-    # Extra bar at collector
-    painter.drawLine(QPointF(6, -12), QPointF(10, -12))
-
-
-def _draw_switch(painter: QPainter) -> None:
-    """Draw switch symbol."""
-    # Two terminals
-    painter.drawLine(QPointF(-20, 0), QPointF(-8, 0))
-    painter.drawLine(QPointF(8, 0), QPointF(20, 0))
-    # Contact points
-    painter.drawEllipse(QPointF(-8, 0), 2, 2)
-    painter.drawEllipse(QPointF(8, 0), 2, 2)
-    # Switch arm (open position)
-    painter.drawLine(QPointF(-6, 0), QPointF(6, -10))
-
-
-def _draw_transformer(painter: QPainter) -> None:
-    """Draw transformer symbol."""
-    # Primary coil
-    for i in range(3):
-        y = -10 + i * 10
-        painter.drawArc(QRectF(-15, y, 8, 10), 90 * 16, 180 * 16)
-    # Secondary coil
-    for i in range(3):
-        y = -10 + i * 10
-        painter.drawArc(QRectF(7, y, 8, 10), -90 * 16, 180 * 16)
-    # Core lines
-    painter.drawLine(QPointF(-2, -15), QPointF(-2, 15))
-    painter.drawLine(QPointF(2, -15), QPointF(2, 15))
-
-
-def _draw_block(painter: QPainter, label: str) -> None:
-    """Draw simple rectangular control block with centered text."""
-    rect = QRectF(-20, -15, 40, 30)
-    painter.drawRect(rect)
-    painter.save()
-    font = painter.font()
-    font.setBold(True)
-    painter.setFont(font)
-    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-    painter.restore()
-
-
-def _draw_scope_block(painter: QPainter, label: str) -> None:
-    """Draw a small scope-like rectangle with input tick marks."""
-
-    body = QRectF(-28, -20, 56, 40)
-    painter.drawRoundedRect(body, 6, 6)
-
-    # Screen grid
-    painter.save()
-    grid_pen = QPen(QColor(0, 0, 0, 150), 1, Qt.PenStyle.DotLine)
-    painter.setPen(grid_pen)
-    painter.drawLine(QPointF(-10, -10), QPointF(10, -10))
-    painter.drawLine(QPointF(-10, 0), QPointF(10, 0))
-    painter.drawLine(QPointF(-10, 10), QPointF(10, 10))
-    painter.restore()
-
-    # Trace
-    painter.drawPolyline(
-        [
-            QPointF(-10, 8),
-            QPointF(-5, -5),
-            QPointF(0, 0),
-            QPointF(6, -12),
-            QPointF(10, -8),
-        ]
-    )
-
-    # Input ticks (default 3 for preview)
-    tick_y = [-12, 0, 12]
-    for y in tick_y:
-        painter.drawLine(QPointF(-35, y), QPointF(-28, y))
-
-    painter.save()
-    font = painter.font()
-    font.setPointSizeF(max(font.pointSizeF() - 1, 8))
-    font.setBold(True)
-    painter.setFont(font)
-    painter.drawText(body, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, label)
-    painter.restore()
-
-
-def _draw_mux_block(painter: QPainter) -> None:
-    """Draw a triangular mux with multiple inputs."""
-
-    polygon = [QPointF(-25, -20), QPointF(-25, 20), QPointF(20, 0)]
-    painter.drawPolygon(polygon)
-
-    # Input ticks
-    y_positions = [-15, -5, 5, 15]
-    for y in y_positions:
-        painter.drawLine(QPointF(-35, y), QPointF(-25, y))
-
-    # Output tick
-    painter.drawLine(QPointF(20, 0), QPointF(30, 0))
-
-    painter.drawText(
-        QRectF(-20, -10, 30, 20),
-        Qt.AlignmentFlag.AlignCenter,
-        "MUX",
-    )
-
-
-def _draw_demux_block(painter: QPainter) -> None:
-    """Draw an inverted triangular demux with multiple outputs."""
-
-    polygon = [QPointF(-20, 0), QPointF(25, -20), QPointF(25, 20)]
-    painter.drawPolygon(polygon)
-
-    # Input tick
-    painter.drawLine(QPointF(-30, 0), QPointF(-20, 0))
-
-    # Output ticks
-    y_positions = [-15, -5, 5, 15]
-    for y in y_positions:
-        painter.drawLine(QPointF(25, y), QPointF(35, y))
-
-    painter.drawText(
-        QRectF(-5, -10, 30, 20),
-        Qt.AlignmentFlag.AlignCenter,
-        "DEMUX",
-    )
-
-
-def create_component_thumbnail(
-    comp_type: ComponentType, size: int = 36, color: str = "#6b7280"
-) -> QIcon:
-    """Create a small thumbnail icon for the component tree.
-
-    Uses a smaller internal drawing scale to fit the component symbol
-    properly within the icon bounds.
-    """
-    # Get device pixel ratio for HiDPI support
-    app = QApplication.instance()
-    if app:
-        screen = app.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen else 2.0
-    else:
-        dpr = 2.0
 
     render_size = int(size * dpr)
-
-    # Create transparent pixmap at high resolution
     pixmap = QPixmap(render_size, render_size)
     pixmap.fill(Qt.GlobalColor.transparent)
     pixmap.setDevicePixelRatio(dpr)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-    # Set up pen for drawing with theme color - thicker line for bolder look
-    pen = QPen(QColor(color), 2.5)
-    pen.setCosmetic(True)  # Keep pen width constant regardless of transform
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
+    component = Component(type=comp_type, name="")
+    item = create_component_item(component)
+    item.set_show_labels(False)
+    item.set_show_value_labels(False)
+    item.set_dark_mode(dark_mode)
 
-    # The component drawings are centered at origin and span roughly -35 to +35 (70px total)
-    # for some components like scope blocks. We need to fit this into `size` logical pixels.
-    #
-    # The scale factor should map 60 drawing units to `size` logical pixels.
-    # A smaller divisor means the component fills more of the icon space.
-    scale_factor = size / 60.0
+    rect = item.boundingRect().adjusted(-4, -4, 4, 4)
+    draw_size = max(size - 4, 1)
+    scale = min(draw_size / max(rect.width(), 1), draw_size / max(rect.height(), 1))
 
-    # Translate to center of logical size area (not render_size)
-    # QPainter with devicePixelRatio will handle the conversion
     painter.translate(size / 2.0, size / 2.0)
-    painter.scale(scale_factor, scale_factor)
-
-    # Draw symbol based on component type
-    if comp_type == ComponentType.RESISTOR:
-        _draw_resistor(painter)
-    elif comp_type == ComponentType.CAPACITOR:
-        _draw_capacitor(painter)
-    elif comp_type == ComponentType.INDUCTOR:
-        _draw_inductor(painter)
-    elif comp_type == ComponentType.VOLTAGE_SOURCE:
-        _draw_voltage_source(painter)
-    elif comp_type == ComponentType.CURRENT_SOURCE:
-        _draw_current_source(painter)
-    elif comp_type == ComponentType.GROUND:
-        _draw_ground(painter)
-    elif comp_type == ComponentType.DIODE:
-        _draw_diode(painter)
-    elif comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
-        _draw_mosfet(painter, comp_type == ComponentType.MOSFET_N)
-    elif comp_type == ComponentType.IGBT:
-        _draw_igbt(painter)
-    elif comp_type == ComponentType.SWITCH:
-        _draw_switch(painter)
-    elif comp_type == ComponentType.TRANSFORMER:
-        _draw_transformer(painter)
-    elif comp_type == ComponentType.PI_CONTROLLER:
-        _draw_block(painter, "PI")
-    elif comp_type == ComponentType.PID_CONTROLLER:
-        _draw_block(painter, "PID")
-    elif comp_type == ComponentType.MATH_BLOCK:
-        _draw_block(painter, "Σ")
-    elif comp_type == ComponentType.PWM_GENERATOR:
-        _draw_block(painter, "PWM")
-    elif comp_type == ComponentType.ELECTRICAL_SCOPE:
-        _draw_scope_block(painter, label="")
-    elif comp_type == ComponentType.THERMAL_SCOPE:
-        _draw_scope_block(painter, label="")
-    elif comp_type == ComponentType.SIGNAL_MUX:
-        _draw_mux_block(painter)
-    elif comp_type == ComponentType.SIGNAL_DEMUX:
-        _draw_demux_block(painter)
-    else:
-        # Fallback: draw a simple box
-        painter.drawRect(-15, -15, 30, 30)
+    painter.scale(scale, scale)
+    painter.translate(-rect.center())
+    item.paint(painter, QStyleOptionGraphicsItem(), None)
 
     painter.end()
-    return QIcon(pixmap)
+    return pixmap
 
 
-# Category icons mapping (using Lucide icon names)
-CATEGORY_ICONS = {
-    "Recently Used": "clock",
-    "Favorites": "star",
-    "Passive": "box",
-    "Sources": "zap",
-    "Semiconductors": "cpu",
-    "Switches": "toggle-left",
-    "Control Blocks": "square-function",
-}
+def _draw_resistor_icon(painter: QPainter) -> None:
+    """Draw modern resistor icon - rectangular with color bands."""
+    # Body
+    body_rect = QRectF(-18, -8, 36, 16)
+    painter.setBrush(QColor("#d4c4a8"))
+    painter.drawRoundedRect(body_rect, 3, 3)
+
+    # Color bands
+    bands = [("#8B4513", -12), ("#FF0000", -6), ("#FFA500", 0), ("#FFD700", 6)]
+    painter.setPen(Qt.PenStyle.NoPen)
+    for color, x in bands:
+        painter.setBrush(QColor(color))
+        painter.drawRect(QRectF(x - 2, -8, 4, 16))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(-28, 0), QPointF(-18, 0))
+    painter.drawLine(QPointF(18, 0), QPointF(28, 0))
 
 
-class DraggableTreeWidget(QTreeWidget):
-    """Tree widget with proper drag support."""
+def _draw_capacitor_icon(painter: QPainter) -> None:
+    """Draw modern capacitor icon."""
+    # Plates with gradient
+    grad1 = QLinearGradient(-6, -14, -6, 14)
+    grad1.setColorAt(0, QColor("#a0a0a0"))
+    grad1.setColorAt(1, QColor("#606060"))
+    painter.setBrush(grad1)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRect(QRectF(-8, -14, 4, 28))
 
-    def __init__(self, parent=None):
+    grad2 = QLinearGradient(6, -14, 6, 14)
+    grad2.setColorAt(0, QColor("#a0a0a0"))
+    grad2.setColorAt(1, QColor("#606060"))
+    painter.setBrush(grad2)
+    painter.drawRect(QRectF(4, -14, 4, 28))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(-25, 0), QPointF(-8, 0))
+    painter.drawLine(QPointF(8, 0), QPointF(25, 0))
+
+
+def _draw_inductor_icon(painter: QPainter) -> None:
+    """Draw modern inductor icon - copper coil."""
+    # Coil with copper color
+    painter.setPen(QPen(QColor("#b87333"), 3))
+    for i in range(4):
+        x = -15 + i * 10
+        painter.drawArc(QRectF(x, -8, 10, 16), 0, 180 * 16)
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.drawLine(QPointF(-25, 0), QPointF(-15, 0))
+    painter.drawLine(QPointF(25, 0), QPointF(25, 0))
+
+
+def _draw_transformer_icon(painter: QPainter) -> None:
+    """Draw transformer icon with two coils."""
+    # Primary coil
+    painter.setPen(QPen(QColor("#b87333"), 2.5))
+    for i in range(3):
+        y = -12 + i * 12
+        painter.drawArc(QRectF(-18, y, 10, 12), 90 * 16, 180 * 16)
+
+    # Secondary coil
+    for i in range(3):
+        y = -12 + i * 12
+        painter.drawArc(QRectF(8, y, 10, 12), -90 * 16, 180 * 16)
+
+    # Core
+    painter.setPen(QPen(QColor("#404040"), 2))
+    painter.drawLine(QPointF(-4, -18), QPointF(-4, 18))
+    painter.drawLine(QPointF(4, -18), QPointF(4, 18))
+
+
+def _draw_voltage_source_icon(painter: QPainter) -> None:
+    """Draw voltage source icon."""
+    # Circle with gradient
+    grad = QLinearGradient(0, -18, 0, 18)
+    grad.setColorAt(0, QColor("#fef3c7"))
+    grad.setColorAt(1, QColor("#f59e0b"))
+    painter.setBrush(grad)
+    painter.setPen(QPen(QColor("#d97706"), 2))
+    painter.drawEllipse(QPointF(0, 0), 16, 16)
+
+    # + and - symbols
+    painter.setPen(QPen(QColor("#92400e"), 2.5))
+    # Plus
+    painter.drawLine(QPointF(-8, 0), QPointF(-2, 0))
+    painter.drawLine(QPointF(-5, -3), QPointF(-5, 3))
+    # Minus
+    painter.drawLine(QPointF(2, 0), QPointF(8, 0))
+
+
+def _draw_current_source_icon(painter: QPainter) -> None:
+    """Draw current source icon."""
+    # Circle with gradient
+    grad = QLinearGradient(0, -18, 0, 18)
+    grad.setColorAt(0, QColor("#d1fae5"))
+    grad.setColorAt(1, QColor("#10b981"))
+    painter.setBrush(grad)
+    painter.setPen(QPen(QColor("#059669"), 2))
+    painter.drawEllipse(QPointF(0, 0), 16, 16)
+
+    # Arrow
+    painter.setPen(QPen(QColor("#065f46"), 2.5))
+    painter.drawLine(QPointF(-8, 0), QPointF(8, 0))
+    painter.drawLine(QPointF(4, -4), QPointF(8, 0))
+    painter.drawLine(QPointF(4, 4), QPointF(8, 0))
+
+
+def _draw_ground_icon(painter: QPainter) -> None:
+    """Draw ground icon."""
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.drawLine(QPointF(0, -15), QPointF(0, 0))
+    painter.drawLine(QPointF(-14, 0), QPointF(14, 0))
+    painter.drawLine(QPointF(-9, 6), QPointF(9, 6))
+    painter.drawLine(QPointF(-4, 12), QPointF(4, 12))
+
+
+def _draw_diode_icon(painter: QPainter) -> None:
+    """Draw diode icon with filled triangle."""
+    # Triangle (anode)
+    path = QPainterPath()
+    path.moveTo(-10, 0)
+    path.lineTo(8, -12)
+    path.lineTo(8, 12)
+    path.closeSubpath()
+
+    painter.setPen(QPen(QColor("#1f2937"), 2))
+    painter.setBrush(QColor("#374151"))
+    painter.drawPath(path)
+
+    # Cathode bar
+    painter.setPen(QPen(QColor("#9ca3af"), 3))
+    painter.drawLine(QPointF(8, -12), QPointF(8, 12))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.drawLine(QPointF(-25, 0), QPointF(-10, 0))
+    painter.drawLine(QPointF(8, 0), QPointF(25, 0))
+
+
+def _draw_mosfet_icon(painter: QPainter, is_nmos: bool) -> None:
+    """Draw MOSFET icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Gate
+    painter.setPen(QPen(QColor("#3b82f6"), 2.5))
+    painter.drawLine(QPointF(-18, 0), QPointF(-8, 0))
+    painter.drawLine(QPointF(-8, -12), QPointF(-8, 12))
+
+    # Channel
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.drawLine(QPointF(-4, -12), QPointF(-4, -6))
+    painter.drawLine(QPointF(-4, -3), QPointF(-4, 3))
+    painter.drawLine(QPointF(-4, 6), QPointF(-4, 12))
+
+    # D/S connections
+    painter.drawLine(QPointF(-4, -9), QPointF(10, -9))
+    painter.drawLine(QPointF(10, -9), QPointF(10, -18))
+    painter.drawLine(QPointF(-4, 9), QPointF(10, 9))
+    painter.drawLine(QPointF(10, 9), QPointF(10, 18))
+
+    # Body
+    painter.drawLine(QPointF(-4, 0), QPointF(10, 0))
+    painter.drawLine(QPointF(10, 0), QPointF(10, 9))
+
+    # Arrow
+    color = "#10b981" if is_nmos else "#ef4444"
+    painter.setPen(QPen(QColor(color), 2))
+    if is_nmos:
+        painter.drawLine(QPointF(2, 0), QPointF(6, -4))
+        painter.drawLine(QPointF(2, 0), QPointF(6, 4))
+    else:
+        painter.drawLine(QPointF(-2, -4), QPointF(2, 0))
+        painter.drawLine(QPointF(-2, 4), QPointF(2, 0))
+
+
+def _draw_igbt_icon(painter: QPainter) -> None:
+    """Draw IGBT icon."""
+    _draw_mosfet_icon(painter, True)
+    painter.setPen(QPen(QColor("#f59e0b"), 2.5))
+    painter.drawLine(QPointF(8, -14), QPointF(12, -14))
+
+
+def _draw_switch_icon(painter: QPainter) -> None:
+    """Draw switch icon."""
+    # Contacts
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.setBrush(QColor("#fbbf24"))
+    painter.drawEllipse(QPointF(-12, 0), 4, 4)
+    painter.drawEllipse(QPointF(12, 0), 4, 4)
+
+    # Switch arm
+    painter.setPen(QPen(QColor("#78716c"), 3))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(-8, 0), QPointF(8, -12))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2.5))
+    painter.drawLine(QPointF(-25, 0), QPointF(-16, 0))
+    painter.drawLine(QPointF(16, 0), QPointF(25, 0))
+
+
+def _draw_control_block_icon(painter: QPainter, label: str, accent_color: str) -> None:
+    """Draw control block icon."""
+    rect = QRectF(-18, -14, 36, 28)
+
+    # White fill with border
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(rect, 4, 4)
+
+    # Accent stripe
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(accent_color))
+    painter.drawRoundedRect(QRectF(-16, -10, 4, 20), 2, 2)
+
+    # Label
+    painter.setPen(QColor("#374151"))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(10)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+
+def _draw_pwm_icon(painter: QPainter) -> None:
+    """Draw PWM icon with waveform."""
+    rect = QRectF(-18, -14, 36, 28)
+
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(rect, 4, 4)
+
+    # PWM waveform
+    painter.setPen(QPen(QColor("#8b5cf6"), 2))
+    points = [
+        QPointF(-12, 6), QPointF(-12, -6), QPointF(-4, -6), QPointF(-4, 6),
+        QPointF(4, 6), QPointF(4, -6), QPointF(12, -6), QPointF(12, 6)
+    ]
+    for i in range(len(points) - 1):
+        painter.drawLine(points[i], points[i + 1])
+
+
+def _draw_scope_icon(painter: QPainter) -> None:
+    """Draw scope icon."""
+    # Body
+    body = QRectF(-20, -16, 40, 32)
+    painter.setPen(QPen(QColor("#1f2937"), 2))
+    painter.setBrush(QColor("#1f2937"))
+    painter.drawRoundedRect(body, 4, 4)
+
+    # Screen
+    screen = QRectF(-16, -12, 32, 24)
+    painter.setBrush(QColor("#064e3b"))
+    painter.drawRoundedRect(screen, 2, 2)
+
+    # Waveform
+    painter.setPen(QPen(QColor("#34d399"), 2))
+    points = [QPointF(-12, 4), QPointF(-6, -6), QPointF(0, 2), QPointF(6, -8), QPointF(12, 0)]
+    for i in range(len(points) - 1):
+        painter.drawLine(points[i], points[i + 1])
+
+
+def _draw_thermal_scope_icon(painter: QPainter) -> None:
+    """Draw thermal scope icon."""
+    body = QRectF(-20, -16, 40, 32)
+    painter.setPen(QPen(QColor("#1f2937"), 2))
+    painter.setBrush(QColor("#1f2937"))
+    painter.drawRoundedRect(body, 4, 4)
+
+    # Screen with warm color
+    screen = QRectF(-16, -12, 32, 24)
+    grad = QLinearGradient(-16, -12, -16, 12)
+    grad.setColorAt(0, QColor("#dc2626"))
+    grad.setColorAt(0.5, QColor("#f59e0b"))
+    grad.setColorAt(1, QColor("#3b82f6"))
+    painter.setBrush(grad)
+    painter.drawRoundedRect(screen, 2, 2)
+
+
+def _draw_mux_icon(painter: QPainter) -> None:
+    """Draw mux icon - vertical bar style."""
+    # Central bar
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#374151"))
+    painter.drawRect(QRectF(-4, -16, 8, 32))
+
+    # Input lines
+    painter.setPen(QPen(QColor("#374151"), 2))
+    for y in [-10, 0, 10]:
+        painter.drawLine(QPointF(-20, y), QPointF(-4, y))
+
+    # Output line
+    painter.drawLine(QPointF(4, 0), QPointF(20, 0))
+
+
+def _draw_demux_icon(painter: QPainter) -> None:
+    """Draw demux icon - vertical bar style."""
+    # Central bar
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#374151"))
+    painter.drawRect(QRectF(-4, -16, 8, 32))
+
+    # Input line
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.drawLine(QPointF(-20, 0), QPointF(-4, 0))
+
+    # Output lines
+    for y in [-10, 0, 10]:
+        painter.drawLine(QPointF(4, y), QPointF(20, y))
+
+
+# === NEW ICON FUNCTIONS ===
+
+def _draw_zener_icon(painter: QPainter) -> None:
+    """Draw Zener diode icon."""
+    _draw_diode_icon(painter)
+    # Add bent cathode ends
+    painter.setPen(QPen(QColor("#9ca3af"), 2))
+    painter.drawLine(QPointF(8, -12), QPointF(5, -12))
+    painter.drawLine(QPointF(8, 12), QPointF(11, 12))
+
+
+def _draw_led_icon(painter: QPainter) -> None:
+    """Draw LED icon."""
+    _draw_diode_icon(painter)
+    # Light emission arrows
+    painter.setPen(QPen(QColor("#ef4444"), 1.5))
+    painter.drawLine(QPointF(0, -10), QPointF(6, -16))
+    painter.drawLine(QPointF(6, -16), QPointF(4, -14))
+    painter.drawLine(QPointF(4, -10), QPointF(10, -16))
+    painter.drawLine(QPointF(10, -16), QPointF(8, -14))
+
+
+def _draw_bjt_icon(painter: QPainter, is_npn: bool) -> None:
+    """Draw BJT transistor icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Base vertical
+    painter.setPen(QPen(QColor("#374151"), 3))
+    painter.drawLine(QPointF(-6, -10), QPointF(-6, 10))
+
+    # Base terminal
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.drawLine(QPointF(-18, 0), QPointF(-6, 0))
+
+    # Collector
+    painter.drawLine(QPointF(-6, -6), QPointF(10, -14))
+    painter.drawLine(QPointF(10, -14), QPointF(10, -20))
+
+    # Emitter
+    painter.drawLine(QPointF(-6, 6), QPointF(10, 14))
+    painter.drawLine(QPointF(10, 14), QPointF(10, 20))
+
+    # Arrow
+    color = "#22c55e" if is_npn else "#ef4444"
+    painter.setPen(QPen(QColor(color), 2))
+    painter.setBrush(QColor(color))
+    if is_npn:
+        path = QPainterPath()
+        path.moveTo(8, 12)
+        path.lineTo(4, 8)
+        path.lineTo(6, 14)
+        path.closeSubpath()
+        painter.drawPath(path)
+    else:
+        path = QPainterPath()
+        path.moveTo(-4, 4)
+        path.lineTo(0, 8)
+        path.lineTo(-2, 2)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+
+def _draw_thyristor_icon(painter: QPainter) -> None:
+    """Draw thyristor (SCR) icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Terminals
+    painter.drawLine(QPointF(0, -20), QPointF(0, -8))
+    painter.drawLine(QPointF(0, 8), QPointF(0, 20))
+
+    # Gate
+    painter.drawLine(QPointF(-18, 8), QPointF(-6, 8))
+    painter.drawLine(QPointF(-6, 8), QPointF(-6, 4))
+
+    # Triangle
+    path = QPainterPath()
+    path.moveTo(-8, -8)
+    path.lineTo(8, -8)
+    path.lineTo(0, 6)
+    path.closeSubpath()
+    painter.setBrush(QColor("#6b7280"))
+    painter.drawPath(path)
+
+    # Cathode bar
+    painter.drawLine(QPointF(-8, 6), QPointF(8, 6))
+
+
+def _draw_triac_icon(painter: QPainter) -> None:
+    """Draw TRIAC icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Terminals
+    painter.drawLine(QPointF(0, -20), QPointF(0, -10))
+    painter.drawLine(QPointF(0, 10), QPointF(0, 20))
+
+    # Gate
+    painter.drawLine(QPointF(-18, 8), QPointF(-8, 8))
+    painter.drawLine(QPointF(-8, 8), QPointF(-8, 0))
+
+    # Two triangles
+    painter.setBrush(QColor("#6b7280"))
+    # Upper
+    path1 = QPainterPath()
+    path1.moveTo(-6, -10)
+    path1.lineTo(6, -10)
+    path1.lineTo(0, 0)
+    path1.closeSubpath()
+    painter.drawPath(path1)
+    # Lower
+    path2 = QPainterPath()
+    path2.moveTo(-6, 10)
+    path2.lineTo(6, 10)
+    path2.lineTo(0, 0)
+    path2.closeSubpath()
+    painter.drawPath(path2)
+
+
+def _draw_opamp_icon(painter: QPainter) -> None:
+    """Draw op-amp icon."""
+    # Triangle
+    path = QPainterPath()
+    path.moveTo(-16, -16)
+    path.lineTo(-16, 16)
+    path.lineTo(16, 0)
+    path.closeSubpath()
+
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#f8fafc"))
+    painter.drawPath(path)
+
+    # Input symbols
+    painter.setPen(QPen(QColor("#22c55e"), 2))
+    painter.drawLine(QPointF(-14, -8), QPointF(-10, -8))
+    painter.drawLine(QPointF(-12, -10), QPointF(-12, -6))
+
+    painter.setPen(QPen(QColor("#ef4444"), 2))
+    painter.drawLine(QPointF(-14, 8), QPointF(-10, 8))
+
+
+def _draw_comparator_icon(painter: QPainter) -> None:
+    """Draw comparator icon."""
+    _draw_opamp_icon(painter)
+    # Output indicator
+    painter.setPen(QPen(QColor("#374151"), 1.5))
+    painter.drawRect(QRectF(10, -3, 4, 6))
+
+
+def _draw_fuse_icon(painter: QPainter) -> None:
+    """Draw fuse icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#f8fafc"))
+    painter.drawRect(QRectF(-12, -8, 24, 16))
+
+    # Fuse element
+    painter.setPen(QPen(QColor("#9ca3af"), 1.5))
+    path = QPainterPath()
+    path.moveTo(-10, 0)
+    path.cubicTo(-4, -4, 0, 4, 6, -2)
+    path.lineTo(10, 0)
+    painter.drawPath(path)
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-20, 0), QPointF(-12, 0))
+    painter.drawLine(QPointF(12, 0), QPointF(20, 0))
+
+
+def _draw_breaker_icon(painter: QPainter) -> None:
+    """Draw circuit breaker icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Contacts
+    painter.setBrush(QColor("#fbbf24"))
+    painter.drawEllipse(QPointF(-10, 0), 3, 3)
+    painter.drawEllipse(QPointF(10, 0), 3, 3)
+
+    # Open arm
+    painter.setPen(QPen(QColor("#374151"), 3))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(-10, 0), QPointF(6, -10))
+
+    # Trip indicator
+    painter.setPen(QPen(QColor("#ef4444"), 2))
+    painter.drawRect(QRectF(-3, -12, 6, 4))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-20, 0), QPointF(-13, 0))
+    painter.drawLine(QPointF(13, 0), QPointF(20, 0))
+
+
+def _draw_relay_icon(painter: QPainter) -> None:
+    """Draw relay icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Coil rectangle
+    painter.setBrush(QColor("#d4c4a8"))
+    painter.drawRect(QRectF(-18, -10, 14, 20))
+
+    # Dashed coupling line
+    painter.setPen(QPen(QColor("#374151"), 1, Qt.PenStyle.DashLine))
+    painter.drawLine(QPointF(0, -14), QPointF(0, 14))
+
+    # Switch arm
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#fbbf24"))
+    painter.drawEllipse(QPointF(10, 0), 3, 3)
+    painter.drawLine(QPointF(10, 0), QPointF(16, -10))
+
+
+def _draw_simple_block_icon(painter: QPainter, comp_type: ComponentType) -> None:
+    """Draw simple block icon with label."""
+    labels = {
+        ComponentType.INTEGRATOR: "∫",
+        ComponentType.DIFFERENTIATOR: "d/dt",
+        ComponentType.LIMITER: "⊏⊐",
+        ComponentType.RATE_LIMITER: "↗",
+        ComponentType.HYSTERESIS: "⊂⊃",
+        ComponentType.LOOKUP_TABLE: "f(x)",
+        ComponentType.TRANSFER_FUNCTION: "H(s)",
+        ComponentType.DELAY_BLOCK: "T",
+        ComponentType.SAMPLE_HOLD: "S/H",
+        ComponentType.STATE_MACHINE: "FSM",
+    }
+    label = labels.get(comp_type, "?")
+
+    rect = QRectF(-16, -12, 32, 24)
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(rect, 4, 4)
+
+    # Accent stripe
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#8b5cf6"))
+    painter.drawRoundedRect(QRectF(-14, -8, 4, 16), 2, 2)
+
+    # Label
+    painter.setPen(QColor("#374151"))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(8)
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+
+def _draw_probe_icon(painter: QPainter, symbol: str, color: str) -> None:
+    """Draw measurement probe icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+    painter.setBrush(QColor("#fffbeb"))
+    painter.drawEllipse(QPointF(0, 0), 14, 14)
+
+    painter.setPen(QPen(QColor(color), 2.5))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSize(12)
+    painter.setFont(font)
+    painter.drawText(QRectF(-10, -10, 20, 20), Qt.AlignmentFlag.AlignCenter, symbol)
+
+
+def _draw_saturable_inductor_icon(painter: QPainter) -> None:
+    """Draw saturable inductor icon."""
+    _draw_inductor_icon(painter)
+    # Filled core line
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#374151"))
+    painter.drawRect(QRectF(-12, -2, 24, 4))
+
+
+def _draw_coupled_inductor_icon(painter: QPainter) -> None:
+    """Draw coupled inductor icon."""
+    _draw_transformer_icon(painter)
+
+
+def _draw_snubber_icon(painter: QPainter) -> None:
+    """Draw RC snubber icon."""
+    painter.setPen(QPen(QColor("#374151"), 2))
+
+    # Resistor part
+    painter.setBrush(QColor("#d4c4a8"))
+    painter.drawRect(QRectF(-16, -6, 14, 12))
+
+    # Capacitor plates
+    painter.setPen(QPen(QColor("#374151"), 2.5))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(4, -10), QPointF(4, 10))
+    painter.drawLine(QPointF(10, -10), QPointF(10, 10))
+
+    # Leads
+    painter.setPen(QPen(QColor("#666666"), 2))
+    painter.drawLine(QPointF(-22, 0), QPointF(-16, 0))
+    painter.drawLine(QPointF(10, 0), QPointF(22, 0))
+
+
+class ComponentCard(QFrame):
+    """A draggable card representing a component."""
+
+    clicked = Signal(ComponentType)
+    double_clicked = Signal(ComponentType)
+
+    def __init__(self, comp_type: ComponentType, name: str, shortcut: str, parent=None):
         super().__init__(parent)
-        self.setDragEnabled(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.setObjectName("ComponentCard")
+        self._comp_type = comp_type
+        self._name = name
+        self._shortcut = shortcut
+        self._hovered = False
+        self._icon_color = "#374151"
+        self._icon_dark_mode = False
+        self._theme: Theme | None = None
+        self._hover_fill = "rgba(59, 130, 246, 0.1)"
+        self._hover_border = "rgba(59, 130, 246, 0.3)"
+        self._name_color = "#374151"
+        self._badge_bg = "rgba(107, 114, 128, 0.16)"
+        self._badge_text = "#6b7280"
 
-    def startDrag(self, supportedActions) -> None:
-        """Start drag operation for the current item."""
-        item = self.currentItem()
-        if not item:
-            return
+        self.setFixedSize(76, 92)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setMouseTracking(True)
 
-        comp_type = item.data(0, Qt.ItemDataRole.UserRole)
-        if not comp_type:
-            return
+        self._setup_ui()
+        self._update_style()
 
-        # Create mime data
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 6, 4, 5)
+        layout.setSpacing(3)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Icon
+        self._icon_label = QLabel()
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon_label.setFixedSize(48, 48)
+        self._update_icon()
+        layout.addWidget(self._icon_label)
+
+        # Name
+        self._name_label = QLabel(self._name)
+        self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = self._name_label.font()
+        font.setPointSize(9)
+        self._name_label.setFont(font)
+        self._name_label.setWordWrap(True)
+        layout.addWidget(self._name_label)
+
+        self._shortcut_label = QLabel(self._shortcut)
+        self._shortcut_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._shortcut_label.setVisible(bool(self._shortcut))
+        self._shortcut_label.setObjectName("ComponentShortcutBadge")
+        badge_font = self._shortcut_label.font()
+        badge_font.setPointSize(7)
+        badge_font.setBold(True)
+        self._shortcut_label.setFont(badge_font)
+        self._shortcut_label.setStyleSheet(
+            "color: #6b7280; background: rgba(107, 114, 128, 0.16); "
+            "border-radius: 6px; padding: 1px 6px;"
+        )
+        layout.addWidget(self._shortcut_label)
+
+    def _update_icon(self):
+        pixmap = create_component_icon(
+            self._comp_type,
+            48,
+            self._icon_color,
+            dark_mode=self._icon_dark_mode,
+        )
+        self._icon_label.setPixmap(pixmap)
+
+    def _update_style(self):
+        if self._hovered:
+            self.setStyleSheet(f"""
+                QFrame#ComponentCard {{
+                    background-color: {self._hover_fill};
+                    border: 1px solid {self._hover_border};
+                    border-radius: 8px;
+                }}
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#ComponentCard {
+                    background-color: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 8px;
+                }
+            """)
+
+    def set_icon_color(self, color: str):
+        self._icon_color = color
+        self._update_icon()
+
+    def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        """Set icon rendering mode to match active UI theme."""
+        self._icon_dark_mode = dark_mode
+        self._update_icon()
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme-aware card visuals."""
+        self._theme = theme
+        self._icon_dark_mode = theme.is_dark
+        c = theme.colors
+        selected = QColor(c.tree_item_selected)
+        primary = QColor(c.primary)
+        hover_alpha = 72 if theme.is_dark else 48
+        border_alpha = 170 if theme.is_dark else 110
+        self._hover_fill = (
+            f"rgba({selected.red()}, {selected.green()}, {selected.blue()}, {hover_alpha})"
+        )
+        self._hover_border = (
+            f"rgba({primary.red()}, {primary.green()}, {primary.blue()}, {border_alpha})"
+        )
+        self._name_color = c.foreground
+        self._name_label.setStyleSheet(f"color: {self._name_color};")
+        badge_bg = QColor(c.tree_item_selected)
+        badge_fg = QColor(c.foreground_muted)
+        badge_alpha = 115 if theme.is_dark else 150
+        self._badge_bg = (
+            f"rgba({badge_bg.red()}, {badge_bg.green()}, {badge_bg.blue()}, {badge_alpha})"
+        )
+        self._badge_text = badge_fg.name()
+        self._shortcut_label.setStyleSheet(
+            f"color: {self._badge_text}; background: {self._badge_bg}; "
+            "border-radius: 6px; padding: 1px 6px;"
+        )
+        self._update_icon()
+        self._update_style()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self._update_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self._update_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            if hasattr(self, '_drag_start_pos'):
+                distance = (event.pos() - self._drag_start_pos).manhattanLength()
+                if distance >= QApplication.startDragDistance():
+                    self._start_drag()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if hasattr(self, '_drag_start_pos'):
+                distance = (event.pos() - self._drag_start_pos).manhattanLength()
+                if distance < QApplication.startDragDistance():
+                    self.clicked.emit(self._comp_type)
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit(self._comp_type)
+        super().mouseDoubleClickEvent(event)
+
+    def _start_drag(self):
         mime_data = QMimeData()
         mime_data.setData(
             "application/x-pulsim-component",
-            QByteArray(comp_type.name.encode()),
+            QByteArray(self._comp_type.name.encode()),
         )
 
-        # Create drag
         drag = QDrag(self)
         drag.setMimeData(mime_data)
 
-        # Create drag pixmap with component symbol
-        pixmap = create_component_drag_pixmap(comp_type)
+        # Create drag pixmap
+        pixmap = create_component_icon(
+            self._comp_type,
+            48,
+            self._icon_color,
+            dark_mode=self._icon_dark_mode,
+        )
         drag.setPixmap(pixmap)
         drag.setHotSpot(pixmap.rect().center())
 
         drag.exec(Qt.DropAction.CopyAction)
 
 
-# Component metadata for library display
-COMPONENT_LIBRARY = {
-    "Passive": [
-        {
-            "type": ComponentType.RESISTOR,
-            "name": "Resistor",
-            "shortcut": "R",
-            "description": "Electrical resistance element",
-        },
-        {
-            "type": ComponentType.CAPACITOR,
-            "name": "Capacitor",
-            "shortcut": "C",
-            "description": "Energy storage in electric field",
-        },
-        {
-            "type": ComponentType.INDUCTOR,
-            "name": "Inductor",
-            "shortcut": "L",
-            "description": "Energy storage in magnetic field",
-        },
-        {
-            "type": ComponentType.TRANSFORMER,
-            "name": "Transformer",
-            "shortcut": "T",
-            "description": "Magnetic coupling between inductors",
-        },
-    ],
-    "Sources": [
-        {
-            "type": ComponentType.VOLTAGE_SOURCE,
-            "name": "Voltage Source",
-            "shortcut": "V",
-            "description": "Ideal voltage source (DC, AC, pulse, PWL)",
-        },
-        {
-            "type": ComponentType.CURRENT_SOURCE,
-            "name": "Current Source",
-            "shortcut": "I",
-            "description": "Ideal current source (DC, AC, pulse, PWL)",
-        },
-        {
-            "type": ComponentType.GROUND,
-            "name": "Ground",
-            "shortcut": "G",
-            "description": "Reference node (0V)",
-        },
-    ],
-    "Semiconductors": [
-        {
-            "type": ComponentType.DIODE,
-            "name": "Diode",
-            "shortcut": "D",
-            "description": "PN junction diode",
-        },
-        {
-            "type": ComponentType.MOSFET_N,
-            "name": "NMOS",
-            "shortcut": "M",
-            "description": "N-channel MOSFET",
-        },
-        {
-            "type": ComponentType.MOSFET_P,
-            "name": "PMOS",
-            "shortcut": "Shift+M",
-            "description": "P-channel MOSFET",
-        },
-        {
-            "type": ComponentType.IGBT,
-            "name": "IGBT",
-            "shortcut": "B",
-            "description": "Insulated Gate Bipolar Transistor",
-        },
-    ],
-    "Switches": [
-        {
-            "type": ComponentType.SWITCH,
-            "name": "Ideal Switch",
-            "shortcut": "S",
-            "description": "Controlled ideal switch",
-        },
-    ],
-    "Control Blocks": [
-        {
-            "type": ComponentType.PI_CONTROLLER,
-            "name": "PI Controller",
-            "shortcut": "Ctrl+P",
-            "description": "Two-input PI compensator block",
-        },
-        {
-            "type": ComponentType.PID_CONTROLLER,
-            "name": "PID Controller",
-            "shortcut": "Ctrl+Shift+P",
-            "description": "Two-input PID controller block",
-        },
-        {
-            "type": ComponentType.MATH_BLOCK,
-            "name": "Math Block",
-            "shortcut": "Ctrl+M",
-            "description": "Generic math operation block (sum, diff, gain)",
-        },
-        {
-            "type": ComponentType.PWM_GENERATOR,
-            "name": "PWM Generator",
-            "shortcut": "Ctrl+W",
-            "description": "Carrier-based PWM signal generator",
-        },
-        {
-            "type": ComponentType.ELECTRICAL_SCOPE,
-            "name": "Electrical Scope",
-            "shortcut": "Ctrl+E",
-            "description": "Scope component with configurable input channels",
-        },
-        {
-            "type": ComponentType.THERMAL_SCOPE,
-            "name": "Thermal Scope",
-            "shortcut": "Ctrl+Shift+E",
-            "description": "Thermal scope for temperature/loss visualization",
-        },
-        {
-            "type": ComponentType.SIGNAL_MUX,
-            "name": "Signal Mux",
-            "shortcut": "Ctrl+Alt+M",
-            "description": "Combine multiple scalar signals into a bus",
-        },
-        {
-            "type": ComponentType.SIGNAL_DEMUX,
-            "name": "Signal Demux",
-            "shortcut": "Ctrl+Alt+D",
-            "description": "Split a bus back into labeled scalar signals",
-        },
-    ],
-}
+class CategorySection(QWidget):
+    """A collapsible section for a component category."""
+
+    component_clicked = Signal(ComponentType)
+    component_double_clicked = Signal(ComponentType)
+
+    def __init__(self, name: str, color: str, parent=None):
+        super().__init__(parent)
+        self._name = name
+        self._color = color
+        self._expanded = True
+        self._theme: Theme | None = None
+        self._cards: list[ComponentCard] = []
+        self._icon_color = "#374151"
+        self._icon_dark_mode = False
+        self._header: QWidget | None = None
+        self._color_bar: QFrame | None = None
+        self._toggle_btn: QToolButton | None = None
+        self._count_label: QLabel | None = None
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(4)
+
+        # Header
+        self._header = QWidget()
+        self._header.setObjectName("CategoryHeader")
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_layout = QHBoxLayout(self._header)
+        header_layout.setContentsMargins(8, 5, 8, 5)
+        header_layout.setSpacing(7)
+
+        # Color indicator
+        self._color_bar = QFrame()
+        self._color_bar.setFixedSize(4, 20)
+        header_layout.addWidget(self._color_bar)
+
+        # Category name
+        self._title_label = QLabel(self._name)
+        self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        font = self._title_label.font()
+        font.setBold(True)
+        font.setPointSize(10)
+        self._title_label.setFont(font)
+        header_layout.addWidget(self._title_label)
+
+        self._count_label = QLabel("0")
+        self._count_label.setObjectName("CategoryCount")
+        self._count_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._count_label.setMinimumWidth(20)
+        header_layout.addWidget(self._count_label)
+
+        header_layout.addStretch()
+
+        self._toggle_btn = QToolButton()
+        self._toggle_btn.setObjectName("CategoryToggle")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.setText("▾")
+        self._toggle_btn.setAutoRaise(True)
+        self._toggle_btn.clicked.connect(self._toggle_expanded)
+        header_layout.addWidget(self._toggle_btn)
+
+        layout.addWidget(self._header)
+        for clickable in (self._header, self._title_label, self._count_label, self._color_bar):
+            clickable.installEventFilter(self)
+
+        # Grid container
+        self._grid_container = QWidget()
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setContentsMargins(4, 2, 4, 0)
+        self._grid_layout.setSpacing(6)
+        self._grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        layout.addWidget(self._grid_container)
+        self._refresh_header_style()
+
+    def add_component(self, comp_type: ComponentType, name: str, shortcut: str):
+        card = ComponentCard(comp_type, name, shortcut)
+        card.set_icon_color(self._icon_color)
+        card.set_icon_theme_mode(self._icon_dark_mode)
+        card.clicked.connect(self.component_clicked.emit)
+        card.double_clicked.connect(self.component_double_clicked.emit)
+
+        self._cards.append(card)
+        if self._count_label is not None:
+            self._count_label.setText(str(len(self._cards)))
+
+        # Add to grid (3 columns)
+        row = (len(self._cards) - 1) // 3
+        col = (len(self._cards) - 1) % 3
+        self._grid_layout.addWidget(card, row, col)
+
+    def _toggle_expanded(self) -> None:
+        self._expanded = not self._expanded
+        self._grid_container.setVisible(self._expanded)
+        if self._toggle_btn is not None:
+            self._toggle_btn.setText("▾" if self._expanded else "▸")
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonRelease and watched in {
+            self._header,
+            self._title_label,
+            self._count_label,
+            self._color_bar,
+        }:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._toggle_expanded()
+                return True
+        return super().eventFilter(watched, event)
+
+    def set_icon_color(self, color: str):
+        self._icon_color = color
+        for card in self._cards:
+            card.set_icon_color(color)
+
+    def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        self._icon_dark_mode = dark_mode
+        for card in self._cards:
+            card.set_icon_theme_mode(dark_mode)
+
+    def _refresh_header_style(self, theme: Theme | None = None) -> None:
+        """Apply styles to section header and color accent bar."""
+        if self._color_bar is not None:
+            self._color_bar.setStyleSheet(
+                f"background-color: {self._color}; border-radius: 2px;"
+            )
+        if theme is None or self._header is None:
+            self._title_label.setStyleSheet("")
+            return
+
+        c = theme.colors
+        self._theme = theme
+        self._header.setStyleSheet(
+            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 6px;"
+        )
+        self._title_label.setStyleSheet(f"color: {c.foreground};")
+        if self._count_label is not None:
+            self._count_label.setStyleSheet(
+                f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
+                "border-radius: 5px; padding: 0 5px; font-size: 10px;"
+            )
+        if self._toggle_btn is not None:
+            self._toggle_btn.setStyleSheet(
+                f"QToolButton {{ color: {c.foreground_muted}; border: none; padding: 0 2px; }}"
+                f"QToolButton:hover {{ color: {c.foreground}; }}"
+            )
+
+    def apply_theme(self, theme: Theme, accent_color: str, icon_color: str) -> None:
+        """Apply theme to section and nested component cards."""
+        self._color = accent_color
+        self._icon_color = icon_color
+        self._icon_dark_mode = theme.is_dark
+        self._refresh_header_style(theme)
+        for card in self._cards:
+            card.set_icon_theme_mode(theme.is_dark)
+            card.set_icon_color(icon_color)
+            card.apply_theme(theme)
+
+    def filter_components(self, search_text: str) -> bool:
+        """Filter components by search text. Returns True if any visible."""
+        search_lower = search_text.lower()
+        any_visible = False
+        visible_count = 0
+
+        for card in self._cards:
+            visible = not search_text or search_lower in card._name.lower()
+            card.setVisible(visible)
+            if visible:
+                any_visible = True
+                visible_count += 1
+
+        if search_text and any_visible and not self._expanded:
+            self._expanded = True
+            self._grid_container.setVisible(True)
+            if self._toggle_btn is not None:
+                self._toggle_btn.setText("▾")
+        if self._count_label is not None:
+            if search_text:
+                self._count_label.setText(f"{visible_count}/{len(self._cards)}")
+            else:
+                self._count_label.setText(str(len(self._cards)))
+        self.setVisible(any_visible or not search_text)
+        return any_visible
 
 
 class LibraryPanel(QWidget):
-    """Panel displaying component library with drag-and-drop."""
+    """Panel displaying component library with grid cards."""
 
     component_selected = Signal(ComponentType)
     component_double_clicked = Signal(ComponentType)
 
-    def __init__(self, theme_service=None, parent=None):
+    def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("LibraryPanelRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self._theme_service = theme_service
-        self._favorites: list[ComponentType] = []
+        self._theme: Theme | None = None
+        self._icon_color = "#374151"
+        self._sections: list[CategorySection] = []
         self._recent: list[ComponentType] = []
         self._max_recent = 5
-        self._icon_color = "#6b7280"  # Default muted color
+        self._scroll: QScrollArea | None = None
+        self._search_action = None
+        self._summary_label: QLabel | None = None
+        self._total_components = 0
 
         self._setup_ui()
-        self._populate_tree()
+        self._populate_components()
 
-        # Connect to theme changes
         if self._theme_service:
             self._theme_service.theme_changed.connect(self._on_theme_changed)
-            self._update_colors_from_theme()
+            self.apply_theme(self._theme_service.current_theme)
 
-    def _setup_ui(self) -> None:
-        """Set up the panel UI."""
+    def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
-        # Search bar with icon
+        title_row = QWidget()
+        title_row.setObjectName("LibraryTitleRow")
+        title_layout = QHBoxLayout(title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(6)
+
+        title = QLabel("Component Library")
+        title.setObjectName("LibraryPanelTitle")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+
+        self._summary_label = QLabel("")
+        self._summary_label.setObjectName("LibrarySummaryLabel")
+        title_layout.addWidget(self._summary_label)
+        layout.addWidget(title_row)
+
+        # Search bar
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Search components...")
+        self._search_edit.setPlaceholderText("Search component or function...")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
-        # Add search icon
         search_icon = IconService.get_icon("search", "#9ca3af", 16)
-        self._search_edit.addAction(search_icon, QLineEdit.ActionPosition.LeadingPosition)
+        self._search_action = self._search_edit.addAction(
+            search_icon, QLineEdit.ActionPosition.LeadingPosition
+        )
         layout.addWidget(self._search_edit)
 
-        # Component tree with improved styling
-        self._tree = DraggableTreeWidget()
-        self._tree.setHeaderHidden(True)
-        self._tree.setIndentation(20)
-        self._tree.setAnimated(True)
-        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._tree.itemClicked.connect(self._on_item_clicked)
-        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self._tree.setMouseTracking(True)
-        self._tree.setIconSize(QSize(36, 36))
-        self._tree.setUniformRowHeights(False)  # Allow different row heights
+        # Scroll area for categories
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        layout.addWidget(self._tree)
+        self._content = QWidget()
+        self._content.setObjectName("LibraryContentRoot")
+        self._content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(0)
+        self._content_layout.addStretch()
 
-        # Info label with better styling
-        self._info_label = QLabel("")
-        self._info_label.setWordWrap(True)
-        self._info_label.setProperty("muted", True)
-        layout.addWidget(self._info_label)
+        scroll.setWidget(self._content)
+        layout.addWidget(scroll)
+        self._scroll = scroll
 
-    def _populate_tree(self) -> None:
-        """Populate the tree with components."""
-        self._tree.clear()
-
-        # Recent category
-        self._recent_item = QTreeWidgetItem(self._tree, ["Recently Used"])
-        self._recent_item.setFlags(
-            self._recent_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
-        )
-        self._set_category_icon(self._recent_item, "Recently Used")
-        self._update_recent_items()
-
-        # Favorites category
-        self._favorites_item = QTreeWidgetItem(self._tree, ["Favorites"])
-        self._favorites_item.setFlags(
-            self._favorites_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
-        )
-        self._set_category_icon(self._favorites_item, "Favorites")
-        self._update_favorites_items()
-
-        # Component categories
+    def _populate_components(self):
         for category, components in COMPONENT_LIBRARY.items():
-            category_item = QTreeWidgetItem(self._tree, [category])
-            category_item.setFlags(
-                category_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled
-            )
-            category_item.setExpanded(True)
-            self._set_category_icon(category_item, category)
+            color = CATEGORY_COLORS.get(category, "#6b7280")
+            section = CategorySection(category, color)
+            section.set_icon_color(self._icon_color)
+            section.component_clicked.connect(self._on_component_clicked)
+            section.component_double_clicked.connect(self._on_component_double_clicked)
 
             for comp in components:
-                item = QTreeWidgetItem(category_item)
-                item.setText(0, f"{comp['name']} ({comp['shortcut']})")
-                item.setData(0, Qt.ItemDataRole.UserRole, comp["type"])
-                item.setData(0, Qt.ItemDataRole.UserRole + 1, comp["description"])
-                item.setToolTip(0, f"{comp['description']}\nShortcut: {comp['shortcut']}")
-                # Add component thumbnail icon
-                item.setIcon(0, create_component_thumbnail(comp["type"], 36, self._icon_color))
+                section.add_component(comp["type"], comp["name"], comp["shortcut"])
+                self._total_components += 1
 
-    def _update_recent_items(self) -> None:
-        """Update the recently used items."""
-        # Clear existing children
-        while self._recent_item.childCount() > 0:
-            self._recent_item.removeChild(self._recent_item.child(0))
+            self._sections.append(section)
+            self._content_layout.insertWidget(self._content_layout.count() - 1, section)
+        self._update_summary_label()
 
-        if not self._recent:
-            empty_item = QTreeWidgetItem(self._recent_item, ["(empty)"])
-            empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+    def _on_search_changed(self, text: str):
+        visible_count = 0
+        for section in self._sections:
+            if section.filter_components(text):
+                visible_count += sum(1 for card in section._cards if card.isVisible())
+        self._update_summary_label(visible_count if text else self._total_components)
+
+    def _update_summary_label(self, visible_count: int | None = None) -> None:
+        if self._summary_label is None:
             return
+        count = self._total_components if visible_count is None else visible_count
+        if self._search_edit is not None and self._search_edit.text():
+            self._summary_label.setText(f"{count} matching")
+        else:
+            self._summary_label.setText(f"{count} components")
 
-        for comp_type in self._recent:
-            comp_info = self._find_component_info(comp_type)
-            if comp_info:
-                item = QTreeWidgetItem(self._recent_item)
-                item.setText(0, comp_info["name"])
-                item.setData(0, Qt.ItemDataRole.UserRole, comp_type)
-                item.setToolTip(0, comp_info["description"])
-                item.setIcon(0, create_component_thumbnail(comp_type, 36, self._icon_color))
+    def _on_component_clicked(self, comp_type: ComponentType):
+        self.component_selected.emit(comp_type)
 
-    def _update_favorites_items(self) -> None:
-        """Update the favorites items."""
-        # Clear existing children
-        while self._favorites_item.childCount() > 0:
-            self._favorites_item.removeChild(self._favorites_item.child(0))
+    def _on_component_double_clicked(self, comp_type: ComponentType):
+        self.add_to_recent(comp_type)
+        self.component_double_clicked.emit(comp_type)
 
-        if not self._favorites:
-            empty_item = QTreeWidgetItem(self._favorites_item, ["(empty)"])
-            empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            return
-
-        for comp_type in self._favorites:
-            comp_info = self._find_component_info(comp_type)
-            if comp_info:
-                item = QTreeWidgetItem(self._favorites_item)
-                item.setText(0, comp_info["name"])
-                item.setData(0, Qt.ItemDataRole.UserRole, comp_type)
-                item.setToolTip(0, comp_info["description"])
-                item.setIcon(0, create_component_thumbnail(comp_type, 36, self._icon_color))
-
-    def _find_component_info(self, comp_type: ComponentType) -> dict | None:
-        """Find component info by type."""
-        for components in COMPONENT_LIBRARY.values():
-            for comp in components:
-                if comp["type"] == comp_type:
-                    return comp
-        return None
-
-    def _on_search_changed(self, text: str) -> None:
-        """Filter tree based on search text."""
-        text = text.lower()
-
-        def set_item_visibility(item: QTreeWidgetItem, visible: bool):
-            item.setHidden(not visible)
-
-        def filter_category(category_item: QTreeWidgetItem) -> bool:
-            """Returns True if any child is visible."""
-            any_visible = False
-            for i in range(category_item.childCount()):
-                child = category_item.child(i)
-                comp_type = child.data(0, Qt.ItemDataRole.UserRole)
-
-                if comp_type is None:
-                    # Skip non-component items like "(empty)"
-                    child.setHidden(bool(text))
-                    continue
-
-                child_text = child.text(0).lower()
-                description = (child.data(0, Qt.ItemDataRole.UserRole + 1) or "").lower()
-
-                visible = not text or text in child_text or text in description
-                set_item_visibility(child, visible)
-                if visible:
-                    any_visible = True
-
-            return any_visible
-
-        # Filter each category
-        for i in range(self._tree.topLevelItemCount()):
-            category = self._tree.topLevelItem(i)
-            if category.childCount() > 0:
-                has_visible = filter_category(category)
-                set_item_visibility(category, has_visible or not text)
-                if has_visible:
-                    category.setExpanded(True)
-
-    def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
-        """Handle item click."""
-        comp_type = item.data(0, Qt.ItemDataRole.UserRole)
-        if comp_type:
-            description = item.data(0, Qt.ItemDataRole.UserRole + 1) or ""
-            self._info_label.setText(description)
-            self.component_selected.emit(comp_type)
-
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
-        """Handle item double-click to add component."""
-        comp_type = item.data(0, Qt.ItemDataRole.UserRole)
-        if comp_type:
-            self.add_to_recent(comp_type)
-            self.component_double_clicked.emit(comp_type)
-
-    def add_to_recent(self, comp_type: ComponentType) -> None:
-        """Add a component to the recently used list."""
+    def add_to_recent(self, comp_type: ComponentType):
         if comp_type in self._recent:
             self._recent.remove(comp_type)
         self._recent.insert(0, comp_type)
-        self._recent = self._recent[: self._max_recent]
-        self._update_recent_items()
+        self._recent = self._recent[:self._max_recent]
 
-    def add_to_favorites(self, comp_type: ComponentType) -> None:
-        """Add a component to favorites."""
-        if comp_type not in self._favorites:
-            self._favorites.append(comp_type)
-            self._update_favorites_items()
+    @staticmethod
+    def _category_color_for_theme(category: str, theme: Theme) -> str:
+        """Normalize category accent brightness for active theme."""
+        base = QColor(CATEGORY_COLORS.get(category, "#6b7280"))
+        return base.lighter(135).name() if theme.is_dark else base.darker(105).name()
 
-    def remove_from_favorites(self, comp_type: ComponentType) -> None:
-        """Remove a component from favorites."""
-        if comp_type in self._favorites:
-            self._favorites.remove(comp_type)
-            self._update_favorites_items()
+    def _on_theme_changed(self, theme: Theme) -> None:
+        self.apply_theme(theme)
 
-    def _set_category_icon(self, item: QTreeWidgetItem, category_name: str) -> None:
-        """Set the icon for a category item."""
-        icon_name = CATEGORY_ICONS.get(category_name, "folder")
-        # Use 36px to match tree iconSize
-        item.setIcon(0, IconService.get_icon(icon_name, self._icon_color, 36))
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to library panel and all category sections."""
+        self._theme = theme
+        c = theme.colors
+        self._icon_color = c.foreground_muted
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(c.panel_background))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
 
-    def _on_theme_changed(self, theme) -> None:
-        """Handle theme change event."""
-        self._update_colors_from_theme()
-        self._populate_tree()
+        if self._search_action is not None:
+            self._search_action.setIcon(IconService.get_icon("search", c.input_placeholder, 16))
+        if self._scroll is not None:
+            self._scroll.viewport().setStyleSheet(f"background-color: {c.panel_background};")
 
-    def _update_colors_from_theme(self) -> None:
-        """Update colors based on current theme."""
-        if self._theme_service:
-            theme = self._theme_service.current_theme
-            self._icon_color = theme.colors.foreground_muted
+        self.setStyleSheet(f"""
+            QWidget#LibraryPanelRoot {{
+                background-color: {c.panel_background};
+            }}
+            QWidget#LibraryTitleRow {{
+                background-color: {c.panel_header};
+                border: 1px solid {c.panel_border};
+                border-radius: 6px;
+                padding: 4px 6px;
+            }}
+            QLabel#LibraryPanelTitle {{
+                color: {c.foreground};
+                font-weight: 600;
+                font-size: 12px;
+            }}
+            QLabel#LibrarySummaryLabel {{
+                color: {c.foreground_muted};
+                background-color: {c.tree_item_hover};
+                border-radius: 5px;
+                padding: 1px 7px;
+                font-size: 10px;
+                font-weight: 500;
+            }}
+            QWidget#LibraryContentRoot {{
+                background-color: {c.panel_background};
+            }}
+            QLineEdit {{
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+                border-radius: 6px;
+                padding: 7px 8px;
+                color: {c.foreground};
+            }}
+            QLineEdit:focus {{
+                border-color: {c.input_focus_border};
+            }}
+            QScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QWidget {{
+                color: {c.foreground};
+            }}
+        """)
+
+        for section in self._sections:
+            accent = self._category_color_for_theme(section._name, theme)
+            section.apply_theme(theme, accent_color=accent, icon_color=self._icon_color)

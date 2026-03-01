@@ -19,7 +19,7 @@ is_linux = sys.platform.startswith('linux')
 
 # Application metadata
 APP_NAME = 'PulsimGui'
-APP_VERSION = '0.1.0'
+APP_VERSION = os.environ.get('PULSIMGUI_VERSION', '0.1.0').lstrip('v') or '0.1.0'
 APP_BUNDLE_ID = 'com.pulsim.pulsimgui'
 
 # Paths
@@ -72,7 +72,7 @@ hidden_imports = [
 
     # numpy modules
     'numpy',
-    'numpy.core._methods',
+    'numpy._core._methods',
     'numpy.lib.format',
     'numpy.fft',
     'numpy.linalg',
@@ -84,17 +84,7 @@ hidden_imports = [
     # pulsim backend - simulation engine
     'pulsim',
     'pulsim._pulsim',
-    'pulsim.devices',
-    'pulsim.remote',
-    'pulsim.remote.client',
-    'pulsim.remote.simulator_pb2',
-    'pulsim.remote.simulator_pb2_grpc',
-    'pulsim.remote.widgets',
-
-    # grpc for remote simulation (if used)
-    'grpc',
-    'grpc._cython',
-    'google.protobuf',
+    'pulsim.netlist',
 ]
 
 # Collect data files

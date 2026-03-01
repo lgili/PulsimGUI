@@ -161,6 +161,24 @@ Or as a Python module:
 python -m pulsimgui
 ```
 
+## Documentation Website
+
+The project now includes a MkDocs Material site for user-facing documentation.
+
+- GitHub Pages deploy runs automatically when pushing a version tag (`v*`).
+- Local docs build:
+
+```bash
+python3 -m pip install -r docs/requirements.txt
+mkdocs serve
+```
+
+Static build:
+
+```bash
+mkdocs build --strict
+```
+
 ## Troubleshooting
 
 ### PySide6 Import Errors

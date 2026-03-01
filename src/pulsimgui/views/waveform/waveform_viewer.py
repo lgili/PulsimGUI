@@ -3,7 +3,7 @@
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
-from PySide6.QtGui import QDrag, QColor
+from PySide6.QtGui import QDrag, QColor, QPalette
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -20,13 +20,19 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QAbstractItemView,
+    QHeaderView,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
 )
 
 from pulsimgui.services.simulation_service import SimulationResult
+from pulsimgui.services.theme_service import ThemeService, Theme
 
 
 # Maximum points to display before decimation kicks in
-MAX_DISPLAY_POINTS = 5000
+# Higher = better resolution but slower updates
+MAX_DISPLAY_POINTS = 10000
 
 
 # Color palette for traces (distinguishable colors)
@@ -81,20 +87,40 @@ class DraggableCursor(pg.InfiniteLine):
         """Get the text item for adding to plot."""
         return self._text
 
+    def set_color(self, color: tuple[int, int, int]) -> None:
+        """Update cursor line/text colors for active theme changes."""
+        self._color = color
+        self.setPen(pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine))
+        self._text.setColor(color)
+
 
 class MeasurementsPanel(QFrame):
     """Panel displaying cursor measurements and signal statistics."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("MeasurementsPanelRoot")
         self.setFrameStyle(QFrame.Shape.NoFrame)
+        self._value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
+        self._muted_labels: list[QLabel] = []
+        self._accent_labels: dict[QLabel, str] = {}
+        self._separator: QFrame | None = None
         self._setup_ui()
         self._apply_styles()
 
-    def _apply_styles(self) -> None:
+    @staticmethod
+    def _to_hex(color: tuple[int, int, int]) -> str:
+        return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+
+    def _apply_styles(
+        self,
+        theme: Theme | None = None,
+        cursor_colors: tuple[str, str] | None = None,
+    ) -> None:
         """Apply modern styling."""
-        self.setStyleSheet("""
-            MeasurementsPanel {
+        if theme is None:
+            self.setStyleSheet("""
+            QFrame#MeasurementsPanelRoot {
                 background-color: #f9fafb;
                 border-radius: 8px;
             }
@@ -114,7 +140,108 @@ class MeasurementsPanel(QFrame):
                 padding: 0 6px;
                 background-color: #ffffff;
             }
-        """)
+            QTableWidget {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                gridline-color: #e5e7eb;
+                color: #111827;
+                font-size: 10px;
+            }
+            QHeaderView::section {
+                background-color: #f3f4f6;
+                color: #374151;
+                border: none;
+                border-right: 1px solid #e5e7eb;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 4px 6px;
+                font-size: 10px;
+                font-weight: 600;
+            }
+            """)
+            muted_color = "#6b7280"
+            accent_colors = {
+                "cursor_1": "#dc2626",
+                "cursor_2": "#2563eb",
+                "delta": "#059669",
+                "frequency": "#7c3aed",
+                "stat_min": "#0891b2",
+                "stat_max": "#dc2626",
+                "stat_mean": "#374151",
+                "stat_rms": "#7c3aed",
+                "stat_pkpk": "#059669",
+            }
+            separator_color = "#e5e7eb"
+        else:
+            c = theme.colors
+            self.setStyleSheet(f"""
+                QFrame#MeasurementsPanelRoot {{
+                    background-color: {c.panel_background};
+                    border-radius: 8px;
+                }}
+                QGroupBox {{
+                    font-weight: 600;
+                    font-size: 11px;
+                    color: {c.foreground};
+                    border: 1px solid {c.panel_border};
+                    border-radius: 6px;
+                    margin-top: 12px;
+                    padding-top: 8px;
+                    background-color: {c.background};
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 6px;
+                    background-color: {c.background};
+                }}
+                QTableWidget {{
+                    background-color: {c.background};
+                    border: 1px solid {c.panel_border};
+                    border-radius: 6px;
+                    gridline-color: {c.divider};
+                    color: {c.foreground};
+                    font-size: 10px;
+                }}
+                QHeaderView::section {{
+                    background-color: {c.panel_background};
+                    color: {c.foreground};
+                    border: none;
+                    border-right: 1px solid {c.divider};
+                    border-bottom: 1px solid {c.divider};
+                    padding: 4px 6px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }}
+            """)
+            muted_color = c.foreground_muted
+            cursor_1 = cursor_colors[0] if cursor_colors is not None else c.error
+            cursor_2 = cursor_colors[1] if cursor_colors is not None else c.primary
+            accent_colors = {
+                "cursor_1": cursor_1,
+                "cursor_2": cursor_2,
+                "delta": c.success,
+                "frequency": c.info,
+                "stat_min": c.info,
+                "stat_max": c.error,
+                "stat_mean": c.foreground,
+                "stat_rms": c.primary,
+                "stat_pkpk": c.success,
+            }
+            separator_color = c.divider
+
+        for label in self._muted_labels:
+            label.setStyleSheet(f"color: {muted_color}; font-size: 10px;")
+
+        for label, accent_role in self._accent_labels.items():
+            accent = accent_colors.get(accent_role, accent_colors["stat_mean"])
+            label.setStyleSheet(f"{self._value_style_base} color: {accent};")
+
+        if self._separator is not None:
+            self._separator.setStyleSheet(f"background-color: {separator_color};")
+
+        if hasattr(self, "_multi_table"):
+            self._multi_table.viewport().update()
 
     def _setup_ui(self) -> None:
         """Set up the panel UI."""
@@ -128,94 +255,93 @@ class MeasurementsPanel(QFrame):
         cursor_layout.setContentsMargins(10, 16, 10, 10)
         cursor_layout.setSpacing(6)
 
-        label_style = "color: #6b7280; font-size: 10px;"
-        value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
-
         # Cursor 1
         c1_label = QLabel("C1 Time")
-        c1_label.setStyleSheet(label_style)
+        self._muted_labels.append(c1_label)
         cursor_layout.addWidget(c1_label, 0, 0)
         self._c1_time = QLabel("---")
-        self._c1_time.setStyleSheet(f"{value_style_base} color: #dc2626;")
+        self._accent_labels[self._c1_time] = "cursor_1"
         cursor_layout.addWidget(self._c1_time, 0, 1)
 
         c1v_label = QLabel("C1 Value")
-        c1v_label.setStyleSheet(label_style)
+        self._muted_labels.append(c1v_label)
         cursor_layout.addWidget(c1v_label, 1, 0)
         self._c1_value = QLabel("---")
-        self._c1_value.setStyleSheet(f"{value_style_base} color: #dc2626;")
+        self._accent_labels[self._c1_value] = "cursor_1"
         cursor_layout.addWidget(self._c1_value, 1, 1)
 
         # Cursor 2
         c2_label = QLabel("C2 Time")
-        c2_label.setStyleSheet(label_style)
+        self._muted_labels.append(c2_label)
         cursor_layout.addWidget(c2_label, 2, 0)
         self._c2_time = QLabel("---")
-        self._c2_time.setStyleSheet(f"{value_style_base} color: #2563eb;")
+        self._accent_labels[self._c2_time] = "cursor_2"
         cursor_layout.addWidget(self._c2_time, 2, 1)
 
         c2v_label = QLabel("C2 Value")
-        c2v_label.setStyleSheet(label_style)
+        self._muted_labels.append(c2v_label)
         cursor_layout.addWidget(c2v_label, 3, 0)
         self._c2_value = QLabel("---")
-        self._c2_value.setStyleSheet(f"{value_style_base} color: #2563eb;")
+        self._accent_labels[self._c2_value] = "cursor_2"
         cursor_layout.addWidget(self._c2_value, 3, 1)
 
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e5e7eb;")
         sep.setFixedHeight(1)
+        self._separator = sep
         cursor_layout.addWidget(sep, 4, 0, 1, 2)
 
         # Delta measurements
         dt_label = QLabel("Delta T")
-        dt_label.setStyleSheet(label_style)
+        self._muted_labels.append(dt_label)
         cursor_layout.addWidget(dt_label, 5, 0)
         self._delta_t = QLabel("---")
-        self._delta_t.setStyleSheet(f"{value_style_base} color: #059669;")
+        self._accent_labels[self._delta_t] = "delta"
         cursor_layout.addWidget(self._delta_t, 5, 1)
 
         dv_label = QLabel("Delta V")
-        dv_label.setStyleSheet(label_style)
+        self._muted_labels.append(dv_label)
         cursor_layout.addWidget(dv_label, 6, 0)
         self._delta_v = QLabel("---")
-        self._delta_v.setStyleSheet(f"{value_style_base} color: #059669;")
+        self._accent_labels[self._delta_v] = "delta"
         cursor_layout.addWidget(self._delta_v, 6, 1)
 
         freq_label = QLabel("Frequency")
-        freq_label.setStyleSheet(label_style)
+        self._muted_labels.append(freq_label)
         cursor_layout.addWidget(freq_label, 7, 0)
         self._frequency = QLabel("---")
-        self._frequency.setStyleSheet(f"{value_style_base} color: #7c3aed;")
+        self._accent_labels[self._frequency] = "frequency"
         cursor_layout.addWidget(self._frequency, 7, 1)
 
         layout.addWidget(cursor_group)
 
-        # Signal statistics
-        stats_group = QGroupBox("Signal Statistics")
-        stats_layout = QGridLayout(stats_group)
-        stats_layout.setContentsMargins(10, 16, 10, 10)
-        stats_layout.setSpacing(6)
+        # Measurements table (channels as columns, metrics as rows)
+        table_group = QGroupBox("Measurements")
+        table_layout = QVBoxLayout(table_group)
+        table_layout.setContentsMargins(8, 16, 8, 8)
+        table_layout.setSpacing(6)
 
-        stat_labels = [
-            ("Min", "_min_value", "#0891b2"),
-            ("Max", "_max_value", "#dc2626"),
-            ("Mean", "_mean_value", "#374151"),
-            ("RMS", "_rms_value", "#7c3aed"),
-            ("Pk-Pk", "_pkpk_value", "#059669"),
+        self._measurement_rows: list[tuple[str, str]] = [
+            ("c1", "C1"),
+            ("c2", "C2"),
+            ("dv", "dV"),
+            ("min", "Min"),
+            ("max", "Max"),
+            ("mean", "Mean"),
+            ("rms", "RMS"),
+            ("pkpk", "Pk-Pk"),
         ]
+        self._multi_table = QTableWidget(len(self._measurement_rows), 0)
+        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
+        self._multi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._multi_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._multi_table.setAlternatingRowColors(True)
+        self._multi_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._multi_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table_layout.addWidget(self._multi_table)
 
-        for row, (name, attr, color) in enumerate(stat_labels):
-            label = QLabel(name)
-            label.setStyleSheet(label_style)
-            stats_layout.addWidget(label, row, 0)
-            value_label = QLabel("---")
-            value_label.setStyleSheet(f"{value_style_base} color: {color};")
-            stats_layout.addWidget(value_label, row, 1)
-            setattr(self, attr, value_label)
-
-        layout.addWidget(stats_group)
+        layout.addWidget(table_group, stretch=1)
         layout.addStretch()
 
     def update_cursor1(self, time: float, value: float | None) -> None:
@@ -258,20 +384,56 @@ class MeasurementsPanel(QFrame):
         mean_val: float,
         rms_val: float,
     ) -> None:
-        """Update signal statistics."""
-        self._min_value.setText(f"{min_val:.6g}")
-        self._max_value.setText(f"{max_val:.6g}")
-        self._mean_value.setText(f"{mean_val:.6g}")
-        self._rms_value.setText(f"{rms_val:.6g}")
-        self._pkpk_value.setText(f"{max_val - min_val:.6g}")
+        """Legacy API kept for compatibility; stats now shown in Measurements table."""
+        _ = (min_val, max_val, mean_val, rms_val)
 
     def clear_statistics(self) -> None:
-        """Clear all statistics."""
-        self._min_value.setText("---")
-        self._max_value.setText("---")
-        self._mean_value.setText("---")
-        self._rms_value.setText("---")
-        self._pkpk_value.setText("---")
+        """Legacy API kept for compatibility; stats now shown in Measurements table."""
+        return
+
+    def clear_cursor_measurements(self) -> None:
+        """Clear cursor readouts."""
+        self._c1_time.setText("---")
+        self._c1_value.setText("---")
+        self._c2_time.setText("---")
+        self._c2_value.setText("---")
+        self._delta_t.setText("---")
+        self._delta_v.setText("---")
+        self._frequency.setText("---")
+
+    @staticmethod
+    def _fmt(value: float | None) -> str:
+        if value is None:
+            return "---"
+        return f"{value:.6g}"
+
+    def set_multi_signal_measurements(
+        self,
+        per_signal: dict[str, dict[str, float | None]],
+    ) -> None:
+        """Populate measurements table (metrics in rows, channels in columns)."""
+        signal_names = list(per_signal.keys())
+        self._multi_table.setColumnCount(len(signal_names))
+        self._multi_table.setHorizontalHeaderLabels(signal_names)
+        self._multi_table.setRowCount(len(self._measurement_rows))
+        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
+
+        for row, (metric_key, _metric_label) in enumerate(self._measurement_rows):
+            for col, signal_name in enumerate(signal_names):
+                values = per_signal.get(signal_name, {})
+                item = QTableWidgetItem(self._fmt(values.get(metric_key)))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._multi_table.setItem(row, col, item)
+
+    def apply_theme(self, theme: Theme, cursor_palette: list[tuple[int, int, int]] | None = None) -> None:
+        """Apply theme colors to measurement surfaces and readouts."""
+        cursor_colors = None
+        if cursor_palette is not None and len(cursor_palette) >= 2:
+            cursor_colors = (
+                self._to_hex(cursor_palette[0]),
+                self._to_hex(cursor_palette[1]),
+            )
+        self._apply_styles(theme, cursor_colors=cursor_colors)
 
 
 class SignalListItem(QListWidgetItem):
@@ -338,10 +500,16 @@ class SignalListPanel(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("SignalListPanelRoot")
         self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
 
         self._signal_items: dict[str, SignalListItem] = {}
         self._color_index = 0
+        self._trace_palette = TRACE_COLORS.copy()
+        self._compact_min_rows = 2
+        self._compact_max_rows = 7
+        self._root_layout: QVBoxLayout | None = None
+        self._button_row: QWidget | None = None
 
         self._setup_ui()
 
@@ -350,11 +518,12 @@ class SignalListPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
+        self._root_layout = layout
 
         # Header
-        header = QLabel("Signals")
-        header.setStyleSheet("font-weight: bold;")
-        layout.addWidget(header)
+        self._header_label = QLabel("Signals")
+        self._header_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._header_label)
 
         # Signal list
         self._list_widget = QListWidget()
@@ -369,7 +538,10 @@ class SignalListPanel(QFrame):
         layout.addWidget(self._list_widget)
 
         # Buttons
-        button_layout = QHBoxLayout()
+        self._button_row = QWidget()
+        button_layout = QHBoxLayout(self._button_row)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(5)
 
         show_all_btn = QPushButton("Show All")
         show_all_btn.clicked.connect(self._show_all)
@@ -379,7 +551,42 @@ class SignalListPanel(QFrame):
         hide_all_btn.clicked.connect(self._hide_all)
         button_layout.addWidget(hide_all_btn)
 
-        layout.addLayout(button_layout)
+        layout.addWidget(self._button_row)
+        self._update_compact_height()
+
+    def _row_height_hint(self) -> int:
+        if self._list_widget.count() > 0:
+            row_hint = self._list_widget.sizeHintForRow(0)
+            if row_hint > 0:
+                return row_hint
+        return max(20, self.fontMetrics().height() + 8)
+
+    def _update_compact_height(self) -> None:
+        if self._root_layout is None or self._button_row is None:
+            return
+
+        row_height = self._row_height_hint()
+        item_count = self._list_widget.count()
+        visible_rows = min(max(item_count, self._compact_min_rows), self._compact_max_rows)
+
+        list_height = (self._list_widget.frameWidth() * 2) + (visible_rows * row_height) + 4
+        self._list_widget.setMinimumHeight(list_height)
+        self._list_widget.setMaximumHeight(list_height)
+
+        margins = self._root_layout.contentsMargins()
+        spacing = self._root_layout.spacing()
+        total_height = (
+            margins.top()
+            + margins.bottom()
+            + self._header_label.sizeHint().height()
+            + self._button_row.sizeHint().height()
+            + list_height
+            + (spacing * 2)
+        )
+
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(total_height)
+        self.setMaximumHeight(total_height)
 
     def set_signals(self, signal_names: list[str]) -> None:
         """Set the list of available signals."""
@@ -388,12 +595,43 @@ class SignalListPanel(QFrame):
         self._color_index = 0
 
         for name in signal_names:
-            color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+            color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
 
             item = SignalListItem(name, color)
             self._list_widget.addItem(item)
             self._signal_items[name] = item
+
+        self._update_compact_height()
+
+    def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
+        """Update signal color palette and refresh existing list colors."""
+        self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
+        for index, item in enumerate(self._signal_items.values()):
+            item.color = self._trace_palette[index % len(self._trace_palette)]
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply theme to the signal list panel surfaces."""
+        c = theme.colors
+        self.setStyleSheet(f"""
+            QFrame#SignalListPanelRoot {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
+                border-radius: 8px;
+            }}
+            QListWidget {{
+                background-color: {c.background};
+                border: 1px solid {c.panel_border};
+                border-radius: 6px;
+                color: {c.foreground};
+            }}
+            QListWidget::item:selected {{
+                background-color: {c.tree_item_selected};
+                color: {c.foreground};
+            }}
+        """)
+        self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
+        self._update_compact_height()
 
     def get_signal_color(self, signal_name: str) -> tuple | None:
         """Get the color assigned to a signal."""
@@ -457,23 +695,32 @@ class SignalListPanel(QFrame):
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._update_compact_height()
 
 
 class WaveformViewer(QWidget):
     """Widget for displaying simulation waveforms using PyQtGraph."""
 
-    def __init__(self, parent=None):
+    def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("WaveformViewerRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
+        self._theme_service = theme_service
+        self._theme: Theme | None = None
         self._result: SimulationResult | None = None
         self._traces: dict[str, pg.PlotDataItem] = {}
         self._color_index = 0
+        self._trace_palette = TRACE_COLORS.copy()
+        self._cursor_palette = CURSOR_COLORS.copy()
 
         # Cursors
         self._cursor1: DraggableCursor | None = None
         self._cursor2: DraggableCursor | None = None
         self._cursors_visible = False
         self._active_signal: str | None = None
+        self._manual_signal_add_enabled = True
+        self._auto_show_all_signals = False
 
         # Zoom history for back/forward navigation
         self._zoom_history: list[tuple] = []
@@ -490,14 +737,18 @@ class WaveformViewer(QWidget):
 
         # Update timer for batching streaming updates
         self._update_timer = QTimer()
-        self._update_timer.setInterval(50)  # 20 Hz update rate
+        self._update_timer.setInterval(16)  # 60 Hz update rate for smooth animation
         self._update_timer.timeout.connect(self._flush_streaming_data)
         self._pending_updates = False
+        self._last_displayed_index = 0  # Track how much data we've shown
 
         # Configure pyqtgraph
         pg.setConfigOptions(antialias=True)
 
         self._setup_ui()
+        if self._theme_service is not None:
+            self._theme_service.theme_changed.connect(self.apply_theme)
+            self.apply_theme(self._theme_service.current_theme)
 
     def _setup_ui(self) -> None:
         """Set up the widget UI."""
@@ -518,10 +769,6 @@ class WaveformViewer(QWidget):
         self._plot_widget.setLabel("bottom", "Time", units="s")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self._plot_widget.setBackground("w")
-        self._plot_widget.getAxis("left").setPen("k")
-        self._plot_widget.getAxis("bottom").setPen("k")
-        self._plot_widget.getAxis("left").setTextPen("k")
-        self._plot_widget.getAxis("bottom").setTextPen("k")
 
         # Configure view box for mouse interactions
         view_box = self._plot_widget.getViewBox()
@@ -532,29 +779,32 @@ class WaveformViewer(QWidget):
 
         # Add legend
         self._legend = self._plot_widget.addLegend(offset=(10, 10))
-        self._legend.setLabelTextColor("k")
+        self._legend.setLabelTextColor("#111827")
 
         plot_layout.addWidget(self._plot_widget)
 
         # Controls bar
         controls = QWidget()
+        controls.setObjectName("waveformControlsBar")
         controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(5, 5, 5, 5)
+        controls_layout.setContentsMargins(3, 2, 3, 2)
+        controls_layout.setSpacing(4)
 
         # Signal selector
-        controls_layout.addWidget(QLabel("Add Signal:"))
+        self._add_signal_label = QLabel("Add Signal:")
+        controls_layout.addWidget(self._add_signal_label)
         self._signal_combo = QComboBox()
-        self._signal_combo.setMinimumWidth(150)
+        self._signal_combo.setMinimumWidth(120)
         self._signal_combo.currentTextChanged.connect(self._on_signal_selected)
         controls_layout.addWidget(self._signal_combo)
 
-        add_btn = QPushButton("Add")
-        add_btn.clicked.connect(self._on_add_signal)
-        controls_layout.addWidget(add_btn)
+        self._add_signal_btn = QPushButton("Add")
+        self._add_signal_btn.clicked.connect(self._on_add_signal)
+        controls_layout.addWidget(self._add_signal_btn)
 
-        clear_btn = QPushButton("Clear All")
-        clear_btn.clicked.connect(self.clear_traces)
-        controls_layout.addWidget(clear_btn)
+        self._clear_btn = QPushButton("Clear All")
+        self._clear_btn.clicked.connect(self.clear_traces)
+        controls_layout.addWidget(self._clear_btn)
 
         controls_layout.addStretch()
 
@@ -574,14 +824,14 @@ class WaveformViewer(QWidget):
         # Navigation buttons
         self._back_btn = QPushButton("<")
         self._back_btn.setToolTip("Previous zoom level")
-        self._back_btn.setMaximumWidth(30)
+        self._back_btn.setMaximumWidth(24)
         self._back_btn.setEnabled(False)
         self._back_btn.clicked.connect(self._zoom_back)
         controls_layout.addWidget(self._back_btn)
 
         self._forward_btn = QPushButton(">")
         self._forward_btn.setToolTip("Next zoom level")
-        self._forward_btn.setMaximumWidth(30)
+        self._forward_btn.setMaximumWidth(24)
         self._forward_btn.setEnabled(False)
         self._forward_btn.clicked.connect(self._zoom_forward)
         controls_layout.addWidget(self._forward_btn)
@@ -609,8 +859,8 @@ class WaveformViewer(QWidget):
 
         # Signal list panel
         self._signal_list_panel = SignalListPanel()
-        self._signal_list_panel.setMinimumWidth(150)
-        self._signal_list_panel.setMaximumWidth(200)
+        self._signal_list_panel.setMinimumWidth(180)
+        self._signal_list_panel.setMaximumWidth(320)
         self._signal_list_panel.signal_visibility_changed.connect(
             self._on_signal_visibility_changed
         )
@@ -619,16 +869,158 @@ class WaveformViewer(QWidget):
 
         # Measurements panel
         self._measurements_panel = MeasurementsPanel()
-        self._measurements_panel.setMinimumWidth(150)
-        self._measurements_panel.setMaximumWidth(200)
-        right_layout.addWidget(self._measurements_panel, stretch=1)
+        self._measurements_panel.setMinimumWidth(260)
+        self._measurements_panel.setMaximumWidth(460)
+        right_layout.addWidget(self._measurements_panel, stretch=2)
 
         splitter.addWidget(right_container)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 2)
 
         # Set splitter sizes
-        splitter.setSizes([700, 200])
+        splitter.setSizes([820, 360])
 
         layout.addWidget(splitter)
+        self._update_manual_signal_add_controls()
+
+    def set_manual_signal_add_enabled(self, enabled: bool) -> None:
+        """Enable/disable manual signal add controls."""
+        self._manual_signal_add_enabled = bool(enabled)
+        self._update_manual_signal_add_controls()
+
+    def set_auto_show_all_signals(self, enabled: bool) -> None:
+        """Control whether all available signals are auto-plotted on new results."""
+        self._auto_show_all_signals = bool(enabled)
+
+    def cursor_state(self) -> tuple[bool, float | None, float | None]:
+        """Return cursor enabled flag and current positions."""
+        enabled = bool(self._cursor_checkbox.isChecked())
+        c1 = float(self._cursor1.value()) if self._cursor1 is not None else None
+        c2 = float(self._cursor2.value()) if self._cursor2 is not None else None
+        return enabled, c1, c2
+
+    def set_cursor_state(
+        self,
+        enabled: bool,
+        c1: float | None = None,
+        c2: float | None = None,
+    ) -> None:
+        """Set cursor enabled flag and optionally sync cursor positions."""
+        enabled = bool(enabled)
+        if self._cursor_checkbox.isChecked() != enabled:
+            self._cursor_checkbox.setChecked(enabled)
+
+        if not enabled or self._cursor1 is None or self._cursor2 is None:
+            return
+
+        if c1 is not None and c2 is not None:
+            self._set_cursor_positions(c1, c2)
+
+    def _update_manual_signal_add_controls(self) -> None:
+        show = self._manual_signal_add_enabled
+        self._add_signal_label.setVisible(show)
+        self._signal_combo.setVisible(show)
+        self._add_signal_btn.setVisible(show)
+
+    def _set_cursor_positions(self, c1: float, c2: float) -> None:
+        if self._cursor1 is None or self._cursor2 is None:
+            return
+
+        c1_clamped = self._clamp_cursor_time(c1)
+        c2_clamped = self._clamp_cursor_time(c2)
+
+        self._cursor1.blockSignals(True)
+        self._cursor2.blockSignals(True)
+        try:
+            self._cursor1.setValue(c1_clamped)
+            self._cursor2.setValue(c2_clamped)
+        finally:
+            self._cursor1.blockSignals(False)
+            self._cursor2.blockSignals(False)
+        self._update_cursor_values()
+
+    def _clamp_cursor_time(self, value: float) -> float:
+        if not self._result or not self._result.time:
+            return float(value)
+        t_min = float(min(self._result.time))
+        t_max = float(max(self._result.time))
+        return float(min(max(value, t_min), t_max))
+
+    @staticmethod
+    def _rgb_to_hex(color: tuple[int, int, int]) -> str:
+        """Convert RGB tuple to hex string."""
+        return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply active theme to plot surfaces and side panels."""
+        self._theme = theme
+        c = theme.colors
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(c.background))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+        if self._theme_service is not None:
+            self._trace_palette = self._theme_service.get_trace_palette(theme)
+            self._cursor_palette = self._theme_service.get_cursor_palette(theme)
+
+        self._plot_widget.setBackground(c.plot_background)
+        plot_item = self._plot_widget.getPlotItem()
+        for axis_name in ("left", "bottom"):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen(c.plot_axis))
+            axis.setTickPen(pg.mkPen(c.plot_axis))
+            axis.setTextPen(pg.mkPen(c.plot_text))
+        self._legend.setLabelTextColor(c.plot_text)
+        self._legend.setBrush(pg.mkBrush(c.plot_legend_background))
+        self._legend.setPen(pg.mkPen(c.plot_legend_border))
+
+        self._signal_list_panel.set_trace_palette(self._trace_palette)
+        self._signal_list_panel.apply_theme(theme)
+        self._measurements_panel.apply_theme(theme, cursor_palette=self._cursor_palette)
+
+        self.setStyleSheet(f"""
+            QWidget#WaveformViewerRoot {{
+                background-color: {c.background};
+            }}
+            QFrame {{
+                color: {c.foreground};
+            }}
+            QWidget#waveformControlsBar QLabel {{
+                color: {c.foreground_muted};
+                font-size: 11px;
+            }}
+            QWidget#waveformControlsBar QComboBox,
+            QWidget#waveformControlsBar QPushButton {{
+                background-color: {c.input_background};
+                color: {c.foreground};
+                border: 1px solid {c.input_border};
+                border-radius: 4px;
+                padding: 1px 6px;
+                min-height: 20px;
+                max-height: 22px;
+            }}
+            QWidget#waveformControlsBar QCheckBox {{
+                color: {c.foreground};
+                spacing: 4px;
+                margin: 0;
+                padding: 0;
+            }}
+        """)
+
+        for index, trace in enumerate(self._traces.values()):
+            color = self._trace_palette[index % len(self._trace_palette)]
+            trace.setPen(pg.mkPen(color=color, width=1))
+
+        for index, trace in enumerate(self._streaming_traces.values()):
+            color = self._trace_palette[index % len(self._trace_palette)]
+            trace.setPen(pg.mkPen(color=color, width=1))
+
+        if self._cursor1 is not None:
+            self._cursor1.set_color(self._cursor_palette[0])
+        if self._cursor2 is not None:
+            self._cursor2.set_color(self._cursor_palette[1])
 
     def set_result(self, result: SimulationResult) -> None:
         """Set the simulation result to display."""
@@ -646,23 +1038,85 @@ class WaveformViewer(QWidget):
 
         # Update signal list panel
         if result.signals:
-            self._signal_list_panel.set_signals(list(result.signals.keys()))
-
-            # Auto-add first signal if available
-            first_signal = list(result.signals.keys())[0]
-            self.add_trace(first_signal)
+            signal_names = list(result.signals.keys())
+            self._signal_list_panel.set_signals(signal_names)
+            first_signal = signal_names[0]
             self._active_signal = first_signal
 
-            # Mark first signal as visible in list
-            self._signal_list_panel.set_signal_visible(first_signal, True)
+            if self._auto_show_all_signals:
+                for signal_name in signal_names:
+                    self.add_trace(signal_name)
+                    self._signal_list_panel.set_signal_visible(signal_name, True)
+            else:
+                # Auto-add first signal if available
+                self.add_trace(first_signal)
+                self._signal_list_panel.set_signal_visible(first_signal, True)
+
+            # Auto-range to fit new data (ensures time axis updates)
+            self._auto_range()
         else:
             self._signal_list_panel.clear()
+            self._active_signal = None
+        self._refresh_measurements_table()
 
     def _update_signal_combo(self) -> None:
         """Update the signal combo box with available signals."""
         self._signal_combo.clear()
         if self._result:
             self._signal_combo.addItems(list(self._result.signals.keys()))
+
+    def _measurement_signal_names(self) -> list[str]:
+        if self._result:
+            return list(self._result.signals.keys())
+        return []
+
+    def _build_per_signal_measurements(
+        self,
+        t1: float | None = None,
+        t2: float | None = None,
+    ) -> dict[str, dict[str, float | None]]:
+        if not self._result or not self._result.time:
+            return {}
+
+        time = np.array(self._result.time, dtype=float)
+        if len(time) == 0:
+            return {}
+
+        measurements: dict[str, dict[str, float | None]] = {}
+        for signal_name in self._measurement_signal_names():
+            if signal_name not in self._result.signals:
+                continue
+            values = np.array(self._result.signals[signal_name], dtype=float)
+            if len(values) != len(time) or len(values) == 0:
+                continue
+
+            min_val = float(np.min(values))
+            max_val = float(np.max(values))
+            mean_val = float(np.mean(values))
+            rms_val = float(np.sqrt(np.mean(values ** 2)))
+            c1_val = self._interpolate_value(time, values, t1) if t1 is not None else None
+            c2_val = self._interpolate_value(time, values, t2) if t2 is not None else None
+            dv = c2_val - c1_val if c1_val is not None and c2_val is not None else None
+            measurements[signal_name] = {
+                "c1": c1_val,
+                "c2": c2_val,
+                "dv": dv,
+                "min": min_val,
+                "max": max_val,
+                "mean": mean_val,
+                "rms": rms_val,
+                "pkpk": max_val - min_val,
+            }
+        return measurements
+
+    def _refresh_measurements_table(
+        self,
+        t1: float | None = None,
+        t2: float | None = None,
+    ) -> None:
+        self._measurements_panel.set_multi_signal_measurements(
+            self._build_per_signal_measurements(t1, t2)
+        )
 
     def add_trace(self, signal_name: str) -> None:
         """Add a trace for the specified signal."""
@@ -675,24 +1129,79 @@ class WaveformViewer(QWidget):
         time = np.array(self._result.time)
         values = np.array(self._result.signals[signal_name])
 
+        # Decimate if too many points to prevent GUI freeze
+        if len(time) > MAX_DISPLAY_POINTS:
+            time, values = self._decimate_for_display(time, values)
+
         # Get color from signal list panel if available, otherwise use default
         color = self._signal_list_panel.get_signal_color(signal_name)
         if color is None:
-            color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+            color = self._trace_palette[self._color_index % len(self._trace_palette)]
             self._color_index += 1
 
-        pen = pg.mkPen(color=color, width=2)
-        trace = self._plot_widget.plot(time, values, pen=pen, name=signal_name)
+        # Use optimized pen (width=1 is fastest)
+        pen = pg.mkPen(color=color, width=1)
+        trace = self._plot_widget.plot(
+            time, values, pen=pen, name=signal_name,
+            skipFiniteCheck=True,  # Skip NaN/Inf check (faster)
+        )
         self._traces[signal_name] = trace
 
         # Update statistics
         self._update_statistics(signal_name)
+        if self._cursor1 is not None and self._cursor2 is not None:
+            self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+        else:
+            self._refresh_measurements_table()
+
+    def _decimate_for_display(
+        self, time: np.ndarray, values: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decimate data for efficient display using min-max bucketing.
+
+        Preserves peaks and visual features while reducing point count.
+        """
+        n_points = len(time)
+        if n_points <= MAX_DISPLAY_POINTS:
+            return time, values
+
+        # Calculate bucket size
+        n_buckets = MAX_DISPLAY_POINTS // 2  # Each bucket contributes 2 points (min, max)
+        bucket_size = n_points // n_buckets
+
+        decimated_time = []
+        decimated_values = []
+
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
+            bucket_values = values[start:end]
+
+            if len(bucket_values) > 0:
+                min_idx = start + np.argmin(bucket_values)
+                max_idx = start + np.argmax(bucket_values)
+
+                # Add min and max in time order
+                if min_idx <= max_idx:
+                    decimated_time.extend([time[min_idx], time[max_idx]])
+                    decimated_values.extend([values[min_idx], values[max_idx]])
+                else:
+                    decimated_time.extend([time[max_idx], time[min_idx]])
+                    decimated_values.extend([values[max_idx], values[min_idx]])
+
+        return np.array(decimated_time), np.array(decimated_values)
 
     def remove_trace(self, signal_name: str) -> None:
         """Remove a trace from the plot."""
         if signal_name in self._traces:
             self._plot_widget.removeItem(self._traces[signal_name])
             del self._traces[signal_name]
+            if self._active_signal == signal_name:
+                self._active_signal = next(iter(self._traces), None)
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
 
     def clear_traces(self) -> None:
         """Remove all traces from the plot."""
@@ -702,6 +1211,8 @@ class WaveformViewer(QWidget):
         self._color_index = 0
         self._legend.clear()
         self._measurements_panel.clear_statistics()
+        self._measurements_panel.clear_cursor_measurements()
+        self._measurements_panel.set_multi_signal_measurements({})
 
         # Sync with signal list panel - uncheck all signals
         for signal_name in list(self._signal_list_panel.get_visible_signals()):
@@ -721,6 +1232,8 @@ class WaveformViewer(QWidget):
             self._active_signal = signal_name
             self._update_statistics(signal_name)
             self._update_cursor_values()
+            if self._cursor1 is None or self._cursor2 is None:
+                self._refresh_measurements_table()
 
     def _toggle_grid(self, show: bool) -> None:
         """Toggle grid visibility."""
@@ -734,6 +1247,8 @@ class WaveformViewer(QWidget):
             self._create_cursors()
         else:
             self._remove_cursors()
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
 
     def _create_cursors(self) -> None:
         """Create the two measurement cursors."""
@@ -750,13 +1265,13 @@ class WaveformViewer(QWidget):
         c2_pos = t_min + t_range * 0.67
 
         # Create cursor 1
-        self._cursor1 = DraggableCursor(c1_pos, CURSOR_COLORS[0], "C1")
+        self._cursor1 = DraggableCursor(c1_pos, self._cursor_palette[0], "C1")
         self._plot_widget.addItem(self._cursor1)
         self._plot_widget.addItem(self._cursor1.get_text_item())
         self._cursor1.cursor_moved.connect(self._on_cursor_moved)
 
         # Create cursor 2
-        self._cursor2 = DraggableCursor(c2_pos, CURSOR_COLORS[1], "C2")
+        self._cursor2 = DraggableCursor(c2_pos, self._cursor_palette[1], "C2")
         self._plot_widget.addItem(self._cursor2)
         self._plot_widget.addItem(self._cursor2.get_text_item())
         self._cursor2.cursor_moved.connect(self._on_cursor_moved)
@@ -783,12 +1298,17 @@ class WaveformViewer(QWidget):
     def _update_cursor_values(self) -> None:
         """Update cursor value displays."""
         if not self._cursor1 or not self._cursor2:
+            self._refresh_measurements_table()
             return
 
         if not self._result or not self._active_signal:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
             return
 
         if self._active_signal not in self._result.signals:
+            self._measurements_panel.clear_cursor_measurements()
+            self._refresh_measurements_table()
             return
 
         time = np.array(self._result.time)
@@ -810,6 +1330,7 @@ class WaveformViewer(QWidget):
         dt = t2 - t1
         dv = v2 - v1 if v1 is not None and v2 is not None else None
         self._measurements_panel.update_delta(dt, dv, v1, v2)
+        self._refresh_measurements_table(t1, t2)
 
         # Update label positions
         view_range = self._plot_widget.getViewBox().viewRange()
@@ -942,8 +1463,10 @@ class WaveformViewer(QWidget):
     def start_streaming(self) -> None:
         """Start streaming mode - prepares viewer for real-time data."""
         self._streaming = True
-        self._streaming_time.clear()
-        self._streaming_signals.clear()
+        self._streaming_time = []
+        self._streaming_signals = {}
+        self._last_displayed_index = 0
+        self._y_range_set = False  # Reset Y auto-range flag
 
         # Clear existing streaming traces
         for trace in self._streaming_traces.values():
@@ -966,9 +1489,6 @@ class WaveformViewer(QWidget):
         self._update_timer.start()
         self._pending_updates = False
 
-        # Make viewer visible
-        self.parentWidget().setVisible(True) if self.parentWidget() else None
-
     def stop_streaming(self) -> None:
         """Stop streaming mode."""
         self._streaming = False
@@ -979,88 +1499,254 @@ class WaveformViewer(QWidget):
             self._flush_streaming_data()
 
     def add_data_point(self, time: float, signals: dict[str, float]) -> None:
-        """Add a single data point during streaming.
+        """Add data point(s) during streaming.
+
+        Supports multiple modes:
+        1. Animated display: _animate + _time_array + _signal_arrays (smoothest)
+        2. Incremental chunks: _chunk_time + _chunk_signals
+        3. Full data replacement: _full_data with _time/_signals
+        4. Single point: individual time + signal values
 
         Args:
             time: The time value for this data point
-            signals: Dictionary mapping signal names to their values
+            signals: Dictionary with data in one of the supported formats
         """
         if not self._streaming:
             self.start_streaming()
 
-        # Add time point
+        # Mode 0: Animated display (simulation complete, animate progressively)
+        if "_animate" in signals:
+            self._start_animated_display(
+                signals.get("_time_array"),
+                signals.get("_signal_arrays", {}),
+                signals.get("_total_points", 0),
+            )
+            return
+
+        # Mode 1: Chunk data (can be replace or append)
+        if "_chunk_time" in signals:
+            chunk_time = signals["_chunk_time"]
+            chunk_signals = signals.get("_chunk_signals", {})
+            replace_mode = signals.get("_replace", False)
+
+            if replace_mode:
+                # Replace all data (for animated playback)
+                self._streaming_time = list(chunk_time)
+                self._streaming_signals = {
+                    name: list(values) for name, values in chunk_signals.items()
+                }
+            else:
+                # Append mode (incremental streaming)
+                if not isinstance(self._streaming_time, list):
+                    self._streaming_time = []
+                if not self._streaming_signals:
+                    self._streaming_signals = {}
+
+                self._streaming_time.extend(chunk_time)
+                for name, values in chunk_signals.items():
+                    if name not in self._streaming_signals:
+                        self._streaming_signals[name] = []
+                    self._streaming_signals[name].extend(values)
+
+            self._pending_updates = True
+            return
+
+        # Mode 2: Complete signal (simulation finished)
+        if "_complete" in signals:
+            # Just mark for final update
+            self._pending_updates = True
+            return
+
+        # Mode 3: Full data replacement (numpy arrays)
+        if "_full_data" in signals:
+            full_data = signals["_full_data"]
+            if "_time_np" in full_data:
+                self._streaming_time = list(full_data["_time_np"])
+                self._streaming_signals = {
+                    k: list(v) for k, v in full_data.get("_signals_np", {}).items()
+                }
+            elif "_time" in full_data:
+                self._streaming_time = full_data.get("_time", [])
+                self._streaming_signals = full_data.get("_signals", {})
+            self._pending_updates = True
+            return
+
+        # Mode 4: Legacy single point
+        if not isinstance(self._streaming_time, list):
+            self._streaming_time = []
+
         self._streaming_time.append(time)
-
-        # Add signal values
         for name, value in signals.items():
-            if name not in self._streaming_signals:
-                self._streaming_signals[name] = []
-            self._streaming_signals[name].append(value)
+            if not name.startswith("_"):
+                if name not in self._streaming_signals:
+                    self._streaming_signals[name] = []
+                self._streaming_signals[name].append(value)
 
-        # Mark that we have pending updates
         self._pending_updates = True
 
+    def _start_animated_display(
+        self,
+        time_array: np.ndarray | None,
+        signal_arrays: dict[str, np.ndarray],
+        total_points: int,
+    ) -> None:
+        """Start animated display of complete simulation data.
+
+        Uses QTimer for smooth 60 FPS animation without blocking the UI.
+
+        Args:
+            time_array: Complete time data as numpy array
+            signal_arrays: Complete signal data as numpy arrays
+            total_points: Total number of data points
+        """
+        if time_array is None or len(time_array) == 0:
+            return
+
+        # Store the complete data for animation
+        self._anim_time = time_array
+        self._anim_signals = signal_arrays
+        self._anim_total_points = total_points
+        self._anim_current_index = 0
+
+        # Calculate animation parameters (~4 second animation at 60 FPS)
+        animation_duration = 4.0  # seconds (slower, more satisfying animation)
+        fps = 60
+        total_frames = int(animation_duration * fps)
+        self._anim_points_per_frame = max(1, total_points // total_frames)
+        self._anim_frame_count = 0
+
+        # Create traces for each signal (if not already present)
+        for name in signal_arrays.keys():
+            if name not in self._streaming_traces:
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
+                self._color_index += 1
+                pen = pg.mkPen(color=color, width=1)
+                # Start with empty data
+                trace = self._plot_widget.plot(
+                    [], [], pen=pen, name=name,
+                    skipFiniteCheck=True,
+                )
+                self._streaming_traces[name] = trace
+
+        # Set up animation timer (separate from regular update timer)
+        if not hasattr(self, '_anim_timer'):
+            self._anim_timer = QTimer()
+            self._anim_timer.timeout.connect(self._animate_frame)
+
+        self._anim_timer.start(16)  # 60 FPS
+
+    def _animate_frame(self) -> None:
+        """Render one frame of the animation."""
+        if not hasattr(self, '_anim_time') or self._anim_time is None:
+            if hasattr(self, '_anim_timer'):
+                self._anim_timer.stop()
+            return
+
+        # Calculate how much data to show this frame
+        self._anim_current_index = min(
+            self._anim_current_index + self._anim_points_per_frame,
+            self._anim_total_points
+        )
+
+        # Get current slice of data
+        end_idx = self._anim_current_index
+        time_slice = self._anim_time[:end_idx]
+
+        # Update each trace with current data slice
+        for name, full_values in self._anim_signals.items():
+            if name in self._streaming_traces:
+                values_slice = full_values[:end_idx]
+                self._streaming_traces[name].setData(time_slice, values_slice)
+
+        # Update X range to show waveform growing
+        if len(time_slice) > 0:
+            t_start = float(time_slice[0])
+            t_current = float(time_slice[-1])
+            t_range = t_current - t_start
+            if t_range > 0:
+                t_end = t_current + t_range * 0.1
+                self._recording_zoom = False
+                self._plot_widget.setXRange(t_start, t_end, padding=0)
+                self._recording_zoom = True
+
+        # Auto-range Y only on first frame
+        if self._anim_frame_count == 0:
+            self._plot_widget.enableAutoRange(axis='y')
+
+        self._anim_frame_count += 1
+
+        # Check if animation is complete
+        if self._anim_current_index >= self._anim_total_points:
+            self._anim_timer.stop()
+            # Store final data for result display
+            self._streaming_time = self._anim_time.tolist()
+            self._streaming_signals = {
+                name: values.tolist() for name, values in self._anim_signals.items()
+            }
+            # Clean up animation data
+            self._anim_time = None
+            self._anim_signals = None
+
     def _flush_streaming_data(self) -> None:
-        """Flush buffered streaming data to the plot."""
-        if not self._pending_updates or not self._streaming_time:
+        """Flush buffered streaming data to the plot.
+
+        Optimized for high-performance real-time display.
+        PyQtGraph handles downsampling automatically with autoDownsample=True.
+        """
+        if not self._pending_updates:
+            return
+
+        time_data = self._streaming_time
+        if not time_data or len(time_data) == 0:
             return
 
         self._pending_updates = False
 
-        # Decimate data if needed
-        time_data, signals_data = self._decimate_data(
-            self._streaming_time, self._streaming_signals
-        )
-
-        time_array = np.array(time_data)
+        # Convert to numpy array once (much faster for pyqtgraph)
+        time_array = np.asarray(time_data, dtype=np.float64)
 
         # Update or create traces for each signal
-        for name, values in signals_data.items():
-            values_array = np.array(values)
+        for name, values in self._streaming_signals.items():
+            values_array = np.asarray(values, dtype=np.float64)
 
             if name in self._streaming_traces:
-                # Update existing trace
+                # Fast update - just set new data
                 self._streaming_traces[name].setData(time_array, values_array)
             else:
-                # Create new trace
-                color = TRACE_COLORS[self._color_index % len(TRACE_COLORS)]
+                # Create new trace (only happens once per signal)
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
-                pen = pg.mkPen(color=color, width=2)
+                pen = pg.mkPen(color=color, width=1)
                 trace = self._plot_widget.plot(
-                    time_array, values_array, pen=pen, name=name
+                    time_array, values_array, pen=pen, name=name,
+                    skipFiniteCheck=True,
                 )
                 self._streaming_traces[name] = trace
 
-        # Handle auto-scroll
-        if self._auto_scroll and len(time_data) > 0:
-            current_time = time_data[-1]
+        # Set view to show waveform growing from start
+        if len(time_array) > 0:
+            t_start = float(time_array[0])
+            t_current = float(time_array[-1])
+            t_range = t_current - t_start
 
-            # Calculate window size based on data
-            if len(time_data) > 1:
-                # Use 10% of total time as window, minimum scroll_window
-                total_time = time_data[-1] - time_data[0]
-                window = max(self._scroll_window, total_time * 0.1)
-            else:
-                window = self._scroll_window
+            if t_range > 0:
+                t_end = t_current + t_range * 0.1
+                self._recording_zoom = False
+                self._plot_widget.setXRange(t_start, t_end, padding=0)
+                self._recording_zoom = True
 
-            # Set X range to show recent data
-            x_min = max(0, current_time - window)
-            x_max = current_time + window * 0.1  # Small padding on right
-
-            self._recording_zoom = False
-            self._plot_widget.setXRange(x_min, x_max, padding=0)
-            self._recording_zoom = True
-
-            # Auto-scale Y axis
-            self._plot_widget.enableAutoRange(axis='y')
+            # Only auto-range Y on first update (expensive operation)
+            if not hasattr(self, '_y_range_set') or not self._y_range_set:
+                self._plot_widget.enableAutoRange(axis='y')
+                self._y_range_set = True
 
     def _decimate_data(
         self, time_data: list[float], signals_data: dict[str, list[float]]
     ) -> tuple[list[float], dict[str, list[float]]]:
         """Decimate data if it exceeds MAX_DISPLAY_POINTS.
 
-        Uses LTTB (Largest Triangle Three Buckets) algorithm for efficient
-        downsampling while preserving visual features.
+        Uses min-max bucketing to preserve peaks and visual features,
+        which is critical for accurate waveform display.
 
         Args:
             time_data: List of time values
@@ -1074,36 +1760,139 @@ class WaveformViewer(QWidget):
         if n_points <= MAX_DISPLAY_POINTS:
             return time_data, signals_data
 
-        # Calculate decimation factor
-        target_points = MAX_DISPLAY_POINTS
-        step = n_points / target_points
+        # Use min-max decimation: each bucket produces 2 points (min and max)
+        # This preserves peaks which is essential for waveforms
+        n_buckets = MAX_DISPLAY_POINTS // 2
+        bucket_size = max(1, n_points // n_buckets)
 
-        # Use simple min-max decimation for each bucket
-        # This preserves peaks which is important for waveforms
-        decimated_time = []
-        decimated_signals = {name: [] for name in signals_data}
+        decimated_time: list[float] = []
+        decimated_signals: dict[str, list[float]] = {name: [] for name in signals_data}
 
-        bucket_start = 0
-        while bucket_start < n_points:
-            bucket_end = min(int(bucket_start + step), n_points)
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
 
-            if bucket_end <= bucket_start:
-                bucket_end = bucket_start + 1
+            if start >= n_points:
+                break
 
-            # For time, use the middle of the bucket
-            mid_idx = (bucket_start + bucket_end) // 2
-            if mid_idx < len(time_data):
-                decimated_time.append(time_data[mid_idx])
+            # Get bucket slice
+            bucket_time = time_data[start:end]
+            if not bucket_time:
+                continue
 
-                # For each signal, find min and max in bucket
+            # For the first signal, find min/max indices to determine order
+            first_signal = next(iter(signals_data.values()), None)
+            if first_signal:
+                bucket_vals = first_signal[start:end]
+                if bucket_vals:
+                    local_min_idx = min(range(len(bucket_vals)), key=lambda x: bucket_vals[x])
+                    local_max_idx = max(range(len(bucket_vals)), key=lambda x: bucket_vals[x])
+
+                    # Add points in time order
+                    if local_min_idx <= local_max_idx:
+                        idx1, idx2 = local_min_idx, local_max_idx
+                    else:
+                        idx1, idx2 = local_max_idx, local_min_idx
+
+                    # Add time points
+                    decimated_time.append(bucket_time[idx1])
+                    if idx1 != idx2:
+                        decimated_time.append(bucket_time[idx2])
+
+                    # Add all signal values at these indices
+                    for name, values in signals_data.items():
+                        bucket_vals = values[start:end]
+                        if len(bucket_vals) > idx1:
+                            decimated_signals[name].append(bucket_vals[idx1])
+                        if idx1 != idx2 and len(bucket_vals) > idx2:
+                            decimated_signals[name].append(bucket_vals[idx2])
+
+        return decimated_time, decimated_signals
+
+    def _decimate_data_numpy(
+        self, time_data: np.ndarray, signals_data: dict[str, np.ndarray]
+    ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        """Decimate numpy array data using efficient vectorized operations.
+
+        Uses LTTB-like min-max bucketing optimized for numpy arrays.
+        Much faster than the list-based version for large datasets.
+
+        Args:
+            time_data: Numpy array of time values
+            signals_data: Dictionary of signal numpy arrays
+
+        Returns:
+            Tuple of (decimated_time, decimated_signals)
+        """
+        n_points = len(time_data)
+
+        if n_points <= MAX_DISPLAY_POINTS:
+            return time_data, signals_data
+
+        # Use min-max decimation with numpy vectorized operations
+        n_buckets = MAX_DISPLAY_POINTS // 2
+        bucket_size = n_points // n_buckets
+
+        # Get the first signal for determining min/max indices
+        first_signal_name = next(iter(signals_data.keys()), None)
+        if first_signal_name is None:
+            return time_data, signals_data
+
+        first_signal = signals_data[first_signal_name]
+        if not isinstance(first_signal, np.ndarray):
+            first_signal = np.array(first_signal)
+
+        # Pre-allocate output arrays (2 points per bucket)
+        max_output_size = n_buckets * 2
+        decimated_time = np.zeros(max_output_size)
+        decimated_signals = {name: np.zeros(max_output_size) for name in signals_data}
+
+        output_idx = 0
+
+        for i in range(n_buckets):
+            start = i * bucket_size
+            end = min(start + bucket_size, n_points)
+
+            if start >= n_points:
+                break
+
+            # Get bucket slice
+            bucket_signal = first_signal[start:end]
+            if len(bucket_signal) == 0:
+                continue
+
+            # Find min and max indices within bucket
+            local_min_idx = np.argmin(bucket_signal)
+            local_max_idx = np.argmax(bucket_signal)
+
+            # Add points in time order
+            if local_min_idx <= local_max_idx:
+                idx1, idx2 = local_min_idx, local_max_idx
+            else:
+                idx1, idx2 = local_max_idx, local_min_idx
+
+            # Add time points
+            decimated_time[output_idx] = time_data[start + idx1]
+            for name, values in signals_data.items():
+                if isinstance(values, np.ndarray):
+                    decimated_signals[name][output_idx] = values[start + idx1]
+                else:
+                    decimated_signals[name][output_idx] = values[start + idx1]
+            output_idx += 1
+
+            # Add second point if different
+            if idx1 != idx2:
+                decimated_time[output_idx] = time_data[start + idx2]
                 for name, values in signals_data.items():
-                    bucket_values = values[bucket_start:bucket_end]
-                    if bucket_values:
-                        # Use value at mid point (simple but effective)
-                        if mid_idx < len(values):
-                            decimated_signals[name].append(values[mid_idx])
+                    if isinstance(values, np.ndarray):
+                        decimated_signals[name][output_idx] = values[start + idx2]
+                    else:
+                        decimated_signals[name][output_idx] = values[start + idx2]
+                output_idx += 1
 
-            bucket_start = bucket_end
+        # Trim to actual size
+        decimated_time = decimated_time[:output_idx]
+        decimated_signals = {name: arr[:output_idx] for name, arr in decimated_signals.items()}
 
         return decimated_time, decimated_signals
 
@@ -1146,10 +1935,22 @@ class WaveformViewer(QWidget):
 
         # Update active signal if the toggled signal is now the only visible one
         visible_signals = self._signal_list_panel.get_visible_signals()
-        if visible_signals and self._active_signal not in visible_signals:
+        if not visible_signals:
+            self._active_signal = None
+            self._measurements_panel.clear_statistics()
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
+        elif self._active_signal not in visible_signals:
             self._active_signal = visible_signals[0]
             self._update_statistics(self._active_signal)
             self._update_cursor_values()
+        else:
+            if self._cursor1 is not None and self._cursor2 is not None:
+                self._refresh_measurements_table(self._cursor1.value(), self._cursor2.value())
+            else:
+                self._refresh_measurements_table()
 
     def _on_signal_list_selected(self, signal_name: str) -> None:
         """Handle signal selection from signal list panel.
@@ -1162,6 +1963,8 @@ class WaveformViewer(QWidget):
         self._active_signal = signal_name
         self._update_statistics(signal_name)
         self._update_cursor_values()
+        if self._cursor1 is None or self._cursor2 is None:
+            self._refresh_measurements_table()
 
         # Also update the combo box selection
         idx = self._signal_combo.findText(signal_name)

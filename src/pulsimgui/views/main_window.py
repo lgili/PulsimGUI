@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
-        from PySide6.QtWidgets import QToolButton
+        from PySide6.QtWidgets import QToolButton, QSizePolicy
 
         self._toolbar = QToolBar("Main Toolbar")
         self._toolbar.setObjectName("MainToolbar")
@@ -436,18 +436,21 @@ class MainWindow(QMainWindow):
         self._toolbar.addAction(self.action_zoom_fit)
         self._toolbar.addSeparator()
 
-        # Simulation actions
+        # Simulation actions (high-frequency workflow group)
         self._toolbar.addAction(self.action_run)
+        self._toolbar.addAction(self.action_pause)
         self._toolbar.addAction(self.action_stop)
+        self._toolbar.addAction(self.action_dc_op)
+        self._toolbar.addAction(self.action_ac)
 
         # Add flexible spacer
         spacer = QWidget()
-        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toolbar.addWidget(spacer)
 
         # Overflow menu button for additional actions
         self._overflow_btn = QToolButton()
-        self._overflow_btn.setIcon(IconService.get_icon("menu", "#374151"))
+        self._overflow_btn.setIcon(IconService.get_icon("menu", self._theme_service.current_theme.colors.icon_default))
         self._overflow_btn.setToolTip("More actions")
         self._overflow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._overflow_btn.setAutoRaise(True)
@@ -455,10 +458,10 @@ class MainWindow(QMainWindow):
         overflow_menu = QMenu(self._overflow_btn)
         overflow_menu.addAction(self.action_toggle_grid)
         overflow_menu.addAction(self.action_toggle_dc_overlay)
+        overflow_menu.addAction(self.action_toggle_minimap)
         overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_dc_op)
-        overflow_menu.addAction(self.action_ac)
         overflow_menu.addAction(self.action_parameter_sweep)
+        overflow_menu.addAction(self.action_thermal_viewer)
         overflow_menu.addSeparator()
         overflow_menu.addAction(self.action_sim_settings)
         overflow_menu.addAction(self.action_preferences)
@@ -525,6 +528,11 @@ class MainWindow(QMainWindow):
         self._library_panel = LibraryPanel(theme_service=self._theme_service)
         self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
         self.library_dock.setWidget(self._library_panel)
+        self.library_dock.setMinimumWidth(272)
+        self.library_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.library_dock)
 
         # Properties Panel (right)
@@ -533,9 +541,14 @@ class MainWindow(QMainWindow):
         self.properties_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self._properties_panel = PropertiesPanel()
+        self._properties_panel = PropertiesPanel(theme_service=self._theme_service)
         self._properties_panel.property_changed.connect(self._on_property_changed)
         self.properties_dock.setWidget(self._properties_panel)
+        self.properties_dock.setMinimumWidth(310)
+        self.properties_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
         # Waveform Viewer (bottom)
@@ -544,7 +557,7 @@ class MainWindow(QMainWindow):
         self.waveform_dock.setAllowedAreas(
             Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
-        self._waveform_viewer = WaveformViewer()
+        self._waveform_viewer = WaveformViewer(theme_service=self._theme_service)
         self.waveform_dock.setWidget(self._waveform_viewer)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.waveform_dock)
 
@@ -672,14 +685,24 @@ class MainWindow(QMainWindow):
         self._schematic_scene.set_background_color(bg_color)
         self._schematic_scene.set_grid_color(grid_color)
 
-        # Update component colors (dark mode affects line colors)
+        # Update component and overlay colors
         self._schematic_scene.set_dark_mode(theme.is_dark)
+        self._schematic_view.apply_theme(theme)
+        self._library_panel.apply_theme(theme)
+        self._minimap.apply_theme(theme)
+        self._properties_panel.apply_theme(theme)
+        self._waveform_viewer.apply_theme(theme)
+        self._coord_widget.apply_theme(theme)
+        self._zoom_widget.apply_theme(theme)
+        self._selection_widget.apply_theme(theme)
+        self._sim_status_widget.apply_theme(theme)
+        self._modified_widget.apply_theme(theme)
+
+        # Clear icon cache before assigning theme-specific icons
+        IconService.clear_cache()
 
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
-
-        # Clear icon cache when theme changes
-        IconService.clear_cache()
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -697,11 +720,15 @@ class MainWindow(QMainWindow):
             self.action_zoom_out: "zoom-out",
             self.action_zoom_fit: "maximize",
             self.action_run: "play",
+            self.action_pause: "pause",
             self.action_stop: "square",
+            self.action_dc_op: "activity",
+            self.action_ac: "zap",
         }
 
         for action, icon_name in icon_map.items():
             action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
+        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 16))
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -1336,9 +1363,8 @@ class MainWindow(QMainWindow):
 
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
-        from pulsimgui.models.wire import Wire, WireSegment, WireConnection
-        from pulsimgui.views.schematic.items import WireItem, ComponentItem
-        from PySide6.QtCore import QPointF
+        from pulsimgui.models.wire import Wire, WireSegment
+        from pulsimgui.views.schematic.items import WireItem
 
         if not segments:
             return
@@ -1349,38 +1375,6 @@ class MainWindow(QMainWindow):
             for seg in segments
         ]
         wire = Wire(segments=wire_segments)
-
-        # Detect connections at wire endpoints
-        start_pt = QPointF(segments[0][0], segments[0][1])
-        end_pt = QPointF(segments[-1][2], segments[-1][3])
-
-        # Find connected components at start and end points
-        SNAP_TOLERANCE = 15.0
-        for item in self._schematic_scene.items():
-            if not isinstance(item, ComponentItem):
-                continue
-
-            component = item.component
-            for pin_index in range(len(component.pins)):
-                pin_pos = item.get_pin_position(pin_index)
-
-                # Check start connection
-                dist_start = ((start_pt.x() - pin_pos.x()) ** 2 +
-                              (start_pt.y() - pin_pos.y()) ** 2) ** 0.5
-                if dist_start < SNAP_TOLERANCE:
-                    wire.start_connection = WireConnection(
-                        component_id=component.id,
-                        pin_index=pin_index
-                    )
-
-                # Check end connection
-                dist_end = ((end_pt.x() - pin_pos.x()) ** 2 +
-                            (end_pt.y() - pin_pos.y()) ** 2) ** 0.5
-                if dist_end < SNAP_TOLERANCE:
-                    wire.end_connection = WireConnection(
-                        component_id=component.id,
-                        pin_index=pin_index
-                    )
 
         # Add to circuit
         self._current_circuit().add_wire(wire)
@@ -1495,7 +1489,13 @@ class MainWindow(QMainWindow):
         comp_id = str(component.id)
         window = self._scope_windows.get(comp_id)
         if window is None:
-            window = ScopeWindow(comp_id, component.name, component.type, self)
+            window = ScopeWindow(
+                comp_id,
+                component.name,
+                component.type,
+                theme_service=self._theme_service,
+                parent=self,
+            )
             window.closed.connect(self._on_scope_window_closed)
             self._scope_windows[comp_id] = window
 
@@ -1729,7 +1729,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = ThermalViewerDialog(result, self)
+        dialog = ThermalViewerDialog(result, theme_service=self._theme_service, parent=self)
         dialog.exec()
 
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
@@ -1768,21 +1768,14 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_data_point(self, time: float, signals: dict) -> None:
         """Handle streaming data point during simulation."""
-        # Make waveform dock visible if not already
-        if not self.waveform_dock.isVisible():
-            self.waveform_dock.setVisible(True)
-
-        # Add data point to waveform viewer for real-time display
+        # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
-            # Finalize streaming and show complete results in waveform viewer
+            # Finalize streaming in the dock viewer without forcing it open.
             self._waveform_viewer.finalize_streaming(result)
-
-            # Make waveform dock visible
-            self.waveform_dock.setVisible(True)
 
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "

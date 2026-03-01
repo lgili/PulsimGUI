@@ -9,6 +9,7 @@ This directory contains example project files demonstrating various power electr
 | File | Description |
 |------|-------------|
 | `rc_circuit.pulsim` | Simple RC low-pass filter |
+| `07_rc_backend_smoke.pulsim` | RC transient project validated against the backend adapter |
 | `rl_circuit.pulsim` | Simple RL circuit with step response |
 | `rlc_circuit.pulsim` | RLC resonant circuit |
 
@@ -39,7 +40,8 @@ This directory contains example project files demonstrating various power electr
 
 - Press `F5` to run a transient simulation
 - Adjust simulation time in **Simulation > Simulation Settings**
-- Use the Waveform Viewer to analyze results
+- Each example includes a connected **Scope** block; double-click it after simulation to inspect waveforms
+- In the scope window, switch between `Overlay` and `Stacked` display modes
 - Try modifying component values to see how they affect performance
 
 ## Creating Your Own Examples

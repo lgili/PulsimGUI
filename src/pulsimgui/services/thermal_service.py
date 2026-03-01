@@ -1,17 +1,17 @@
-"""Synthetic thermal analysis utilities.
+"""Thermal analysis service with backend integration.
 
-This module offers a lightweight placeholder implementation that generates
-thermal network information, temperature traces, and loss summaries derived
-from the current schematic. The data is entirely synthetic but deterministic,
-which makes it useful for UI development and testing until the thermal solver
-is wired in.
+This module provides thermal analysis with real backend support and synthetic
+fallback. When a backend with thermal capability is available, it uses the
+real thermal simulator. Otherwise, it generates synthetic data for UI
+development and testing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import math
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from PySide6.QtCore import QObject, Signal
 
@@ -20,6 +20,14 @@ from pulsimgui.services.simulation_service import SimulationResult
 if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from pulsimgui.models.circuit import Circuit
     from pulsimgui.models.component import Component
+    from pulsimgui.services.backend_adapter import SimulationBackend
+    from pulsimgui.services.backend_types import (
+        ThermalResult as BackendThermalResult,
+        ThermalSettings,
+        TransientResult,
+    )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,6 +69,8 @@ class ThermalResult:
     time: list[float] = field(default_factory=list)
     devices: list[ThermalDeviceResult] = field(default_factory=list)
     ambient_temperature: float = 25.0
+    is_synthetic: bool = True
+    error_message: str = ""
 
     def device_names(self) -> list[str]:
         """Return ordered list of component names."""
@@ -72,13 +82,19 @@ class ThermalResult:
 
 
 class ThermalAnalysisService(QObject):
-    """Generate deterministic placeholder thermal data."""
+    """Thermal analysis with backend integration and synthetic fallback."""
 
     result_generated = Signal(ThermalResult)
 
-    def __init__(self, ambient_temperature: float = 25.0, parent: QObject | None = None):
+    def __init__(
+        self,
+        ambient_temperature: float = 25.0,
+        backend: "SimulationBackend | None" = None,
+        parent: QObject | None = None,
+    ):
         super().__init__(parent)
         self._ambient_temperature = ambient_temperature
+        self._backend = backend
 
     @property
     def ambient_temperature(self) -> float:
@@ -89,16 +105,175 @@ class ThermalAnalysisService(QObject):
     def ambient_temperature(self, value: float) -> None:
         self._ambient_temperature = value
 
+    @property
+    def backend(self) -> "SimulationBackend | None":
+        """Return the current backend."""
+        return self._backend
+
+    @backend.setter
+    def backend(self, value: "SimulationBackend | None") -> None:
+        """Set the backend for thermal analysis."""
+        self._backend = value
+
     def build_result(
         self,
-        circuit: Circuit | None,
+        circuit: "Circuit | None",
         electrical_result: SimulationResult | None = None,
         max_devices: int = 6,
+        circuit_data: dict | None = None,
     ) -> ThermalResult:
-        """Generate a synthetic thermal data set from the provided circuit."""
+        """Build thermal result, trying real backend first then synthetic fallback.
+
+        Args:
+            circuit: GUI Circuit model for synthetic generation.
+            electrical_result: Electrical simulation result for time base.
+            max_devices: Maximum devices for synthetic generation.
+            circuit_data: Serialized circuit data for backend (if available).
+
+        Returns:
+            ThermalResult with is_synthetic=False if from real backend,
+            or is_synthetic=True if synthetic fallback was used.
+        """
         if circuit is None or not circuit.components:
             return self._empty_result(electrical_result)
 
+        # Try real backend first if available
+        if self._backend is not None and self._backend.has_capability("thermal"):
+            result = self._try_backend_thermal(circuit, electrical_result, circuit_data)
+            if result is not None:
+                self.result_generated.emit(result)
+                return result
+            logger.debug("Backend thermal analysis failed, using synthetic fallback")
+
+        # Fall back to synthetic generation
+        result = self._build_synthetic_result(circuit, electrical_result, max_devices)
+        self.result_generated.emit(result)
+        return result
+
+    def _try_backend_thermal(
+        self,
+        circuit: "Circuit",
+        electrical_result: SimulationResult | None,
+        circuit_data: dict | None,
+    ) -> ThermalResult | None:
+        """Attempt to run thermal analysis via the backend."""
+        if circuit_data is None:
+            # Try to build circuit_data from GUI circuit
+            circuit_data = self._circuit_to_data(circuit)
+            if circuit_data is None:
+                return None
+
+        try:
+            from pulsimgui.services.backend_types import ThermalSettings, TransientResult
+
+            # Build settings
+            settings = ThermalSettings(
+                ambient_temperature=self._ambient_temperature,
+                include_switching_losses=True,
+                include_conduction_losses=True,
+            )
+
+            # Build transient result for backend
+            transient_result = self._simulation_to_transient(electrical_result)
+
+            # Run backend thermal analysis
+            backend_result = self._backend.run_thermal(circuit_data, transient_result, settings)
+
+            # Check for errors
+            if backend_result.error_message:
+                logger.warning(f"Backend thermal error: {backend_result.error_message}")
+                return None
+
+            # Convert to service format
+            return self._convert_backend_result(backend_result)
+
+        except Exception as exc:
+            logger.warning(f"Backend thermal analysis failed: {exc}")
+            return None
+
+    def _circuit_to_data(self, circuit: "Circuit") -> dict | None:
+        """Convert GUI Circuit to serialized data for backend."""
+        try:
+            # Use the circuit's serialization method if available
+            if hasattr(circuit, "to_dict"):
+                return circuit.to_dict()
+            # Build minimal data structure
+            components = []
+            for comp_id, comp in circuit.components.items():
+                comp_data = {
+                    "id": str(comp_id),
+                    "type": comp.type.name,
+                    "name": comp.name or comp.type.name,
+                    "parameters": dict(comp.parameters) if comp.parameters else {},
+                }
+                # Add pin nodes if available
+                if hasattr(comp, "pin_nodes"):
+                    comp_data["pin_nodes"] = list(comp.pin_nodes)
+                components.append(comp_data)
+            return {"components": components}
+        except Exception as exc:
+            logger.debug(f"Failed to convert circuit to data: {exc}")
+            return None
+
+    def _simulation_to_transient(
+        self, electrical_result: SimulationResult | None
+    ) -> "TransientResult":
+        """Convert SimulationResult to TransientResult for backend."""
+        from pulsimgui.services.backend_types import TransientResult
+
+        if electrical_result is None:
+            return TransientResult()
+
+        return TransientResult(
+            time=list(electrical_result.time) if electrical_result.time else [],
+            signals=dict(electrical_result.signals) if electrical_result.signals else {},
+        )
+
+    def _convert_backend_result(
+        self, backend_result: "BackendThermalResult"
+    ) -> ThermalResult:
+        """Convert backend ThermalResult to service ThermalResult."""
+        devices = []
+        for dev in backend_result.devices:
+            # Convert FosterStage to ThermalStage
+            stages = []
+            for i, stage in enumerate(dev.foster_stages):
+                stages.append(
+                    ThermalStage(
+                        name=f"{dev.name} RC{i + 1}",
+                        resistance=stage.resistance,
+                        capacitance=stage.capacitance,
+                        temperature=dev.peak_temperature,  # Use peak temp for stage
+                    )
+                )
+
+            # Build device result
+            devices.append(
+                ThermalDeviceResult(
+                    component_id=dev.name,
+                    component_name=dev.name,
+                    stages=stages,
+                    temperature_trace=list(dev.junction_temperature),
+                    conduction_loss=dev.losses.conduction,
+                    switching_loss=dev.losses.switching_total,
+                )
+            )
+
+        return ThermalResult(
+            time=list(backend_result.time),
+            devices=devices,
+            ambient_temperature=backend_result.ambient_temperature,
+            is_synthetic=backend_result.is_synthetic,
+            error_message=backend_result.error_message,
+        )
+
+    def _build_synthetic_result(
+        self,
+        circuit: "Circuit",
+        electrical_result: SimulationResult | None,
+        max_devices: int,
+    ) -> ThermalResult:
+        """Generate synthetic thermal data from the circuit."""
         ordered_components = self._select_components(circuit, max_devices)
         timeline = self._resolve_time_axis(electrical_result)
         normalized_time = self._normalize_time(timeline)
@@ -107,13 +282,12 @@ class ThermalAnalysisService(QObject):
             for index, comp in enumerate(ordered_components)
         ]
 
-        result = ThermalResult(
+        return ThermalResult(
             time=timeline,
             devices=devices,
             ambient_temperature=self._ambient_temperature,
+            is_synthetic=True,
         )
-        self.result_generated.emit(result)
-        return result
 
     def _select_components(self, circuit: Circuit, max_devices: int) -> Sequence[Component]:
         components = list(circuit.components.values())
@@ -197,4 +371,8 @@ class ThermalAnalysisService(QObject):
         return stages
 
     def _empty_result(self, electrical_result: SimulationResult | None) -> ThermalResult:
-        return ThermalResult(time=self._resolve_time_axis(electrical_result), devices=[])
+        return ThermalResult(
+            time=self._resolve_time_axis(electrical_result),
+            devices=[],
+            is_synthetic=True,
+        )

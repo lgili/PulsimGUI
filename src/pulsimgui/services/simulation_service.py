@@ -9,15 +9,30 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Signal, QMutex, QThread, QWaitCondition
+from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
     BackendInfo,
     BackendLoader,
     SimulationBackend,
+)
+from pulsimgui.services.backend_runtime_service import (
+    BackendInstallResult,
+    BackendRuntimeConfig,
+    BackendRuntimeService,
+)
+from pulsimgui.services.backend_types import (
+    ACResult as BackendACResult,
+)
+from pulsimgui.services.backend_types import (
+    ACSettings,
+    DCSettings,
+)
+from pulsimgui.services.backend_types import (
+    DCResult as BackendDCResult,
 )
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
@@ -50,6 +65,16 @@ class SimulationSettings:
     max_step: float = 1e-6
     rel_tol: float = 1e-4
     abs_tol: float = 1e-6
+
+    # Newton solver settings
+    max_newton_iterations: int = 50
+    enable_voltage_limiting: bool = True
+    max_voltage_step: float = 5.0
+
+    # DC analysis settings
+    dc_strategy: str = "auto"  # auto, direct, gmin, source, pseudo
+    gmin_initial: float = 1e-3
+    gmin_final: float = 1e-12
 
     # Output settings
     output_points: int = 10000
@@ -228,6 +253,10 @@ class SimulationWorker(QThread):
 
         try:
             self._thread_ident = threading.get_ident()
+
+            # Emit initial progress immediately so user sees feedback
+            self.progress.emit(0, "Starting simulation...")
+
             callbacks = BackendCallbacks(
                 progress=lambda value, message: self.progress.emit(value, message),
                 data_point=lambda t, data: self.data_point.emit(t, data),
@@ -438,7 +467,7 @@ class SimulationService(QObject):
     error = Signal(str)
     backend_changed = Signal(BackendInfo)
 
-    def __init__(self, settings_service: "SettingsService" | None = None, parent=None):
+    def __init__(self, settings_service: SettingsService | None = None, parent=None):
         super().__init__(parent)
 
         self._state = SimulationState.IDLE
@@ -446,10 +475,47 @@ class SimulationService(QObject):
         self._sweep_worker: ParameterSweepWorker | None = None
         self._settings = SimulationSettings()
         self._last_result: SimulationResult | None = None
+        self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
+        self._runtime_service = BackendRuntimeService()
+        self._runtime_config = BackendRuntimeConfig()
+        self._runtime_issue: str | None = None
         preferred_backend = None
         if settings_service is not None:
             preferred_backend = settings_service.get_backend_preference()
+
+            # Load persisted simulation settings
+            sim_settings = settings_service.get_simulation_settings()
+            self._settings.t_stop = sim_settings.get("t_stop", self._settings.t_stop)
+            self._settings.t_step = sim_settings.get("t_step", self._settings.t_step)
+            self._settings.solver = sim_settings.get("solver", self._settings.solver)
+            self._settings.max_step = sim_settings.get("max_step", self._settings.max_step)
+            self._settings.rel_tol = sim_settings.get("rel_tol", self._settings.rel_tol)
+            self._settings.abs_tol = sim_settings.get("abs_tol", self._settings.abs_tol)
+            self._settings.output_points = sim_settings.get("output_points", self._settings.output_points)
+
+            # Load persisted solver settings
+            solver_settings = settings_service.get_solver_settings()
+            self._settings.max_newton_iterations = solver_settings.get("max_newton_iterations", self._settings.max_newton_iterations)
+            self._settings.enable_voltage_limiting = solver_settings.get("enable_voltage_limiting", self._settings.enable_voltage_limiting)
+            self._settings.max_voltage_step = solver_settings.get("max_voltage_step", self._settings.max_voltage_step)
+            self._settings.dc_strategy = solver_settings.get("dc_strategy", self._settings.dc_strategy)
+            self._settings.gmin_initial = solver_settings.get("gmin_initial", self._settings.gmin_initial)
+            self._settings.gmin_final = solver_settings.get("gmin_final", self._settings.gmin_final)
+
+            # Load backend runtime settings
+            runtime_settings = settings_service.get_backend_runtime_settings()
+            self._runtime_config = BackendRuntimeConfig.from_dict(runtime_settings)
+
+        if self._runtime_config.auto_sync:
+            sync_result = self._runtime_service.ensure_target_version(self._runtime_config, force=False)
+            if sync_result.success:
+                self._runtime_issue = None
+                if sync_result.changed:
+                    self._runtime_service.invalidate_backend_import_cache()
+            else:
+                self._runtime_issue = sync_result.message
+
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
 
@@ -467,6 +533,7 @@ class SimulationService(QObject):
     def settings(self, value: SimulationSettings) -> None:
         """Set simulation settings."""
         self._settings = value
+        self._persist_simulation_settings()
 
     @property
     def last_result(self) -> SimulationResult | None:
@@ -482,6 +549,32 @@ class SimulationService(QObject):
     def backend_info(self) -> BackendInfo:
         """Return metadata about the active simulation backend."""
         return self._backend.info
+
+    @property
+    def backend(self):
+        """Return the active simulation backend for direct access."""
+        return self._backend
+
+    @property
+    def backend_runtime_config(self) -> BackendRuntimeConfig:
+        """Return backend runtime provisioning settings."""
+        return self._runtime_config
+
+    @property
+    def last_convergence_info(self):
+        """Return the last DC/transient convergence info for diagnostics."""
+        return self._last_convergence_info
+
+    def has_capability(self, name: str) -> bool:
+        """Check if the backend supports a specific capability.
+
+        Args:
+            name: Capability name (e.g., "dc", "ac", "thermal", "transient")
+
+        Returns:
+            True if the capability is supported.
+        """
+        return self._backend.has_capability(name)
 
     @property
     def available_backends(self) -> list[BackendInfo]:
@@ -500,6 +593,10 @@ class SimulationService(QObject):
         """Human-friendly description when the backend cannot be used."""
         if self.is_backend_ready:
             return None
+
+        if self._runtime_issue:
+            return self._runtime_issue
+
         info = self._backend.info
         detail = (info.message or "").strip()
         if detail:
@@ -520,6 +617,79 @@ class SimulationService(QObject):
         self.backend_changed.emit(info)
         return info
 
+    def update_backend_runtime_config(self, config: BackendRuntimeConfig) -> None:
+        """Persist and apply backend runtime configuration."""
+        self._runtime_config = config
+        if self._settings_service is not None:
+            self._settings_service.set_backend_runtime_settings(config.to_dict())
+
+    def install_backend_runtime(
+        self,
+        config: BackendRuntimeConfig | None = None,
+        *,
+        force: bool = True,
+    ) -> BackendInstallResult:
+        """Install or synchronize backend runtime according to configuration."""
+        if self.is_running:
+            return BackendInstallResult(
+                success=False,
+                message="Cannot install backend while a simulation is running.",
+            )
+
+        effective_config = config or self._runtime_config
+        if config is not None:
+            self.update_backend_runtime_config(config)
+
+        result = self._runtime_service.ensure_target_version(effective_config, force=force)
+        if not result.success:
+            self._runtime_issue = result.message
+            return result
+
+        self._runtime_issue = None
+        if result.changed:
+            self._runtime_service.invalidate_backend_import_cache()
+
+        self._reload_backend_loader(emit_signal=True)
+        return result
+
+    def _reload_backend_loader(self, *, emit_signal: bool) -> None:
+        preferred_backend = None
+        if self._settings_service is not None:
+            preferred_backend = self._settings_service.get_backend_preference()
+        elif self._backend_loader.active_backend_id:
+            preferred_backend = self._backend_loader.active_backend_id
+
+        self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
+        self._backend = self._backend_loader.backend
+        if emit_signal:
+            self.backend_changed.emit(self._backend.info)
+
+    def _persist_simulation_settings(self) -> None:
+        """Persist simulation and solver settings when available."""
+        if self._settings_service is None:
+            return
+        self._settings_service.set_simulation_settings(
+            {
+                "t_stop": self._settings.t_stop,
+                "t_step": self._settings.t_step,
+                "solver": self._settings.solver,
+                "max_step": self._settings.max_step,
+                "rel_tol": self._settings.rel_tol,
+                "abs_tol": self._settings.abs_tol,
+                "output_points": self._settings.output_points,
+            }
+        )
+        self._settings_service.set_solver_settings(
+            {
+                "max_newton_iterations": self._settings.max_newton_iterations,
+                "enable_voltage_limiting": self._settings.enable_voltage_limiting,
+                "max_voltage_step": self._settings.max_voltage_step,
+                "dc_strategy": self._settings.dc_strategy,
+                "gmin_initial": self._settings.gmin_initial,
+                "gmin_final": self._settings.gmin_final,
+            }
+        )
+
     def _ensure_backend_ready(self) -> bool:
         """Emit a user-facing error if no backend is currently usable."""
         if self.is_backend_ready:
@@ -538,6 +708,9 @@ class SimulationService(QObject):
 
         self._set_state(SimulationState.RUNNING)
 
+        # Emit immediate feedback so UI shows activity right away
+        self.progress.emit(-1, "Starting simulation...")
+
         # Create and start worker thread
         self._worker = SimulationWorker(self._backend, circuit_data, self._settings)
         self._worker.progress.connect(self._on_progress)
@@ -547,8 +720,17 @@ class SimulationService(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
-    def run_dc_operating_point(self, circuit_data: dict) -> None:
-        """Run DC operating point analysis."""
+    def run_dc_operating_point(
+        self,
+        circuit_data: dict,
+        dc_settings: DCSettings | None = None,
+    ) -> None:
+        """Run DC operating point analysis.
+
+        Args:
+            circuit_data: Dictionary representation of the circuit.
+            dc_settings: DC analysis settings. If None, builds from SimulationSettings.
+        """
         if not self._ensure_backend_ready():
             return
         if self.is_running:
@@ -558,27 +740,57 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(0, "Running DC analysis...")
 
-        # Placeholder DC analysis
-        # In real implementation, this would solve the DC equations
+        # Build DC settings from SimulationSettings if not provided
+        if dc_settings is None:
+            dc_settings = DCSettings(
+                strategy=self._settings.dc_strategy,
+                max_iterations=self._settings.max_newton_iterations,
+                enable_limiting=self._settings.enable_voltage_limiting,
+                max_voltage_step=self._settings.max_voltage_step,
+                gmin_initial=self._settings.gmin_initial,
+                gmin_final=self._settings.gmin_final,
+            )
+
         result = DCResult()
 
         try:
-            # Simulate DC solution - placeholder
-            result.node_voltages = {
-                "V(out)": 5.0,
-                "V(in)": 10.0,
-                "V(gnd)": 0.0,
-            }
-            result.branch_currents = {
-                "I(R1)": 0.005,
-                "I(V1)": -0.005,
-            }
-            result.power_dissipation = {
-                "P(R1)": 0.025,
-            }
+            # Check if backend supports DC analysis
+            if self._backend.has_capability("dc"):
+                # Use real backend for DC analysis
+                backend_result: BackendDCResult = self._backend.run_dc(circuit_data, dc_settings)
 
-            self.progress.emit(100, "DC analysis complete")
-            self._set_state(SimulationState.COMPLETED)
+                # Convert backend result to local DCResult
+                result.node_voltages = backend_result.node_voltages.copy()
+                result.branch_currents = backend_result.branch_currents.copy()
+                result.power_dissipation = backend_result.power_dissipation.copy()
+                result.error_message = backend_result.error_message
+
+                # Store convergence info for potential diagnostics dialog
+                self._last_convergence_info = backend_result.convergence_info
+
+                if backend_result.error_message:
+                    self._set_state(SimulationState.ERROR)
+                    self.error.emit(backend_result.error_message)
+                else:
+                    self.progress.emit(100, "DC analysis complete")
+                    self._set_state(SimulationState.COMPLETED)
+            else:
+                # Fallback to placeholder
+                result.node_voltages = {
+                    "V(out)": 5.0,
+                    "V(in)": 10.0,
+                    "V(gnd)": 0.0,
+                }
+                result.branch_currents = {
+                    "I(R1)": 0.005,
+                    "I(V1)": -0.005,
+                }
+                result.power_dissipation = {
+                    "P(R1)": 0.025,
+                }
+                self.progress.emit(100, "DC analysis complete (placeholder)")
+                self._set_state(SimulationState.COMPLETED)
+
             self.dc_finished.emit(result)
 
         except Exception as e:
@@ -588,9 +800,22 @@ class SimulationService(QObject):
             self.dc_finished.emit(result)
 
     def run_ac_analysis(
-        self, circuit_data: dict, f_start: float, f_stop: float, points_per_decade: int = 10
+        self,
+        circuit_data: dict,
+        f_start: float,
+        f_stop: float,
+        points_per_decade: int = 10,
+        ac_settings: ACSettings | None = None,
     ) -> None:
-        """Run AC frequency sweep analysis."""
+        """Run AC frequency sweep analysis.
+
+        Args:
+            circuit_data: Dictionary representation of the circuit.
+            f_start: Start frequency (Hz).
+            f_stop: Stop frequency (Hz).
+            points_per_decade: Number of points per decade.
+            ac_settings: AC analysis settings. If None, uses parameters above.
+        """
         if not self._ensure_backend_ready():
             return
         if self.is_running:
@@ -600,37 +825,65 @@ class SimulationService(QObject):
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(0, "Running AC analysis...")
 
+        # Build settings if not provided
+        if ac_settings is None:
+            ac_settings = ACSettings(
+                f_start=f_start,
+                f_stop=f_stop,
+                points_per_decade=points_per_decade,
+            )
+
         result = ACResult()
 
         try:
-            import math
+            # Check if backend supports AC analysis
+            if self._backend.has_capability("ac"):
+                # Use real backend for AC analysis
+                backend_result: BackendACResult = self._backend.run_ac(circuit_data, ac_settings)
 
-            # Generate frequency points (logarithmic)
-            decades = math.log10(f_stop / f_start)
-            num_points = int(decades * points_per_decade)
+                # Convert backend result to local ACResult
+                result.frequencies = backend_result.frequencies.copy()
+                result.magnitude = {k: list(v) for k, v in backend_result.magnitude.items()}
+                result.phase = {k: list(v) for k, v in backend_result.phase.items()}
+                result.error_message = backend_result.error_message
 
-            result.frequencies = []
-            result.magnitude = {"V(out)/V(in)": []}
-            result.phase = {"V(out)/V(in)": []}
+                if backend_result.error_message:
+                    self._set_state(SimulationState.ERROR)
+                    self.error.emit(backend_result.error_message)
+                else:
+                    self.progress.emit(100, "AC analysis complete")
+                    self._set_state(SimulationState.COMPLETED)
+            else:
+                # Fallback to placeholder
+                import math
 
-            for i in range(num_points + 1):
-                f = f_start * (10 ** (i * decades / num_points))
-                result.frequencies.append(f)
+                # Generate frequency points (logarithmic)
+                decades = math.log10(f_stop / f_start)
+                num_points = int(decades * points_per_decade)
 
-                # Placeholder: Generate dummy Bode plot data
-                # This simulates a simple RC low-pass filter response
-                fc = 1000  # cutoff frequency
-                mag_db = -10 * math.log10(1 + (f / fc) ** 2)
-                phase_deg = -math.degrees(math.atan(f / fc))
+                result.frequencies = []
+                result.magnitude = {"V(out)/V(in)": []}
+                result.phase = {"V(out)/V(in)": []}
 
-                result.magnitude["V(out)/V(in)"].append(mag_db)
-                result.phase["V(out)/V(in)"].append(phase_deg)
+                for i in range(num_points + 1):
+                    f = f_start * (10 ** (i * decades / num_points))
+                    result.frequencies.append(f)
 
-                progress = (i / num_points) * 100
-                self.progress.emit(progress, f"Frequency: {f:.1f}Hz")
+                    # Placeholder: Generate dummy Bode plot data
+                    # This simulates a simple RC low-pass filter response
+                    fc = 1000  # cutoff frequency
+                    mag_db = -10 * math.log10(1 + (f / fc) ** 2)
+                    phase_deg = -math.degrees(math.atan(f / fc))
 
-            self.progress.emit(100, "AC analysis complete")
-            self._set_state(SimulationState.COMPLETED)
+                    result.magnitude["V(out)/V(in)"].append(mag_db)
+                    result.phase["V(out)/V(in)"].append(phase_deg)
+
+                    progress = (i / num_points) * 100
+                    self.progress.emit(progress, f"Frequency: {f:.1f}Hz")
+
+                self.progress.emit(100, "AC analysis complete (placeholder)")
+                self._set_state(SimulationState.COMPLETED)
+
             self.ac_finished.emit(result)
 
         except Exception as e:

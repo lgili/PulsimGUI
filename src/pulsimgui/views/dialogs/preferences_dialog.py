@@ -1,27 +1,33 @@
 """Preferences dialog for application settings."""
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
 from PySide6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTabWidget,
-    QWidget,
-    QFormLayout,
-    QComboBox,
-    QSpinBox,
-    QDoubleSpinBox,
+    QApplication,
     QCheckBox,
-    QLineEdit,
-    QPushButton,
-    QFileDialog,
+    QComboBox,
+    QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.services.backend_adapter import BackendInfo
+from pulsimgui.services.backend_runtime_service import (
+    DEFAULT_BACKEND_TARGET_VERSION,
+    BackendRuntimeConfig,
+)
 from pulsimgui.services.settings_service import SettingsService
 from pulsimgui.services.simulation_service import SimulationService
 
@@ -193,6 +199,45 @@ class PreferencesDialog(QDialog):
 
         layout.addWidget(backend_group)
 
+        runtime_group = QGroupBox("Backend Runtime")
+        runtime_layout = QFormLayout(runtime_group)
+
+        self._backend_source_combo = QComboBox()
+        self._backend_source_combo.addItem("PyPI", "pypi")
+        self._backend_source_combo.addItem("Local PulsimCore checkout", "local")
+        self._backend_source_combo.currentIndexChanged.connect(self._on_runtime_source_changed)
+        runtime_layout.addRow("Source:", self._backend_source_combo)
+
+        self._backend_target_version_edit = QLineEdit()
+        self._backend_target_version_edit.setPlaceholderText(
+            f"e.g. {DEFAULT_BACKEND_TARGET_VERSION} (or {DEFAULT_BACKEND_TARGET_VERSION.lstrip('v')})"
+        )
+        runtime_layout.addRow("Target version:", self._backend_target_version_edit)
+
+        local_layout = QHBoxLayout()
+        self._backend_local_path_edit = QLineEdit()
+        self._backend_local_path_edit.setPlaceholderText("Path to PulsimCore checkout")
+        local_layout.addWidget(self._backend_local_path_edit)
+        self._backend_local_path_btn = QPushButton("Browse...")
+        self._backend_local_path_btn.clicked.connect(self._browse_backend_local_path)
+        local_layout.addWidget(self._backend_local_path_btn)
+        self._backend_local_path_widget = QWidget()
+        self._backend_local_path_widget.setLayout(local_layout)
+        runtime_layout.addRow("Local path:", self._backend_local_path_widget)
+
+        self._backend_auto_sync_check = QCheckBox("Auto-sync backend on startup")
+        runtime_layout.addRow(self._backend_auto_sync_check)
+
+        self._backend_install_button = QPushButton("Install / Update Backend")
+        self._backend_install_button.clicked.connect(self._on_install_backend_runtime)
+        runtime_layout.addRow(self._backend_install_button)
+
+        self._backend_runtime_status_label = QLabel("-")
+        self._backend_runtime_status_label.setWordWrap(True)
+        runtime_layout.addRow("Runtime status:", self._backend_runtime_status_label)
+
+        layout.addWidget(runtime_group)
+
         # Solver group
         solver_group = QGroupBox("Solver")
         solver_layout = QFormLayout(solver_group)
@@ -297,6 +342,63 @@ class PreferencesDialog(QDialog):
         self._apply_backend_details(info)
         self._backend_combo.setEnabled(not self._simulation_service.is_running)
 
+    def _on_runtime_source_changed(self, index: int) -> None:
+        source = self._backend_source_combo.itemData(index) if index >= 0 else "pypi"
+        is_local = source == "local"
+        self._backend_local_path_widget.setVisible(is_local)
+
+    def _browse_backend_local_path(self) -> None:
+        initial = self._backend_local_path_edit.text() or str(Path.cwd())
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select PulsimCore Checkout",
+            initial,
+        )
+        if directory:
+            self._backend_local_path_edit.setText(directory)
+
+    def _runtime_config_from_ui(self) -> BackendRuntimeConfig:
+        return BackendRuntimeConfig(
+            target_version=self._backend_target_version_edit.text().strip(),
+            source=self._backend_source_combo.currentData() or "pypi",
+            local_path=self._backend_local_path_edit.text().strip(),
+            auto_sync=self._backend_auto_sync_check.isChecked(),
+        )
+
+    def _on_install_backend_runtime(self) -> None:
+        if not self._simulation_service:
+            QMessageBox.warning(self, "Backend Runtime", "Simulation service unavailable.")
+            return
+
+        config = self._runtime_config_from_ui()
+        if config.normalized_source == "local" and not config.local_path.strip():
+            QMessageBox.warning(self, "Backend Runtime", "Select a local PulsimCore path first.")
+            return
+
+        self._backend_runtime_status_label.setText("Installing backend...")
+        QApplication.processEvents()
+
+        self._backend_install_button.setEnabled(False)
+        try:
+            result = self._simulation_service.install_backend_runtime(config, force=True)
+        finally:
+            self._backend_install_button.setEnabled(True)
+
+        self._backend_runtime_status_label.setText(result.message)
+        if result.success:
+            QMessageBox.information(
+                self,
+                "Backend Runtime",
+                (
+                    f"{result.message}\n\n"
+                    "If a previous backend version was already loaded, restart PulsimGui "
+                    "to guarantee the new version is active."
+                ),
+            )
+            self._populate_backend_options()
+        else:
+            QMessageBox.warning(self, "Backend Runtime", result.message)
+
     def _load_settings(self) -> None:
         """Load current settings into UI."""
         # General - find theme by data
@@ -315,6 +417,29 @@ class PreferencesDialog(QDialog):
         self._snap_grid_checkbox.setChecked(self._settings.get_snap_to_grid())
         self._grid_size_spin.setValue(self._settings.get_grid_size())
 
+        # Simulation defaults
+        sim_settings = self._settings.get_simulation_settings()
+        solver_map = {"auto": 0, "rk4": 1, "rk45": 2, "bdf": 3}
+        self._solver_combo.setCurrentIndex(solver_map.get(sim_settings.get("solver", "auto"), 0))
+        self._max_step_spin.setValue(float(sim_settings.get("max_step", 1e-6)) * 1e6)
+        self._output_points_spin.setValue(int(sim_settings.get("output_points", 10000)))
+
+        runtime_settings = self._settings.get_backend_runtime_settings()
+        source = runtime_settings.get("source", "pypi")
+        source_index = next(
+            (idx for idx in range(self._backend_source_combo.count()) if self._backend_source_combo.itemData(idx) == source),
+            0,
+        )
+        self._backend_source_combo.setCurrentIndex(source_index)
+        self._backend_target_version_edit.setText(str(runtime_settings.get("target_version", "") or ""))
+
+        local_path = str(runtime_settings.get("local_path", "") or "")
+        if not local_path:
+            local_path = self._suggest_local_backend_path()
+        self._backend_local_path_edit.setText(local_path)
+        self._backend_auto_sync_check.setChecked(bool(runtime_settings.get("auto_sync", False)))
+        self._on_runtime_source_changed(self._backend_source_combo.currentIndex())
+
     def _apply_settings(self) -> None:
         """Apply settings without closing dialog."""
         # General - get theme from combo data
@@ -329,6 +454,30 @@ class PreferencesDialog(QDialog):
         self._settings.set_show_grid(self._show_grid_checkbox.isChecked())
         self._settings.set_snap_to_grid(self._snap_grid_checkbox.isChecked())
         self._settings.set_grid_size(self._grid_size_spin.value())
+
+        # Simulation defaults
+        solver_map = {0: "auto", 1: "rk4", 2: "rk45", 3: "bdf"}
+        self._settings.set_simulation_settings(
+            {
+                "solver": solver_map.get(self._solver_combo.currentIndex(), "auto"),
+                "max_step": self._max_step_spin.value() * 1e-6,
+                "output_points": self._output_points_spin.value(),
+            }
+        )
+
+        runtime_config = self._runtime_config_from_ui()
+        self._settings.set_backend_runtime_settings(runtime_config.to_dict())
+        if self._simulation_service:
+            self._simulation_service.update_backend_runtime_config(runtime_config)
+
+    def _suggest_local_backend_path(self) -> str:
+        """Best-effort suggestion for a sibling PulsimCore checkout."""
+        cwd = Path.cwd()
+        candidates = [cwd / "PulsimCore", cwd.parent / "PulsimCore"]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return ""
 
     def _on_accept(self) -> None:
         """Handle OK button."""
