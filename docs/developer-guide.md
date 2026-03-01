@@ -67,3 +67,11 @@ mkdocs build --strict
 - Docs build runs on PRs and on `main`.
 - Deploy runs automatically on `main`/`workflow_dispatch` via GitHub Pages Actions.
 - Entry point: `.github/workflows/docs-pages.yml`.
+
+## Release Pipeline
+
+- Entry point: `.github/workflows/release.yml`.
+- On tag `v*`, the pipeline:
+  - builds and publishes desktop artifacts to GitHub Releases;
+  - builds `sdist`/`wheel` and publishes `pulsimgui` to PyPI (Trusted Publishing).
+- PyPI one-time config: add this repository/workflow as a Trusted Publisher in the `pulsimgui` project on PyPI.

@@ -97,7 +97,7 @@ python scripts/build.py --platform windows
 
 ## GitHub Actions
 
-Automated builds are configured in `.github/workflows/build.yml`. They trigger on:
+Automated releases are configured in `.github/workflows/release.yml`. They trigger on:
 - Git tags starting with `v` (e.g., `v0.5.2`)
 - Manual workflow dispatch
 
@@ -111,9 +111,21 @@ Automated builds are configured in `.github/workflows/build.yml`. They trigger o
 
 2. GitHub Actions will automatically:
    - Build for macOS, Windows, and Linux
-   - Create a draft release with all artifacts
+   - Publish artifacts to GitHub Releases
+   - Build and publish `pulsimgui` (`sdist` + `wheel`) to PyPI
 
-3. Review and publish the draft release on GitHub
+3. Verify release assets and package availability:
+   - GitHub: `https://github.com/lgili/PulsimGUI/releases`
+   - PyPI: `https://pypi.org/project/pulsimgui/`
+
+### PyPI One-Time Setup (Trusted Publishing)
+
+In PyPI project settings (`pulsimgui`), configure a trusted publisher with:
+
+- Owner: `lgili`
+- Repository: `PulsimGUI`
+- Workflow: `release.yml`
+- Environment: *(leave empty, unless you enforce one in GitHub Actions)*
 
 ## Customizing Icons
 
@@ -187,5 +199,5 @@ PulsimGui/
 │   ├── windows/            # Windows NSIS installer
 │   └── linux/              # Linux desktop files
 └── .github/workflows/
-    └── build.yml           # CI/CD configuration
+    └── release.yml         # Release + PyPI publish pipeline
 ```

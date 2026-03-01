@@ -12,6 +12,8 @@ Download your platform package from [Releases](https://github.com/lgili/PulsimGU
 
 ## Option 2: Install via pip
 
+Package source: [PyPI — pulsimgui](https://pypi.org/project/pulsimgui/).
+
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install pulsimgui
@@ -28,6 +30,8 @@ or:
 ```bash
 python3 -m pulsimgui
 ```
+
+The package on PyPI is published by the release workflow (`.github/workflows/release.yml`) on each new `v*` tag.
 
 ## Option 3: Run from source
 
