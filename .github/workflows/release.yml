@@ -132,17 +132,26 @@ jobs:
         shell: pwsh
         run: |
           (Get-Content packaging/windows/installer.nsi) -replace '!define APP_VERSION ".*"', "!define APP_VERSION `"$env:PULSIMGUI_VERSION`"" | Set-Content packaging/windows/installer.nsi
+          $makensis = $null
           $cmd = Get-Command makensis -ErrorAction SilentlyContinue
-          $candidates = @(
-            if ($cmd) { $cmd.Source }
-            "$env:ChocolateyInstall\bin\makensis.exe"
-            "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-            "$env:ProgramFiles\NSIS\makensis.exe"
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-          if (-not $candidates) {
+          if ($cmd -and $cmd.Path -and (Test-Path -LiteralPath $cmd.Path)) {
+            $makensis = $cmd.Path
+          }
+          if (-not $makensis) {
+            foreach ($candidate in @(
+              "$env:ChocolateyInstall\bin\makensis.exe",
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            )) {
+              if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+                $makensis = $candidate
+                break
+              }
+            }
+          }
+          if (-not $makensis) {
             throw "makensis.exe not found after NSIS installation"
           }
-          $makensis = $candidates[0]
           Write-Host "Using makensis at: $makensis"
           & $makensis packaging/windows/installer.nsi
           if ($LASTEXITCODE -ne 0) {
