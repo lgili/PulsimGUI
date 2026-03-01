@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version override (e.g. 0.5.2)"
+        description: "Optional version override (e.g. 0.5.3)"
         required: false
         default: ""
 

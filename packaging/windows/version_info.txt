@@ -22,12 +22,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'Luiz Gili'),
             StringStruct(u'FileDescription', u'PulsimGui - Power Electronics Simulator GUI'),
-            StringStruct(u'FileVersion', u'0.5.2'),
+            StringStruct(u'FileVersion', u'0.5.3'),
             StringStruct(u'InternalName', u'PulsimGui'),
             StringStruct(u'LegalCopyright', u'Copyright (c) 2024 Luiz Gili'),
             StringStruct(u'OriginalFilename', u'PulsimGui.exe'),
             StringStruct(u'ProductName', u'PulsimGui'),
-            StringStruct(u'ProductVersion', u'0.5.2')
+            StringStruct(u'ProductVersion', u'0.5.3')
           ]
         )
       ]

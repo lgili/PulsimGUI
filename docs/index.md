@@ -20,10 +20,10 @@ Desktop GUI for modeling and simulating power converter circuits with the **Puls
 
 ## Default Project Backend
 
-The recommended runtime baseline is **`pulsim v0.5.2`**.
+The recommended runtime baseline is **`pulsim v0.5.3`**.
 
 !!! tip "Reproducible environment"
-    In `Preferences → Simulation`, keep `Source = PyPI`, `Target version = v0.5.2`, and `Auto-sync` enabled to maintain consistency across machines.
+    In `Preferences → Simulation`, keep `Source = PyPI`, `Target version = v0.5.3`, and `Auto-sync` enabled to maintain consistency across machines.
 
 ## Useful Links
 

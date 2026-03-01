@@ -19,7 +19,7 @@ is_linux = sys.platform.startswith('linux')
 
 # Application metadata
 APP_NAME = 'PulsimGui'
-APP_VERSION = os.environ.get('PULSIMGUI_VERSION', '0.5.2').lstrip('v') or '0.5.2'
+APP_VERSION = os.environ.get('PULSIMGUI_VERSION', '0.5.3').lstrip('v') or '0.5.3'
 APP_BUNDLE_ID = 'com.pulsim.pulsimgui'
 
 # Paths
