@@ -1,32 +1,32 @@
 # PulsimGui
 
-Interface gráfica para modelagem e simulação de conversores de potência com backend **Pulsim**.
+Desktop GUI for modeling and simulating power converter circuits with the **Pulsim** backend.
 
-![Dashboard do PulsimGui](imgs/dashboard_moderndark.png)
+![PulsimGui dashboard](imgs/dashboard_moderndark.png)
 
-## O que você consegue fazer
+## What You Can Do
 
-- Montar esquemas elétricos com componentes de eletrônica de potência.
-- Executar simulações transitórias com configuração completa de solver.
-- Acompanhar formas de onda em tempo real no viewer integrado.
-- Validar topologias com exemplos prontos (RC, buck, boost e outros).
+- Build schematics using power electronics components.
+- Run transient simulations with full solver configuration.
+- Inspect waveforms in real time with the integrated viewer.
+- Validate topologies using ready-to-run examples (RC, buck, boost, and more).
 
-## Fluxo recomendado
+## Recommended Workflow
 
-1. Instale e execute o app em [Instalação e Execução](instalacao.md).
-2. Rode o primeiro tutorial em [Primeiro Circuito RC](tutoriais/circuito-rc.md).
-3. Evolua para o exemplo de [Buck](tutoriais/conversor-buck.md).
-4. Ajuste solver e tolerâncias em [Configuração de Simulação](gui/configuracao-simulacao.md).
+1. Install and launch the app in [Installation and Run](instalacao.md).
+2. Complete the first tutorial in [First RC Circuit](tutoriais/circuito-rc.md).
+3. Move to [Buck Converter Example](tutoriais/conversor-buck.md).
+4. Tune solver and tolerance settings in [Simulation Configuration](gui/configuracao-simulacao.md).
 
-## Backend padrão do projeto
+## Default Project Backend
 
-O runtime de simulação padrão está alinhado para **`pulsim v0.5.0`**.
+The recommended runtime baseline is **`pulsim v0.5.2`**.
 
-!!! tip "Ambiente reprodutível"
-    Em `Preferences → Simulation`, mantenha `Source = PyPI`, `Target version = v0.5.0` e `Auto-sync` habilitado para garantir consistência entre máquinas.
+!!! tip "Reproducible environment"
+    In `Preferences → Simulation`, keep `Source = PyPI`, `Target version = v0.5.2`, and `Auto-sync` enabled to maintain consistency across machines.
 
-## Links úteis
+## Useful Links
 
-- Repositório: [github.com/lgili/PulsimGUI](https://github.com/lgili/PulsimGUI)
+- Repository: [github.com/lgili/PulsimGUI](https://github.com/lgili/PulsimGUI)
 - Releases: [github.com/lgili/PulsimGUI/releases](https://github.com/lgili/PulsimGUI/releases)
 - Issues: [github.com/lgili/PulsimGUI/issues](https://github.com/lgili/PulsimGUI/issues)

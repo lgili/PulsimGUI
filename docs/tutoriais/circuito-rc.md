@@ -1,21 +1,21 @@
-# Primeiro Circuito RC
+# First RC Circuit
 
-Tutorial rápido para validar instalação, conectividade do esquema e fluxo de simulação.
+Quick tutorial to validate installation, schematic connectivity, and simulation flow.
 
-![Exemplo de resposta RC](../assets/images/rc-waveform.svg)
+![RC response example](../assets/images/rc-waveform.svg)
 
-## Objetivo
+## Objective
 
-Montar um passa-baixa RC simples e confirmar a curva exponencial em `Vout`.
+Build a simple RC low-pass circuit and confirm the exponential `Vout` response.
 
-## Topologia
+## Topology
 
-- `Vin` (fonte)
+- `Vin` (source)
 - `R1 = 1kΩ`
 - `C1 = 1uF`
 - `GND`
 
-Conexões:
+Connections:
 
 1. `Vin+ -> R1`
 2. `R1 -> Vout`
@@ -23,29 +23,29 @@ Conexões:
 4. `C1 -> GND`
 5. `Vin- -> GND`
 
-## Passo a passo na GUI
+## Step-by-step in the GUI
 
-1. Crie um projeto novo.
-2. Insira `Voltage Source`, `Resistor`, `Capacitor` e `Ground`.
-3. Faça as conexões da topologia acima.
-4. Ajuste os parâmetros de `R1` e `C1`.
-5. Configure a fonte como degrau ou pulso.
-6. Abra `Simulation Settings` e use:
+1. Create a new project.
+2. Insert `Voltage Source`, `Resistor`, `Capacitor`, and `Ground`.
+3. Wire the topology above.
+4. Set `R1` and `C1` parameters.
+5. Configure source as step or pulse.
+6. Open `Simulation Settings` and use:
    - `Start time = 0`
    - `Stop time = 10ms`
    - `Step size = 1us`
    - `Output points = 10000`
-7. Clique em **Run**.
-8. No viewer, plote `V(vout)` e `V(vin)`.
+7. Click **Run**.
+8. In the viewer, plot `V(vout)` and `V(vin)`.
 
-## Resultado esperado
+## Expected Result
 
-- `V(vout)` cresce exponencialmente.
+- `V(vout)` rises exponentially.
 - `τ = R × C = 1k × 1u = 1ms`.
-- Em ~`5τ` (aprox. `5ms`), a saída fica próxima do valor final.
+- Around `5τ` (about `5ms`), output is close to final value.
 
-## Checklist de validação
+## Validation Checklist
 
-- Simulação finaliza sem erro.
-- `V(vout)` tem curva de 1ª ordem coerente.
-- Alterar `R` ou `C` desloca `τ` como esperado.
+- Simulation finishes without errors.
+- `V(vout)` shows consistent first-order behavior.
+- Changing `R` or `C` shifts `τ` as expected.

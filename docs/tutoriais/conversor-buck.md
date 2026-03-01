@@ -1,49 +1,49 @@
-# Exemplo de Conversor Buck
+# Buck Converter Example
 
-Este tutorial foca em validação de fluxo para topologia buck usando template do projeto.
+This tutorial validates the simulation workflow for a buck topology using the built-in project template.
 
-## Objetivo
+## Objective
 
-- Abrir o template buck.
-- Ajustar parâmetros básicos de entrada/chaveamento/carga.
-- Rodar simulação transitória.
-- Ler `Vsw`, `Vout` e corrente no indutor.
+- Open the buck template.
+- Adjust basic input/switching/load parameters.
+- Run a transient simulation.
+- Read `Vsw`, `Vout`, and inductor current.
 
-## Passos
+## Steps
 
-1. Abra `File → New from Template`.
-2. Escolha **Buck Converter**.
-3. Verifique os blocos principais:
-   - Fonte de entrada (`Vin`)
-   - Chave (MOSFET)
-   - Diodo de roda livre
-   - Indutor (`L1`)
-   - Capacitor de saída (`Cout`)
-   - Carga (`Rload`)
-4. Abra `Simulation Settings` e use um perfil inicial:
+1. Open `File → New from Template`.
+2. Select **Buck Converter**.
+3. Verify core blocks:
+   - Input source (`Vin`)
+   - Switching element (MOSFET)
+   - Freewheel diode
+   - Inductor (`L1`)
+   - Output capacitor (`Cout`)
+   - Load (`Rload`)
+4. Open `Simulation Settings` and start with:
    - `Stop time`: `10ms`
    - `Step size`: `2us`
-   - `Output points`: `5000` a `10000`
-   - Robustez transitória habilitada
-5. Execute com **Run** (`F5`).
-6. No viewer/scope, observe sinais como:
+   - `Output points`: `5000` to `10000`
+   - Transient robustness enabled
+5. Run with **Run** (`F5`).
+6. In viewer/scope, inspect:
    - `V(SW)`
    - `V(VOUT)`
    - `I(L1)`
 
-## O que analisar
+## What to Analyze
 
-- **Nó SW**: forma pulsada em alta frequência.
-- **VOUT**: nível médio estabilizado com ripple.
-- **I(L1)**: rampa triangular (modo contínuo ou descontínuo conforme carga/indutância).
+- **SW node**: high-frequency pulsed waveform.
+- **VOUT**: stabilized average level with ripple.
+- **I(L1)**: triangular ramp (continuous or discontinuous mode depending on load/inductance).
 
-## Ajustes úteis
+## Useful Adjustments
 
-- Ripple alto em `VOUT`: aumente `Cout` e/ou frequência de chaveamento.
-- Corrente de indutor muito serrilhada: aumente `L1`.
-- Convergência ruim: reduza `Step size`, mantenha robustez habilitada e revise parâmetros extremos.
+- High `VOUT` ripple: increase `Cout` and/or switching frequency.
+- Excessive inductor ripple current: increase `L1`.
+- Poor convergence: reduce `Step size`, keep robustness enabled, and review extreme parameters.
 
-## Referências internas
+## Internal References
 
-- Exemplos de projeto: [`examples/`](https://github.com/lgili/PulsimGUI/tree/main/examples)
-- Configuração detalhada do solver: [Configuração de Simulação](../gui/configuracao-simulacao.md)
+- Project examples: [`examples/`](https://github.com/lgili/PulsimGUI/tree/main/examples)
+- Detailed solver setup: [Simulation Configuration](../gui/configuracao-simulacao.md)

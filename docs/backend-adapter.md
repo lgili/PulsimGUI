@@ -1,8 +1,8 @@
 # Backend Adapter
 
-Visão técnica de como o PulsimGui converte o esquema da GUI e executa simulações no backend Pulsim.
+Technical overview of how PulsimGui converts GUI schematics and executes simulations using the Pulsim backend.
 
-## Arquitetura
+## Architecture
 
 ```text
 MainWindow
@@ -14,37 +14,37 @@ MainWindow
               -> run_transient()
 ```
 
-## Responsabilidades principais
+## Core Responsibilities
 
 ### `SimulationService`
 
-- Mantém `SimulationSettings` em memória.
-- Converte projeto GUI para formato de simulação.
-- Executa simulação em worker thread.
-- Emite progresso, streaming de pontos e resultado final.
+- Keeps `SimulationSettings` in memory.
+- Converts GUI project data into simulation format.
+- Executes simulation in a worker thread.
+- Emits progress updates, streaming points, and final results.
 
 ### `BackendLoader`
 
-- Descobre backends disponíveis.
-- Ativa backend preferido salvo em settings.
-- Cai para backend de placeholder quando Pulsim não está disponível.
+- Discovers available backends.
+- Activates the preferred backend saved in settings.
+- Falls back to placeholder backend when Pulsim is unavailable.
 
 ### `CircuitConverter`
 
-- Mapeia componentes da GUI para `pulsim.Circuit`.
-- Resolve nós elétricos e aliases.
-- Ignora componentes apenas de instrumentação visual.
-- Traduz parâmetros de waveform (incluindo chaves legadas como `td/tr/tf/pw/per`).
+- Maps GUI components to `pulsim.Circuit`.
+- Resolves electrical nodes and aliases.
+- Ignores visualization-only instrumentation components.
+- Translates waveform parameters (including legacy keys like `td/tr/tf/pw/per`).
 
-## Contratos de dados
+## Data Contracts
 
 ### `BackendInfo`
 
-Metadados para UI e seleção de backend: `identifier`, `version`, `status`, `capabilities`, `message`.
+UI/backend selection metadata: `identifier`, `version`, `status`, `capabilities`, `message`.
 
 ### `BackendCallbacks`
 
-Hooks de execução:
+Execution hooks:
 
 - `progress(value, message)`
 - `data_point(time, signals)`
@@ -53,15 +53,15 @@ Hooks de execução:
 
 ### `BackendRunResult`
 
-Resultado normalizado:
+Normalized simulation output:
 
 - `time: list[float]`
 - `signals: dict[str, list[float]]`
 - `statistics: dict[str, Any]`
 - `error_message: str`
 
-## Boas práticas de operação
+## Operational Best Practices
 
-- Use backend fixado em `v0.5.0` para reprodutibilidade.
-- Mantenha `Auto-sync` habilitado em ambientes de validação.
-- Em falha de convergência, ajuste primeiro `step size`, `max step`, `max iterations` e robustez transitória.
+- Pin backend to `v0.5.2` for reproducibility.
+- Keep `Auto-sync` enabled in validation environments.
+- For convergence failures, tune `step size`, `max step`, `max iterations`, and transient robustness first.

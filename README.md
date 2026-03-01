@@ -4,63 +4,63 @@
 
 # PulsimGui
 
-**GUI profissional para simulação de eletrônica de potência com Pulsim.**
+**Professional GUI for power electronics simulation with Pulsim.**
 
 [![Release](https://img.shields.io/github/v/release/lgili/PulsimGUI?label=latest&color=brightgreen)](https://github.com/lgili/PulsimGUI/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0ea5e9)](https://lgili.github.io/PulsimGUI/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
-[**Baixar última release**](https://github.com/lgili/PulsimGUI/releases/latest) · [**Documentação**](https://lgili.github.io/PulsimGUI/) · [**Reportar bug**](https://github.com/lgili/PulsimGUI/issues)
+[**Download latest release**](https://github.com/lgili/PulsimGUI/releases/latest) · [**Documentation**](https://lgili.github.io/PulsimGUI/) · [**Report a bug**](https://github.com/lgili/PulsimGUI/issues)
 
 </div>
 
 ---
 
-O **PulsimGui** é uma interface gráfica cross-platform para o [Pulsim](https://github.com/lgili/PulsimCore), focada em modelagem e validação de conversores de potência.
+**PulsimGui** is a cross-platform desktop interface for [Pulsim](https://github.com/lgili/PulsimCore), focused on modeling and validating power converter topologies.
 
-## Principais recursos
+## Key Features
 
-- Editor esquemático com workflow drag-and-drop.
-- Biblioteca de componentes para eletrônica de potência.
-- Simulação transitória com controles avançados de solver.
-- Waveform viewer com medições e inspeção de sinais.
-- Exemplos prontos (`RC`, `buck`, `boost`, etc.) para validação rápida.
+- Schematic editor with drag-and-drop workflow.
+- Component library focused on power electronics.
+- Transient simulation with advanced solver controls.
+- Integrated waveform viewer with signal measurements.
+- Ready-to-run examples (`RC`, `buck`, `boost`, and more).
 
-## Documentação oficial
+## Official Documentation
 
-A documentação completa está em:
+Full documentation is available at:
 
 - [https://lgili.github.io/PulsimGUI/](https://lgili.github.io/PulsimGUI/)
 
-Conteúdo principal:
+Main content includes:
 
-- Instalação e execução
-- Guias da interface
-- Configuração de simulação e backend
-- Tutoriais com exemplos práticos
-- Referência técnica para desenvolvimento
+- Installation and execution
+- GUI guides and workflow
+- Simulation and backend configuration
+- Practical tutorials
+- Technical reference for contributors
 
-## Instalação
+## Installation
 
-### 1. Release (recomendado)
+### 1. Release (Recommended)
 
-Use os instaladores em [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
+Use installers from [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
 
-### 2. Via pip
+### 2. Install via pip
 
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install pulsimgui
 ```
 
-Executar:
+Run:
 
 ```bash
 pulsimgui
 ```
 
-### 3. Desenvolvimento (código-fonte)
+### 3. Development setup (source code)
 
 ```bash
 git clone https://github.com/lgili/PulsimGUI.git
@@ -72,21 +72,21 @@ python3 -m pip install -e ".[dev]"
 python3 -m pulsimgui
 ```
 
-## Backend recomendado
+## Recommended Backend
 
-Para ambiente reprodutível, use **`pulsim v0.5.0`**.
+For reproducible behavior, use **`pulsim v0.5.2`**.
 
-Validação rápida:
+Quick check:
 
 ```bash
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-No app: `Preferences → Simulation → Backend Runtime`.
+In the app: `Preferences → Simulation → Backend Runtime`.
 
-## Desenvolvimento
+## Development
 
-### Testes
+### Tests
 
 ```bash
 pytest
@@ -98,7 +98,7 @@ pytest
 ruff check src tests
 ```
 
-### Build local da documentação
+### Local docs build
 
 ```bash
 python3 -m pip install -r docs/requirements.txt
@@ -106,22 +106,22 @@ mkdocs build --strict
 mkdocs serve
 ```
 
-## GitHub Pages (docs)
+## GitHub Pages (Docs)
 
-A documentação é publicada via workflow em:
+Documentation is published through:
 
 - `.github/workflows/docs-pages.yml`
 
-Deploy automático para GitHub Pages em `main` e `workflow_dispatch`.
+Automatic deploy runs on `main` and `workflow_dispatch`.
 
-> Configure no repositório: **Settings → Pages → Source: GitHub Actions**.
+> Repository setting required: **Settings → Pages → Source: GitHub Actions**.
 
-## Contribuição
+## Contributing
 
-- Abra issues para bugs e sugestões.
-- Para PRs, inclua contexto, passos de validação e evidência (logs/capturas).
-- Atualize docs quando houver mudança de fluxo/feature.
+- Open issues for bug reports and feature requests.
+- For PRs, include context, validation steps, and evidence (logs/screenshots).
+- Update docs whenever a user workflow or feature changes.
 
-## Licença
+## License
 
-MIT — veja [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

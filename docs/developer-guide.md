@@ -1,25 +1,25 @@
-# Guia do Desenvolvedor
+# Developer Guide
 
-Guia para contribuir com código, testes e documentação no PulsimGui.
+Contributing guide for code, tests, and documentation in PulsimGui.
 
-## Estrutura do projeto
+## Project Structure
 
 ```text
 src/pulsimgui/
   commands/      # undo/redo
-  models/        # dados de circuito/projeto
-  services/      # simulação, backend, persistência
-  views/         # interface Qt (janelas, painéis, viewer)
-  presenters/    # integração de fluxos UI
-  utils/         # utilitários
-  resources/     # temas, ícones e branding
+  models/        # circuit/project data
+  services/      # simulation, backend, persistence
+  views/         # Qt interface (windows, panels, viewer)
+  presenters/    # UI flow integration
+  utils/         # utilities
+  resources/     # themes, icons, branding
 
-docs/            # documentação MkDocs Material
-examples/        # projetos .pulsim de referência
-tests/           # suíte pytest
+docs/            # MkDocs Material documentation
+examples/        # reference .pulsim projects
+tests/           # pytest suite
 ```
 
-## Setup de desenvolvimento
+## Development Setup
 
 ```bash
 python3 -m venv .venv
@@ -28,26 +28,26 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -e ".[dev]"
 ```
 
-## Executar aplicação local
+## Run the App Locally
 
 ```bash
 python3 -m pulsimgui
 ```
 
-## Qualidade e testes
+## Quality and Tests
 
 ```bash
 ruff check src tests
 pytest
 ```
 
-Para ambientes sem display:
+For headless environments:
 
 ```bash
 QT_QPA_PLATFORM=offscreen pytest
 ```
 
-## Documentação local
+## Local Documentation
 
 ```bash
 python3 -m pip install -r docs/requirements.txt
@@ -55,15 +55,15 @@ mkdocs serve
 mkdocs build --strict
 ```
 
-## Convenções práticas
+## Practical Conventions
 
-- Prefira mudanças pequenas e rastreáveis por PR.
-- Sempre incluir teste de regressão em correções de bug.
-- Evite acoplar lógica de simulação diretamente à camada de view.
-- Ao alterar fluxo de simulação, valide exemplos em `examples/`.
+- Prefer small, traceable PRs.
+- Always include regression tests for bug fixes.
+- Avoid coupling simulation logic directly into view classes.
+- When changing simulation flow, validate examples in `examples/`.
 
-## Pipeline de docs (GitHub Pages)
+## Docs Pipeline (GitHub Pages)
 
-- Build de docs em PR e em `main`.
-- Deploy automático em `main`/`workflow_dispatch` usando GitHub Pages Actions.
-- Ponto de entrada: `.github/workflows/docs-pages.yml`.
+- Docs build runs on PRs and on `main`.
+- Deploy runs automatically on `main`/`workflow_dispatch` via GitHub Pages Actions.
+- Entry point: `.github/workflows/docs-pages.yml`.
