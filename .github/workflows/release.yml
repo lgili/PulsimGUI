@@ -124,6 +124,40 @@ jobs:
           "PULSIMGUI_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Release version: $version"
 
+      - name: Ensure Windows installer icon
+        shell: pwsh
+        run: |
+          $icoPath = Join-Path $PWD "packaging/icons/pulsimgui.ico"
+          if (Test-Path -LiteralPath $icoPath) {
+            Write-Host "Installer icon already exists: $icoPath"
+            exit 0
+          }
+          $pngPath = Join-Path $PWD "packaging/icons/pulsimgui.png"
+          if (-not (Test-Path -LiteralPath $pngPath)) {
+            throw "Missing source icon at $pngPath"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $bitmap = [System.Drawing.Bitmap]::FromFile($pngPath)
+          try {
+            $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+            try {
+              $stream = [System.IO.File]::Create($icoPath)
+              try {
+                $icon.Save($stream)
+              } finally {
+                $stream.Dispose()
+              }
+            } finally {
+              $icon.Dispose()
+            }
+          } finally {
+            $bitmap.Dispose()
+          }
+          if (-not (Test-Path -LiteralPath $icoPath)) {
+            throw "Failed to generate installer icon at $icoPath"
+          }
+          Write-Host "Generated installer icon: $icoPath"
+
       - name: Install NSIS
         shell: pwsh
         run: choco install nsis -y --no-progress
