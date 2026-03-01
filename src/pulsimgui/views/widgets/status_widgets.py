@@ -46,6 +46,18 @@ class IconLabel(QWidget):
             pixmap = icon.pixmap(14, 14)
             self._icon_label.setPixmap(pixmap)
 
+    def _set_icon_state(self, icon_name: str | None = None, color: str | None = None) -> None:
+        """Apply icon name/color and repaint only when they changed."""
+        changed = False
+        if icon_name is not None and icon_name != self._icon_name:
+            self._icon_name = icon_name
+            changed = True
+        if color is not None and color != self._icon_color:
+            self._icon_color = color
+            changed = True
+        if changed:
+            self._update_icon()
+
     def setText(self, text: str) -> None:
         """Set the text."""
         self._text_label.setText(text)
@@ -56,13 +68,11 @@ class IconLabel(QWidget):
 
     def setIconColor(self, color: str) -> None:
         """Set icon color."""
-        self._icon_color = color
-        self._update_icon()
+        self._set_icon_state(color=color)
 
     def setIcon(self, icon_name: str) -> None:
         """Change the icon."""
-        self._icon_name = icon_name
-        self._update_icon()
+        self._set_icon_state(icon_name=icon_name)
 
     def setDarkMode(self, dark: bool) -> None:
         """Set dark mode."""
@@ -298,19 +308,21 @@ class SimulationStatusWidget(IconLabel):
     def setStatus(self, status: str, is_running: bool = False, is_error: bool = False) -> None:
         """Set simulation status."""
         if is_error:
-            self.setIcon("sim-error")
-            self.setIconColor(self._error_color)
+            icon_name = "sim-error"
+            color = self._error_color
         elif is_running:
-            self.setIcon("play")
-            self.setIconColor(self._running_color)
+            icon_name = "play"
+            color = self._running_color
         elif status.lower() in ("complete", "done", "finished"):
-            self.setIcon("sim-done")
-            self.setIconColor(self._complete_color)
+            icon_name = "sim-done"
+            color = self._complete_color
         else:
-            self.setIcon("sim-ready")
-            self.setIconColor(self._idle_color)
+            icon_name = "sim-ready"
+            color = self._idle_color
 
-        self.setText(status)
+        self._set_icon_state(icon_name=icon_name, color=color)
+        if status != self.text():
+            self.setText(status)
 
     def setDarkMode(self, dark: bool) -> None:
         """Override to keep status colors."""

@@ -21,78 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import ThemeService, Theme
 
 
-# Component metadata for library display
-COMPONENT_LIBRARY = {
-    "Passive": [
-        {"type": ComponentType.RESISTOR, "name": "Resistor", "shortcut": "R"},
-        {"type": ComponentType.CAPACITOR, "name": "Capacitor", "shortcut": "C"},
-        {"type": ComponentType.INDUCTOR, "name": "Inductor", "shortcut": "L"},
-        {"type": ComponentType.TRANSFORMER, "name": "Transformer", "shortcut": "T"},
-    ],
-    "Sources": [
-        {"type": ComponentType.VOLTAGE_SOURCE, "name": "Voltage", "shortcut": "V"},
-        {"type": ComponentType.CURRENT_SOURCE, "name": "Current", "shortcut": "I"},
-        {"type": ComponentType.GROUND, "name": "Ground", "shortcut": "G"},
-    ],
-    "Semiconductors": [
-        {"type": ComponentType.DIODE, "name": "Diode", "shortcut": "D"},
-        {"type": ComponentType.ZENER_DIODE, "name": "Zener", "shortcut": "Z"},
-        {"type": ComponentType.LED, "name": "LED", "shortcut": ""},
-        {"type": ComponentType.MOSFET_N, "name": "NMOS", "shortcut": "M"},
-        {"type": ComponentType.MOSFET_P, "name": "PMOS", "shortcut": "Shift+M"},
-        {"type": ComponentType.BJT_NPN, "name": "NPN", "shortcut": "Q"},
-        {"type": ComponentType.BJT_PNP, "name": "PNP", "shortcut": "Shift+Q"},
-        {"type": ComponentType.IGBT, "name": "IGBT", "shortcut": "B"},
-        {"type": ComponentType.THYRISTOR, "name": "SCR", "shortcut": ""},
-        {"type": ComponentType.TRIAC, "name": "TRIAC", "shortcut": ""},
-        {"type": ComponentType.SWITCH, "name": "Switch", "shortcut": "S"},
-    ],
-    "Analog": [
-        {"type": ComponentType.OP_AMP, "name": "Op-Amp", "shortcut": "O"},
-        {"type": ComponentType.COMPARATOR, "name": "Comparator", "shortcut": ""},
-    ],
-    "Protection": [
-        {"type": ComponentType.FUSE, "name": "Fuse", "shortcut": "F"},
-        {"type": ComponentType.CIRCUIT_BREAKER, "name": "Breaker", "shortcut": ""},
-        {"type": ComponentType.RELAY, "name": "Relay", "shortcut": ""},
-    ],
-    "Control": [
-        {"type": ComponentType.PI_CONTROLLER, "name": "PI", "shortcut": "Ctrl+P"},
-        {"type": ComponentType.PID_CONTROLLER, "name": "PID", "shortcut": "Ctrl+Shift+P"},
-        {"type": ComponentType.MATH_BLOCK, "name": "Math", "shortcut": "Ctrl+M"},
-        {"type": ComponentType.PWM_GENERATOR, "name": "PWM", "shortcut": "Ctrl+W"},
-        {"type": ComponentType.INTEGRATOR, "name": "Integrator", "shortcut": ""},
-        {"type": ComponentType.DIFFERENTIATOR, "name": "d/dt", "shortcut": ""},
-        {"type": ComponentType.LIMITER, "name": "Limiter", "shortcut": ""},
-        {"type": ComponentType.RATE_LIMITER, "name": "Rate Lim.", "shortcut": ""},
-        {"type": ComponentType.HYSTERESIS, "name": "Hysteresis", "shortcut": ""},
-        {"type": ComponentType.LOOKUP_TABLE, "name": "Lookup", "shortcut": ""},
-        {"type": ComponentType.TRANSFER_FUNCTION, "name": "H(s)", "shortcut": ""},
-        {"type": ComponentType.DELAY_BLOCK, "name": "Delay", "shortcut": ""},
-        {"type": ComponentType.SAMPLE_HOLD, "name": "S/H", "shortcut": ""},
-        {"type": ComponentType.STATE_MACHINE, "name": "FSM", "shortcut": ""},
-    ],
-    "Measurement": [
-        {"type": ComponentType.VOLTAGE_PROBE, "name": "V Probe", "shortcut": ""},
-        {"type": ComponentType.CURRENT_PROBE, "name": "I Probe", "shortcut": ""},
-        {"type": ComponentType.POWER_PROBE, "name": "P Probe", "shortcut": ""},
-        {"type": ComponentType.ELECTRICAL_SCOPE, "name": "Scope", "shortcut": "Ctrl+E"},
-        {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal", "shortcut": "Ctrl+Shift+E"},
-        {"type": ComponentType.SIGNAL_MUX, "name": "Mux", "shortcut": "Ctrl+Alt+M"},
-        {"type": ComponentType.SIGNAL_DEMUX, "name": "Demux", "shortcut": "Ctrl+Alt+D"},
-    ],
-    "Magnetic": [
-        {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Ind.", "shortcut": ""},
-        {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled L", "shortcut": ""},
-    ],
-    "Networks": [
-        {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
-    ],
-}
+# Component metadata for library display.
+# Keep this list aligned with backend-supported + GUI-functional blocks only.
+COMPONENT_LIBRARY = SUPPORTED_COMPONENT_LIBRARY
 
 COMPONENT_META: dict[ComponentType, dict[str, str]] = {
     comp["type"]: {"name": comp["name"], "shortcut": comp["shortcut"]}
@@ -102,15 +38,9 @@ COMPONENT_META: dict[ComponentType, dict[str, str]] = {
 
 # Category colors for visual distinction
 CATEGORY_COLORS = {
-    "Passive": "#3b82f6",      # Blue
-    "Sources": "#f59e0b",      # Amber
-    "Semiconductors": "#10b981",  # Emerald
-    "Analog": "#06b6d4",       # Cyan
-    "Protection": "#ef4444",   # Red
-    "Control": "#8b5cf6",      # Purple
-    "Measurement": "#ec4899",  # Pink
-    "Magnetic": "#78716c",     # Stone
-    "Networks": "#84cc16",     # Lime
+    "Circuit": "#0f766e",
+    "Signal & Control": "#2563eb",
+    "Thermal": "#ea580c",
 }
 
 
@@ -857,7 +787,7 @@ class ComponentCard(QFrame):
                 QFrame#ComponentCard {{
                     background-color: {self._hover_fill};
                     border: 1px solid {self._hover_border};
-                    border-radius: 8px;
+                    border-radius: 10px;
                 }}
             """)
         else:
@@ -865,7 +795,7 @@ class ComponentCard(QFrame):
                 QFrame#ComponentCard {
                     background-color: transparent;
                     border: 1px solid transparent;
-                    border-radius: 8px;
+                    border-radius: 10px;
                 }
             """)
 
@@ -895,16 +825,16 @@ class ComponentCard(QFrame):
         )
         self._name_color = c.foreground
         self._name_label.setStyleSheet(f"color: {self._name_color};")
-        badge_bg = QColor(c.tree_item_selected)
+        badge_bg = QColor(c.background_alt)
         badge_fg = QColor(c.foreground_muted)
-        badge_alpha = 115 if theme.is_dark else 150
+        badge_alpha = 188 if theme.is_dark else 230
         self._badge_bg = (
             f"rgba({badge_bg.red()}, {badge_bg.green()}, {badge_bg.blue()}, {badge_alpha})"
         )
         self._badge_text = badge_fg.name()
         self._shortcut_label.setStyleSheet(
             f"color: {self._badge_text}; background: {self._badge_bg}; "
-            "border-radius: 6px; padding: 1px 6px;"
+            "border-radius: 7px; padding: 1px 7px;"
         )
         self._update_icon()
         self._update_style()
@@ -1071,12 +1001,12 @@ class CategorySection(QWidget):
             self._toggle_btn.setText("▾" if self._expanded else "▸")
 
     def eventFilter(self, watched, event):
-        if event.type() == QEvent.Type.MouseButtonRelease and watched in {
-            self._header,
-            self._title_label,
-            self._count_label,
-            self._color_bar,
-        }:
+        if event.type() == QEvent.Type.MouseButtonRelease and (
+            watched is self._header
+            or watched is self._title_label
+            or watched is self._count_label
+            or watched is self._color_bar
+        ):
             if event.button() == Qt.MouseButton.LeftButton:
                 self._toggle_expanded()
                 return True
@@ -1105,13 +1035,13 @@ class CategorySection(QWidget):
         c = theme.colors
         self._theme = theme
         self._header.setStyleSheet(
-            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 6px;"
+            f"background-color: {c.panel_header}; border: 1px solid {c.panel_border}; border-radius: 9px;"
         )
         self._title_label.setStyleSheet(f"color: {c.foreground};")
         if self._count_label is not None:
             self._count_label.setStyleSheet(
                 f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
-                "border-radius: 5px; padding: 0 5px; font-size: 10px;"
+                "border-radius: 6px; padding: 0 6px; font-size: 10px;"
             )
         if self._toggle_btn is not None:
             self._toggle_btn.setStyleSheet(
@@ -1312,19 +1242,19 @@ class LibraryPanel(QWidget):
             QWidget#LibraryTitleRow {{
                 background-color: {c.panel_header};
                 border: 1px solid {c.panel_border};
-                border-radius: 6px;
-                padding: 4px 6px;
+                border-radius: 10px;
+                padding: 5px 8px;
             }}
             QLabel#LibraryPanelTitle {{
                 color: {c.foreground};
                 font-weight: 600;
-                font-size: 12px;
+                font-size: 13px;
             }}
             QLabel#LibrarySummaryLabel {{
                 color: {c.foreground_muted};
                 background-color: {c.tree_item_hover};
-                border-radius: 5px;
-                padding: 1px 7px;
+                border-radius: 7px;
+                padding: 2px 8px;
                 font-size: 10px;
                 font-weight: 500;
             }}
@@ -1334,8 +1264,8 @@ class LibraryPanel(QWidget):
             QLineEdit {{
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
-                border-radius: 6px;
-                padding: 7px 8px;
+                border-radius: 10px;
+                padding: 8px 10px;
                 color: {c.foreground};
             }}
             QLineEdit:focus {{

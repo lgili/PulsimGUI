@@ -25,14 +25,18 @@ class TestUIValueChanges:
 
         # Check solver settings
         assert dialog._solver_combo.currentIndex() == 0  # auto
+        assert dialog._step_mode_combo.currentData() == "fixed"
         assert dialog._max_iterations_spin.value() == 50
-        assert dialog._voltage_limiting_check.isChecked()
+        assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 5.0
+        assert dialog._transient_robust_mode_check.isChecked()
+        assert dialog._transient_auto_regularize_check.isChecked()
 
         # Check DC strategy
         assert dialog._dc_strategy_combo.currentIndex() == 0  # auto
         assert dialog._gmin_initial_spin.value() == 1e-3
         assert dialog._gmin_final_spin.value() == 1e-12
+        assert dialog._source_steps_spin.value() == 10
 
         # Check tolerances
         assert dialog._rel_tol_spin.value() == 1e-4
@@ -40,6 +44,8 @@ class TestUIValueChanges:
 
         # Check output
         assert dialog._output_points_spin.value() == 10000
+        assert dialog._enable_events_check.isChecked()
+        assert dialog._max_step_retries_spin.value() == 8
 
     def test_dialog_loads_custom_settings(self, qapp) -> None:
         """Test that dialog loads custom settings correctly."""
@@ -47,16 +53,22 @@ class TestUIValueChanges:
             t_start=1e-6,
             t_stop=5e-3,
             t_step=5e-6,
-            solver="rk4",
+            solver="trapezoidal",
+            step_mode="variable",
             max_newton_iterations=100,
             enable_voltage_limiting=False,
             max_voltage_step=10.0,
-            dc_strategy="gmin",
+            dc_strategy="source",
             gmin_initial=1e-2,
             gmin_final=1e-15,
+            dc_source_steps=42,
+            transient_robust_mode=False,
+            transient_auto_regularize=False,
             rel_tol=1e-5,
             abs_tol=1e-9,
             output_points=5000,
+            enable_events=False,
+            max_step_retries=17,
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -66,18 +78,21 @@ class TestUIValueChanges:
         assert dialog._t_step_edit.value == 5e-6
 
         # Check solver settings
-        assert dialog._solver_combo.currentIndex() == 1  # rk4
+        assert dialog._solver_combo.currentData() == "trapezoidal"
+        assert dialog._step_mode_combo.currentData() == "variable"
         assert dialog._max_iterations_spin.value() == 100
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 10.0
+        assert not dialog._transient_robust_mode_check.isChecked()
+        assert not dialog._transient_auto_regularize_check.isChecked()
 
-        # Check DC strategy (gmin is index 2)
-        assert dialog._dc_strategy_combo.currentIndex() == 2
+        # Check DC strategy (source is index 3)
+        assert dialog._dc_strategy_combo.currentIndex() == 3
         assert dialog._gmin_initial_spin.value() == 1e-2
         assert dialog._gmin_final_spin.value() == 1e-15
-        # GMIN widget should be set visible when gmin strategy selected
-        # (note: isVisible() returns False until dialog is shown, so check testAttribute)
-        assert not dialog._gmin_widget.isHidden()
+        assert dialog._source_steps_spin.value() == 42
+        assert dialog._gmin_widget.isHidden()
+        assert not dialog._source_widget.isHidden()
 
         # Check tolerances
         assert dialog._rel_tol_spin.value() == 1e-5
@@ -85,6 +100,8 @@ class TestUIValueChanges:
 
         # Check output
         assert dialog._output_points_spin.value() == 5000
+        assert not dialog._enable_events_check.isChecked()
+        assert dialog._max_step_retries_spin.value() == 17
 
     def test_dialog_saves_settings_on_accept(self, qapp) -> None:
         """Test that dialog saves UI values back to settings."""
@@ -95,41 +112,93 @@ class TestUIValueChanges:
         dialog._t_start_edit.value = 0.0
         dialog._t_stop_edit.value = 10e-3
         dialog._t_step_edit.value = 10e-6
-        dialog._solver_combo.setCurrentIndex(2)  # rk45
+        dialog._solver_combo.setCurrentIndex(3)  # bdf2
+        dialog._step_mode_combo.setCurrentIndex(1)  # variable
         dialog._max_iterations_spin.setValue(75)
         dialog._voltage_limiting_check.setChecked(False)
         dialog._max_voltage_step_spin.setValue(8.0)
         dialog._dc_strategy_combo.setCurrentIndex(3)  # source
+        dialog._source_steps_spin.setValue(37)
+        dialog._transient_robust_mode_check.setChecked(False)
+        dialog._transient_auto_regularize_check.setChecked(True)
         dialog._gmin_initial_spin.setValue(5e-3)
         dialog._gmin_final_spin.setValue(1e-10)
         dialog._rel_tol_spin.setValue(1e-6)
         dialog._abs_tol_spin.setValue(1e-8)
         dialog._output_points_spin.setValue(20000)
+        dialog._enable_events_check.setChecked(False)
+        dialog._max_step_retries_spin.setValue(12)
 
         # Simulate accept
         dialog._on_accept()
 
         # Check settings were updated
-        assert settings.t_stop == 10e-3
-        assert settings.t_step == 10e-6
-        assert settings.solver == "rk45"
+        assert settings.t_stop == pytest.approx(10e-3)
+        assert settings.t_step == pytest.approx(10e-6)
+        assert settings.solver == "bdf2"
+        assert settings.step_mode == "variable"
         assert settings.max_newton_iterations == 75
         assert settings.enable_voltage_limiting is False
         assert settings.max_voltage_step == 8.0
         assert settings.dc_strategy == "source"
+        assert settings.dc_source_steps == 37
+        assert settings.transient_robust_mode is False
+        assert settings.transient_auto_regularize is False
         assert settings.gmin_initial == 5e-3
         assert settings.gmin_final == 1e-10
         assert settings.rel_tol == 1e-6
         assert settings.abs_tol == 1e-8
         assert settings.output_points == 20000
+        assert settings.enable_events is False
+        assert settings.max_step_retries == 12
+
+    def test_dialog_apply_emits_signal_and_keeps_dialog_open(self, qapp) -> None:
+        """Apply should store settings and emit settings_applied without closing dialog."""
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+        applied = []
+        dialog.settings_applied.connect(lambda: applied.append(True))
+
+        dialog._t_stop_edit.value = 2e-3
+        dialog._solver_combo.setCurrentIndex(1)  # trapezoidal
+
+        dialog._on_apply()
+
+        assert settings.t_stop == pytest.approx(2e-3)
+        assert settings.solver == "trapezoidal"
+        assert len(applied) == 1
+        assert dialog.result() == 0
+
+    def test_accept_commits_pending_si_text_without_focus_change(self, qapp) -> None:
+        """OK should commit edited SI text even if the field still has focus."""
+        settings = SimulationSettings(t_stop=1e-3, max_step=1e-6)
+        dialog = SimulationSettingsDialog(settings)
+
+        # Simulate typing new values but not leaving the field.
+        dialog._t_stop_edit._edit.setText("2m")
+        dialog._max_step_edit._edit.setText("25u")
+
+        dialog._on_accept()
+
+        assert settings.t_stop == pytest.approx(2e-3)
+        assert settings.max_step == pytest.approx(25e-6)
 
     def test_all_solver_types_load_correctly(self, qapp) -> None:
         """Test that all solver types are loaded correctly."""
-        solver_map = {"auto": 0, "rk4": 1, "rk45": 2, "bdf": 3}
+        solver_map = {
+            "auto": "auto",
+            "trapezoidal": "trapezoidal",
+            "bdf1": "bdf1",
+            "bdf2": "bdf2",
+            "trbdf2": "trbdf2",
+            "rk4": "trapezoidal",   # legacy alias
+            "rk45": "trapezoidal",  # legacy alias
+            "bdf": "bdf2",          # legacy alias
+        }
         for solver_name, expected_index in solver_map.items():
             settings = SimulationSettings(solver=solver_name)
             dialog = SimulationSettingsDialog(settings)
-            assert dialog._solver_combo.currentIndex() == expected_index
+            assert dialog._solver_combo.currentData() == expected_index
 
     def test_all_dc_strategies_load_correctly(self, qapp) -> None:
         """Test that all DC strategies are loaded correctly."""
@@ -150,6 +219,12 @@ class TestUIValueChanges:
         # Change to GMIN strategy
         dialog._dc_strategy_combo.setCurrentIndex(2)  # gmin
         assert not dialog._gmin_widget.isHidden()
+        assert dialog._source_widget.isHidden()
+
+        # Change to source strategy
+        dialog._dc_strategy_combo.setCurrentIndex(3)  # source
+        assert dialog._gmin_widget.isHidden()
+        assert not dialog._source_widget.isHidden()
 
         # Change back to auto
         dialog._dc_strategy_combo.setCurrentIndex(0)  # auto
@@ -206,20 +281,20 @@ class TestPersistence:
         """Test that settings survive dialog close and reopen."""
         # Create initial settings
         settings = SimulationSettings(
-            solver="bdf",
+            solver="bdf2",
             max_newton_iterations=80,
             dc_strategy="pseudo",
         )
 
         # Open dialog, modify, and accept
         dialog1 = SimulationSettingsDialog(settings)
-        dialog1._solver_combo.setCurrentIndex(1)  # rk4
+        dialog1._solver_combo.setCurrentIndex(1)  # trapezoidal
         dialog1._max_iterations_spin.setValue(120)
         dialog1._dc_strategy_combo.setCurrentIndex(1)  # direct
         dialog1._on_accept()
 
         # Check settings updated
-        assert settings.solver == "rk4"
+        assert settings.solver == "trapezoidal"
         assert settings.max_newton_iterations == 120
         assert settings.dc_strategy == "direct"
 
@@ -227,7 +302,7 @@ class TestPersistence:
         dialog2 = SimulationSettingsDialog(settings)
 
         # Values should persist
-        assert dialog2._solver_combo.currentIndex() == 1  # rk4
+        assert dialog2._solver_combo.currentData() == "trapezoidal"
         assert dialog2._max_iterations_spin.value() == 120
         assert dialog2._dc_strategy_combo.currentIndex() == 1  # direct
 
@@ -274,7 +349,7 @@ class TestBackendReceivesOptions:
 
         assert dc_settings.strategy == "auto"
         assert dc_settings.max_iterations == 50
-        assert dc_settings.enable_limiting is True
+        assert dc_settings.enable_limiting is False
         assert dc_settings.max_voltage_step == 5.0
         assert dc_settings.gmin_initial == 1e-3
         assert dc_settings.gmin_final == 1e-12

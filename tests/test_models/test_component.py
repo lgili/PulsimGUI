@@ -1,9 +1,16 @@
 """Tests for Component model."""
 
-import pytest
-from uuid import UUID
-
-from pulsimgui.models.component import Component, ComponentType, Pin
+from pulsimgui.models.component import (
+    CURRENT_PROBE_OUTPUT_PIN_NAME,
+    Component,
+    ComponentType,
+    Pin,
+    THERMAL_PORT_PARAMETER,
+    THERMAL_PORT_PIN_NAME,
+    VOLTAGE_PROBE_OUTPUT_PIN_NAME,
+    can_connect_measurement_pins,
+    set_thermal_port_enabled,
+)
 
 
 class TestPin:
@@ -56,10 +63,13 @@ class TestComponent:
 
     def test_pin_position_with_rotation(self):
         comp = Component(type=ComponentType.RESISTOR, x=0, y=0, rotation=90)
-        # Pin at (-30, 0) rotated 90 degrees should be at (0, -30)
+        # 90-degree rotation maps local (x, y) -> (-y, x).
+        pin = comp.pins[0]
+        expected_x = -pin.y
+        expected_y = pin.x
         x, y = comp.get_pin_position(0)
-        assert abs(x - 0) < 0.001
-        assert abs(y - (-30)) < 0.001
+        assert abs(x - expected_x) < 0.001
+        assert abs(y - expected_y) < 0.001
 
     def test_serialization(self):
         comp = Component(
@@ -93,7 +103,7 @@ class TestComponent:
 
     def test_control_blocks_have_defaults(self):
         pi = Component(type=ComponentType.PI_CONTROLLER)
-        assert len(pi.pins) == 3
+        assert len(pi.pins) == 2
         assert "kp" in pi.parameters and "ki" in pi.parameters
 
         pid = Component(type=ComponentType.PID_CONTROLLER)
@@ -103,4 +113,66 @@ class TestComponent:
         assert math_block.parameters["operation"] == "sum"
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
+        assert len(pwm.pins) == 1
         assert pwm.parameters["frequency"] == 10000.0
+
+        gain = Component(type=ComponentType.GAIN)
+        assert len(gain.pins) == 2
+        assert gain.parameters["gain"] == 1.0
+
+        summing = Component(type=ComponentType.SUM)
+        assert len(summing.pins) == 3
+        assert summing.parameters["input_count"] == 2
+
+        subtractor = Component(type=ComponentType.SUBTRACTOR)
+        assert len(subtractor.pins) == 3
+        assert subtractor.parameters["signs"] == ["+", "-"]
+
+    def test_thermal_port_default_is_disabled(self):
+        resistor = Component(type=ComponentType.RESISTOR)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is False
+        assert all(pin.name != THERMAL_PORT_PIN_NAME for pin in resistor.pins)
+
+    def test_thermal_port_toggle_updates_pin_layout(self):
+        resistor = Component(type=ComponentType.RESISTOR)
+        assert len(resistor.pins) == 2
+
+        set_thermal_port_enabled(resistor, True)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is True
+        assert len(resistor.pins) == 3
+        assert resistor.pins[-1].name == THERMAL_PORT_PIN_NAME
+
+        set_thermal_port_enabled(resistor, False)
+        assert resistor.parameters[THERMAL_PORT_PARAMETER] is False
+        assert len(resistor.pins) == 2
+        assert all(pin.name != THERMAL_PORT_PIN_NAME for pin in resistor.pins)
+
+    def test_thermal_port_not_exposed_for_unsupported_components(self):
+        pi = Component(type=ComponentType.PI_CONTROLLER)
+        assert THERMAL_PORT_PARAMETER not in pi.parameters
+
+    def test_voltage_probe_has_scope_output_pin(self):
+        probe = Component(type=ComponentType.VOLTAGE_PROBE)
+        assert len(probe.pins) == 3
+        assert probe.pins[2].name == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+    def test_current_probe_has_scope_output_pin(self):
+        probe = Component(type=ComponentType.CURRENT_PROBE)
+        assert len(probe.pins) == 3
+        assert probe.pins[2].name == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+    def test_scope_connection_rules_for_electrical_probes(self):
+        scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
+        v_probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1")
+        resistor = Component(type=ComponentType.RESISTOR, name="R1")
+
+        assert can_connect_measurement_pins(scope, 0, v_probe, 2)
+        assert not can_connect_measurement_pins(scope, 0, resistor, 0)
+
+    def test_scope_connection_rules_for_thermal_outputs(self):
+        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1")
+        resistor = Component(type=ComponentType.RESISTOR, name="R1")
+        set_thermal_port_enabled(resistor, True)
+
+        assert can_connect_measurement_pins(scope, 0, resistor, 2)
+        assert not can_connect_measurement_pins(scope, 0, resistor, 1)

@@ -73,7 +73,7 @@ def install_dependencies() -> None:
         "pyqtgraph>=0.13.0",
         "numpy>=1.24.0",
         "qtawesome>=1.3.0",
-        "pulsim>=0.1.11",
+        "pulsim>=0.4.0",
     ], check=True)
 
 

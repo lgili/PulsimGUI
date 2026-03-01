@@ -1,10 +1,11 @@
 """Main application window."""
 
+import math
 from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
     QDockWidget,
@@ -16,12 +17,26 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFileDialog,
     QApplication,
-    QMenu,
 )
 
 from pulsimgui.commands.base import CommandStack
+from pulsimgui.commands.component_commands import (
+    AddComponentCommand,
+    DeleteComponentCommand,
+    FlipComponentCommand,
+    MoveComponentCommand,
+    RotateComponentCommand,
+    UpdateComponentStateCommand,
+)
+from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import (
+    ComponentType,
+    THERMAL_PORT_PARAMETER,
+    can_connect_measurement_pins,
+    is_restricted_measurement_pin,
+    pin_connection_domain,
+)
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
@@ -35,6 +50,8 @@ from pulsimgui.services.simulation_service import (
     SimulationService,
     SimulationState,
     ParameterSweepResult,
+    normalize_integration_method,
+    normalize_step_mode,
 )
 from pulsimgui.services.thermal_service import ThermalAnalysisService
 from pulsimgui.services.theme_service import ThemeService, Theme
@@ -53,14 +70,17 @@ from pulsimgui.views.dialogs import (
     ParameterSweepDialog,
     ParameterSweepResultsDialog,
     ThermalViewerDialog,
+    ComponentPropertiesDialog,
 )
 from pulsimgui.services.template_service import TemplateService
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
-from pulsimgui.views.schematic import SchematicScene, SchematicView
+from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
+from pulsimgui.utils.signal_utils import format_signal_key
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +101,7 @@ class MainWindow(QMainWindow):
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
         self._latest_thermal_waveform: SimulationResult | None = None
+        self._component_state_cache: dict[UUID, dict] = {}
 
         self._setup_window()
         self._create_actions()
@@ -132,14 +153,26 @@ class MainWindow(QMainWindow):
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.wire_created.connect(self._on_wire_created)
+        self._schematic_view.component_delete_requested.connect(
+            self._on_component_delete_requested
+        )
+        self._schematic_view.wire_delete_requested.connect(self._on_wire_delete_requested)
+        self._schematic_view.component_rotate_requested.connect(
+            self._on_component_rotate_requested
+        )
+        self._schematic_view.component_flip_requested.connect(self._on_component_flip_requested)
         self._schematic_view.grid_toggle_requested.connect(self._on_grid_toggle_from_view)
         self._schematic_view.subcircuit_open_requested.connect(self._on_subcircuit_open_requested)
         self._schematic_view.scope_open_requested.connect(self._on_scope_open_requested)
+        self._schematic_view.component_properties_requested.connect(
+            self._on_component_properties_requested
+        )
         self._schematic_view.wire_alias_changed.connect(self._on_wire_alias_changed)
         self._schematic_view.quick_add_component.connect(self._on_quick_add_component)
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
+        self._schematic_scene.component_moved.connect(self._on_component_moved)
         # Throttle minimap updates to avoid performance issues during rapid changes
         self._minimap_update_timer = QTimer(self)
         self._minimap_update_timer.setSingleShot(True)
@@ -147,6 +180,7 @@ class MainWindow(QMainWindow):
         self._minimap_update_timer.timeout.connect(self._minimap.update_minimap)
         self._schematic_scene.changed.connect(lambda _: self._schedule_minimap_update())
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
+        self._refresh_component_state_cache()
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -252,6 +286,22 @@ class MainWindow(QMainWindow):
         self.action_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.action_zoom_fit.setToolTip("Zoom to Fit (Ctrl+0)")
         self.action_zoom_fit.triggered.connect(self._on_zoom_fit)
+
+        self.action_wire_tool = QAction("&Wire Tool", self)
+        self.action_wire_tool.setCheckable(True)
+        self.action_wire_tool.setToolTip("Wire Tool (W)")
+        self.action_wire_tool.triggered.connect(self._on_wire_tool_selected)
+
+        self.action_hand_tool = QAction("&Hand Tool", self)
+        self.action_hand_tool.setCheckable(True)
+        self.action_hand_tool.setToolTip("Hand Tool (H)")
+        self.action_hand_tool.triggered.connect(self._on_hand_tool_selected)
+
+        self._toolbar_tool_group = QActionGroup(self)
+        self._toolbar_tool_group.setExclusive(True)
+        self._toolbar_tool_group.addAction(self.action_wire_tool)
+        self._toolbar_tool_group.addAction(self.action_hand_tool)
+        self.action_hand_tool.setChecked(True)
 
         self.action_toggle_grid = QAction("Show &Grid", self)
         self.action_toggle_grid.setCheckable(True)
@@ -370,7 +420,6 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
-        edit_menu.addAction(self.action_preferences)
         edit_menu.addAction(self.action_keyboard_shortcuts)
 
         # View menu
@@ -384,6 +433,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
+        self.panels_menu.setEnabled(False)
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("&Theme")
         theme_menu.addAction(self.action_theme_light)
@@ -410,7 +460,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
-        from PySide6.QtWidgets import QToolButton, QSizePolicy
+        from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QSizePolicy
 
         self._toolbar = QToolBar("Main Toolbar")
         self._toolbar.setObjectName("MainToolbar")
@@ -436,38 +486,34 @@ class MainWindow(QMainWindow):
         self._toolbar.addAction(self.action_zoom_fit)
         self._toolbar.addSeparator()
 
-        # Simulation actions (high-frequency workflow group)
-        self._toolbar.addAction(self.action_run)
-        self._toolbar.addAction(self.action_pause)
-        self._toolbar.addAction(self.action_stop)
-        self._toolbar.addAction(self.action_dc_op)
-        self._toolbar.addAction(self.action_ac)
+        # Left tool selectors
+        self._toolbar.addAction(self.action_wire_tool)
+        self._toolbar.addAction(self.action_hand_tool)
 
         # Add flexible spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toolbar.addWidget(spacer)
 
-        # Overflow menu button for additional actions
-        self._overflow_btn = QToolButton()
-        self._overflow_btn.setIcon(IconService.get_icon("menu", self._theme_service.current_theme.colors.icon_default))
-        self._overflow_btn.setToolTip("More actions")
-        self._overflow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._overflow_btn.setAutoRaise(True)
-
-        overflow_menu = QMenu(self._overflow_btn)
-        overflow_menu.addAction(self.action_toggle_grid)
-        overflow_menu.addAction(self.action_toggle_dc_overlay)
-        overflow_menu.addAction(self.action_toggle_minimap)
-        overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_parameter_sweep)
-        overflow_menu.addAction(self.action_thermal_viewer)
-        overflow_menu.addSeparator()
-        overflow_menu.addAction(self.action_sim_settings)
-        overflow_menu.addAction(self.action_preferences)
-
-        self._overflow_btn.setMenu(overflow_menu)
-        self._toolbar.addWidget(self._overflow_btn)
+        # Simulation actions grouped on the right for faster recognition
+        self._simulation_toolbar_group = QFrame(self._toolbar)
+        self._simulation_toolbar_group.setObjectName("SimulationToolbarGroup")
+        sim_layout = QHBoxLayout(self._simulation_toolbar_group)
+        sim_layout.setContentsMargins(8, 4, 8, 4)
+        sim_layout.setSpacing(2)
+        for action in (
+            self.action_run,
+            self.action_pause,
+            self.action_stop,
+            self.action_dc_op,
+            self.action_ac,
+        ):
+            button = QToolButton(self._simulation_toolbar_group)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setAutoRaise(True)
+            button.setDefaultAction(action)
+            sim_layout.addWidget(button)
+        self._toolbar.addWidget(self._simulation_toolbar_group)
 
     def _create_status_bar(self) -> None:
         """Create the status bar with icons."""
@@ -505,6 +551,8 @@ class MainWindow(QMainWindow):
         self._sim_progress = QProgressBar()
         self._sim_progress.setMinimumWidth(150)
         self._sim_progress.setMaximumWidth(200)
+        self._sim_progress.setRange(0, 100)
+        self._sim_progress.setValue(0)
         self._sim_progress.setVisible(False)
         status_bar.addPermanentWidget(self._sim_progress)
 
@@ -550,6 +598,8 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        # Component properties are edited in a modal popup flow.
+        self.properties_dock.hide()
 
         # Waveform Viewer (bottom)
         self.waveform_dock = QDockWidget("Waveform Viewer", self)
@@ -563,7 +613,6 @@ class MainWindow(QMainWindow):
 
         # Add toggle actions to panels menu
         self.panels_menu.addAction(self.library_dock.toggleViewAction())
-        self.panels_menu.addAction(self.properties_dock.toggleViewAction())
         self.panels_menu.addAction(self.waveform_dock.toggleViewAction())
 
     def _connect_signals(self) -> None:
@@ -593,6 +642,8 @@ class MainWindow(QMainWindow):
         )
         self._simulation_service.error.connect(self._on_simulation_error)
         self._simulation_service.backend_changed.connect(self._on_backend_changed)
+        self._schematic_view.tool_changed.connect(self._sync_toolbar_tool_actions)
+        self._sync_toolbar_tool_actions(self._schematic_view.current_tool)
 
         # Hierarchy service signals
         self._hierarchy_service.hierarchy_changed.connect(self._on_hierarchy_changed)
@@ -604,11 +655,13 @@ class MainWindow(QMainWindow):
         """Enable or disable simulation actions based on backend readiness."""
         backend_ready = self._simulation_service.is_backend_ready
         is_running = self._simulation_service.is_running
+        has_dc = self._simulation_service.has_capability("dc")
+        has_ac = self._simulation_service.has_capability("ac")
         self.action_run.setEnabled(backend_ready and not is_running)
         self.action_stop.setEnabled(backend_ready and is_running)
         self.action_pause.setEnabled(backend_ready and is_running)
-        self.action_dc_op.setEnabled(backend_ready and not is_running)
-        self.action_ac.setEnabled(backend_ready and not is_running)
+        self.action_dc_op.setEnabled(backend_ready and has_dc and not is_running)
+        self.action_ac.setEnabled(backend_ready and has_ac and not is_running)
         self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
 
     def _update_backend_status(self, info: BackendInfo | None = None) -> None:
@@ -657,6 +710,8 @@ class MainWindow(QMainWindow):
         state = self._settings.get_window_state()
         if state:
             self.restoreState(state)
+        # Keep the old side properties panel hidden; editing is modal.
+        self.properties_dock.hide()
 
     def _apply_theme(self) -> None:
         """Apply the current theme from settings."""
@@ -703,6 +758,35 @@ class MainWindow(QMainWindow):
 
         # Update toolbar icons for current theme
         self._update_toolbar_icons()
+        self._update_toolbar_group_styles()
+
+    def _update_toolbar_group_styles(self) -> None:
+        """Apply dedicated visual styling for grouped toolbar controls."""
+        if not hasattr(self, "_simulation_toolbar_group"):
+            return
+        colors = self._theme_service.current_theme.colors
+        self._simulation_toolbar_group.setStyleSheet(
+            f"""
+            QFrame#SimulationToolbarGroup {{
+                border: 1px solid {colors.primary}66;
+                border-radius: 11px;
+                background-color: {colors.primary}16;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton {{
+                border-radius: 8px;
+                padding: 6px 8px;
+                margin: 1px;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton:hover {{
+                background-color: {colors.primary}30;
+                border: 1px solid {colors.primary}55;
+            }}
+            QFrame#SimulationToolbarGroup QToolButton:checked {{
+                background-color: {colors.primary}44;
+                border: 1px solid {colors.primary}88;
+            }}
+            """
+        )
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""
@@ -719,16 +803,34 @@ class MainWindow(QMainWindow):
             self.action_zoom_in: "zoom-in",
             self.action_zoom_out: "zoom-out",
             self.action_zoom_fit: "maximize",
-            self.action_run: "play",
-            self.action_pause: "pause",
-            self.action_stop: "square",
+            self.action_wire_tool: "wire",
+            self.action_hand_tool: "hand",
             self.action_dc_op: "activity",
             self.action_ac: "zap",
         }
 
         for action, icon_name in icon_map.items():
             action.setIcon(IconService.get_icon(icon_name, icon_color, 16))
-        self._overflow_btn.setIcon(IconService.get_icon("menu", icon_color, 16))
+        self.action_run.setIcon(IconService.get_icon("play", theme.colors.sim_running, 16))
+        self.action_pause.setIcon(IconService.get_icon("pause", theme.colors.sim_paused, 16))
+        self.action_stop.setIcon(IconService.get_icon("square", theme.colors.sim_error, 16))
+
+    def _sync_toolbar_tool_actions(self, tool: Tool) -> None:
+        """Reflect current schematic tool state in toolbar actions."""
+        is_wire_mode = tool == Tool.WIRE
+        self.action_wire_tool.setChecked(is_wire_mode)
+        self.action_hand_tool.setChecked(not is_wire_mode)
+
+    def _on_wire_tool_selected(self, checked: bool = False) -> None:
+        """Activate wire drawing mode from toolbar."""
+        if checked:
+            self._schematic_view.current_tool = Tool.WIRE
+
+    def _on_hand_tool_selected(self, checked: bool = False) -> None:
+        """Activate hand/select mode and cancel any pending wire operation."""
+        if checked:
+            self._schematic_view.cancel_wire()
+            self._schematic_view.current_tool = Tool.SELECT
 
     def _set_theme(self, theme_name: str) -> None:
         """Set and apply a theme."""
@@ -847,9 +949,17 @@ class MainWindow(QMainWindow):
 
     def _on_scene_selection_changed(self) -> None:
         """Handle selection change in schematic scene."""
+        from shiboken6 import isValid
         from pulsimgui.views.schematic.items import ComponentItem
 
-        selected_items = self._schematic_scene.selectedItems()
+        scene = self._schematic_scene
+        if scene is None or not isValid(scene):
+            return
+
+        try:
+            selected_items = scene.selectedItems()
+        except RuntimeError:
+            return
 
         # Filter to get only ComponentItems
         selected_components = [
@@ -889,6 +999,7 @@ class MainWindow(QMainWindow):
     def _on_hierarchy_changed(self, _level) -> None:
         """Refresh scene when hierarchy level changes."""
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._schematic_scene.clearSelection()
         self._properties_panel.set_component(None)
         self.update_selection(0)
@@ -995,8 +1106,70 @@ class MainWindow(QMainWindow):
         """Load the current project's circuit into the schematic scene."""
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
+
+    def _apply_project_simulation_settings_to_service(self) -> None:
+        """Mirror project transient settings into the runtime simulation service."""
+        project_settings = self._project.simulation_settings
+        runtime_settings = self._simulation_service.settings
+        runtime_settings.t_start = float(project_settings.tstart)
+        runtime_settings.t_stop = float(project_settings.tstop)
+        runtime_settings.t_step = float(project_settings.dt)
+        runtime_settings.max_step = float(getattr(project_settings, "max_step", project_settings.dt))
+        # Extremely small abs_tol values from legacy files can destabilize switching solves.
+        runtime_settings.abs_tol = max(float(project_settings.abstol), 1e-10)
+        runtime_settings.rel_tol = float(project_settings.reltol)
+        runtime_settings.solver = normalize_integration_method(
+            getattr(project_settings, "solver", runtime_settings.solver)
+        )
+        runtime_settings.step_mode = normalize_step_mode(
+            getattr(project_settings, "step_mode", runtime_settings.step_mode)
+        )
+        runtime_settings.output_points = int(
+            getattr(project_settings, "output_points", runtime_settings.output_points)
+        )
+        runtime_settings.enable_events = bool(
+            getattr(project_settings, "enable_events", runtime_settings.enable_events)
+        )
+        runtime_settings.max_step_retries = int(
+            getattr(project_settings, "max_step_retries", runtime_settings.max_step_retries)
+        )
+        runtime_settings.max_newton_iterations = int(project_settings.max_iterations)
+        runtime_settings.enable_voltage_limiting = bool(project_settings.enable_voltage_limiting)
+        runtime_settings.max_voltage_step = float(project_settings.max_voltage_step)
+        runtime_settings.dc_strategy = str(project_settings.dc_strategy)
+        runtime_settings.gmin_initial = float(project_settings.gmin_initial)
+        runtime_settings.gmin_final = float(project_settings.gmin_final)
+        runtime_settings.dc_source_steps = int(project_settings.dc_source_steps)
+        runtime_settings.transient_robust_mode = bool(project_settings.transient_robust_mode)
+        runtime_settings.transient_auto_regularize = bool(project_settings.transient_auto_regularize)
+
+    def _apply_simulation_service_settings_to_project(self) -> None:
+        """Persist runtime simulation settings back into the project model."""
+        project_settings = self._project.simulation_settings
+        runtime_settings = self._simulation_service.settings
+        project_settings.tstart = float(runtime_settings.t_start)
+        project_settings.tstop = float(runtime_settings.t_stop)
+        project_settings.dt = float(runtime_settings.t_step)
+        project_settings.max_step = float(runtime_settings.max_step)
+        project_settings.abstol = float(runtime_settings.abs_tol)
+        project_settings.reltol = float(runtime_settings.rel_tol)
+        project_settings.solver = normalize_integration_method(runtime_settings.solver)
+        project_settings.step_mode = normalize_step_mode(runtime_settings.step_mode)
+        project_settings.output_points = int(runtime_settings.output_points)
+        project_settings.enable_events = bool(runtime_settings.enable_events)
+        project_settings.max_step_retries = int(runtime_settings.max_step_retries)
+        project_settings.max_iterations = int(runtime_settings.max_newton_iterations)
+        project_settings.enable_voltage_limiting = bool(runtime_settings.enable_voltage_limiting)
+        project_settings.max_voltage_step = float(runtime_settings.max_voltage_step)
+        project_settings.dc_strategy = str(runtime_settings.dc_strategy)
+        project_settings.gmin_initial = float(runtime_settings.gmin_initial)
+        project_settings.gmin_final = float(runtime_settings.gmin_final)
+        project_settings.dc_source_steps = int(runtime_settings.dc_source_steps)
+        project_settings.transient_robust_mode = bool(runtime_settings.transient_robust_mode)
+        project_settings.transient_auto_regularize = bool(runtime_settings.transient_auto_regularize)
 
     # Slots
     def _on_new_project(self) -> None:
@@ -1010,6 +1183,7 @@ class MainWindow(QMainWindow):
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
@@ -1031,8 +1205,8 @@ class MainWindow(QMainWindow):
                     self._project = Project(name=circuit.name)
                     self._latest_electrical_result = None
                     self._latest_thermal_waveform = None
-                    self._project._circuits = {circuit.id: circuit}
-                    self._project._active_circuit_id = circuit.id
+                    self._project.circuits = {"main": circuit}
+                    self._project.active_circuit = "main"
                     self._command_stack.clear()
                     self._load_project_to_scene()
                     self._project.mark_dirty()
@@ -1075,6 +1249,7 @@ class MainWindow(QMainWindow):
 
     def _on_save(self) -> None:
         """Save the current project."""
+        self._apply_simulation_service_settings_to_project()
         if self._project.path is None:
             self._on_save_as()
         else:
@@ -1089,6 +1264,7 @@ class MainWindow(QMainWindow):
 
     def _on_save_as(self) -> None:
         """Save the project with a new name."""
+        self._apply_simulation_service_settings_to_project()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
@@ -1120,6 +1296,7 @@ class MainWindow(QMainWindow):
         self._command_stack.clear()
         self._hierarchy_service.set_project(self._project)
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
+        self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._update_title()
         self._update_modified_indicator()
@@ -1127,17 +1304,57 @@ class MainWindow(QMainWindow):
 
     def _on_undo(self) -> None:
         """Undo the last command."""
+        if not self._command_stack.can_undo:
+            return
         self._command_stack.undo()
+        self._reload_schematic_scene()
         self._project.mark_dirty()
         self._update_title()
         self._update_modified_indicator()
 
     def _on_redo(self) -> None:
         """Redo the last undone command."""
+        if not self._command_stack.can_redo:
+            return
         self._command_stack.redo()
+        self._reload_schematic_scene()
         self._project.mark_dirty()
         self._update_title()
         self._update_modified_indicator()
+
+    def _execute_schematic_command(
+        self,
+        command,
+        *,
+        refresh_scene: bool = True,
+        merge: bool = False,
+    ) -> None:
+        """Execute an undoable command and update project/UI state."""
+        self._command_stack.execute(command, merge=merge)
+        if refresh_scene:
+            self._reload_schematic_scene()
+        else:
+            self._refresh_component_state_cache()
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+    def _reload_schematic_scene(self) -> None:
+        """Reload active circuit into scene to reflect model changes."""
+        self._schematic_scene.load_circuit(self._current_circuit())
+        self._refresh_component_state_cache()
+
+    def _component_state_snapshot(self, component) -> dict:
+        """Capture an undo-friendly snapshot for a component."""
+        return UpdateComponentStateCommand.snapshot(component)
+
+    def _refresh_component_state_cache(self) -> None:
+        """Refresh local cache used to build property-edit undo commands."""
+        circuit = self._current_circuit()
+        self._component_state_cache = {
+            component.id: self._component_state_snapshot(component)
+            for component in circuit.components.values()
+        }
 
     def _on_about(self) -> None:
         """Show about dialog."""
@@ -1221,16 +1438,11 @@ class MainWindow(QMainWindow):
 
         # Create component
         component = Component(comp_type, x=x, y=y)
-        circuit = self._current_circuit()
-        circuit.add_component(component)
-
-        # Update scene
-        if scene:
-            scene.load_circuit(circuit)
-
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
     def _on_zoom_in(self) -> None:
         """Zoom in the schematic view."""
@@ -1310,17 +1522,15 @@ class MainWindow(QMainWindow):
         # Create component
         component = Component(type=comp_type, name=name, x=x, y=y)
 
-        # Add to circuit and scene
-        self._current_circuit().add_component(component)
-        self._schematic_scene.add_component(component)
+        # Add to circuit through command stack
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
-
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
 
     def _on_component_dropped(self, comp_type_name: str, x: float, y: float) -> None:
         """Handle component drop from library panel."""
@@ -1338,17 +1548,15 @@ class MainWindow(QMainWindow):
         # Create component at drop position
         component = Component(type=comp_type, name=name, x=x, y=y)
 
-        # Add to circuit and scene
-        self._current_circuit().add_component(component)
-        self._schematic_scene.add_component(component)
+        # Add to circuit through command stack
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
-
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
 
     def _on_component_removed(self, component) -> None:
         """Tear down scope window state when a component disappears."""
@@ -1361,10 +1569,108 @@ class MainWindow(QMainWindow):
             self._project.mark_dirty()
             self._update_modified_indicator()
 
+    def _on_component_delete_requested(self, component_id: str) -> None:
+        """Delete a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        component = circuit.get_component(comp_uuid)
+        if component is None:
+            return
+
+        self._execute_schematic_command(
+            DeleteComponentCommand(circuit, comp_uuid),
+            refresh_scene=True,
+            merge=False,
+        )
+        self._on_component_removed(component)
+
+    def _on_wire_delete_requested(self, wire_id: str) -> None:
+        """Delete a wire via command stack."""
+        try:
+            wire_uuid = UUID(wire_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_wire(wire_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            DeleteWireCommand(circuit, wire_uuid),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_rotate_requested(self, component_id: str, degrees: int) -> None:
+        """Rotate a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_component(comp_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            RotateComponentCommand(circuit, comp_uuid, degrees=int(degrees)),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_flip_requested(self, component_id: str, horizontal: bool) -> None:
+        """Flip a component via command stack."""
+        try:
+            comp_uuid = UUID(component_id)
+        except ValueError:
+            return
+
+        circuit = self._current_circuit()
+        if circuit.get_component(comp_uuid) is None:
+            return
+
+        self._execute_schematic_command(
+            FlipComponentCommand(circuit, comp_uuid, horizontal=bool(horizontal)),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_component_moved(
+        self,
+        component,
+        old_x: float,
+        old_y: float,
+        new_x: float,
+        new_y: float,
+    ) -> None:
+        """Record drag movement as an undoable command."""
+        if component is None:
+            return
+        if abs(new_x - old_x) < 0.01 and abs(new_y - old_y) < 0.01:
+            return
+
+        self._execute_schematic_command(
+            MoveComponentCommand(
+                self._current_circuit(),
+                component.id,
+                new_x,
+                new_y,
+                old_x=old_x,
+                old_y=old_y,
+                already_applied=True,
+            ),
+            refresh_scene=False,
+            merge=False,
+        )
+
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
-        from pulsimgui.models.wire import Wire, WireSegment
-        from pulsimgui.views.schematic.items import WireItem
+        from PySide6.QtCore import QPointF
+        from pulsimgui.models.wire import Wire, WireConnection, WireSegment
 
         if not segments:
             return
@@ -1376,18 +1682,83 @@ class MainWindow(QMainWindow):
         ]
         wire = Wire(segments=wire_segments)
 
-        # Add to circuit
-        self._current_circuit().add_wire(wire)
+        start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
+        end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
+        start_pin = self._schematic_scene.find_nearest_pin(
+            start_pos,
+            max_distance=self._schematic_scene.PIN_CAPTURE_DISTANCE,
+        )
+        end_pin = self._schematic_scene.find_nearest_pin(
+            end_pos,
+            max_distance=self._schematic_scene.PIN_CAPTURE_DISTANCE,
+        )
 
-        # Add to scene
-        wire_item = WireItem(wire)
-        wire_item.set_dark_mode(self._theme_service.is_dark)
-        self._schematic_scene.addItem(wire_item)
+        # Force endpoint coordinates to land exactly on detected pin centers.
+        if start_pin is not None:
+            pin_pos = start_pin[0]
+            wire_segments[0].x1 = pin_pos.x()
+            wire_segments[0].y1 = pin_pos.y()
+        if end_pin is not None:
+            pin_pos = end_pin[0]
+            wire_segments[-1].x2 = pin_pos.x()
+            wire_segments[-1].y2 = pin_pos.y()
 
-        # Mark project dirty
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
+        start_ref = (start_pin[1].component, start_pin[2]) if start_pin is not None else None
+        end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
+        if not self._is_valid_wire_measurement_connection(start_ref, end_ref):
+            self.statusBar().showMessage(
+                "Invalid connection: domains cannot mix (circuit/signal/thermal). "
+                "Electrical Scope only accepts V/I probe outputs; Thermal Scope only accepts TH outputs.",
+                5000,
+            )
+            return
+
+        if start_ref is not None:
+            wire.start_connection = WireConnection(
+                component_id=start_ref[0].id,
+                pin_index=start_ref[1],
+            )
+        if end_ref is not None:
+            wire.end_connection = WireConnection(
+                component_id=end_ref[0].id,
+                pin_index=end_ref[1],
+            )
+
+        if not self._schematic_scene.is_wire_path_clear(wire_segments):
+            self.statusBar().showMessage(
+                "Invalid route: wires cannot pass through component bodies.",
+                5000,
+            )
+            return
+
+        self._execute_schematic_command(
+            AddWireCommand(self._current_circuit(), wire),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _is_valid_wire_measurement_connection(self, start_ref, end_ref) -> bool:
+        """Validate dedicated scope/probe/thermal endpoint compatibility."""
+        if start_ref is not None and end_ref is not None:
+            left_component, left_pin = start_ref
+            right_component, right_pin = end_ref
+            if not can_connect_measurement_pins(
+                left_component,
+                left_pin,
+                right_component,
+                right_pin,
+            ):
+                return False
+            # Never allow mixing circuit/signal/thermal domains on a direct wire connection.
+            return pin_connection_domain(left_component, left_pin) == pin_connection_domain(right_component, right_pin)
+
+        for ref in (start_ref, end_ref):
+            if ref is None:
+                continue
+            component, pin_index = ref
+            if is_restricted_measurement_pin(component, pin_index):
+                return False
+        return True
 
     def _on_wire_alias_changed(self, wire) -> None:
         """Update project state when a wire alias is renamed."""
@@ -1400,6 +1771,37 @@ class MainWindow(QMainWindow):
         if component is None:
             return
         self._open_scope_window(component)
+
+    def _on_component_properties_requested(self, component) -> None:
+        """Open modal component properties editor and apply on confirmation."""
+        if component is None:
+            return
+
+        dialog = ComponentPropertiesDialog(
+            component=component,
+            theme_service=self._theme_service,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        old_state = self._component_state_snapshot(component)
+        new_state = self._component_state_snapshot(dialog.edited_component)
+        if old_state == new_state:
+            return
+
+        self._execute_schematic_command(
+            UpdateComponentStateCommand(
+                self._current_circuit(),
+                component.id,
+                new_state,
+                old_state=old_state,
+            ),
+            refresh_scene=True,
+            merge=False,
+        )
+        self._refresh_scope_window_bindings()
+        self.statusBar().showMessage("Component properties updated", 2000)
 
     def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
         """Persist window state whenever a scope window closes."""
@@ -1429,6 +1831,11 @@ class MainWindow(QMainWindow):
             ComponentType.IGBT: "Q",
             ComponentType.SWITCH: "S",
             ComponentType.TRANSFORMER: "T",
+            ComponentType.PWM_GENERATOR: "PWM",
+            ComponentType.PI_CONTROLLER: "PI",
+            ComponentType.GAIN: "K",
+            ComponentType.SUM: "SUM",
+            ComponentType.SUBTRACTOR: "SUB",
         }
 
         prefix = prefix_map.get(comp_type, "X")
@@ -1447,15 +1854,28 @@ class MainWindow(QMainWindow):
         """Handle property change from properties panel."""
         from pulsimgui.views.schematic.items import ComponentItem
 
-        # Mark project dirty and update display
-        self._project.mark_dirty()
-        self._update_title()
-        self._update_modified_indicator()
-
         # Get the component being edited from properties panel
         edited_component = self._properties_panel._component
         if edited_component is None:
             return
+
+        old_state = self._component_state_cache.get(edited_component.id)
+        new_state = self._component_state_snapshot(edited_component)
+
+        if old_state is None:
+            self._component_state_cache[edited_component.id] = new_state
+        elif old_state != new_state:
+            self._execute_schematic_command(
+                UpdateComponentStateCommand(
+                    self._current_circuit(),
+                    edited_component.id,
+                    new_state,
+                    old_state=old_state,
+                    already_applied=True,
+                ),
+                refresh_scene=False,
+                merge=True,
+            )
 
         # Find and update the corresponding component item in the scene
         for item in self._schematic_scene.items():
@@ -1467,8 +1887,13 @@ class MainWindow(QMainWindow):
                     item.setPos(edited_component.x, edited_component.y)
                 elif name == "rotation":
                     item.setRotation(edited_component.rotation)
+                    item.update_transform()
+                elif name == "mirror_h" or name == "mirror_v":
+                    item.update_transform()
+                elif name == THERMAL_PORT_PARAMETER:
+                    self._schematic_scene.update_connected_wires(item)
                 # Update name label
-                item._name_label.setPlainText(edited_component.name)
+                item._name_label.setText(edited_component.name)
                 # Update labels for parameter changes (value text)
                 item._update_labels()
                 item.update()
@@ -1593,8 +2018,12 @@ class MainWindow(QMainWindow):
         for device in thermal_result.devices:
             if not device.temperature_trace:
                 continue
-            key = f"T({device.component_name})"
-            subset.signals[key] = list(device.temperature_trace)
+            key = format_signal_key("T", device.component_name)
+            trace = list(device.temperature_trace)
+            subset.signals[key] = trace
+            legacy_key = f"T({device.component_name})"
+            if legacy_key != key and legacy_key not in subset.signals:
+                subset.signals[legacy_key] = trace
         return subset if subset.signals else None
 
     def _get_component_by_id(self, component_id: str, circuit: Circuit | None = None):
@@ -1648,6 +2077,7 @@ class MainWindow(QMainWindow):
     # Simulation handlers
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_transient(circuit_data)
 
@@ -1666,25 +2096,49 @@ class MainWindow(QMainWindow):
 
     def _on_dc_analysis(self) -> None:
         """Run DC operating point analysis."""
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_dc_operating_point(circuit_data)
 
     def _on_ac_analysis(self) -> None:
         """Run AC analysis."""
+        if not self._simulation_service.has_capability("ac"):
+            QMessageBox.warning(
+                self,
+                "AC Analysis Unavailable",
+                (
+                    "The selected backend does not provide AC analysis.\n"
+                    "Install/enable a backend version with AC support to run this analysis."
+                ),
+            )
+            return
         # TODO: Show AC settings dialog first
+        self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
         self._simulation_service.run_ac_analysis(circuit_data, 1, 1e6, 10)
 
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
+        self._apply_project_simulation_settings_to_service()
         dialog = SimulationSettingsDialog(
             self._simulation_service.settings,
             backend_info=self._simulation_service.backend_info,
             backend_warning=self._simulation_service.backend_issue_message,
+            theme=self._theme_service.current_theme,
             parent=self,
         )
-        if dialog.exec():
+
+        def apply_dialog_settings() -> None:
             self._simulation_service.settings = dialog.get_settings()
+            self._apply_simulation_service_settings_to_project()
+            self._project.mark_dirty()
+            self._update_title()
+            self._update_modified_indicator()
+
+        dialog.settings_applied.connect(apply_dialog_settings)
+
+        if dialog.exec():
+            apply_dialog_settings()
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
@@ -1702,6 +2156,7 @@ class MainWindow(QMainWindow):
             sweep_settings = dialog.get_settings()
             if not sweep_settings:
                 return
+            self._apply_project_simulation_settings_to_service()
             circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
 
@@ -1763,8 +2218,21 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_progress(self, value: float, message: str) -> None:
         """Handle simulation progress update."""
-        self._sim_progress.setValue(int(value))
-        self._sim_status_widget.setStatus(message, is_running=True)
+        if not math.isfinite(value):
+            return
+
+        if value < 0:
+            if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 0:
+                self._sim_progress.setRange(0, 0)
+        else:
+            if self._sim_progress.minimum() == 0 and self._sim_progress.maximum() == 0:
+                self._sim_progress.setRange(0, 100)
+            clamped = max(0, min(100, int(value)))
+            if clamped != self._sim_progress.value():
+                self._sim_progress.setValue(clamped)
+
+        if message and message != self._sim_status_widget.text():
+            self._sim_status_widget.setStatus(message, is_running=True)
 
     def _on_simulation_data_point(self, time: float, signals: dict) -> None:
         """Handle streaming data point during simulation."""
@@ -1782,7 +2250,7 @@ class MainWindow(QMainWindow):
                 f"{len(result.signals)} signals",
                 5000,
             )
-            self._latest_electrical_result = result
+            self._latest_electrical_result = self._result_with_probe_signals(result)
         else:
             QMessageBox.warning(
                 self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
@@ -1790,6 +2258,95 @@ class MainWindow(QMainWindow):
             self._latest_electrical_result = None
 
         self._update_scope_results()
+
+    def _result_with_probe_signals(self, result: SimulationResult) -> SimulationResult:
+        """Build an enriched result view with probe-exported scope channels."""
+        circuit = self._current_circuit()
+        if circuit is None or not result.time:
+            return result
+
+        enriched = SimulationResult(
+            time=list(result.time),
+            signals={name: list(values) for name, values in result.signals.items()},
+            statistics=dict(result.statistics),
+            error_message=result.error_message,
+        )
+
+        node_map = build_node_map(circuit)
+        alias_map = build_node_alias_map(circuit, node_map)
+
+        for component in circuit.components.values():
+            if component.type == ComponentType.VOLTAGE_PROBE:
+                plus = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
+                minus = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
+                if plus is None and minus is None:
+                    continue
+                if plus is None and minus is not None:
+                    plus = [0.0] * len(minus)
+                if minus is None:
+                    minus = [0.0] * len(plus)
+                if plus is None:
+                    continue
+                samples = min(len(plus), len(minus), len(enriched.time))
+                probe_name = component.name or "VoltageProbe"
+                enriched.signals[format_signal_key("VP", probe_name)] = [
+                    plus[idx] - minus[idx] for idx in range(samples)
+                ]
+
+            if component.type == ComponentType.CURRENT_PROBE:
+                node_in = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
+                node_out = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
+                if node_in is None and node_out is None:
+                    continue
+                if node_in is None and node_out is not None:
+                    node_in = [0.0] * len(node_out)
+                if node_out is None and node_in is not None:
+                    node_out = [0.0] * len(node_in)
+                if node_in is None or node_out is None:
+                    continue
+
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(node_in), len(node_out), len(enriched.time))
+                probe_name = component.name or "CurrentProbe"
+                enriched.signals[format_signal_key("IP", probe_name)] = [
+                    (node_in[idx] - node_out[idx]) * scale for idx in range(samples)
+                ]
+
+        return enriched
+
+    def _probe_node_series(
+        self,
+        result: SimulationResult,
+        node_id: str | None,
+        alias_map: dict[str, str],
+    ) -> list[float] | None:
+        """Resolve a node id to a voltage trace from simulation results."""
+        if node_id is None:
+            return None
+
+        candidates: list[str] = []
+        if node_id == "0":
+            candidates.extend(["V(0)", "V(gnd)", "V(GND)"])
+        else:
+            alias = alias_map.get(node_id)
+            if alias:
+                candidates.append(format_signal_key("V", alias))
+                candidates.append(f"V({alias})")
+            candidates.append(format_signal_key("V", f"N{node_id}"))
+            candidates.append(f"V(N{node_id})")
+            candidates.append(f"V({node_id})")
+
+        for key in candidates:
+            series = result.signals.get(key)
+            if series is not None:
+                return list(series)
+
+        # Compatibility fallback: some backends vary signal key case.
+        lowered_candidates = {key.lower() for key in candidates}
+        for key, series in result.signals.items():
+            if key.lower() in lowered_candidates and series is not None:
+                return list(series)
+        return None
 
     def _on_dc_finished(self, result) -> None:
         """Handle DC analysis completion."""

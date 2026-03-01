@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pulsimgui.models.component import ComponentType
@@ -152,11 +153,43 @@ class CircuitConverter:
         for _component, comp_type, _name, nodes in components:
             if comp_type == ComponentType.GROUND:
                 continue
-            for node in nodes:
+            for node in self._nodes_to_predeclare(comp_type, nodes):
                 normalized = self._node_name(node)
                 if normalized == "0" or normalized in cache:
                     continue
                 cache[normalized] = self._declare_node(circuit, normalized)
+
+    def _nodes_to_predeclare(self, comp_type: ComponentType, nodes: list[str]) -> list[str]:
+        """Return only electrical terminals that the backend will stamp.
+
+        Some GUI components expose auxiliary pins (for example thermal ports).
+        Predeclaring those unused nodes can create isolated nodes and degrade
+        backend convergence on otherwise simple circuits.
+        """
+        if comp_type in {
+            ComponentType.RESISTOR,
+            ComponentType.CAPACITOR,
+            ComponentType.INDUCTOR,
+            ComponentType.VOLTAGE_SOURCE,
+            ComponentType.CURRENT_SOURCE,
+            ComponentType.DIODE,
+            ComponentType.ZENER_DIODE,
+            ComponentType.LED,
+            ComponentType.SNUBBER_RC,
+        }:
+            return nodes[:2]
+
+        if comp_type in {ComponentType.MOSFET_N, ComponentType.MOSFET_P, ComponentType.IGBT}:
+            return nodes[:3]
+
+        if comp_type == ComponentType.TRANSFORMER:
+            return nodes[:4]
+
+        if comp_type == ComponentType.SWITCH:
+            return nodes[:3] if len(nodes) >= 3 else nodes[:2]
+
+        # Virtual/unknown components keep their full terminal list.
+        return nodes
 
     def _node_index(self, circuit: Any, name: str, cache: dict[str, int]) -> int:
         """Resolve a node name into a Circuit node index, caching as needed."""
@@ -241,11 +274,14 @@ class CircuitConverter:
 
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
-            circuit.add_diode(
-                name,
-                self._node_index(circuit, n_anode, node_cache),
-                self._node_index(circuit, n_cathode, node_cache),
-            )
+            anode = self._node_index(circuit, n_anode, node_cache)
+            cathode = self._node_index(circuit, n_cathode, node_cache)
+            g_on, g_off = self._switch_conductances(params)
+            try:
+                circuit.add_diode(name, anode, cathode, g_on, g_off)
+            except TypeError:
+                # Backward compatibility with older backends that accept only 2 terminals.
+                circuit.add_diode(name, anode, cathode)
             return
 
         if comp_type in (ComponentType.MOSFET_N, ComponentType.MOSFET_P):
@@ -287,6 +323,81 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.SWITCH:
+            g_on, g_off = self._switch_conductances(params)
+            if len(nodes) >= 3:
+                if not hasattr(circuit, "add_vcswitch"):
+                    raise CircuitConversionError(
+                        f"Component '{name}' uses a controlled switch but backend lacks 'add_vcswitch'"
+                    )
+                # Pin layout: 0="CTL" (control), 1="1" (terminal), 2="2" (terminal)
+                ctrl, t1, t2 = self._require_nodes(name, nodes, 3)
+                circuit.add_vcswitch(
+                    name,
+                    self._node_index(circuit, ctrl, node_cache),
+                    self._node_index(circuit, t1, node_cache),
+                    self._node_index(circuit, t2, node_cache),
+                    self._as_float(params.get("v_threshold"), default=2.5),
+                    g_on,
+                    g_off,
+                )
+                return
+
+            if hasattr(circuit, "add_switch"):
+                n1, n2 = self._require_nodes(name, nodes, 2)
+                circuit.add_switch(
+                    name,
+                    self._node_index(circuit, n1, node_cache),
+                    self._node_index(circuit, n2, node_cache),
+                    self._switch_closed(params),
+                    g_on,
+                    g_off,
+                )
+                return
+
+        if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
+            n1, n2 = self._require_nodes(name, nodes, 2)
+            circuit.add_snubber_rc(
+                name,
+                self._node_index(circuit, n1, node_cache),
+                self._node_index(circuit, n2, node_cache),
+                self._as_float(params.get("resistance"), default=100.0),
+                self._as_float(params.get("capacitance"), default=100e-9),
+                self._as_float(params.get("initial_voltage"), default=0.0),
+            )
+            return
+
+        if comp_type == ComponentType.PWM_GENERATOR:
+            # Convert the PWM block into a real PWM voltage source.
+            # The single OUT pin drives the connected node (e.g. a gate) relative to GND.
+            if nodes:
+                npos = self._node_index(circuit, nodes[0], node_cache)
+                nneg = self._node_index(circuit, "0", node_cache)
+                waveform = {
+                    "type": "pwm",
+                    "frequency": params.get("frequency", 10000.0),
+                    "duty_cycle": params.get("duty_cycle", 0.5),
+                    "v_high": params.get("amplitude", params.get("v_high", 10.0)),
+                    "v_low": params.get("v_low", 0.0),
+                    "phase": params.get("phase", 0.0),
+                    "rise_time": params.get("rise_time", 0.0),
+                    "fall_time": params.get("fall_time", 0.0),
+                    "dead_time": params.get("dead_time", 0.0),
+                }
+                self._add_voltage_source(circuit, name, npos, nneg, waveform)
+            return
+
+        if hasattr(circuit, "add_virtual_component"):
+            self._add_virtual_component(
+                circuit,
+                comp_type,
+                name,
+                nodes,
+                params,
+                node_cache,
+            )
+            return
+
         raise CircuitConversionError(
             f"Backend converter does not yet support component '{comp_type.name}'"
         )
@@ -312,35 +423,66 @@ class CircuitConverter:
 
         if kind == "sine":
             params = self._sl.SineParams()
-            params.offset = self._as_float(waveform.get("offset"), default=0.0)
-            params.amplitude = self._as_float(waveform.get("amplitude"), default=1.0)
-            params.frequency = self._as_float(waveform.get("frequency"), default=60.0)
-            params.phase = self._as_float(waveform.get("phase"), default=0.0)
+            params.offset = self._waveform_float(waveform, ("offset", "vo"), default=0.0)
+            params.amplitude = self._waveform_float(waveform, ("amplitude", "va"), default=1.0)
+            params.frequency = self._waveform_float(waveform, ("frequency", "freq"), default=60.0)
+            params.phase = self._waveform_float(waveform, ("phase",), default=0.0)
             circuit.add_sine_voltage_source(name, npos, nneg, params)
             return
 
         if kind == "pulse":
             params = self._sl.PulseParams()
-            params.v_initial = self._as_float(waveform.get("v1"), default=0.0)
-            params.v_pulse = self._as_float(waveform.get("v2"), default=5.0)
-            params.t_delay = self._as_float(waveform.get("delay"), default=0.0)
-            params.t_rise = self._as_float(waveform.get("rise_time"), default=1e-9)
-            params.t_fall = self._as_float(waveform.get("fall_time"), default=1e-9)
-            params.t_width = self._as_float(waveform.get("pulse_width"), default=1e-6)
-            params.period = self._as_float(waveform.get("period"), default=2e-6)
+            params.v_initial = self._waveform_float(waveform, ("v1", "v_initial"), default=0.0)
+            params.v_pulse = self._waveform_float(waveform, ("v2", "v_pulse"), default=5.0)
+            params.t_delay = self._waveform_float(
+                waveform,
+                ("delay", "td", "t_delay"),
+                default=0.0,
+            )
+            params.t_rise = self._waveform_float(
+                waveform,
+                ("rise_time", "tr", "t_rise"),
+                default=1e-9,
+            )
+            params.t_fall = self._waveform_float(
+                waveform,
+                ("fall_time", "tf", "t_fall"),
+                default=1e-9,
+            )
+            params.t_width = self._waveform_float(
+                waveform,
+                ("pulse_width", "pw", "t_width"),
+                default=1e-6,
+            )
+            params.period = self._waveform_float(
+                waveform,
+                ("period", "per"),
+                default=2e-6,
+            )
             circuit.add_pulse_voltage_source(name, npos, nneg, params)
             return
 
         if kind == "pwm":
             params = self._sl.PWMParams()
-            params.v_low = self._as_float(waveform.get("v_off"), default=0.0)
-            params.v_high = self._as_float(waveform.get("v_on"), default=5.0)
-            params.frequency = self._as_float(waveform.get("frequency"), default=1000.0)
-            params.duty = self._as_float(waveform.get("duty_cycle"), default=0.5)
-            params.dead_time = self._as_float(waveform.get("dead_time"), default=0.0)
-            params.phase = self._as_float(waveform.get("phase"), default=0.0)
-            params.rise_time = self._as_float(waveform.get("rise_time"), default=0.0)
-            params.fall_time = self._as_float(waveform.get("fall_time"), default=0.0)
+            params.v_low = self._waveform_float(waveform, ("v_off", "vlow", "v_low"), default=0.0)
+            params.v_high = self._waveform_float(waveform, ("v_on", "vhigh", "v_high"), default=5.0)
+            params.frequency = self._waveform_float(waveform, ("frequency", "freq"), default=1000.0)
+            duty = self._waveform_float(waveform, ("duty_cycle", "duty"), default=0.5)
+            if duty > 1.0:
+                duty /= 100.0
+            params.duty = max(0.0, min(1.0, duty))
+            params.dead_time = self._waveform_float(waveform, ("dead_time",), default=0.0)
+            params.phase = self._waveform_float(waveform, ("phase",), default=0.0)
+            params.rise_time = self._waveform_float(
+                waveform,
+                ("rise_time", "tr"),
+                default=0.0,
+            )
+            params.fall_time = self._waveform_float(
+                waveform,
+                ("fall_time", "tf"),
+                default=0.0,
+            )
             circuit.add_pwm_voltage_source(name, npos, nneg, params)
             return
 
@@ -398,11 +540,89 @@ class CircuitConverter:
                 continue
             setattr(target, attr, value)
 
+    def _add_virtual_component(
+        self,
+        circuit: Any,
+        comp_type: ComponentType,
+        name: str,
+        nodes: list[str],
+        params: dict[str, Any],
+        node_cache: dict[str, int],
+    ) -> None:
+        node_indices = [self._node_index(circuit, node_name, node_cache) for node_name in nodes]
+        numeric_params: dict[str, float] = {}
+        metadata: dict[str, str] = {"component_type": comp_type.name}
+
+        for key, value in params.items():
+            param_name = str(key)
+            if isinstance(value, bool):
+                numeric_params[param_name] = 1.0 if value else 0.0
+                continue
+            if isinstance(value, (int, float)):
+                numeric_params[param_name] = float(value)
+                continue
+
+            if isinstance(value, str):
+                metadata[param_name] = value
+                continue
+
+            try:
+                metadata[param_name] = json.dumps(value)
+            except TypeError:
+                metadata[param_name] = str(value)
+
+        try:
+            circuit.add_virtual_component(
+                comp_type.name,
+                name,
+                node_indices,
+                numeric_params,
+                metadata,
+            )
+        except Exception as exc:
+            raise CircuitConversionError(
+                f"Backend converter failed to add virtual component '{comp_type.name}': {exc}"
+            ) from exc
+
     def _as_float(self, value: Any, *, default: float) -> float:
         try:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    def _waveform_float(
+        self,
+        waveform: dict[str, Any],
+        keys: tuple[str, ...],
+        *,
+        default: float,
+    ) -> float:
+        for key in keys:
+            if key in waveform:
+                return self._as_float(waveform.get(key), default=default)
+        return float(default)
+
+    def _switch_closed(self, params: dict[str, Any]) -> bool:
+        if "closed" in params:
+            return bool(params.get("closed"))
+        return bool(params.get("initial_state", False))
+
+    def _switch_conductances(self, params: dict[str, Any]) -> tuple[float, float]:
+        g_on_value = params.get("g_on")
+        if g_on_value is None:
+            ron = self._as_float(params.get("ron"), default=1e-3)
+            g_on = 1.0 / max(abs(ron), 1e-15)
+        else:
+            g_on = self._as_float(g_on_value, default=1e3)
+
+        g_off_value = params.get("g_off")
+        if g_off_value is None:
+            roff = self._as_float(params.get("roff"), default=1e9)
+            g_off = 1.0 / max(abs(roff), 1e-30)
+        else:
+            g_off = self._as_float(g_off_value, default=1e-9)
+
+        return g_on, g_off
 
 
 __all__ = ["CircuitConverter", "CircuitConversionError"]

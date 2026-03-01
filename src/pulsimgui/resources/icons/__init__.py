@@ -66,6 +66,8 @@ ICON_MAP = {
     "activity": "ph.pulse",  # Measurements
     "tool": "ph.wrench",  # Misc
     "grid": "ph.grid-four",  # Grid
+    "wire": "ph.path",  # Schematic wire tool
+    "hand": "ph.hand",  # Selection/hand tool
     "star": "ph.star",  # Favorites
     "heart": "ph.heart",  # Favorites alt
     "clock": "ph.clock",  # Recently Used

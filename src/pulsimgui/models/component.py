@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import math
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -54,6 +55,9 @@ class ComponentType(Enum):
     PID_CONTROLLER = auto()
     MATH_BLOCK = auto()
     PWM_GENERATOR = auto()
+    GAIN = auto()
+    SUM = auto()
+    SUBTRACTOR = auto()
 
     # Control blocks - signal processing
     INTEGRATOR = auto()
@@ -117,6 +121,31 @@ class Pin:
         )
 
 
+PIN_GRID_STEP = 20.0
+
+
+def _snap_to_pin_grid(value: float) -> float:
+    """Snap a coordinate to the pin grid step using half-away-from-zero rounding."""
+    step = PIN_GRID_STEP
+    value = float(value)
+    if value >= 0:
+        return math.floor((value + step / 2.0) / step) * step
+    return math.ceil((value - step / 2.0) / step) * step
+
+
+def _snap_pin_layout(pins: list[Pin]) -> list[Pin]:
+    """Return a copy of pins with coordinates aligned to the pin grid."""
+    return [
+        Pin(pin.index, pin.name, _snap_to_pin_grid(pin.x), _snap_to_pin_grid(pin.y))
+        for pin in pins
+    ]
+
+
+def _snap_component_pins_to_grid(component: "Component") -> None:
+    """Mutate component pin coordinates so every pin lands on the wiring grid."""
+    component.pins = _snap_pin_layout(component.pins)
+
+
 def _generate_stacked_pins(
     count: int,
     x: float,
@@ -128,16 +157,23 @@ def _generate_stacked_pins(
     if count <= 0:
         return []
 
-    spacing = 18.0
-    offset = (count - 1) * spacing / 2.0
+    spacing = PIN_GRID_STEP
     pins: list[Pin] = []
     for idx in range(count):
+        if count % 2 == 1:
+            y = (idx - (count // 2)) * spacing
+        else:
+            lower_half = count // 2
+            if idx < lower_half:
+                y = (idx - lower_half) * spacing
+            else:
+                y = (idx - lower_half + 1) * spacing
         pins.append(
             Pin(
                 start_index + idx,
                 f"{name_prefix}{idx + 1}",
-                x,
-                -offset + idx * spacing,
+                _snap_to_pin_grid(x),
+                y,
             )
         )
     return pins
@@ -167,10 +203,227 @@ def _default_demux_pins(output_count: int) -> list[Pin]:
     return pins
 
 
+def _default_unary_block_pins() -> list[Pin]:
+    """Create IN/OUT pin pair for unary signal blocks."""
+    return [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)]
+
+
+def _default_sum_pins(input_count: int) -> list[Pin]:
+    """Create stacked input pins plus single output pin for sum/sub blocks."""
+    pins = _generate_stacked_pins(input_count, -35, "IN")
+    pins.append(Pin(len(pins), "OUT", 35, 0))
+    return pins
+
+
 def _scope_label_prefix(comp_type: ComponentType) -> str:
     """Get default label prefix for scope channels based on component type."""
 
     return "CH" if comp_type == ComponentType.ELECTRICAL_SCOPE else "T"
+
+
+THERMAL_PORT_PARAMETER = "enable_thermal_port"
+THERMAL_PORT_PIN_NAME = "TH"
+VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
+CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.RESISTOR,
+    ComponentType.CAPACITOR,
+    ComponentType.INDUCTOR,
+    ComponentType.VOLTAGE_SOURCE,
+    ComponentType.CURRENT_SOURCE,
+    ComponentType.DIODE,
+    ComponentType.ZENER_DIODE,
+    ComponentType.LED,
+    ComponentType.MOSFET_N,
+    ComponentType.MOSFET_P,
+    ComponentType.IGBT,
+    ComponentType.BJT_NPN,
+    ComponentType.BJT_PNP,
+    ComponentType.THYRISTOR,
+    ComponentType.TRIAC,
+    ComponentType.SWITCH,
+    ComponentType.TRANSFORMER,
+    ComponentType.RELAY,
+    ComponentType.FUSE,
+    ComponentType.CIRCUIT_BREAKER,
+    ComponentType.SATURABLE_INDUCTOR,
+    ComponentType.COUPLED_INDUCTOR,
+    ComponentType.SNUBBER_RC,
+}
+
+
+def supports_thermal_port(component_type: ComponentType) -> bool:
+    """Return True when component type can expose a thermal measurement port."""
+
+    return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
+def _pin_name(component: "Component", pin_index: int) -> str:
+    if 0 <= pin_index < len(component.pins):
+        return component.pins[pin_index].name
+    return ""
+
+
+def is_scope_input_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin belongs to an electrical or thermal scope input."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return False
+    return component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE)
+
+
+def is_voltage_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin is the scope-facing output of a voltage probe."""
+    if component.type != ComponentType.VOLTAGE_PROBE:
+        return False
+    return _pin_name(component, pin_index) == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+
+def is_current_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when pin is the scope-facing output of a current probe."""
+    if component.type != ComponentType.CURRENT_PROBE:
+        return False
+    return _pin_name(component, pin_index) == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+
+def is_thermal_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for optional thermal output pins exposed by components."""
+    if is_scope_input_pin(component, pin_index):
+        return False
+    return _pin_name(component, pin_index) == THERMAL_PORT_PIN_NAME
+
+
+def is_electrical_probe_output_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for any electrical probe output that can feed electrical scopes."""
+    return is_voltage_probe_output_pin(component, pin_index) or is_current_probe_output_pin(component, pin_index)
+
+
+def is_restricted_measurement_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when a pin has dedicated measurement-routing rules."""
+    return (
+        is_scope_input_pin(component, pin_index)
+        or is_electrical_probe_output_pin(component, pin_index)
+        or is_thermal_output_pin(component, pin_index)
+    )
+
+
+def can_connect_measurement_pins(
+    left_component: "Component",
+    left_pin_index: int,
+    right_component: "Component",
+    right_pin_index: int,
+) -> bool:
+    """Validate dedicated scope/probe/thermal routing compatibility."""
+    left_is_e_scope = left_component.type == ComponentType.ELECTRICAL_SCOPE
+    right_is_e_scope = right_component.type == ComponentType.ELECTRICAL_SCOPE
+    left_is_t_scope = left_component.type == ComponentType.THERMAL_SCOPE
+    right_is_t_scope = right_component.type == ComponentType.THERMAL_SCOPE
+
+    left_is_e_probe_out = is_electrical_probe_output_pin(left_component, left_pin_index)
+    right_is_e_probe_out = is_electrical_probe_output_pin(right_component, right_pin_index)
+    left_is_t_out = is_thermal_output_pin(left_component, left_pin_index)
+    right_is_t_out = is_thermal_output_pin(right_component, right_pin_index)
+
+    electrical_group = left_is_e_scope or right_is_e_scope or left_is_e_probe_out or right_is_e_probe_out
+    if electrical_group:
+        return (left_is_e_scope and right_is_e_probe_out) or (right_is_e_scope and left_is_e_probe_out)
+
+    thermal_group = left_is_t_scope or right_is_t_scope or left_is_t_out or right_is_t_out
+    if thermal_group:
+        return (left_is_t_scope and right_is_t_out) or (right_is_t_scope and left_is_t_out)
+
+    return True
+
+
+CONNECTION_DOMAIN_CIRCUIT = "circuit"
+CONNECTION_DOMAIN_SIGNAL = "signal"
+CONNECTION_DOMAIN_THERMAL = "thermal"
+
+# Map switching-device component types to their gate/base/control pin indices.
+# These pins accept signal-domain connections (e.g. PWM output).
+_CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
+    ComponentType.MOSFET_N:  {1},   # G
+    ComponentType.MOSFET_P:  {1},   # G
+    ComponentType.IGBT:      {1},   # G
+    ComponentType.BJT_NPN:   {1},   # B
+    ComponentType.BJT_PNP:   {1},   # B
+    ComponentType.THYRISTOR: {2},   # G
+    ComponentType.TRIAC:     {2},   # G
+    ComponentType.SWITCH:    {2},   # CTL
+}
+
+SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.ELECTRICAL_SCOPE,
+    ComponentType.VOLTAGE_PROBE,
+    ComponentType.CURRENT_PROBE,
+    ComponentType.POWER_PROBE,
+    ComponentType.SIGNAL_MUX,
+    ComponentType.SIGNAL_DEMUX,
+    ComponentType.PI_CONTROLLER,
+    ComponentType.PID_CONTROLLER,
+    ComponentType.MATH_BLOCK,
+    ComponentType.PWM_GENERATOR,
+    ComponentType.GAIN,
+    ComponentType.SUM,
+    ComponentType.SUBTRACTOR,
+    ComponentType.INTEGRATOR,
+    ComponentType.DIFFERENTIATOR,
+    ComponentType.LIMITER,
+    ComponentType.RATE_LIMITER,
+    ComponentType.HYSTERESIS,
+    ComponentType.LOOKUP_TABLE,
+    ComponentType.TRANSFER_FUNCTION,
+    ComponentType.DELAY_BLOCK,
+    ComponentType.SAMPLE_HOLD,
+    ComponentType.STATE_MACHINE,
+    ComponentType.OP_AMP,
+    ComponentType.COMPARATOR,
+}
+
+THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.THERMAL_SCOPE,
+}
+
+
+def component_connection_domain(component_type: ComponentType) -> str:
+    """Return the default wiring domain used by a component family."""
+    if component_type in THERMAL_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_THERMAL
+    if component_type in SIGNAL_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_SIGNAL
+    return CONNECTION_DOMAIN_CIRCUIT
+
+
+def pin_connection_domain(component: "Component", pin_index: int) -> str:
+    """Return the effective connection domain for a specific pin."""
+    if component.type == ComponentType.THERMAL_SCOPE:
+        return CONNECTION_DOMAIN_THERMAL
+    if is_thermal_output_pin(component, pin_index):
+        return CONNECTION_DOMAIN_THERMAL
+
+    if component.type == ComponentType.VOLTAGE_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_voltage_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if component.type == ComponentType.CURRENT_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_current_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if is_scope_input_pin(component, pin_index):
+        return CONNECTION_DOMAIN_SIGNAL
+    if is_electrical_probe_output_pin(component, pin_index):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    # Gate / base / control pins of switching devices accept signal-domain drives.
+    if pin_index in _CONTROL_PIN_INDICES.get(component.type, set()):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    return component_connection_domain(component.type)
 
 
 # Default pin configurations for each component type
@@ -200,7 +453,7 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 10)],
 
     # Switching
-    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
+    ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0), Pin(2, "CTL", 0, -20)],
 
     # Transformer
     ComponentType.TRANSFORMER: [
@@ -239,9 +492,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # Control blocks - basic
     ComponentType.PI_CONTROLLER: [
-        Pin(0, "IN", -35, -12),
-        Pin(1, "FB", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "IN", -35, 0),
+        Pin(1, "OUT", 35, 0),
     ],
     ComponentType.PID_CONTROLLER: [
         Pin(0, "IN", -35, -12),
@@ -254,10 +506,11 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "OUT", 35, 0),
     ],
     ComponentType.PWM_GENERATOR: [
-        Pin(0, "CTRL", -35, -12),
-        Pin(1, "CLK", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "OUT", 35, 0),
     ],
+    ComponentType.GAIN: _default_unary_block_pins(),
+    ComponentType.SUM: _default_sum_pins(2),
+    ComponentType.SUBTRACTOR: _default_sum_pins(2),
 
     # Control blocks - signal processing
     ComponentType.INTEGRATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
@@ -282,8 +535,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ],
 
     # Measurement
-    ComponentType.VOLTAGE_PROBE: [Pin(0, "+", -20, -10), Pin(1, "-", -20, 10)],
-    ComponentType.CURRENT_PROBE: [Pin(0, "IN", -20, 0), Pin(1, "OUT", 20, 0)],
+    ComponentType.VOLTAGE_PROBE: [
+        Pin(0, "+", 0, -20),
+        Pin(1, "-", 0, 20),
+        Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+    ],
+    ComponentType.CURRENT_PROBE: [
+        Pin(0, "IN", -20, 0),
+        Pin(1, "OUT", 20, 0),
+        Pin(2, CURRENT_PROBE_OUTPUT_PIN_NAME, 0, -20),
+    ],
     ComponentType.POWER_PROBE: [
         Pin(0, "V+", -25, -15),
         Pin(1, "V-", -25, 15),
@@ -311,6 +572,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Pre-configured networks
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
 }
+
+
+def _normalize_default_pin_map() -> None:
+    """Normalize every default pin layout to the global pin grid."""
+    for comp_type, pins in list(DEFAULT_PINS.items()):
+        DEFAULT_PINS[comp_type] = _snap_pin_layout(pins)
+
+
+_normalize_default_pin_map()
+
 
 # Default parameter templates for each component type
 DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
@@ -398,7 +669,18 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "frequency": 10000.0,
         "duty_cycle": 0.5,
         "carrier": "sawtooth",
-        "amplitude": 1.0,
+        "amplitude": 20.0,
+    },
+    ComponentType.GAIN: {
+        "gain": 1.0,
+    },
+    ComponentType.SUM: {
+        "input_count": 2,
+        "signs": ["+", "+"],
+    },
+    ComponentType.SUBTRACTOR: {
+        "input_count": 2,
+        "signs": ["+", "-"],
     },
 
     # Control blocks - signal processing
@@ -511,6 +793,16 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     },
 }
 
+# Parameters that are intentionally hidden from the default properties UI.
+# They keep their default values unless the user edits the .pulsim file directly.
+# RATIONALE - PWM amplitude: all supported switching devices (MOSFET, IGBT,
+# VoltageControlledSwitch) operate correctly with the 20 V default. Exposing
+# the amplitude invites users to lower it below the device threshold, breaking
+# simulation convergence without obvious explanation.
+HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
+    ComponentType.PWM_GENERATOR: frozenset({"amplitude"}),
+}
+
 
 @dataclass
 class Component:
@@ -537,6 +829,7 @@ class Component:
             self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
 
         _synchronize_special_component(self)
+        _snap_component_pins_to_grid(self)
 
     def get_pin_position(self, pin_index: int) -> tuple[float, float]:
         """Get absolute position of a pin, accounting for rotation and mirroring."""
@@ -598,6 +891,7 @@ class Component:
 
 SCOPE_CHANNEL_LIMITS = (1, 8)
 MUX_CHANNEL_LIMITS = (2, 16)
+SUM_INPUT_LIMITS = (2, 16)
 
 
 def _clamp(value: int, min_value: int, max_value: int) -> int:
@@ -611,6 +905,99 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
+        _synchronize_sum_like_block(component)
+    elif component.type in (ComponentType.PI_CONTROLLER, ComponentType.PWM_GENERATOR, ComponentType.GAIN):
+        _synchronize_default_pin_layout(component)
+    elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.CURRENT_PROBE):
+        _synchronize_measurement_probe_pins(component)
+    else:
+        _synchronize_thermal_port(component)
+
+
+def _synchronize_default_pin_layout(component: Component) -> None:
+    """Synchronize components that always follow their default pin map."""
+    default_pins = DEFAULT_PINS.get(component.type, [])
+    if not default_pins:
+        return
+    if len(component.pins) == len(default_pins):
+        names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
+        coords_match = all(
+            abs(component.pins[idx].x - default_pins[idx].x) < 0.1
+            and abs(component.pins[idx].y - default_pins[idx].y) < 0.1
+            for idx in range(len(default_pins))
+        )
+        if names_match and coords_match:
+            return
+    component.pins = _snap_pin_layout([Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins])
+
+
+def _synchronize_measurement_probe_pins(component: Component) -> None:
+    """Synchronize probe pin layout after schema changes."""
+    default_pins = DEFAULT_PINS.get(component.type, [])
+    if not default_pins:
+        return
+    if len(component.pins) == len(default_pins):
+        names_match = all(component.pins[idx].name == default_pins[idx].name for idx in range(len(default_pins)))
+        coords_match = all(
+            abs(component.pins[idx].x - default_pins[idx].x) < 0.1
+            and abs(component.pins[idx].y - default_pins[idx].y) < 0.1
+            for idx in range(len(default_pins))
+        )
+        if names_match and coords_match:
+            return
+    component.pins = _snap_pin_layout([Pin(pin.index, pin.name, pin.x, pin.y) for pin in default_pins])
+
+
+def _synchronize_sum_like_block(component: Component, force_count: int | None = None) -> None:
+    """Synchronize SUM/SUBTRACTOR pin layout and signs list."""
+    params = component.parameters
+    requested = force_count or params.get("input_count") or 2
+    input_count = _clamp(int(requested), *SUM_INPUT_LIMITS)
+    params["input_count"] = input_count
+
+    if component.type == ComponentType.SUBTRACTOR:
+        default_signs = ["+"] + ["-"] * max(input_count - 1, 0)
+    else:
+        default_signs = ["+"] * input_count
+
+    signs = list(params.get("signs") or [])
+    if not signs:
+        signs = default_signs
+    while len(signs) < input_count:
+        signs.append(default_signs[len(signs)])
+    if len(signs) > input_count:
+        del signs[input_count:]
+    params["signs"] = signs
+
+    component.pins = _snap_pin_layout(_default_sum_pins(input_count))
+
+
+def _synchronize_thermal_port(component: Component) -> None:
+    """Synchronize optional thermal measurement pin on supported components."""
+    if not supports_thermal_port(component.type):
+        component.parameters.pop(THERMAL_PORT_PARAMETER, None)
+        return
+
+    enabled = bool(component.parameters.get(THERMAL_PORT_PARAMETER, False))
+    component.parameters[THERMAL_PORT_PARAMETER] = enabled
+
+    base_pins = DEFAULT_PINS.get(component.type, [])
+    if not base_pins:
+        return
+
+    # Keep the current electrical pin map stable and reserve TH as optional last pin.
+    # This preserves extended pin layouts (for example, a controlled switch with 3 pins).
+    pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in component.pins if pin.name != THERMAL_PORT_PIN_NAME]
+    if len(pins) < len(base_pins):
+        pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in base_pins]
+
+    if enabled:
+        pins.append(Pin(index=len(pins), name=THERMAL_PORT_PIN_NAME, x=0.0, y=PIN_GRID_STEP))
+
+    for index, pin in enumerate(pins):
+        pin.index = index
+    component.pins = _snap_pin_layout(pins)
 
 
 def _synchronize_scope(component: Component, force_count: int | None = None) -> None:
@@ -631,7 +1018,7 @@ def _synchronize_scope(component: Component, force_count: int | None = None) -> 
         channel.setdefault("label", f"{prefix}{idx + 1}")
         channel.setdefault("overlay", False)
 
-    component.pins = _default_scope_pins(channel_count)
+    component.pins = _snap_pin_layout(_default_scope_pins(channel_count))
 
 
 def _synchronize_mux(component: Component, force_count: int | None = None) -> None:
@@ -654,7 +1041,7 @@ def _synchronize_mux(component: Component, force_count: int | None = None) -> No
         max(0, min(input_count - 1, idx)) for idx in ordering
     ]
 
-    component.pins = _default_mux_pins(input_count)
+    component.pins = _snap_pin_layout(_default_mux_pins(input_count))
 
 
 def _synchronize_demux(component: Component, force_count: int | None = None) -> None:
@@ -677,7 +1064,7 @@ def _synchronize_demux(component: Component, force_count: int | None = None) -> 
         max(0, min(output_count - 1, idx)) for idx in ordering
     ]
 
-    component.pins = _default_demux_pins(output_count)
+    component.pins = _snap_pin_layout(_default_demux_pins(output_count))
 
 
 def set_scope_channel_count(component: Component, count: int) -> None:
@@ -696,3 +1083,18 @@ def set_demux_output_count(component: Component, count: int) -> None:
     """Update a demux component's output count and pin layout."""
 
     _synchronize_demux(component, force_count=count)
+
+
+def set_sum_input_count(component: Component, count: int) -> None:
+    """Update SUM/SUBTRACTOR input count and pin layout."""
+
+    if component.type not in (ComponentType.SUM, ComponentType.SUBTRACTOR):
+        return
+    _synchronize_sum_like_block(component, force_count=count)
+
+
+def set_thermal_port_enabled(component: Component, enabled: bool) -> None:
+    """Enable or disable thermal measurement pin for compatible components."""
+
+    component.parameters[THERMAL_PORT_PARAMETER] = bool(enabled)
+    _synchronize_special_component(component)

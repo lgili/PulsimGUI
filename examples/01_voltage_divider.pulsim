@@ -5,12 +5,26 @@
   "modified": "2025-12-14T15:49:20.200485",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.005,
+    "tstop": 0.02,
     "dt": 1e-06,
+    "max_step": 1e-06,
     "tstart": 0.0,
     "abstol": 1e-12,
     "reltol": 0.001,
-    "max_iterations": 50
+    "solver": "auto",
+    "step_mode": "fixed",
+    "output_points": 10000,
+    "enable_events": true,
+    "max_step_retries": 8,
+    "max_iterations": 50,
+    "enable_voltage_limiting": false,
+    "max_voltage_step": 5.0,
+    "dc_strategy": "auto",
+    "gmin_initial": 0.001,
+    "gmin_final": 1e-12,
+    "dc_source_steps": 10,
+    "transient_robust_mode": true,
+    "transient_auto_regularize": true
   },
   "circuits": {
     "main": {
@@ -20,8 +34,8 @@
           "id": "11bad6d5-6cdd-481f-b008-12d5affe5bfa",
           "type": "VOLTAGE_SOURCE",
           "name": "V1",
-          "x": 100,
-          "y": 200,
+          "x": 100.0,
+          "y": 200.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -29,20 +43,21 @@
             "waveform": {
               "type": "dc",
               "value": 10.0
-            }
+            },
+            "enable_thermal_port": false
           },
           "pins": [
             {
               "index": 0,
               "name": "+",
-              "x": 0,
-              "y": -30
+              "x": 0.0,
+              "y": -40.0
             },
             {
               "index": 1,
               "name": "-",
-              "x": 0,
-              "y": 30
+              "x": 0.0,
+              "y": 40.0
             }
           ]
         },
@@ -50,26 +65,27 @@
           "id": "dbfd3e7d-277a-48dc-936c-10b97aaf1923",
           "type": "RESISTOR",
           "name": "R1",
-          "x": 200,
-          "y": 100,
+          "x": 200.0,
+          "y": 100.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 1000.0
+            "resistance": 1000.0,
+            "enable_thermal_port": false
           },
           "pins": [
             {
               "index": 0,
               "name": "1",
-              "x": -30,
-              "y": 0
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
               "name": "2",
-              "x": 30,
-              "y": 0
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -77,26 +93,27 @@
           "id": "17a22bfe-81a9-497b-a57c-12eebd559175",
           "type": "RESISTOR",
           "name": "R2",
-          "x": 200,
-          "y": 300,
+          "x": 200.0,
+          "y": 300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 1000.0
+            "resistance": 1000.0,
+            "enable_thermal_port": false
           },
           "pins": [
             {
               "index": 0,
               "name": "1",
-              "x": -30,
-              "y": 0
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
               "name": "2",
-              "x": 30,
-              "y": 0
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -104,8 +121,8 @@
           "id": "032c8da5-b6c0-49d2-b535-f8730a9d66b6",
           "type": "GROUND",
           "name": "GND1",
-          "x": 100,
-          "y": 400,
+          "x": 100.0,
+          "y": 400.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -114,8 +131,8 @@
             {
               "index": 0,
               "name": "gnd",
-              "x": 0,
-              "y": -10
+              "x": 0.0,
+              "y": -20.0
             }
           ]
         },
@@ -124,7 +141,7 @@
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope1",
           "x": 420.0,
-          "y": 109.0,
+          "y": 100.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -145,14 +162,14 @@
             {
               "index": 0,
               "name": "CH1",
-              "x": -40,
-              "y": -9
+              "x": -40.0,
+              "y": -20.0
             },
             {
               "index": 1,
               "name": "CH2",
-              "x": -40,
-              "y": 9
+              "x": -40.0,
+              "y": 20.0
             }
           ]
         }
@@ -162,20 +179,26 @@
           "id": "16b8c08f-efcb-4d60-a7bd-4c0d9d1a13db",
           "segments": [
             {
-              "x1": 100,
-              "y1": 170,
-              "x2": 100,
-              "y2": 100
+              "x1": 100.0,
+              "y1": 160.0,
+              "x2": 100.0,
+              "y2": 100.0
             },
             {
-              "x1": 100,
-              "y1": 100,
-              "x2": 170,
-              "y2": 100
+              "x1": 100.0,
+              "y1": 100.0,
+              "x2": 160.0,
+              "y2": 100.0
             }
           ],
-          "start_connection": null,
-          "end_connection": null,
+          "start_connection": {
+            "component_id": "11bad6d5-6cdd-481f-b008-12d5affe5bfa",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "dbfd3e7d-277a-48dc-936c-10b97aaf1923",
+            "pin_index": 0
+          },
           "junctions": [],
           "node_name": "VIN",
           "alias": ""
@@ -184,26 +207,32 @@
           "id": "29f9c163-73cb-4f3d-b286-16433a91b54b",
           "segments": [
             {
-              "x1": 230,
-              "y1": 100,
-              "x2": 280,
-              "y2": 100
+              "x1": 240.0,
+              "y1": 100.0,
+              "x2": 280.0,
+              "y2": 100.0
             },
             {
-              "x1": 280,
-              "y1": 100,
-              "x2": 280,
-              "y2": 300
+              "x1": 280.0,
+              "y1": 100.0,
+              "x2": 280.0,
+              "y2": 300.0
             },
             {
-              "x1": 280,
-              "y1": 300,
-              "x2": 230,
-              "y2": 300
+              "x1": 280.0,
+              "y1": 300.0,
+              "x2": 240.0,
+              "y2": 300.0
             }
           ],
-          "start_connection": null,
-          "end_connection": null,
+          "start_connection": {
+            "component_id": "dbfd3e7d-277a-48dc-936c-10b97aaf1923",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "17a22bfe-81a9-497b-a57c-12eebd559175",
+            "pin_index": 1
+          },
           "junctions": [],
           "node_name": "OUT",
           "alias": ""
@@ -212,20 +241,26 @@
           "id": "e3a537e5-e353-425d-b6a4-22f7480513be",
           "segments": [
             {
-              "x1": 170,
-              "y1": 300,
-              "x2": 100,
-              "y2": 300
+              "x1": 160.0,
+              "y1": 300.0,
+              "x2": 100.0,
+              "y2": 300.0
             },
             {
-              "x1": 100,
-              "y1": 300,
-              "x2": 100,
-              "y2": 230
+              "x1": 100.0,
+              "y1": 300.0,
+              "x2": 100.0,
+              "y2": 240.0
             }
           ],
-          "start_connection": null,
-          "end_connection": null,
+          "start_connection": {
+            "component_id": "17a22bfe-81a9-497b-a57c-12eebd559175",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "11bad6d5-6cdd-481f-b008-12d5affe5bfa",
+            "pin_index": 1
+          },
           "junctions": [],
           "node_name": "0",
           "alias": ""
@@ -234,14 +269,17 @@
           "id": "f7438907-fe73-45ce-9617-26c52d67de53",
           "segments": [
             {
-              "x1": 100,
-              "y1": 300,
-              "x2": 100,
-              "y2": 390
+              "x1": 100.0,
+              "y1": 300.0,
+              "x2": 100.0,
+              "y2": 380.0
             }
           ],
           "start_connection": null,
-          "end_connection": null,
+          "end_connection": {
+            "component_id": "032c8da5-b6c0-49d2-b535-f8730a9d66b6",
+            "pin_index": 0
+          },
           "junctions": [],
           "node_name": "0",
           "alias": ""
@@ -254,10 +292,19 @@
               "y1": 100.0,
               "x2": 380.0,
               "y2": 100.0
+            },
+            {
+              "x1": 380.0,
+              "y1": 100.0,
+              "x2": 380.0,
+              "y2": 120.0
             }
           ],
           "start_connection": null,
-          "end_connection": null,
+          "end_connection": {
+            "component_id": "82834566-2e2f-44f0-b278-3c8217cc074a",
+            "pin_index": 1
+          },
           "junctions": [],
           "node_name": "OUT",
           "alias": ""

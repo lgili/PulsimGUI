@@ -16,20 +16,48 @@ class SimulationSettings:
 
     tstop: float = 1e-3
     dt: float = 1e-6
+    max_step: float = 1e-6
     tstart: float = 0.0
     abstol: float = 1e-12
     reltol: float = 1e-3
+    solver: str = "auto"
+    step_mode: str = "fixed"
+    output_points: int = 10000
+    enable_events: bool = True
+    max_step_retries: int = 8
     max_iterations: int = 50
+    enable_voltage_limiting: bool = False
+    max_voltage_step: float = 5.0
+    dc_strategy: str = "auto"
+    gmin_initial: float = 1e-3
+    gmin_final: float = 1e-12
+    dc_source_steps: int = 10
+    transient_robust_mode: bool = True
+    transient_auto_regularize: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
             "tstop": self.tstop,
             "dt": self.dt,
+            "max_step": self.max_step,
             "tstart": self.tstart,
             "abstol": self.abstol,
             "reltol": self.reltol,
+            "solver": self.solver,
+            "step_mode": self.step_mode,
+            "output_points": self.output_points,
+            "enable_events": self.enable_events,
+            "max_step_retries": self.max_step_retries,
             "max_iterations": self.max_iterations,
+            "enable_voltage_limiting": self.enable_voltage_limiting,
+            "max_voltage_step": self.max_voltage_step,
+            "dc_strategy": self.dc_strategy,
+            "gmin_initial": self.gmin_initial,
+            "gmin_final": self.gmin_final,
+            "dc_source_steps": self.dc_source_steps,
+            "transient_robust_mode": self.transient_robust_mode,
+            "transient_auto_regularize": self.transient_auto_regularize,
         }
 
     @classmethod
@@ -38,10 +66,24 @@ class SimulationSettings:
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
+            max_step=float(data.get("max_step", data.get("dt", 1e-6))),
             tstart=data.get("tstart", 0.0),
             abstol=data.get("abstol", 1e-12),
             reltol=data.get("reltol", 1e-3),
+            solver=str(data.get("solver", "auto")),
+            step_mode=str(data.get("step_mode", "fixed")),
+            output_points=int(data.get("output_points", 10000)),
+            enable_events=bool(data.get("enable_events", True)),
+            max_step_retries=int(data.get("max_step_retries", 8)),
             max_iterations=data.get("max_iterations", 50),
+            enable_voltage_limiting=bool(data.get("enable_voltage_limiting", False)),
+            max_voltage_step=float(data.get("max_voltage_step", 5.0)),
+            dc_strategy=str(data.get("dc_strategy", "auto")),
+            gmin_initial=float(data.get("gmin_initial", 1e-3)),
+            gmin_final=float(data.get("gmin_final", 1e-12)),
+            dc_source_steps=int(data.get("dc_source_steps", 10)),
+            transient_robust_mode=bool(data.get("transient_robust_mode", True)),
+            transient_auto_regularize=bool(data.get("transient_auto_regularize", True)),
         )
 
 

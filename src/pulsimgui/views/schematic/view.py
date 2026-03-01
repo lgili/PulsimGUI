@@ -1,13 +1,20 @@
 """Schematic view with pan and zoom."""
 
 from enum import Enum, auto
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
 from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
 from shiboken6 import isValid
 
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    Component,
+    ComponentType,
+    can_connect_measurement_pins,
+    pin_connection_domain,
+)
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.schematic.scene import SchematicScene
@@ -202,8 +209,13 @@ class SchematicView(QGraphicsView):
     grid_toggle_requested = Signal()  # emitted when G key is pressed
     subcircuit_open_requested = Signal(object)  # Component instance
     scope_open_requested = Signal(object)  # Component instance
+    component_properties_requested = Signal(object)  # Component instance
     quick_add_component = Signal(object)  # ComponentType for keyboard shortcuts
     scroll_changed = Signal()  # emitted when view scrolls
+    component_delete_requested = Signal(str)  # component UUID string
+    wire_delete_requested = Signal(str)  # wire UUID string
+    component_rotate_requested = Signal(str, int)  # component UUID string, degrees
+    component_flip_requested = Signal(str, bool)  # component UUID string, horizontal
 
     # Zoom settings
     ZOOM_MIN = 0.1
@@ -223,6 +235,7 @@ class SchematicView(QGraphicsView):
         self._wire_preview: WirePreviewItem | None = None
         self._wire_in_progress: WireInProgressItem | None = None  # Shows confirmed segments
         self._wire_start: QPointF | None = None
+        self._wire_start_pin: tuple[Component, int] | None = None
         self._alias_editor: QLineEdit | None = None
         self._alias_wire_item: WireItem | None = None
 
@@ -407,6 +420,13 @@ class SchematicView(QGraphicsView):
             return None
         return self._wire_in_progress
 
+    def _get_pin_highlight(self) -> PinHighlightItem | None:
+        """Return pin highlight only when item is still valid."""
+        if not self._is_alive_graphics_item(self._pin_highlight):
+            self._pin_highlight = None
+            return None
+        return self._pin_highlight
+
     def _remove_wire_preview(self) -> None:
         """Safely remove wire preview item from scene."""
         preview = self._get_wire_preview()
@@ -424,6 +444,37 @@ class SchematicView(QGraphicsView):
             if scene is not None:
                 scene.removeItem(in_progress)
         self._wire_in_progress = None
+
+    def _wire_endpoint_pin_filter(self) -> Callable[[object, int], bool] | None:
+        """Return a pin filter that enforces scope/probe connection rules."""
+        if self._wire_start_pin is None:
+            return None
+
+        start_component, start_pin_index = self._wire_start_pin
+        start_domain = pin_connection_domain(start_component, start_pin_index)
+
+        def _pin_filter(item: object, pin_index: int) -> bool:
+            candidate_component = getattr(item, "component", None)
+            if candidate_component is None:
+                return False
+            candidate_domain = pin_connection_domain(candidate_component, pin_index)
+            if candidate_domain != start_domain:
+                return False
+            return can_connect_measurement_pins(
+                start_component,
+                start_pin_index,
+                candidate_component,
+                pin_index,
+            )
+
+        return _pin_filter
+
+    def _wire_domain(self) -> str:
+        """Return domain color for the wire currently being drawn."""
+        if self._wire_start_pin is None:
+            return CONNECTION_DOMAIN_CIRCUIT
+        component, pin_index = self._wire_start_pin
+        return pin_connection_domain(component, pin_index)
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
         super().resizeEvent(event)
@@ -467,21 +518,22 @@ class SchematicView(QGraphicsView):
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.WIRE:
             # Wire tool: start, add point, or complete wire
             scene_pos = self.mapToScene(event.position().toPoint())
+            preview = self._get_wire_preview()
+            in_progress = self._get_wire_in_progress()
+            nearest_pin = None
 
             # Check if clicking on a pin (magnetic snap) - pins take priority
             # Wires ALWAYS snap to grid or pin for clean schematics
             clicked_on_pin = False
             if isinstance(self.scene(), SchematicScene):
-                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                pin_filter = self._wire_endpoint_pin_filter() if preview is not None else None
+                nearest_pin = self.scene().find_nearest_pin(scene_pos, pin_filter=pin_filter)
                 if nearest_pin is not None:
                     scene_pos = nearest_pin[0]
                     clicked_on_pin = True
                 else:
                     # Always snap wires to grid
                     scene_pos = self.scene().snap_to_grid(scene_pos)
-
-            preview = self._get_wire_preview()
-            in_progress = self._get_wire_in_progress()
 
             if preview is None:
                 # Start new wire
@@ -490,6 +542,13 @@ class SchematicView(QGraphicsView):
                 self._wire_in_progress = WireInProgressItem()
                 self.scene().addItem(self._wire_in_progress)
                 self.scene().addItem(self._wire_preview)
+                if clicked_on_pin and nearest_pin is not None:
+                    self._wire_start_pin = (nearest_pin[1].component, nearest_pin[2])
+                else:
+                    self._wire_start_pin = None
+                wire_domain = self._wire_domain()
+                self._wire_preview.set_domain(wire_domain)
+                self._wire_in_progress.set_domain(wire_domain)
             elif clicked_on_pin:
                 # Clicked on a pin - auto-finish the wire
                 # Update preview end to pin position
@@ -509,12 +568,14 @@ class SchematicView(QGraphicsView):
                 self._remove_wire_preview()
                 self._remove_wire_in_progress()
                 self._wire_start = None
+                self._wire_start_pin = None
             else:
                 # Add current segment to confirmed segments and continue
                 if in_progress is None:
                     self._wire_in_progress = WireInProgressItem()
                     in_progress = self._wire_in_progress
                     self.scene().addItem(in_progress)
+                in_progress.set_domain(self._wire_domain())
                 current_segments = preview.get_segments()
                 if current_segments:
                     in_progress.add_segments(current_segments)
@@ -525,6 +586,7 @@ class SchematicView(QGraphicsView):
                 # Reset preview from new point
                 self._remove_wire_preview()
                 self._wire_preview = WirePreviewItem(scene_pos)
+                self._wire_preview.set_domain(self._wire_domain())
                 self.scene().addItem(self._wire_preview)
             event.accept()
         else:
@@ -548,7 +610,10 @@ class SchematicView(QGraphicsView):
         elif self._get_wire_preview() is not None:
             # Wires ALWAYS snap to grid or pin for clean schematics
             if isinstance(self.scene(), SchematicScene):
-                nearest_pin = self.scene().find_nearest_pin(scene_pos)
+                nearest_pin = self.scene().find_nearest_pin(
+                    scene_pos,
+                    pin_filter=self._wire_endpoint_pin_filter(),
+                )
                 if nearest_pin is not None:
                     # Snap to pin position and show highlight
                     scene_pos = nearest_pin[0]
@@ -612,6 +677,7 @@ class SchematicView(QGraphicsView):
                 self._remove_wire_preview()
                 self._remove_wire_in_progress()
                 self._wire_start = None
+                self._wire_start_pin = None
                 event.accept()
                 return
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
@@ -629,6 +695,9 @@ class SchematicView(QGraphicsView):
                         self.scope_open_requested.emit(item.component)
                         event.accept()
                         return
+                    self.component_properties_requested.emit(item.component)
+                    event.accept()
+                    return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -672,6 +741,9 @@ class SchematicView(QGraphicsView):
 
         # Tool shortcuts (without modifiers)
         if not modifiers:
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._request_properties_for_selected_component():
+                    return
             if key == Qt.Key.Key_F2:
                 if self._maybe_start_alias_edit():
                     return
@@ -685,6 +757,10 @@ class SchematicView(QGraphicsView):
                 return
             elif key == Qt.Key.Key_W:
                 self.current_tool = Tool.WIRE
+                return
+            elif key == Qt.Key.Key_H:
+                self.cancel_wire()
+                self.current_tool = Tool.SELECT
                 return
             elif key == Qt.Key.Key_G:
                 # Toggle grid visibility
@@ -734,23 +810,21 @@ class SchematicView(QGraphicsView):
         if not selected:
             return
 
-        # Collect items to delete (copy list since we'll modify scene)
-        wires_to_delete = []
-        components_to_delete = []
-
+        wire_ids: list[str] = []
+        component_ids: list[str] = []
         for item in selected:
             if isinstance(item, WireItem):
-                wires_to_delete.append(item)
+                wire_ids.append(str(item.wire.id))
             elif isinstance(item, ComponentItem):
-                components_to_delete.append(item)
+                component_ids.append(str(item.component.id))
 
         # Delete wires first
-        for wire_item in wires_to_delete:
-            self._delete_wire(wire_item)
+        for wire_id in wire_ids:
+            self.wire_delete_requested.emit(wire_id)
 
         # Delete components
-        for comp_item in components_to_delete:
-            self._delete_component(comp_item)
+        for component_id in component_ids:
+            self.component_delete_requested.emit(component_id)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         from pulsimgui.views.schematic.items import ComponentItem
@@ -850,7 +924,9 @@ class SchematicView(QGraphicsView):
             flip_v.setShortcut("V")
 
             chosen = menu.exec(event.globalPos())
-            if chosen == rotate_cw:
+            if chosen == props_action:
+                self.component_properties_requested.emit(item.component)
+            elif chosen == rotate_cw:
                 self._rotate_component(item, 90)
             elif chosen == rotate_ccw:
                 self._rotate_component(item, -90)
@@ -873,50 +949,50 @@ class SchematicView(QGraphicsView):
 
         super().contextMenuEvent(event)
 
-    def _delete_wire(self, wire_item: WireItem) -> None:
-        """Delete a wire from the scene and circuit."""
+    def _request_properties_for_selected_component(self) -> bool:
+        """Emit properties request for a single selected component."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
         scene = self.scene()
-        if scene is None or not isinstance(scene, SchematicScene):
+        if scene is None:
+            return False
+
+        selected = [item for item in scene.selectedItems() if isinstance(item, ComponentItem)]
+        if len(selected) != 1:
+            return False
+
+        self.component_properties_requested.emit(selected[0].component)
+        return True
+
+    def _delete_wire(self, wire_item: WireItem) -> None:
+        """Request deletion of a wire from the owning controller."""
+        wire = getattr(wire_item, "wire", None)
+        if wire is None:
             return
-        if scene.circuit is not None:
-            scene.circuit.remove_wire(wire_item.wire.id)
-        scene.removeItem(wire_item)
+        self.wire_delete_requested.emit(str(wire.id))
 
     def _delete_component(self, comp_item) -> None:
-        """Delete a component from the scene and circuit."""
+        """Request deletion of a component from the owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
-        scene = self.scene()
-        if scene is None or not isinstance(scene, SchematicScene):
-            return
-        if isinstance(comp_item, ComponentItem) and scene.circuit is not None:
-            scene.circuit.remove_component(comp_item.component.id)
-            scene.component_removed.emit(comp_item.component)
-        scene.removeItem(comp_item)
+        if isinstance(comp_item, ComponentItem):
+            self.component_delete_requested.emit(str(comp_item.component.id))
 
     def _rotate_component(self, comp_item, angle: int) -> None:
-        """Rotate a component by the given angle."""
+        """Request component rotation from owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
-        current = comp_item.component.rotation
-        new_rotation = (current + angle) % 360
-        comp_item.component.rotation = new_rotation
-        comp_item.setRotation(new_rotation)
-        comp_item.update()
+        self.component_rotate_requested.emit(str(comp_item.component.id), int(angle))
 
     def _flip_component(self, comp_item, horizontal: bool = True) -> None:
-        """Flip a component horizontally or vertically."""
+        """Request component flip from owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
-        if horizontal:
-            comp_item.component.mirrored_h = not comp_item.component.mirrored_h
-        else:
-            comp_item.component.mirrored_v = not comp_item.component.mirrored_v
-        comp_item.update()
+        self.component_flip_requested.emit(str(comp_item.component.id), bool(horizontal))
 
     def _duplicate_component(self, comp_item) -> None:
         """Duplicate a component at a slight offset."""
@@ -1132,6 +1208,8 @@ class SchematicView(QGraphicsView):
         self._remove_wire_preview()
         self._remove_wire_in_progress()
         self._wire_start = None
+        self._wire_start_pin = None
+        self._hide_pin_highlight()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Handle drag enter to accept component drops and show preview."""
@@ -1182,10 +1260,12 @@ class SchematicView(QGraphicsView):
 
     def _remove_drop_preview(self) -> None:
         """Remove the drop preview item from the scene."""
-        if self._drop_preview is not None:
-            self.scene().removeItem(self._drop_preview)
-            self._drop_preview = None
-            self._drop_comp_type = None
+        if self._is_alive_graphics_item(self._drop_preview):
+            scene = self.scene()
+            if scene is not None and isValid(scene):
+                scene.removeItem(self._drop_preview)
+        self._drop_preview = None
+        self._drop_comp_type = None
 
     def dropEvent(self, event: QDropEvent) -> None:
         """Handle drop to add component at location."""
@@ -1212,17 +1292,24 @@ class SchematicView(QGraphicsView):
 
     def _show_pin_highlight(self, pos: QPointF) -> None:
         """Show pin highlight glow at the given position."""
-        if self._pin_highlight is None:
-            self._pin_highlight = PinHighlightItem()
-            self.scene().addItem(self._pin_highlight)
+        scene = self.scene()
+        if scene is None or not isValid(scene):
+            return
 
-        self._pin_highlight.setPos(pos)
-        self._pin_highlight.set_visible(True)
+        highlight = self._get_pin_highlight()
+        if highlight is None:
+            self._pin_highlight = PinHighlightItem()
+            scene.addItem(self._pin_highlight)
+            highlight = self._pin_highlight
+
+        highlight.setPos(pos)
+        highlight.set_visible(True)
 
     def _hide_pin_highlight(self) -> None:
         """Hide the pin highlight glow."""
-        if self._pin_highlight is not None:
-            self._pin_highlight.set_visible(False)
+        highlight = self._get_pin_highlight()
+        if highlight is not None:
+            highlight.set_visible(False)
 
     def _show_alignment_guides(self, moving_item) -> None:
         """Show alignment guides when moving a component."""
