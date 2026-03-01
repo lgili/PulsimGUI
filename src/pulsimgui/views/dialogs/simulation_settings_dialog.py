@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationSettings,
+    normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
 )
@@ -385,6 +386,7 @@ class SimulationSettingsDialog(QDialog):
         body_layout.setSpacing(10)
         body_layout.addWidget(self._create_newton_card(), 1)
         body_layout.addWidget(self._create_dc_card(), 1)
+        body_layout.addWidget(self._create_thermal_card(), 1)
         self._advanced_body.setVisible(False)
         layout.addWidget(self._advanced_body)
 
@@ -423,6 +425,21 @@ class SimulationSettingsDialog(QDialog):
         self._transient_auto_regularize_check = QCheckBox("Enable automatic regularization")
         self._transient_auto_regularize_check.setChecked(True)
         form.addRow(self._transient_auto_regularize_check)
+
+        self._formulation_mode_combo = QComboBox()
+        self._formulation_mode_combo.addItem(
+            "Projected wrapper (recommended)",
+            "projected_wrapper",
+        )
+        self._formulation_mode_combo.addItem("Direct DAE formulation", "direct")
+        self._formulation_mode_combo.currentIndexChanged.connect(self._on_formulation_mode_changed)
+        form.addRow("Formulation mode:", self._formulation_mode_combo)
+
+        self._direct_formulation_fallback_check = QCheckBox(
+            "Fallback to projected wrapper if direct mode fails"
+        )
+        self._direct_formulation_fallback_check.setChecked(True)
+        form.addRow(self._direct_formulation_fallback_check)
 
         self._transient_robust_mode_check.toggled.connect(
             self._transient_auto_regularize_check.setEnabled
@@ -482,6 +499,39 @@ class SimulationSettingsDialog(QDialog):
 
         self._source_widget.setLayout(source_layout)
         form.addRow(self._source_widget)
+
+        layout.addLayout(form)
+        return card
+
+    def _create_thermal_card(self) -> QWidget:
+        card, layout = self._create_card("Thermal & Losses", "Controls for thermal analysis fidelity.")
+        form = self._create_form_layout()
+
+        self._enable_losses_check = QCheckBox("Enable electrical loss tracking")
+        self._enable_losses_check.setChecked(True)
+        self._enable_losses_check.setToolTip("Expose loss telemetry used by thermal/loss post-processing.")
+        form.addRow(self._enable_losses_check)
+
+        self._thermal_ambient_spin = QDoubleSpinBox()
+        self._thermal_ambient_spin.setRange(-80.0, 250.0)
+        self._thermal_ambient_spin.setDecimals(1)
+        self._thermal_ambient_spin.setSingleStep(1.0)
+        self._thermal_ambient_spin.setSuffix(" °C")
+        self._thermal_ambient_spin.setValue(25.0)
+        form.addRow("Ambient temperature:", self._thermal_ambient_spin)
+
+        self._thermal_network_combo = QComboBox()
+        self._thermal_network_combo.addItem("Foster", "foster")
+        self._thermal_network_combo.addItem("Cauer", "cauer")
+        form.addRow("Thermal network:", self._thermal_network_combo)
+
+        self._thermal_include_conduction_check = QCheckBox("Include conduction losses")
+        self._thermal_include_conduction_check.setChecked(True)
+        form.addRow(self._thermal_include_conduction_check)
+
+        self._thermal_include_switching_check = QCheckBox("Include switching losses")
+        self._thermal_include_switching_check.setChecked(True)
+        form.addRow(self._thermal_include_switching_check)
 
         layout.addLayout(form)
         return card
@@ -646,6 +696,15 @@ class SimulationSettingsDialog(QDialog):
         self._transient_robust_mode_check.setChecked(source.transient_robust_mode)
         self._transient_auto_regularize_check.setChecked(source.transient_auto_regularize)
         self._transient_auto_regularize_check.setEnabled(source.transient_robust_mode)
+        formulation_mode = normalize_formulation_mode(
+            getattr(source, "formulation_mode", "projected_wrapper")
+        )
+        formulation_idx = self._formulation_mode_combo.findData(formulation_mode)
+        self._formulation_mode_combo.setCurrentIndex(formulation_idx if formulation_idx >= 0 else 0)
+        self._direct_formulation_fallback_check.setChecked(
+            bool(getattr(source, "direct_formulation_fallback", True))
+        )
+        self._on_formulation_mode_changed(self._formulation_mode_combo.currentIndex())
 
         dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
         self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(source.dc_strategy, 0))
@@ -656,6 +715,17 @@ class SimulationSettingsDialog(QDialog):
         self._output_points_spin.setValue(source.output_points)
         self._enable_events_check.setChecked(bool(getattr(source, "enable_events", True)))
         self._max_step_retries_spin.setValue(max(0, int(getattr(source, "max_step_retries", 8))))
+        self._enable_losses_check.setChecked(bool(getattr(source, "enable_losses", True)))
+        self._thermal_ambient_spin.setValue(float(getattr(source, "thermal_ambient", 25.0)))
+        thermal_network = str(getattr(source, "thermal_network", "foster") or "foster").strip().lower()
+        thermal_network_idx = self._thermal_network_combo.findData(thermal_network)
+        self._thermal_network_combo.setCurrentIndex(thermal_network_idx if thermal_network_idx >= 0 else 0)
+        self._thermal_include_conduction_check.setChecked(
+            bool(getattr(source, "thermal_include_conduction_losses", True))
+        )
+        self._thermal_include_switching_check.setChecked(
+            bool(getattr(source, "thermal_include_switching_losses", True))
+        )
 
         self._update_solver_description()
         self._update_dc_strategy_description()
@@ -715,6 +785,12 @@ class SimulationSettingsDialog(QDialog):
             self._transient_auto_regularize_check.isChecked()
             and self._transient_robust_mode_check.isChecked()
         )
+        self._settings.formulation_mode = normalize_formulation_mode(
+            str(self._formulation_mode_combo.currentData() or "projected_wrapper")
+        )
+        self._settings.direct_formulation_fallback = (
+            self._direct_formulation_fallback_check.isChecked()
+        )
 
         dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
         self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
@@ -725,6 +801,17 @@ class SimulationSettingsDialog(QDialog):
         self._settings.output_points = self._output_points_spin.value()
         self._settings.enable_events = self._enable_events_check.isChecked()
         self._settings.max_step_retries = self._max_step_retries_spin.value()
+        self._settings.enable_losses = self._enable_losses_check.isChecked()
+        self._settings.thermal_ambient = self._thermal_ambient_spin.value()
+        self._settings.thermal_network = str(
+            self._thermal_network_combo.currentData() or "foster"
+        ).strip().lower()
+        self._settings.thermal_include_conduction_losses = (
+            self._thermal_include_conduction_check.isChecked()
+        )
+        self._settings.thermal_include_switching_losses = (
+            self._thermal_include_switching_check.isChecked()
+        )
 
     def _commit_pending_inputs(self) -> None:
         """Commit text still being edited before reading values."""
@@ -781,6 +868,11 @@ class SimulationSettingsDialog(QDialog):
         self._gmin_widget.setVisible(index == 2)
         self._source_widget.setVisible(index == 3)
         self._update_dc_strategy_description()
+
+    def _on_formulation_mode_changed(self, _index: int) -> None:
+        """Enable direct-mode fallback option only when direct mode is selected."""
+        direct_mode = str(self._formulation_mode_combo.currentData() or "") == "direct"
+        self._direct_formulation_fallback_check.setEnabled(direct_mode)
 
     def _update_effective_step(self) -> None:
         """Update effective step display."""

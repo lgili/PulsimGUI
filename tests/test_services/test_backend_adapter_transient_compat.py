@@ -392,6 +392,10 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         Trapezoidal = "trap"
         TRBDF2 = "trbdf2"
 
+    class _FormulationMode:
+        ProjectedWrapper = "projected"
+        Direct = "direct"
+
     class _SimulationOptions:
         def __init__(self) -> None:
             self.tstart = 0.0
@@ -406,6 +410,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.integrator = _Integrator.TRBDF2
             self.enable_events = True
             self.max_step_retries = 8
+            self.enable_losses = True
+            self.formulation_mode = _FormulationMode.ProjectedWrapper
+            self.direct_formulation_fallback = True
 
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
@@ -434,6 +441,7 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         Simulator=_Simulator,
         StepMode=_StepMode,
         Integrator=_Integrator,
+        FormulationMode=_FormulationMode,
         run_transient=run_transient,
     )
 
@@ -452,6 +460,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         step_mode="variable",
         enable_events=False,
         max_step_retries=12,
+        enable_losses=False,
+        formulation_mode="direct",
+        direct_formulation_fallback=False,
         t_start=0.0,
         t_stop=1e-3,
         t_step=1e-6,
@@ -476,3 +487,6 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].integrator == _Integrator.Trapezoidal
     assert seen["options"].enable_events is False
     assert seen["options"].max_step_retries == 12
+    assert seen["options"].enable_losses is False
+    assert seen["options"].formulation_mode == _FormulationMode.Direct
+    assert seen["options"].direct_formulation_fallback is False

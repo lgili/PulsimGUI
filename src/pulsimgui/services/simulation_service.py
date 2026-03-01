@@ -89,6 +89,26 @@ def normalize_step_mode(value: str | None) -> str:
     return "fixed"
 
 
+def normalize_thermal_network(value: str | None) -> str:
+    """Normalize thermal network setting."""
+    raw = (value or "").strip().lower()
+    return raw if raw in {"foster", "cauer"} else "foster"
+
+
+def normalize_formulation_mode(value: str | None) -> str:
+    """Normalize transient formulation mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "projected": "projected_wrapper",
+        "projectedwrapper": "projected_wrapper",
+        "native": "projected_wrapper",
+        "directdae": "direct",
+        "dae": "direct",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -124,6 +144,17 @@ class SimulationSettings:
 
     # Output settings
     output_points: int = 10000
+    enable_losses: bool = True
+
+    # Thermal/loss post-processing settings
+    thermal_ambient: float = 25.0
+    thermal_include_switching_losses: bool = True
+    thermal_include_conduction_losses: bool = True
+    thermal_network: str = "foster"
+
+    # Transient formulation mode (supported by pulsim>=0.6.1)
+    formulation_mode: str = "projected_wrapper"
+    direct_formulation_fallback: bool = True
 
 
 @dataclass
@@ -550,6 +581,9 @@ class SimulationService(QObject):
             self._settings.max_step_retries = int(
                 sim_settings.get("max_step_retries", self._settings.max_step_retries)
             )
+            self._settings.enable_losses = bool(
+                sim_settings.get("enable_losses", self._settings.enable_losses)
+            )
 
             # Load persisted solver settings
             solver_settings = settings_service.get_solver_settings()
@@ -570,6 +604,37 @@ class SimulationService(QObject):
             self._settings.transient_auto_regularize = solver_settings.get(
                 "transient_auto_regularize",
                 self._settings.transient_auto_regularize,
+            )
+            self._settings.thermal_ambient = float(
+                solver_settings.get("thermal_ambient", self._settings.thermal_ambient)
+            )
+            self._settings.thermal_include_switching_losses = bool(
+                solver_settings.get(
+                    "thermal_include_switching_losses",
+                    self._settings.thermal_include_switching_losses,
+                )
+            )
+            self._settings.thermal_include_conduction_losses = bool(
+                solver_settings.get(
+                    "thermal_include_conduction_losses",
+                    self._settings.thermal_include_conduction_losses,
+                )
+            )
+            self._settings.thermal_network = str(
+                normalize_thermal_network(
+                    solver_settings.get("thermal_network", self._settings.thermal_network)
+                )
+            )
+            self._settings.formulation_mode = str(
+                normalize_formulation_mode(
+                    solver_settings.get("formulation_mode", self._settings.formulation_mode)
+                )
+            )
+            self._settings.direct_formulation_fallback = bool(
+                solver_settings.get(
+                    "direct_formulation_fallback",
+                    self._settings.direct_formulation_fallback,
+                )
             )
 
             # Load backend runtime settings
@@ -604,6 +669,10 @@ class SimulationService(QObject):
         self._settings = value
         self._settings.solver = normalize_integration_method(self._settings.solver)
         self._settings.step_mode = normalize_step_mode(self._settings.step_mode)
+        self._settings.thermal_network = normalize_thermal_network(self._settings.thermal_network)
+        self._settings.formulation_mode = normalize_formulation_mode(
+            self._settings.formulation_mode
+        )
         self._persist_simulation_settings()
 
     @property
@@ -751,6 +820,7 @@ class SimulationService(QObject):
                 "output_points": self._settings.output_points,
                 "enable_events": self._settings.enable_events,
                 "max_step_retries": self._settings.max_step_retries,
+                "enable_losses": self._settings.enable_losses,
             }
         )
         self._settings_service.set_solver_settings(
@@ -764,6 +834,14 @@ class SimulationService(QObject):
                 "dc_source_steps": self._settings.dc_source_steps,
                 "transient_robust_mode": self._settings.transient_robust_mode,
                 "transient_auto_regularize": self._settings.transient_auto_regularize,
+                "thermal_ambient": self._settings.thermal_ambient,
+                "thermal_include_switching_losses": self._settings.thermal_include_switching_losses,
+                "thermal_include_conduction_losses": self._settings.thermal_include_conduction_losses,
+                "thermal_network": normalize_thermal_network(self._settings.thermal_network),
+                "formulation_mode": normalize_formulation_mode(self._settings.formulation_mode),
+                "direct_formulation_fallback": bool(
+                    self._settings.direct_formulation_fallback
+                ),
             }
         )
 

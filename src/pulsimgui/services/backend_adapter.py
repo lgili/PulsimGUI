@@ -677,6 +677,19 @@ class PulsimBackend(SimulationBackend):
         raw = str(value or "").strip().lower()
         return raw if raw in {"fixed", "variable"} else "fixed"
 
+    @staticmethod
+    def _normalize_formulation_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "projected": "projected_wrapper",
+            "projectedwrapper": "projected_wrapper",
+            "native": "projected_wrapper",
+            "directdae": "direct",
+            "dae": "direct",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
+
     def _integrator_enum_name(self, method: str) -> str:
         mapping = {
             # "auto" maps to BDF1: first-order implicit method is the most stable
@@ -792,10 +805,31 @@ class PulsimBackend(SimulationBackend):
             if hasattr(self._module.Integrator, enum_name):
                 opts.integrator = getattr(self._module.Integrator, enum_name)
 
+        formulation_mode = self._normalize_formulation_mode(
+            getattr(settings, "formulation_mode", "projected_wrapper")
+        )
+        if hasattr(opts, "formulation_mode") and hasattr(self._module, "FormulationMode"):
+            enum_name = "Direct" if formulation_mode == "direct" else "ProjectedWrapper"
+            if hasattr(self._module.FormulationMode, enum_name):
+                opts.formulation_mode = getattr(self._module.FormulationMode, enum_name)
+        if hasattr(opts, "direct_formulation_fallback"):
+            opts.direct_formulation_fallback = bool(
+                getattr(settings, "direct_formulation_fallback", True)
+            )
+
         if hasattr(opts, "enable_events"):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
         if hasattr(opts, "max_step_retries"):
             opts.max_step_retries = max(0, int(getattr(settings, "max_step_retries", 8)))
+        if hasattr(opts, "enable_losses"):
+            opts.enable_losses = bool(getattr(settings, "enable_losses", True))
+
+        thermal_cfg = getattr(opts, "thermal", None)
+        if thermal_cfg is not None:
+            if hasattr(thermal_cfg, "ambient"):
+                thermal_cfg.ambient = float(getattr(settings, "thermal_ambient", 25.0))
+            if hasattr(thermal_cfg, "enable"):
+                thermal_cfg.enable = bool(getattr(settings, "enable_losses", True))
 
         # Fallback policy: enable transient gmin stepping for switching circuit convergence.
         # These settings match the validated PulsimCore buck converter benchmark.
@@ -834,7 +868,46 @@ class PulsimBackend(SimulationBackend):
         callbacks.progress(5.0, "Running transient with SimulationOptions...")
         options = self._build_simulation_options(settings, dt, newton_opts, linear_solver)
         simulator = self._module.Simulator(circuit, options)
-        native_result = simulator.run_transient(x0) if x0 is not None else simulator.run_transient()
+        native_result: Any | None = None
+        run_error: Exception | None = None
+
+        def _run_native() -> None:
+            nonlocal native_result, run_error
+            try:
+                native_result = (
+                    simulator.run_transient(x0) if x0 is not None else simulator.run_transient()
+                )
+            except Exception as exc:  # pragma: no cover - delegated backend call
+                run_error = exc
+
+        worker = threading.Thread(
+            target=_run_native,
+            name="pulsim-simulator-transient",
+            daemon=True,
+        )
+        worker.start()
+
+        # The SimulationOptions path is blocking in the backend and does not
+        # stream progress. Emit a keepalive progress ramp so GUI users don't
+        # see a frozen 5% status on long runs.
+        start_time = time.monotonic()
+        keepalive_span_seconds = 20.0
+        while worker.is_alive():
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                elapsed = time.monotonic() - start_time
+                progress = 5.0 + min(89.0, (elapsed / keepalive_span_seconds) * 89.0)
+                callbacks.progress(
+                    progress,
+                    f"Running transient with SimulationOptions... ({elapsed:.0f}s elapsed)",
+                )
+        worker.join()
+
+        if run_error is not None:
+            raise run_error
+        if native_result is None:
+            result.error_message = "Transient failed: backend returned no result."
+            return result
 
         success = getattr(native_result, "success", True)
         if callable(success):
@@ -1979,9 +2052,25 @@ class PulsimBackend(SimulationBackend):
             thermal_sim.set_ambient(settings.ambient_temperature)
 
         if hasattr(thermal_sim, "include_switching_losses"):
-            thermal_sim.include_switching_losses = settings.include_switching_losses
+            try:
+                thermal_sim.include_switching_losses = settings.include_switching_losses
+            except Exception:
+                pass
         if hasattr(thermal_sim, "include_conduction_losses"):
-            thermal_sim.include_conduction_losses = settings.include_conduction_losses
+            try:
+                thermal_sim.include_conduction_losses = settings.include_conduction_losses
+            except Exception:
+                pass
+        if hasattr(thermal_sim, "set_thermal_network"):
+            try:
+                thermal_sim.set_thermal_network(settings.thermal_network)
+            except Exception:
+                pass
+        elif hasattr(thermal_sim, "thermal_network"):
+            try:
+                thermal_sim.thermal_network = settings.thermal_network
+            except Exception:
+                pass
 
         if not hasattr(thermal_sim, "run"):
             return None
@@ -2000,6 +2089,13 @@ class PulsimBackend(SimulationBackend):
         create_simple_model = getattr(self._module, "create_simple_thermal_model", None)
         if simulator_cls is None or not callable(create_simple_model):
             return None
+        create_network_model = create_simple_model
+        if settings.thermal_network == "cauer":
+            for model_name in ("create_simple_cauer_model", "create_cauer_thermal_model"):
+                candidate = getattr(self._module, model_name, None)
+                if callable(candidate):
+                    create_network_model = candidate
+                    break
 
         times = [float(t) for t in (electrical_result.time or [])]
         if len(times) < 2:
@@ -2028,7 +2124,10 @@ class PulsimBackend(SimulationBackend):
 
             rth = 0.8 + (0.15 * index)
             tau = 0.02 + (0.004 * index)
-            network = create_simple_model(rth, tau, device_name)
+            try:
+                network = create_network_model(rth, tau, device_name)
+            except TypeError:
+                network = create_simple_model(rth, tau, device_name)
             thermal_sim = simulator_cls(network, settings.ambient_temperature)
             if hasattr(thermal_sim, "set_ambient"):
                 thermal_sim.set_ambient(settings.ambient_temperature)

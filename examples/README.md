@@ -21,6 +21,8 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 |------|-------------|
 | `07_rc_backend_smoke.pulsim` | Backend smoke test circuit |
 | `08_probe_scope_thermal_demo.pulsim` | Probe + electrical/thermal scope routing |
+| `09_buck_closed_loop_loss_thermal_validation.pulsim` | Closed-loop buck with losses + thermal scope validation |
+| `09_buck_closed_loop_loss_thermal_validation_expected.md` | Theoretical targets and pass criteria for example 09 |
 | `PulsimProjects.pulsim` | Minimal starter project |
 | `simple_rc.pulsim` | Legacy simple RC example |
 | `rc_circuit.pulsim` | RC example variant |
@@ -47,3 +49,4 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 - All examples use the current project simulation settings schema.
 - Each project includes at least one scope block for quick waveform inspection.
 - In `08_probe_scope_thermal_demo.pulsim`, connect electrical probe outputs to electrical scopes and the `TH` pin to thermal scope channels.
+- In `09_buck_closed_loop_loss_thermal_validation.pulsim`, compare results against `09_buck_closed_loop_loss_thermal_validation_expected.md`.

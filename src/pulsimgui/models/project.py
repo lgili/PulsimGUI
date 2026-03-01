@@ -25,6 +25,7 @@ class SimulationSettings:
     output_points: int = 10000
     enable_events: bool = True
     max_step_retries: int = 8
+    enable_losses: bool = True
     max_iterations: int = 50
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
@@ -34,6 +35,12 @@ class SimulationSettings:
     dc_source_steps: int = 10
     transient_robust_mode: bool = True
     transient_auto_regularize: bool = True
+    thermal_ambient: float = 25.0
+    thermal_include_switching_losses: bool = True
+    thermal_include_conduction_losses: bool = True
+    thermal_network: str = "foster"
+    formulation_mode: str = "projected_wrapper"
+    direct_formulation_fallback: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -49,6 +56,7 @@ class SimulationSettings:
             "output_points": self.output_points,
             "enable_events": self.enable_events,
             "max_step_retries": self.max_step_retries,
+            "enable_losses": self.enable_losses,
             "max_iterations": self.max_iterations,
             "enable_voltage_limiting": self.enable_voltage_limiting,
             "max_voltage_step": self.max_voltage_step,
@@ -58,11 +66,29 @@ class SimulationSettings:
             "dc_source_steps": self.dc_source_steps,
             "transient_robust_mode": self.transient_robust_mode,
             "transient_auto_regularize": self.transient_auto_regularize,
+            "thermal_ambient": self.thermal_ambient,
+            "thermal_include_switching_losses": self.thermal_include_switching_losses,
+            "thermal_include_conduction_losses": self.thermal_include_conduction_losses,
+            "thermal_network": self.thermal_network,
+            "formulation_mode": self.formulation_mode,
+            "direct_formulation_fallback": self.direct_formulation_fallback,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SimulationSettings":
         """Deserialize from dictionary."""
+        thermal_network = str(data.get("thermal_network", "foster") or "foster").strip().lower()
+        if thermal_network not in {"foster", "cauer"}:
+            thermal_network = "foster"
+        formulation_mode = str(
+            data.get("formulation_mode", "projected_wrapper") or "projected_wrapper"
+        ).strip().lower()
+        if formulation_mode in {"projected", "projectedwrapper", "native"}:
+            formulation_mode = "projected_wrapper"
+        elif formulation_mode in {"directdae", "dae"}:
+            formulation_mode = "direct"
+        if formulation_mode not in {"projected_wrapper", "direct"}:
+            formulation_mode = "projected_wrapper"
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
@@ -75,6 +101,7 @@ class SimulationSettings:
             output_points=int(data.get("output_points", 10000)),
             enable_events=bool(data.get("enable_events", True)),
             max_step_retries=int(data.get("max_step_retries", 8)),
+            enable_losses=bool(data.get("enable_losses", True)),
             max_iterations=data.get("max_iterations", 50),
             enable_voltage_limiting=bool(data.get("enable_voltage_limiting", False)),
             max_voltage_step=float(data.get("max_voltage_step", 5.0)),
@@ -84,6 +111,18 @@ class SimulationSettings:
             dc_source_steps=int(data.get("dc_source_steps", 10)),
             transient_robust_mode=bool(data.get("transient_robust_mode", True)),
             transient_auto_regularize=bool(data.get("transient_auto_regularize", True)),
+            thermal_ambient=float(data.get("thermal_ambient", 25.0)),
+            thermal_include_switching_losses=bool(
+                data.get("thermal_include_switching_losses", True)
+            ),
+            thermal_include_conduction_losses=bool(
+                data.get("thermal_include_conduction_losses", True)
+            ),
+            thermal_network=thermal_network,
+            formulation_mode=formulation_mode,
+            direct_formulation_fallback=bool(
+                data.get("direct_formulation_fallback", True)
+            ),
         )
 
 
