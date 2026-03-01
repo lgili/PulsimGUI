@@ -24,7 +24,7 @@ def test_normalize_backend_version() -> None:
 def test_default_target_version() -> None:
     config = BackendRuntimeConfig()
     assert config.target_version == DEFAULT_BACKEND_TARGET_VERSION
-    assert config.normalized_target_version == "0.5.3"
+    assert config.normalized_target_version == "0.5.2"
     assert config.auto_sync is True
 
 

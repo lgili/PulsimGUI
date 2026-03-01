@@ -58,7 +58,7 @@ Expected project baseline: `0.5.3`.
 Open `Preferences → Simulation → Backend Runtime`:
 
 - `Source`: `PyPI`
-- `Target version`: `v0.5.3`
+- `Target version`: `v0.5.2`
 - `Auto-sync backend on startup`: enabled
 
 ## Common Issues

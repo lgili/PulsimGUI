@@ -72,4 +72,4 @@ Path: `Preferences → Simulation`
 - `Absolute tolerance`: `1e-6`
 - `Output points`: `10000`
 - Transient robustness: enabled
-- Backend target: `v0.5.3`
+- Backend target: `v0.5.2`
