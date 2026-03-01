@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
-from pulsim.signal_evaluator import AlgebraicLoopError, SignalEvaluator
+from pulsimgui.services.signal_evaluator import AlgebraicLoopError, SignalEvaluator
 from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
