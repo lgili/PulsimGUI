@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QColor, QPalette
 from PySide6.QtWidgets import (
     QMainWindow,
     QDockWidget,
@@ -611,6 +611,8 @@ class MainWindow(QMainWindow):
         self._waveform_viewer = WaveformViewer(theme_service=self._theme_service)
         self.waveform_dock.setWidget(self._waveform_viewer)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.waveform_dock)
+        # Keep schematic-first startup layout: waveform panel opens on demand.
+        self.waveform_dock.hide()
 
         # Add toggle actions to panels menu
         self.panels_menu.addAction(self.library_dock.toggleViewAction())
@@ -713,6 +715,8 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
         # Keep the old side properties panel hidden; editing is modal.
         self.properties_dock.hide()
+        # Keep waveform/scope dock closed on startup for consistent first view.
+        self.waveform_dock.hide()
 
     def _apply_theme(self) -> None:
         """Apply the current theme from settings."""
@@ -733,9 +737,9 @@ class MainWindow(QMainWindow):
 
         # Apply stylesheet
         self.setStyleSheet(self._theme_service.generate_stylesheet())
+        self._apply_palette(theme)
 
         # Update schematic colors from theme
-        from PySide6.QtGui import QColor
         bg_color = QColor(theme.colors.schematic_background)
         grid_color = QColor(theme.colors.schematic_grid)
         self._schematic_scene.set_background_color(bg_color)
@@ -788,6 +792,36 @@ class MainWindow(QMainWindow):
             }}
             """
         )
+
+    def _apply_palette(self, theme: Theme) -> None:
+        """Apply a base Qt palette so unstyled widgets stay theme-consistent."""
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        c = theme.colors
+        palette = app.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(c.background))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(c.foreground))
+        palette.setColor(QPalette.ColorRole.Base, QColor(c.input_background))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(c.background_alt))
+        palette.setColor(QPalette.ColorRole.Text, QColor(c.foreground))
+        palette.setColor(QPalette.ColorRole.Button, QColor(c.panel_background))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(c.foreground))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(c.menu_background))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(c.foreground))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(c.primary))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(c.primary_foreground))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor(c.error))
+
+        disabled_text = QColor(c.foreground_muted)
+        disabled_bg = QColor(c.background_alt)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled_text)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, disabled_text)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, disabled_text)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, disabled_bg)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button, disabled_bg)
+        app.setPalette(palette)
 
     def _update_toolbar_icons(self) -> None:
         """Update toolbar icons with theme-appropriate colors."""

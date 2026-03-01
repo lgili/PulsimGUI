@@ -109,6 +109,18 @@ jobs:
           name: windows-build
           path: dist
 
+      - name: Normalize downloaded build layout
+        shell: pwsh
+        run: |
+          if ((Test-Path -LiteralPath "dist/dist/PulsimGui.exe") -and (-not (Test-Path -LiteralPath "dist/PulsimGui.exe"))) {
+            Move-Item -LiteralPath "dist/dist/PulsimGui.exe" -Destination "dist/PulsimGui.exe" -Force
+          }
+          if ((Test-Path -LiteralPath "dist/dist/PulsimGui") -and (-not (Test-Path -LiteralPath "dist/PulsimGui"))) {
+            Move-Item -LiteralPath "dist/dist/PulsimGui" -Destination "dist/PulsimGui" -Force
+          }
+          Write-Host "Windows build layout after normalization:"
+          Get-ChildItem -Path dist -Recurse | ForEach-Object { Write-Host $_.FullName }
+
       - name: Resolve version
         shell: pwsh
         run: |
@@ -196,6 +208,42 @@ jobs:
             throw "NSIS did not generate installer output"
           }
           Move-Item $installer.FullName "dist/$($installer.Name)" -Force
+
+      - name: Smoke test installer payload
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path dist -Filter "PulsimGui-*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) {
+            throw "Installer artifact missing after build"
+          }
+          $installDir = Join-Path $env:RUNNER_TEMP "pulsimgui-smoke-install"
+          if (Test-Path -LiteralPath $installDir) {
+            Remove-Item -LiteralPath $installDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+          $installProc = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($installProc.ExitCode -ne 0) {
+            throw "Silent installer run failed with exit code $($installProc.ExitCode)"
+          }
+          $exeCandidates = @(
+            (Join-Path $installDir "PulsimGui.exe"),
+            (Join-Path $installDir "PulsimGui\\PulsimGui.exe")
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          if (-not $exeCandidates) {
+            Write-Host "Installed files:"
+            Get-ChildItem -Path $installDir -Recurse | ForEach-Object { Write-Host $_.FullName }
+            throw "Installer smoke test failed: PulsimGui.exe not found in installed payload"
+          }
+          Write-Host "Installed executable: $($exeCandidates[0])"
+          $uninstaller = Join-Path $installDir "Uninstall.exe"
+          if (Test-Path -LiteralPath $uninstaller) {
+            $uninstallProc = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+            if ($uninstallProc.ExitCode -ne 0) {
+              throw "Uninstaller smoke test failed with exit code $($uninstallProc.ExitCode)"
+            }
+          } else {
+            throw "Uninstall.exe not found after silent install"
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4

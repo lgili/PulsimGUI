@@ -708,10 +708,16 @@ QToolButton:checked {{
 
 /* ===== Dock Widgets - Clean panel design ===== */
 QDockWidget {{
+    background-color: {c.panel_background};
+    border: 1px solid {c.panel_border};
     font-weight: 600;
     font-size: 12px;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
+}}
+
+QDockWidget > QWidget {{
+    background-color: {c.panel_background};
 }}
 
 QDockWidget::title {{

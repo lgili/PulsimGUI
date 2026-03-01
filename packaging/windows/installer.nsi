@@ -11,15 +11,29 @@
 !define APP_URL "https://github.com/lgili/PulsimGui"
 !define APP_EXE "PulsimGui.exe"
 !define APP_ICON "${__FILEDIR__}\..\icons\pulsimgui.ico"
+Var AppExePath
 
 ; Resolve build output source at compile-time (one-dir or one-file).
-!if /FileExists "..\..\dist\${APP_NAME}\*.*"
+; GH artifact extraction can produce either dist/* or dist/dist/* layout.
+!if /FileExists "..\..\dist\${APP_NAME}\*"
+!define APP_SOURCE_ROOT "..\..\dist"
 !define APP_SOURCE_MODE "onedir"
 !else
 !if /FileExists "..\..\dist\${APP_EXE}"
+!define APP_SOURCE_ROOT "..\..\dist"
+!define APP_SOURCE_MODE "onefile"
+!else
+!if /FileExists "..\..\dist\dist\${APP_NAME}\*"
+!define APP_SOURCE_ROOT "..\..\dist\dist"
+!define APP_SOURCE_MODE "onedir"
+!else
+!if /FileExists "..\..\dist\dist\${APP_EXE}"
+!define APP_SOURCE_ROOT "..\..\dist\dist"
 !define APP_SOURCE_MODE "onefile"
 !else
 !error "Could not find PulsimGui build output in dist/."
+!endif
+!endif
 !endif
 !endif
 
@@ -47,7 +61,7 @@
 ; Installer configuration
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "PulsimGui-${APP_VERSION}-setup.exe"
-InstallDir "$PROGRAMFILES64\${APP_NAME}"
+InstallDir "$PROGRAMFILES\${APP_NAME}"
 InstallDirRegKey HKLM "Software\${APP_NAME}" "InstallDir"
 RequestExecutionLevel admin
 
@@ -81,30 +95,42 @@ VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 
 ; Installation section
 Section "Install"
+    SetShellVarContext all
     SetOutPath "$INSTDIR"
 
     ; Copy application files
     !if "${APP_SOURCE_MODE}" == "onedir"
-    File /r "..\..\dist\${APP_NAME}\*.*"
+    File /r "${APP_SOURCE_ROOT}\${APP_NAME}\*"
     !else
-    File "..\..\dist\${APP_EXE}"
+    File "${APP_SOURCE_ROOT}\${APP_EXE}"
     !endif
+
+    ; Persist install location for next upgrades.
+    WriteRegStr HKLM "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
+
+    ; Resolve actual installed executable path for shortcuts and registry.
+    StrCpy $AppExePath "$INSTDIR\${APP_EXE}"
+    IfFileExists "$AppExePath" +5 0
+    StrCpy $AppExePath "$INSTDIR\${APP_NAME}\${APP_EXE}"
+    IfFileExists "$AppExePath" +3 0
+    MessageBox MB_ICONSTOP|MB_OK "Installation failed: ${APP_EXE} was not found in $INSTDIR."
+    Abort
 
     ; Create uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     ; Create Start Menu shortcuts
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
-    CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+    CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$AppExePath" "" "$AppExePath" 0
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
     ; Create Desktop shortcut
-    CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+    CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$AppExePath" "" "$AppExePath" 0
 
     ; Write registry keys for Add/Remove Programs
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayName" "${APP_NAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "UninstallString" "$INSTDIR\Uninstall.exe"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayIcon" "$AppExePath"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "Publisher" "${APP_PUBLISHER}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "URLInfoAbout" "${APP_URL}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayVersion" "${APP_VERSION}"
@@ -119,8 +145,8 @@ Section "Install"
     ; Register file associations
     WriteRegStr HKCR ".pulsim" "" "PulsimGui.Project"
     WriteRegStr HKCR "PulsimGui.Project" "" "Pulsim Project File"
-    WriteRegStr HKCR "PulsimGui.Project\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
-    WriteRegStr HKCR "PulsimGui.Project\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
+    WriteRegStr HKCR "PulsimGui.Project\DefaultIcon" "" "$AppExePath,0"
+    WriteRegStr HKCR "PulsimGui.Project\shell\open\command" "" '"$AppExePath" "%1"'
 
     ; Refresh shell icons
     System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, p 0, p 0)'
@@ -128,6 +154,7 @@ SectionEnd
 
 ; Uninstallation section
 Section "Uninstall"
+    SetShellVarContext all
     ; Remove application files
     RMDir /r "$INSTDIR"
 
