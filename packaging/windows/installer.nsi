@@ -10,7 +10,7 @@
 !define APP_PUBLISHER "Luiz Gili"
 !define APP_URL "https://github.com/lgili/PulsimGui"
 !define APP_EXE "PulsimGui.exe"
-!define APP_ICON "..\icons\pulsimgui.ico"
+!define APP_ICON "${__FILEDIR__}\..\icons\pulsimgui.ico"
 
 ; Resolve build output source at compile-time (one-dir or one-file).
 !if /FileExists "..\..\dist\${APP_NAME}\*.*"
@@ -34,6 +34,16 @@
 !endif
 !endif
 
+; Resolve installer icon fallback to avoid release build failures.
+!if /FileExists "${APP_ICON}"
+!define INSTALLER_ICON "${APP_ICON}"
+!define UNINSTALLER_ICON "${APP_ICON}"
+!else
+!warning "Custom icon not found at ${APP_ICON}; using NSIS default icons."
+!define INSTALLER_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
+!define UNINSTALLER_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+!endif
+
 ; Installer configuration
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "PulsimGui-${APP_VERSION}-setup.exe"
@@ -43,8 +53,8 @@ RequestExecutionLevel admin
 
 ; Modern UI settings
 !define MUI_ABORTWARNING
-!define MUI_ICON "${APP_ICON}"
-!define MUI_UNICON "${APP_ICON}"
+!define MUI_ICON "${INSTALLER_ICON}"
+!define MUI_UNICON "${UNINSTALLER_ICON}"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Wizard\win.bmp"
 
 ; Pages
