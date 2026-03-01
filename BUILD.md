@@ -42,12 +42,12 @@ brew install python@3.12
 pip install -e ".[build]"
 python scripts/build.py
 
-# Output: dist/PulsimGui.app, dist/PulsimGui-0.1.0-macos.dmg
+# Output: dist/PulsimGui.app, dist/PulsimGui-0.5.2-macos.dmg
 ```
 
 The macOS build creates:
 1. `PulsimGui.app` - Standard macOS application bundle
-2. `PulsimGui-0.1.0-macos.dmg` - Distributable disk image
+2. `PulsimGui-0.5.2-macos.dmg` - Distributable disk image
 
 ### Windows
 
@@ -75,12 +75,12 @@ sudo apt install python3 python3-pip python3-venv fuse libfuse2
 pip install -e ".[build]"
 python scripts/build.py
 
-# Output: dist/PulsimGui-0.1.0-x86_64.AppImage, dist/pulsimgui
+# Output: dist/PulsimGui-0.5.2-x86_64.AppImage, dist/pulsimgui
 ```
 
 The Linux build creates:
 1. `pulsimgui` - Standalone executable
-2. `PulsimGui-0.1.0-x86_64.AppImage` - Portable AppImage (recommended for distribution)
+2. `PulsimGui-0.5.2-x86_64.AppImage` - Portable AppImage (recommended for distribution)
 
 ## Build Options
 
@@ -98,15 +98,15 @@ python scripts/build.py --platform windows
 ## GitHub Actions
 
 Automated builds are configured in `.github/workflows/build.yml`. They trigger on:
-- Git tags starting with `v` (e.g., `v0.1.0`)
+- Git tags starting with `v` (e.g., `v0.5.2`)
 - Manual workflow dispatch
 
 ### Creating a Release
 
 1. Tag the commit:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.5.2
+   git push origin v0.5.2
    ```
 
 2. GitHub Actions will automatically:
@@ -145,7 +145,7 @@ If PyInstaller can't find certain modules:
 
 Ensure pulsim is installed before building:
 ```bash
-pip install pulsim>=0.4.0
+pip install pulsim>=0.5.2
 ```
 
 The spec file automatically locates and bundles the native `.so`/`.pyd` extension.

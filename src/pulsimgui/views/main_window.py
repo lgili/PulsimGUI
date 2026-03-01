@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
+from pulsimgui import __version__ as APP_VERSION
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.commands.component_commands import (
     AddComponentCommand,
@@ -1363,7 +1364,7 @@ class MainWindow(QMainWindow):
             "About PulsimGui",
             "<h3>PulsimGui</h3>"
             "<p>Cross-platform GUI for Pulsim power electronics simulator.</p>"
-            "<p>Version 0.1.0</p>"
+            f"<p>Version {APP_VERSION}</p>"
             "<p>Copyright (c) 2024 Luiz Gili</p>"
             "<p>Licensed under MIT License</p>",
         )

@@ -6,11 +6,33 @@
 
 ; Application metadata
 !define APP_NAME "PulsimGui"
-!define APP_VERSION "0.1.0"
+!define APP_VERSION "0.5.2"
 !define APP_PUBLISHER "Luiz Gili"
 !define APP_URL "https://github.com/lgili/PulsimGui"
 !define APP_EXE "PulsimGui.exe"
 !define APP_ICON "..\icons\pulsimgui.ico"
+
+; Resolve build output source at compile-time (one-dir or one-file).
+!if /FileExists "..\..\dist\${APP_NAME}\*.*"
+!define APP_SOURCE_MODE "onedir"
+!else
+!if /FileExists "..\..\dist\${APP_EXE}"
+!define APP_SOURCE_MODE "onefile"
+!else
+!error "Could not find PulsimGui build output in dist/."
+!endif
+!endif
+
+; Resolve license file fallback to avoid build breaks.
+!if /FileExists "..\..\LICENSE"
+!define APP_LICENSE_FILE "..\..\LICENSE"
+!else
+!if /FileExists "..\..\LICENSE.md"
+!define APP_LICENSE_FILE "..\..\LICENSE.md"
+!else
+!define APP_LICENSE_FILE "..\..\README.md"
+!endif
+!endif
 
 ; Installer configuration
 Name "${APP_NAME} ${APP_VERSION}"
@@ -27,7 +49,7 @@ RequestExecutionLevel admin
 
 ; Pages
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
+!insertmacro MUI_PAGE_LICENSE "${APP_LICENSE_FILE}"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -52,7 +74,11 @@ Section "Install"
     SetOutPath "$INSTDIR"
 
     ; Copy application files
+    !if "${APP_SOURCE_MODE}" == "onedir"
     File /r "..\..\dist\${APP_NAME}\*.*"
+    !else
+    File "..\..\dist\${APP_EXE}"
+    !endif
 
     ; Create uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"

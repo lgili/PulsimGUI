@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 import time
+from importlib import metadata
 from pathlib import Path
 
 
@@ -69,7 +70,18 @@ def _setup_qt_plugin_path() -> None:
 _setup_qt_plugin_path()
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QRadialGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF  # noqa: E402
+from PySide6.QtGui import (  # noqa: E402
+    QColor,
+    QFont,
+    QFontDatabase,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import QApplication, QSplashScreen  # noqa: E402
 
 try:  # noqa: E402
@@ -80,31 +92,63 @@ except Exception:  # pragma: no cover - optional fallback
 from pulsimgui.views.main_window import MainWindow  # noqa: E402
 
 
+def _ui_font_path() -> Path:
+    """Return bundled UI font path used for cross-platform visual consistency."""
+    return Path(__file__).resolve().parent / "resources" / "fonts" / "DejaVuSans.ttf"
+
+
+def _load_embedded_ui_font_family() -> str | None:
+    """Load bundled UI font and return the resolved family name."""
+    font_path = _ui_font_path()
+    if not font_path.exists():
+        return None
+
+    font_id = QFontDatabase.addApplicationFont(str(font_path))
+    if font_id < 0:
+        return None
+
+    families = QFontDatabase.applicationFontFamilies(font_id)
+    return families[0] if families else None
+
+
 def _preferred_ui_font(base_font: QFont) -> QFont:
-    """Return a platform-appropriate UI font with safe fallbacks."""
+    """Return a stable UI font profile across platforms."""
     font = QFont(base_font)
-    db = QFontDatabase()
-    families = set(db.families())
-
-    if sys.platform == "win32":
-        candidates = ("Segoe UI Variable Text", "Segoe UI", "Arial")
-        fallback_point_size = 10
-    elif sys.platform == "darwin":
-        candidates = (".AppleSystemUIFont", "SF Pro Text", "Helvetica Neue")
-        fallback_point_size = 12
+    embedded_family = _load_embedded_ui_font_family()
+    if embedded_family:
+        font.setFamily(embedded_family)
     else:
-        candidates = ("Noto Sans", "Ubuntu", "DejaVu Sans", "Arial")
-        fallback_point_size = 10
-
-    for family in candidates:
-        if family in families:
-            font.setFamily(family)
-            break
+        # Keep deterministic fallback order if the bundled font fails to load.
+        db = QFontDatabase()
+        families = set(db.families())
+        for family in ("DejaVu Sans", "Noto Sans", "Segoe UI", "Helvetica Neue", "Arial"):
+            if family in families:
+                font.setFamily(family)
+                break
 
     if font.pointSizeF() <= 0:
-        font.setPointSize(fallback_point_size)
+        font.setPointSize(10)
 
     return font
+
+
+def _resolve_app_version() -> str:
+    """Return app version for runtime branding."""
+    env_version = os.environ.get("PULSIMGUI_VERSION", "").strip().lstrip("v")
+    if env_version:
+        return env_version
+
+    try:
+        return metadata.version("pulsimgui")
+    except Exception:
+        pass
+
+    try:
+        from pulsimgui import __version__ as package_version
+
+        return str(package_version).strip().lstrip("v")
+    except Exception:
+        return ""
 
 
 def _branding_logo_path() -> Path:
@@ -259,8 +303,10 @@ def _create_startup_splash(logo_path: Path) -> QSplashScreen:
     ver_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
     painter.setFont(ver_font)
 
-    version_text = "v0.5.1"
-    badge_w, badge_h = 56.0, 18.0
+    resolved_version = _resolve_app_version()
+    version_text = f"v{resolved_version}" if resolved_version else "dev"
+    badge_w = max(56.0, float(painter.fontMetrics().horizontalAdvance(version_text) + 18))
+    badge_h = 18.0
     badge_x = (width - badge_w) / 2.0
     badge_y = 254.0
     badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
