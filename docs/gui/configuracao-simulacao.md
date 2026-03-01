@@ -1,90 +1,75 @@
-# Configuração de Simulação
+# Simulation Configuration
 
-Esta página documenta os campos reais disponíveis hoje na GUI.
+This page describes the actual parameters exposed in **Simulation Settings** and backend runtime configuration.
 
-## Janela `Simulation Settings`
+![Simulation Settings screen](../assets/images/simulation-settings.svg)
 
-![Tela de Simulation Settings](../assets/images/simulation-settings.svg)
+## Solver & Time
 
-### Aba `Transient`
+Core transient analysis parameters:
 
-- `Start time`: início da simulação.
-- `Stop time`: fim da simulação.
-- `Time step`: passo base.
-- `Quick Presets`: atalhos de duração (`1µs` a `100ms`).
-
-### Aba `Solver`
-
-#### Integration Method
-
-- `Auto`
-- `RK4 (Fixed Step)`
-- `RK45 (Adaptive)`
-- `BDF (Stiff)`
-
-#### Newton Solver
-
-- `Max iterations`
-- `Enable voltage limiting`
-- `Max voltage step`
-
-#### DC Operating Point Strategy
-
-- `Auto`
-- `Direct Newton`
-- `GMIN Stepping`:
-  - `GMIN initial`
-  - `GMIN final`
-- `Source Stepping`
-- `Pseudo-Transient`
-
-#### Tolerances
-
-- `Max step size`
+- `Integration method`:
+  - `Auto (Backend default)`
+  - `Trapezoidal`
+  - `BDF1`, `BDF2`, `BDF3`, `BDF4`, `BDF5`
+  - `Gear`, `TRBDF2`, `RosenbrockW`, `SDIRK2`
+- `Step mode`: `Fixed step` or `Variable step`
+- `Start time`
+- `Step size`
+- `Stop time`
+- `Max step`
 - `Relative tolerance`
 - `Absolute tolerance`
 
-### Aba `Output`
+## Events & Output
 
+- `Enable simulation event detection`
+- `Max step retries`
 - `Output points`
-- `Effective step` (calculado automaticamente)
-- `Save all node voltages`
-- `Save branch currents`
-- `Save power dissipation`
+- `Effective step` (calculated automatically)
+- Duration presets: `1us` to `100ms`
 
-## Janela `Preferences > Simulation`
+## Advanced Section
 
-![Tela de Backend Runtime](../assets/images/backend-runtime.svg)
+### Transient Robustness
 
-### Backend
+- `Max iterations` (Newton iterations per step)
+- `Enable voltage limiting`
+- `Max voltage step`
+- `Enable robust transient retries`
+- `Enable automatic regularization`
+
+### DC Operating Point
+
+- `Strategy`:
+  - `Auto`
+  - `Direct Newton`
+  - `GMIN Stepping`
+  - `Source Stepping`
+  - `Pseudo-Transient`
+- `GMIN initial` / `GMIN final` (when using `GMIN Stepping`)
+- `Source steps` (when using `Source Stepping`)
+
+## Backend Runtime (Preferences)
+
+![Backend Runtime screen](../assets/images/backend-runtime.svg)
+
+Path: `Preferences → Simulation`
 
 - `Active backend`
-- `Version`
-- `Status`
-- `Location`
-- `Capabilities`
-
-### Backend Runtime
-
-- `Source`: `PyPI` ou `Local PulsimCore checkout`
-- `Target version`: versão alvo do backend
-- `Local path`: caminho do checkout local quando `Source=Local`
+- `Version`, `Status`, `Location`, `Capabilities`
+- `Source`: `PyPI` or `Local`
+- `Target version`
+- `Local path`
 - `Auto-sync backend on startup`
 - `Install / Update Backend`
-- `Runtime status`
 
-## Versão padrão do backend
+## Recommended Starter Profile
 
-No estado atual do projeto, o default é:
-
-- `target_version = v0.4.0`
-
-Isso é aplicado quando não existe valor salvo em settings.
-
-## Recomendação prática
-
-Para ter reprodutibilidade entre máquinas:
-
-1. Manter `Source = PyPI`.
-2. Fixar `Target version = v0.4.0` (ou versão aprovada do release).
-3. Ativar `Auto-sync backend on startup` em ambientes de validação.
+- Integration: `Auto`
+- `Step mode`: `Fixed step`
+- `Relative tolerance`: `1e-4`
+- `Absolute tolerance`: `1e-6`
+- `Output points`: `10000`
+- Transient robustness: enabled
+- Backend target: `v0.5.2`

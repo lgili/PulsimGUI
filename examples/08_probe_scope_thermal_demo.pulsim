@@ -2,14 +2,14 @@
   "version": "1.0",
   "name": "Probe + Scope + Thermal Demo",
   "created": "2026-02-22T00:00:00",
-  "modified": "2026-02-22T00:00:00",
+  "modified": "2026-02-28T16:15:12.308250",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.02,
+    "tstop": 0.001,
     "dt": 1e-06,
     "max_step": 1e-06,
     "tstart": 0.0,
-    "abstol": 1e-12,
+    "abstol": 1e-10,
     "reltol": 0.001,
     "solver": "auto",
     "step_mode": "fixed",
@@ -71,8 +71,8 @@
           "id": "f403088b-f73c-4fd6-ac06-9ef4749a8052",
           "type": "CURRENT_PROBE",
           "name": "IP1",
-          "x": 200.0,
-          "y": 180.0,
+          "x": 160.0,
+          "y": 140.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -106,12 +106,12 @@
           "type": "RESISTOR",
           "name": "R1",
           "x": 320.0,
-          "y": 180.0,
+          "y": 140.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 10.0,
+            "resistance": 5.0,
             "enable_thermal_port": true
           },
           "pins": [
@@ -192,8 +192,8 @@
           "id": "5f261f52-4423-4adc-ae96-9f6d18862766",
           "type": "ELECTRICAL_SCOPE",
           "name": "VScope1",
-          "x": 420.0,
-          "y": 260.0,
+          "x": 520.0,
+          "y": 320.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -220,7 +220,7 @@
           "type": "ELECTRICAL_SCOPE",
           "name": "IScope1",
           "x": 420.0,
-          "y": 160.0,
+          "y": 60.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -246,8 +246,8 @@
           "id": "730ec51d-2a14-46e8-96ec-ad7f56f46473",
           "type": "THERMAL_SCOPE",
           "name": "TScope1",
-          "x": 420.0,
-          "y": 180.0,
+          "x": 500.0,
+          "y": 220.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -277,14 +277,14 @@
             {
               "x1": 100.0,
               "y1": 180.0,
-              "x2": 180.0,
-              "y2": 175.0
+              "x2": 100.0,
+              "y2": 140.0
             },
             {
-              "x1": 180.0,
-              "y1": 175.0,
-              "x2": 180.0,
-              "y2": 180.0
+              "x1": 100.0,
+              "y1": 140.0,
+              "x2": 140.0,
+              "y2": 140.0
             }
           ],
           "start_connection": {
@@ -303,10 +303,10 @@
           "id": "fb3fbb50-8a3f-4db0-a2c7-f0767e59f62a",
           "segments": [
             {
-              "x1": 220.0,
-              "y1": 180.0,
+              "x1": 180.0,
+              "y1": 140.0,
               "x2": 280.0,
-              "y2": 180.0
+              "y2": 140.0
             }
           ],
           "start_connection": {
@@ -326,19 +326,13 @@
           "segments": [
             {
               "x1": 360.0,
-              "y1": 180.0,
-              "x2": 340.0,
-              "y2": 180.0
+              "y1": 140.0,
+              "x2": 360.0,
+              "y2": 280.0
             },
             {
-              "x1": 340.0,
-              "y1": 180.0,
-              "x2": 340.0,
-              "y2": 290.0
-            },
-            {
-              "x1": 340.0,
-              "y1": 290.0,
+              "x1": 360.0,
+              "y1": 280.0,
               "x2": 220.0,
               "y2": 280.0
             }
@@ -351,7 +345,16 @@
             "component_id": "be596f0e-ef37-44a2-a4a9-73f8a79a459e",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              220.0,
+              280.0
+            ],
+            [
+              240.0,
+              280.0
+            ]
+          ],
           "node_name": "0",
           "alias": ""
         },
@@ -362,11 +365,11 @@
               "x1": 100.0,
               "y1": 220.0,
               "x2": 100.0,
-              "y2": 290.0
+              "y2": 280.0
             },
             {
               "x1": 100.0,
-              "y1": 290.0,
+              "y1": 280.0,
               "x2": 220.0,
               "y2": 280.0
             }
@@ -379,37 +382,14 @@
             "component_id": "be596f0e-ef37-44a2-a4a9-73f8a79a459e",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              220.0,
+              280.0
+            ]
+          ],
           "node_name": "0",
           "alias": ""
-        },
-        {
-          "id": "06e3d509-8f7a-4b53-a9ea-8f21f57226d6",
-          "segments": [
-            {
-              "x1": 240.0,
-              "y1": 240.0,
-              "x2": 220.0,
-              "y2": 180.0
-            },
-            {
-              "x1": 220.0,
-              "y1": 180.0,
-              "x2": 280.0,
-              "y2": 180.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "d0a34e91-b592-4847-a8d4-33945e3eca8f",
-            "pin_index": 0
-          },
-          "end_connection": {
-            "component_id": "210f8630-a197-40de-a8db-95b85f4ea4dd",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "N_LOAD",
-          "alias": "N_LOAD"
         },
         {
           "id": "8c5d958e-c2ec-4598-82f7-d57369e7692f",
@@ -429,7 +409,16 @@
             "component_id": "be596f0e-ef37-44a2-a4a9-73f8a79a459e",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              220.0,
+              280.0
+            ],
+            [
+              240.0,
+              280.0
+            ]
+          ],
           "node_name": "0",
           "alias": ""
         },
@@ -439,8 +428,14 @@
             {
               "x1": 260.0,
               "y1": 260.0,
-              "x2": 380.0,
-              "y2": 260.0
+              "x2": 260.0,
+              "y2": 320.0
+            },
+            {
+              "x1": 260.0,
+              "y1": 320.0,
+              "x2": 480.0,
+              "y2": 320.0
             }
           ],
           "start_connection": {
@@ -459,10 +454,16 @@
           "id": "33f02cc4-9e40-4af9-b2b9-4348ac9ec4fe",
           "segments": [
             {
-              "x1": 200.0,
-              "y1": 160.0,
+              "x1": 160.0,
+              "y1": 120.0,
+              "x2": 160.0,
+              "y2": 60.0
+            },
+            {
+              "x1": 160.0,
+              "y1": 60.0,
               "x2": 380.0,
-              "y2": 160.0
+              "y2": 60.0
             }
           ],
           "start_connection": {
@@ -482,15 +483,15 @@
           "segments": [
             {
               "x1": 320.0,
-              "y1": 200.0,
-              "x2": 380.0,
-              "y2": 191.0
+              "y1": 160.0,
+              "x2": 320.0,
+              "y2": 220.0
             },
             {
-              "x1": 380.0,
-              "y1": 191.0,
-              "x2": 380.0,
-              "y2": 180.0
+              "x1": 320.0,
+              "y1": 220.0,
+              "x2": 460.0,
+              "y2": 220.0
             }
           ],
           "start_connection": {
@@ -504,38 +505,21 @@
           "junctions": [],
           "node_name": "T_R1",
           "alias": "T_R1"
-        },
-        {
-          "id": "ae7fa766-dfeb-4c87-bb5a-3ed76cd5ccc8",
-          "segments": [
-            {
-              "x1": 100.0,
-              "y1": 180.0,
-              "x2": 290.0,
-              "y2": 175.0
-            },
-            {
-              "x1": 290.0,
-              "y1": 175.0,
-              "x2": 280.0,
-              "y2": 180.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "95cf3ccf-8fdd-4a17-bd0e-fec1e5f4cb82",
-            "pin_index": 0
-          },
-          "end_connection": {
-            "component_id": "210f8630-a197-40de-a8db-95b85f4ea4dd",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "N_LOAD",
-          "alias": "N_LOAD"
         }
       ]
     }
   },
   "subcircuits": [],
-  "scope_windows": {}
+  "scope_windows": {
+    "730ec51d-2a14-46e8-96ec-ad7f56f46473": {
+      "component_id": "730ec51d-2a14-46e8-96ec-ad7f56f46473",
+      "is_open": false,
+      "geometry": [
+        261,
+        115,
+        1040,
+        700
+      ]
+    }
+  }
 }

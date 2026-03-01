@@ -1,18 +1,20 @@
 site_name: PulsimGui
-site_description: GUI para simulação de eletrônica de potência com Pulsim
-site_url: https://lgili.github.io/PulsimGui/
-repo_url: https://github.com/lgili/PulsimGui
-repo_name: lgili/PulsimGui
+site_description: Professional desktop GUI for power electronics simulation with Pulsim.
+site_url: https://lgili.github.io/PulsimGUI/
+repo_url: https://github.com/lgili/PulsimGUI
+repo_name: lgili/PulsimGUI
 edit_uri: edit/main/docs/
 
 theme:
   name: material
-  language: pt-BR
+  language: en
   features:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - toc.follow
     - content.code.copy
+    - content.action.edit
     - search.highlight
     - search.suggest
   palette:
@@ -22,14 +24,14 @@ theme:
       accent: amber
       toggle:
         icon: material/weather-night
-        name: Alternar para tema escuro
+        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: teal
       accent: amber
       toggle:
         icon: material/weather-sunny
-        name: Alternar para tema claro
+        name: Switch to light mode
   icon:
     repo: fontawesome/brands/github
 
@@ -54,15 +56,17 @@ extra_css:
   - assets/stylesheets/extra.css
 
 nav:
-  - Início: index.md
-  - Instalação e Execução: instalacao.md
-  - GUI:
-      - Visão Geral: gui/visao-geral.md
-      - Configuração de Simulação: gui/configuracao-simulacao.md
-  - Tutoriais:
-      - Circuito RC de Teste: tutoriais/circuito-rc.md
-  - Referência:
-      - Manual do Usuário: user-manual.md
+  - Home: index.md
+  - Getting Started:
+      - Installation and Run: instalacao.md
+      - First RC Circuit: tutoriais/circuito-rc.md
+      - Buck Converter Example: tutoriais/conversor-buck.md
+  - Guides:
+      - GUI Overview: gui/visao-geral.md
+      - Simulation Configuration: gui/configuracao-simulacao.md
+      - User Manual: user-manual.md
+  - Technical Reference:
       - Backend Adapter: backend-adapter.md
-      - Guia do Desenvolvedor: developer-guide.md
-      - Roteiros de Vídeo: tutorials.md
+      - Developer Guide: developer-guide.md
+  - Support:
+      - FAQ and Troubleshooting: faq.md

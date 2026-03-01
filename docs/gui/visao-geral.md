@@ -1,30 +1,39 @@
-# Visão Geral da GUI
+# GUI Overview
 
-Esta página mostra os blocos principais da interface para você navegar rápido no app.
+![GUI overview](../assets/images/gui-main.svg)
 
-![Visão geral da GUI](../assets/images/gui-main.svg)
+## Main Panels
 
-## Áreas principais
+1. **Library Panel**: component catalog and search.
+2. **Schematic Editor**: central workspace to build the circuit.
+3. **Properties Panel**: parameter editing for the selected item.
+4. **Waveform Viewer**: signal inspection and measurements.
+5. **Status Bar**: simulation state, backend status, and messages.
 
-1. **Library Panel**: componentes elétricos para arrastar ao esquema.
-2. **Schematic Editor**: área de desenho do circuito.
-3. **Properties Panel**: edição de parâmetros do item selecionado.
-4. **Waveform Viewer**: visualização de sinais da simulação.
-5. **Status Bar**: estado da simulação e mensagens.
+## Typical Workflow
 
-## Fluxo de trabalho típico
+1. Insert components from the library.
+2. Connect pins in the schematic.
+3. Configure electrical parameters.
+4. Configure simulation settings.
+5. Run and analyze waveforms.
 
-1. Inserir componentes pela biblioteca.
-2. Conectar os nós com fios.
-3. Ajustar parâmetros no painel de propriedades.
-4. Abrir configurações de simulação.
-5. Executar e conferir as formas de onda.
+## Useful Shortcuts
 
-## Telas de configuração
+| Action | Shortcut |
+| --- | --- |
+| New project | `Ctrl+N` |
+| Open project | `Ctrl+O` |
+| Save | `Ctrl+S` |
+| Run simulation | `F5` |
+| Stop simulation | `Shift+F5` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Zoom to fit | `Ctrl+0` |
+| Wire tool | `W` |
 
-Você vai usar principalmente duas janelas:
+## Most Used Configuration Windows
 
-- **Simulation Settings**: tempos, solver, tolerâncias e saída.
-- **Preferences > Simulation**: backend ativo, runtime, versão alvo e defaults.
+- **Simulation Settings**: time window, integration, tolerances, and robustness.
+- **Preferences > Simulation**: active backend runtime and target version.
 
-![Configuração de simulação](../assets/images/simulation-settings.svg)
+![Simulation settings screen](../assets/images/simulation-settings.svg)

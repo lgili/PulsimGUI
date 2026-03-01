@@ -1,22 +1,21 @@
-# Circuito RC de Teste
+# First RC Circuit
 
-Este tutorial cria um circuito **RC passa-baixa** para validar:
+Quick tutorial to validate installation, schematic connectivity, and simulation flow.
 
-- conexões no editor
-- envio correto do circuito ao backend
-- configuração da simulação
-- visualização da resposta no viewer
+![RC response example](../assets/images/rc-waveform.svg)
 
-![Exemplo de saída RC](../assets/images/rc-waveform.svg)
+## Objective
 
-## Topologia
+Build a simple RC low-pass circuit and confirm the exponential `Vout` response.
 
-- Fonte de tensão (`Vin`)
-- Resistor `R1 = 1k`
-- Capacitor `C1 = 1u`
-- Terra `GND`
+## Topology
 
-Conexões:
+- `Vin` (source)
+- `R1 = 1kΩ`
+- `C1 = 1uF`
+- `GND`
+
+Connections:
 
 1. `Vin+ -> R1`
 2. `R1 -> Vout`
@@ -24,34 +23,29 @@ Conexões:
 4. `C1 -> GND`
 5. `Vin- -> GND`
 
-## Passo a passo na GUI
+## Step-by-step in the GUI
 
-1. Crie projeto novo.
-2. Arraste `Voltage Source`, `Resistor`, `Capacitor` e `Ground`.
-3. Faça as ligações conforme a topologia.
-4. Configure parâmetros:
-   - `R1 = 1k`
-   - `C1 = 1u`
-   - Fonte: degrau/pulso para enxergar transitório.
-5. Abra `Simulation Settings`:
-   - `t_start = 0`
-   - `t_stop = 10ms`
-   - `t_step = 1us`
-   - `solver = auto` (ou `rk45`)
-   - `output_points = 10000`
-6. Clique em **Run**.
-7. No viewer, plote `V(vout)` e `V(vin)`.
+1. Create a new project.
+2. Insert `Voltage Source`, `Resistor`, `Capacitor`, and `Ground`.
+3. Wire the topology above.
+4. Set `R1` and `C1` parameters.
+5. Configure source as step or pulse.
+6. Open `Simulation Settings` and use:
+   - `Start time = 0`
+   - `Stop time = 10ms`
+   - `Step size = 1us`
+   - `Output points = 10000`
+7. Click **Run**.
+8. In the viewer, plot `V(vout)` and `V(vin)`.
 
-## Resultado esperado
+## Expected Result
 
-- `V(vout)` sobe de forma exponencial.
-- Constante de tempo aproximada:
-  - `tau = R * C = 1k * 1u = 1ms`
-- Em ~`5 ms`, a saída deve estar próxima do valor final (para entrada em degrau).
+- `V(vout)` rises exponentially.
+- `τ = R × C = 1k × 1u = 1ms`.
+- Around `5τ` (about `5ms`), output is close to final value.
 
-## Checklist de validação rápida
+## Validation Checklist
 
-- Sem erro de parse de netlist/circuito.
-- Simulação completa sem `Simulation failed`.
-- Curva de `V(vout)` coerente com resposta de 1ª ordem.
-- Alterar `R` ou `C` muda `tau` como esperado.
+- Simulation finishes without errors.
+- `V(vout)` shows consistent first-order behavior.
+- Changing `R` or `C` shifts `τ` as expected.

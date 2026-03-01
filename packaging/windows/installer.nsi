@@ -6,11 +6,43 @@
 
 ; Application metadata
 !define APP_NAME "PulsimGui"
-!define APP_VERSION "0.1.0"
+!define APP_VERSION "0.5.3"
 !define APP_PUBLISHER "Luiz Gili"
 !define APP_URL "https://github.com/lgili/PulsimGui"
 !define APP_EXE "PulsimGui.exe"
-!define APP_ICON "..\icons\pulsimgui.ico"
+!define APP_ICON "${__FILEDIR__}\..\icons\pulsimgui.ico"
+
+; Resolve build output source at compile-time (one-dir or one-file).
+!if /FileExists "..\..\dist\${APP_NAME}\*.*"
+!define APP_SOURCE_MODE "onedir"
+!else
+!if /FileExists "..\..\dist\${APP_EXE}"
+!define APP_SOURCE_MODE "onefile"
+!else
+!error "Could not find PulsimGui build output in dist/."
+!endif
+!endif
+
+; Resolve license file fallback to avoid build breaks.
+!if /FileExists "..\..\LICENSE"
+!define APP_LICENSE_FILE "..\..\LICENSE"
+!else
+!if /FileExists "..\..\LICENSE.md"
+!define APP_LICENSE_FILE "..\..\LICENSE.md"
+!else
+!define APP_LICENSE_FILE "..\..\README.md"
+!endif
+!endif
+
+; Resolve installer icon fallback to avoid release build failures.
+!if /FileExists "${APP_ICON}"
+!define INSTALLER_ICON "${APP_ICON}"
+!define UNINSTALLER_ICON "${APP_ICON}"
+!else
+!warning "Custom icon not found at ${APP_ICON}; using NSIS default icons."
+!define INSTALLER_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
+!define UNINSTALLER_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+!endif
 
 ; Installer configuration
 Name "${APP_NAME} ${APP_VERSION}"
@@ -21,13 +53,13 @@ RequestExecutionLevel admin
 
 ; Modern UI settings
 !define MUI_ABORTWARNING
-!define MUI_ICON "${APP_ICON}"
-!define MUI_UNICON "${APP_ICON}"
+!define MUI_ICON "${INSTALLER_ICON}"
+!define MUI_UNICON "${UNINSTALLER_ICON}"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Wizard\win.bmp"
 
 ; Pages
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
+!insertmacro MUI_PAGE_LICENSE "${APP_LICENSE_FILE}"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -52,7 +84,11 @@ Section "Install"
     SetOutPath "$INSTDIR"
 
     ; Copy application files
+    !if "${APP_SOURCE_MODE}" == "onedir"
     File /r "..\..\dist\${APP_NAME}\*.*"
+    !else
+    File "..\..\dist\${APP_EXE}"
+    !endif
 
     ; Create uninstaller
     WriteUninstaller "$INSTDIR\Uninstall.exe"

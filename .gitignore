@@ -79,3 +79,6 @@ Desktop.ini
 # Project specific
 *.pulsim.bak
 .pulsim_backup/
+
+# Documentation build output
+site/

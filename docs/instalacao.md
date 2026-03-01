@@ -1,34 +1,42 @@
-# Instalação e Execução
+# Installation and Run
 
-## Requisitos
+## Requirements
 
 - Python `>= 3.10`
 - `pip`
-- Ambiente virtual recomendado (`venv`)
+- Virtual environment recommended (`venv`)
 
-## Instalar a partir do PyPI
+## Option 1: Release (Recommended)
+
+Download your platform package from [Releases](https://github.com/lgili/PulsimGUI/releases/latest).
+
+## Option 2: Install via pip
+
+Package source: [PyPI — pulsimgui](https://pypi.org/project/pulsimgui/).
 
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install pulsimgui
 ```
 
-Executar:
+Run:
 
 ```bash
 pulsimgui
 ```
 
-ou:
+or:
 
 ```bash
 python3 -m pulsimgui
 ```
 
-## Rodar localmente a partir do repositório
+The package on PyPI is published by the release workflow (`.github/workflows/release.yml`) on each new `v*` tag.
+
+## Option 3: Run from source
 
 ```bash
-git clone https://github.com/lgili/PulsimGui.git
+git clone https://github.com/lgili/PulsimGUI.git
 cd PulsimGui
 python3 -m venv .venv
 source .venv/bin/activate
@@ -37,30 +45,37 @@ python3 -m pip install -e ".[dev]"
 python3 -m pulsimgui
 ```
 
-## Diagnóstico rápido de ambiente
-
-Se quiser validar o backend instalado no mesmo Python:
+## Validate Active Backend
 
 ```bash
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-## Problemas comuns
+Expected project baseline: `0.5.3`.
 
-### Erro de plugin Qt
+## Recommended In-App Runtime Settings
 
-Se ocorrer erro de plataforma Qt, execute com plugin explícito:
+Open `Preferences → Simulation → Backend Runtime`:
+
+- `Source`: `PyPI`
+- `Target version`: `v0.5.2`
+- `Auto-sync backend on startup`: enabled
+
+## Common Issues
+
+### Qt plugin error
 
 ```bash
 QT_QPA_PLATFORM=cocoa python3 -m pulsimgui
 ```
 
-No Linux headless:
+For headless Linux:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python3 -m pulsimgui
 ```
 
-### Backend não encontrado
+### Backend unavailable
 
-Abra `Preferences > Simulation > Backend Runtime` e rode **Install / Update Backend** com alvo `v0.4.0`.
+- Confirm `pulsim` is installed in the same Python environment used by the app.
+- Reopen the app and use `Install / Update Backend` in runtime settings.
