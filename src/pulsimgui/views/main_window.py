@@ -1186,6 +1186,7 @@ class MainWindow(QMainWindow):
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
         self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
+        self._apply_project_simulation_settings_to_service()
         self._update_title()
         self._update_modified_indicator()
 
@@ -1198,10 +1199,29 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             template_id = dialog.get_selected_template_id()
             if template_id:
-                # Create circuit from template
+                # Prefer full project templates (includes saved simulation settings).
+                template_project = TemplateService.create_project_from_template(template_id)
+
+                if template_project is not None:
+                    self._close_all_scope_windows(persist_state=False)
+                    template_project.path = None
+                    self._project = template_project
+                    self._latest_electrical_result = None
+                    self._latest_thermal_waveform = None
+                    self._command_stack.clear()
+                    self._load_project_to_scene()
+                    self._apply_project_simulation_settings_to_service()
+                    self._project.mark_dirty()
+                    self._update_title()
+                    self._update_modified_indicator()
+                    self.statusBar().showMessage(
+                        f"Created new project from template: {self._project.name}", 3000
+                    )
+                    return
+
+                # Fallback: legacy circuit-only templates.
                 circuit = TemplateService.create_circuit_from_template(template_id)
                 if circuit:
-                    # Create new project with the template circuit
                     self._close_all_scope_windows(persist_state=False)
                     self._project = Project(name=circuit.name)
                     self._latest_electrical_result = None
@@ -1210,6 +1230,7 @@ class MainWindow(QMainWindow):
                     self._project.active_circuit = "main"
                     self._command_stack.clear()
                     self._load_project_to_scene()
+                    self._apply_project_simulation_settings_to_service()
                     self._project.mark_dirty()
                     self._update_title()
                     self._update_modified_indicator()
@@ -1240,6 +1261,7 @@ class MainWindow(QMainWindow):
             self._latest_thermal_waveform = None
             self._command_stack.clear()
             self._load_project_to_scene()
+            self._apply_project_simulation_settings_to_service()
             self._settings.add_recent_project(path)
             self._update_recent_menu()
             self._update_title()

@@ -1,12 +1,12 @@
 """Template service for creating circuits from predefined templates."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable
+from pathlib import Path
 
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.wire import Wire, WireSegment
+from pulsimgui.models.project import Project
 
 
 class TemplateCategory(Enum):
@@ -27,310 +27,127 @@ class TemplateInfo:
     category: TemplateCategory
     description: str
     preview_image: str = ""  # Path to preview image
-    tags: list[str] = None
+    tags: list[str] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.tags is None:
             self.tags = []
 
 
-def _create_buck_converter() -> Circuit:
-    """Create a basic synchronous buck converter circuit."""
-    circuit = Circuit(name="Buck Converter")
-
-    # Grid spacing for layout
-    grid = 60
-
-    # Input voltage source (left side)
-    vin = Component(
-        type=ComponentType.VOLTAGE_SOURCE,
-        name="Vin",
-        x=-3 * grid,
-        y=0,
-        parameters={"waveform": {"type": "dc", "value": 12.0}},
-    )
-
-    # High-side MOSFET (top switch)
-    q_high = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q_H",
-        x=0,
-        y=-2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # Low-side MOSFET (synchronous rectifier)
-    q_low = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q_L",
-        x=0,
-        y=2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # Output inductor
-    inductor = Component(
-        type=ComponentType.INDUCTOR,
-        name="L",
-        x=2 * grid,
-        y=0,
-        parameters={"inductance": 10e-6, "initial_current": 0.0},
-    )
-
-    # Output capacitor
-    cout = Component(
-        type=ComponentType.CAPACITOR,
-        name="Cout",
-        x=4 * grid,
-        y=grid,
-        rotation=90,
-        parameters={"capacitance": 100e-6, "initial_voltage": 0.0},
-    )
-
-    # Load resistor
-    rload = Component(
-        type=ComponentType.RESISTOR,
-        name="Rload",
-        x=5 * grid,
-        y=grid,
-        rotation=90,
-        parameters={"resistance": 5.0},
-    )
-
-    # Input capacitor
-    cin = Component(
-        type=ComponentType.CAPACITOR,
-        name="Cin",
-        x=-2 * grid,
-        y=grid,
-        rotation=90,
-        parameters={"capacitance": 10e-6, "initial_voltage": 12.0},
-    )
-
-    # Ground references
-    gnd1 = Component(type=ComponentType.GROUND, name="GND1", x=-3 * grid, y=3 * grid)
-    gnd2 = Component(type=ComponentType.GROUND, name="GND2", x=4 * grid, y=3 * grid)
-
-    # Add components
-    for comp in [vin, q_high, q_low, inductor, cout, rload, cin, gnd1, gnd2]:
-        circuit.add_component(comp)
-
-    return circuit
+def _repo_root() -> Path:
+    """Return repository root from the service module path."""
+    return Path(__file__).resolve().parents[3]
 
 
-def _create_boost_converter() -> Circuit:
-    """Create a basic boost converter circuit."""
-    circuit = Circuit(name="Boost Converter")
-
-    grid = 60
-
-    # Input voltage source
-    vin = Component(
-        type=ComponentType.VOLTAGE_SOURCE,
-        name="Vin",
-        x=-3 * grid,
-        y=0,
-        parameters={"waveform": {"type": "dc", "value": 5.0}},
-    )
-
-    # Input inductor
-    inductor = Component(
-        type=ComponentType.INDUCTOR,
-        name="L",
-        x=-grid,
-        y=-2 * grid,
-        parameters={"inductance": 100e-6, "initial_current": 0.0},
-    )
-
-    # Main switch (MOSFET)
-    q_main = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q",
-        x=grid,
-        y=0,
-        rotation=0,
-        parameters={"rds_on": 0.02, "vth": 2.0},
-    )
-
-    # Boost diode
-    diode = Component(
-        type=ComponentType.DIODE,
-        name="D",
-        x=2 * grid,
-        y=-2 * grid,
-        parameters={"is_": 1e-14, "n": 1.0},
-    )
-
-    # Output capacitor
-    cout = Component(
-        type=ComponentType.CAPACITOR,
-        name="Cout",
-        x=4 * grid,
-        y=0,
-        rotation=90,
-        parameters={"capacitance": 47e-6, "initial_voltage": 0.0},
-    )
-
-    # Load resistor
-    rload = Component(
-        type=ComponentType.RESISTOR,
-        name="Rload",
-        x=5 * grid,
-        y=0,
-        rotation=90,
-        parameters={"resistance": 100.0},
-    )
-
-    # Input capacitor
-    cin = Component(
-        type=ComponentType.CAPACITOR,
-        name="Cin",
-        x=-2 * grid,
-        y=0,
-        rotation=90,
-        parameters={"capacitance": 10e-6, "initial_voltage": 5.0},
-    )
-
-    # Ground references
-    gnd1 = Component(type=ComponentType.GROUND, name="GND1", x=-3 * grid, y=2 * grid)
-    gnd2 = Component(type=ComponentType.GROUND, name="GND2", x=4 * grid, y=2 * grid)
-
-    # Add components
-    for comp in [vin, inductor, q_main, diode, cout, rload, cin, gnd1, gnd2]:
-        circuit.add_component(comp)
-
-    return circuit
+def _candidate_example_paths(example_file: str) -> list[Path]:
+    """Return candidate locations for an example project file."""
+    return [
+        _repo_root() / "examples" / example_file,
+        Path.cwd() / "examples" / example_file,
+    ]
 
 
-def _create_full_bridge() -> Circuit:
-    """Create a full-bridge (H-bridge) inverter circuit."""
-    circuit = Circuit(name="Full-Bridge Inverter")
+def _load_example_circuit(example_file: str, *, fallback_name: str) -> Circuit:
+    """Load the active circuit from an example .pulsim file.
 
-    grid = 60
+    Falls back to an empty circuit when the example cannot be loaded.
+    """
+    for path in _candidate_example_paths(example_file):
+        if not path.exists():
+            continue
+        try:
+            project = Project.load(path)
+            circuit = project.get_active_circuit()
+            # Prefer project/template naming over generic circuit keys.
+            if not circuit.name or circuit.name.lower() in {"main", "untitled", "untitled project"}:
+                circuit.name = project.name or fallback_name
+            return circuit
+        except Exception:
+            continue
 
-    # DC bus voltage source
-    vdc = Component(
-        type=ComponentType.VOLTAGE_SOURCE,
-        name="Vdc",
-        x=-4 * grid,
-        y=0,
-        parameters={"waveform": {"type": "dc", "value": 48.0}},
-    )
-
-    # DC bus capacitor
-    cdc = Component(
-        type=ComponentType.CAPACITOR,
-        name="Cdc",
-        x=-2 * grid,
-        y=0,
-        rotation=90,
-        parameters={"capacitance": 1000e-6, "initial_voltage": 48.0},
-    )
-
-    # High-side left MOSFET (Q1)
-    q1 = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q1",
-        x=-grid,
-        y=-2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # Low-side left MOSFET (Q2)
-    q2 = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q2",
-        x=-grid,
-        y=2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # High-side right MOSFET (Q3)
-    q3 = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q3",
-        x=3 * grid,
-        y=-2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # Low-side right MOSFET (Q4)
-    q4 = Component(
-        type=ComponentType.MOSFET_N,
-        name="Q4",
-        x=3 * grid,
-        y=2 * grid,
-        rotation=0,
-        parameters={"rds_on": 0.01, "vth": 2.0},
-    )
-
-    # Load inductor (represents motor or inductive load)
-    l_load = Component(
-        type=ComponentType.INDUCTOR,
-        name="Lload",
-        x=grid,
-        y=0,
-        parameters={"inductance": 1e-3, "initial_current": 0.0},
-    )
-
-    # Load resistor
-    r_load = Component(
-        type=ComponentType.RESISTOR,
-        name="Rload",
-        x=2 * grid,
-        y=0,
-        parameters={"resistance": 1.0},
-    )
-
-    # Ground reference
-    gnd = Component(type=ComponentType.GROUND, name="GND", x=-4 * grid, y=3 * grid)
-
-    # Add components
-    for comp in [vdc, cdc, q1, q2, q3, q4, l_load, r_load, gnd]:
-        circuit.add_component(comp)
-
-    return circuit
+    return Circuit(name=fallback_name)
 
 
-# Template registry
+def _load_example_project(example_file: str, *, fallback_name: str) -> Project | None:
+    """Load a complete project from an example file.
+
+    Returns a project with circuits + simulation settings when possible.
+    """
+    for path in _candidate_example_paths(example_file):
+        if not path.exists():
+            continue
+        try:
+            project = Project.load(path)
+            if not project.name:
+                project.name = fallback_name
+            return project
+        except Exception:
+            continue
+    return None
+
+
+def _example_factory(example_file: str, fallback_name: str) -> Callable[[], Circuit]:
+    """Build a factory that creates a circuit from an example project."""
+
+    def _factory() -> Circuit:
+        return _load_example_circuit(example_file, fallback_name=fallback_name)
+
+    return _factory
+
+
+# Template registry backed by full example projects (components + wires + probes + scopes).
 TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
     "buck_converter": (
         TemplateInfo(
             id="buck_converter",
             name="Buck Converter",
             category=TemplateCategory.DC_DC_CONVERTERS,
-            description="A synchronous step-down DC-DC converter with high-side and low-side MOSFETs. "
-                       "Ideal for voltage regulation from higher to lower voltage levels.",
-            tags=["dc-dc", "step-down", "synchronous", "switching"],
+            description=(
+                "Step-down converter template loaded from examples/buck_converter.pulsim "
+                "with complete wiring, probes, and scope channels."
+            ),
+            tags=["dc-dc", "step-down", "buck", "switching"],
         ),
-        _create_buck_converter,
+        _example_factory("buck_converter.pulsim", "Buck Converter"),
     ),
     "boost_converter": (
         TemplateInfo(
             id="boost_converter",
             name="Boost Converter",
             category=TemplateCategory.DC_DC_CONVERTERS,
-            description="A step-up DC-DC converter that boosts input voltage to a higher output. "
-                       "Commonly used in battery-powered applications.",
+            description=(
+                "Step-up converter template loaded from examples/boost_converter.pulsim "
+                "with complete wiring, probes, and scope channels."
+            ),
             tags=["dc-dc", "step-up", "boost", "switching"],
         ),
-        _create_boost_converter,
+        _example_factory("boost_converter.pulsim", "Boost Converter"),
     ),
-    "full_bridge": (
+    "flyback_converter": (
         TemplateInfo(
-            id="full_bridge",
-            name="Full-Bridge Inverter",
-            category=TemplateCategory.INVERTERS,
-            description="An H-bridge inverter with 4 MOSFETs for DC-to-AC conversion. "
-                       "Used for motor drives, inverters, and bidirectional power transfer.",
-            tags=["inverter", "h-bridge", "motor-drive", "dc-ac"],
+            id="flyback_converter",
+            name="Flyback Converter",
+            category=TemplateCategory.DC_DC_CONVERTERS,
+            description=(
+                "Flyback converter template loaded from examples/flyback_converter.pulsim "
+                "with complete wiring, probes, and scope channels."
+            ),
+            tags=["dc-dc", "flyback", "isolated", "switching"],
         ),
-        _create_full_bridge,
+        _example_factory("flyback_converter.pulsim", "Flyback Converter"),
+    ),
+    "buck_converter_closed_loop": (
+        TemplateInfo(
+            id="buck_converter_closed_loop",
+            name="Buck Converter (Closed Loop)",
+            category=TemplateCategory.DC_DC_CONVERTERS,
+            description=(
+                "Closed-loop buck template loaded from examples/buck_converter_closed_loop.pulsim "
+                "including control blocks and complete wiring."
+            ),
+            tags=["dc-dc", "buck", "closed-loop", "control"],
+        ),
+        _example_factory("buck_converter_closed_loop.pulsim", "Buck Converter (Closed Loop)"),
     ),
 }
 
@@ -347,7 +164,8 @@ class TemplateService:
     def get_templates_by_category(category: TemplateCategory) -> list[TemplateInfo]:
         """Get templates filtered by category."""
         return [
-            info for info, _ in TEMPLATES.values()
+            info
+            for info, _ in TEMPLATES.values()
             if info.category == category
         ]
 
@@ -365,6 +183,27 @@ class TemplateService:
             _, factory = TEMPLATES[template_id]
             return factory()
         return None
+
+    @staticmethod
+    def create_project_from_template(template_id: str) -> Project | None:
+        """Create a full project from a template example file.
+
+        Includes circuit topology, wires, and persisted simulation settings.
+        """
+        if template_id not in TEMPLATES:
+            return None
+
+        template_info, _ = TEMPLATES[template_id]
+        example_map = {
+            "buck_converter": "buck_converter.pulsim",
+            "boost_converter": "boost_converter.pulsim",
+            "flyback_converter": "flyback_converter.pulsim",
+            "buck_converter_closed_loop": "buck_converter_closed_loop.pulsim",
+        }
+        example_file = example_map.get(template_id)
+        if not example_file:
+            return None
+        return _load_example_project(example_file, fallback_name=template_info.name)
 
     @staticmethod
     def get_categories() -> list[tuple[TemplateCategory, str]]:
