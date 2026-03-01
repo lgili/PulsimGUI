@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from PySide6.QtGui import QColor, QPalette
+
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.project import Project
 import pulsimgui.views.main_window as main_window_module
@@ -117,5 +119,28 @@ def test_open_project_file_syncs_saved_simulation_settings(monkeypatch, qapp, tm
         assert window._simulation_service.settings.t_stop == 0.02
         assert window._simulation_service.settings.t_step == 5e-6
         assert window._simulation_service.settings.max_newton_iterations == 88
+    finally:
+        window.close()
+
+
+def test_waveform_dock_starts_hidden(qapp) -> None:
+    """Waveform panel should not open by default on startup."""
+    window = MainWindow()
+    try:
+        assert window.waveform_dock.isHidden()
+        assert not window.waveform_dock.toggleViewAction().isChecked()
+    finally:
+        window.close()
+
+
+def test_apply_theme_updates_qt_palette(qapp) -> None:
+    """Applying a theme should update base Qt palette roles."""
+    window = MainWindow()
+    try:
+        window._set_theme("light")
+        colors = window._theme_service.current_theme.colors
+        palette = qapp.palette()
+        assert palette.color(QPalette.ColorRole.Window).name().lower() == QColor(colors.background).name().lower()
+        assert palette.color(QPalette.ColorRole.Base).name().lower() == QColor(colors.input_background).name().lower()
     finally:
         window.close()
