@@ -1,8 +1,8 @@
 site_name: PulsimGui
 site_description: Interface gráfica profissional para simulação de eletrônica de potência com Pulsim.
-site_url: https://lgili.github.io/PulsimGui/
-repo_url: https://github.com/lgili/PulsimGui
-repo_name: lgili/PulsimGui
+site_url: https://lgili.github.io/PulsimGUI/
+repo_url: https://github.com/lgili/PulsimGUI
+repo_name: lgili/PulsimGUI
 edit_uri: edit/main/docs/
 
 theme:
