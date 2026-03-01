@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+import pulsimgui.services.template_service as template_service_module
 from pulsimgui.models.component import ComponentType
 from pulsimgui.services.template_service import TemplateService
 
@@ -57,3 +60,20 @@ def test_template_project_loads_with_saved_simulation_settings() -> None:
     assert project.get_active_circuit().wires
     assert project.simulation_settings.tstop > 0.0
     assert project.simulation_settings.dt > 0.0
+
+
+def test_template_loading_falls_back_to_packaged_resources(monkeypatch) -> None:
+    """Release builds should load templates from bundled resources."""
+
+    monkeypatch.setattr(
+        template_service_module,
+        "_candidate_example_paths",
+        lambda _example_file: [Path("/nonexistent/template/path.pulsim")],
+    )
+
+    project = TemplateService.create_project_from_template("buck_converter")
+
+    assert project is not None
+    circuit = project.get_active_circuit()
+    assert len(circuit.components) > 0
+    assert len(circuit.wires) > 0

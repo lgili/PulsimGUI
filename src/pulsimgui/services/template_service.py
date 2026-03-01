@@ -1,8 +1,11 @@
 """Template service for creating circuits from predefined templates."""
 
+import json
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
+from importlib import resources as importlib_resources
 from pathlib import Path
 
 from pulsimgui.models.circuit import Circuit
@@ -40,11 +43,54 @@ def _repo_root() -> Path:
 
 
 def _candidate_example_paths(example_file: str) -> list[Path]:
-    """Return candidate locations for an example project file."""
-    return [
+    """Return candidate filesystem locations for an example project file."""
+    candidates = [
         _repo_root() / "examples" / example_file,
         Path.cwd() / "examples" / example_file,
+        Path(sys.executable).resolve().parent / "examples" / example_file,
     ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "examples" / example_file)
+    return candidates
+
+
+def _load_project_from_path(path: Path, *, fallback_name: str) -> Project | None:
+    """Load project from filesystem path, returning None on failure."""
+    try:
+        project = Project.load(path)
+        if not project.name:
+            project.name = fallback_name
+        return project
+    except Exception:
+        return None
+
+
+def _load_project_from_packaged_resource(
+    example_file: str,
+    *,
+    fallback_name: str,
+) -> Project | None:
+    """Load project from packaged resources for release builds.
+
+    The release app may not ship a top-level ``examples/`` folder. In that
+    scenario, templates are loaded from ``pulsimgui/resources/templates``.
+    """
+    try:
+        resource = importlib_resources.files("pulsimgui.resources").joinpath(
+            "templates",
+            example_file,
+        )
+        if not resource.is_file():
+            return None
+        payload = json.loads(resource.read_text(encoding="utf-8"))
+        project = Project.from_dict(payload)
+        project.path = None
+        if not project.name:
+            project.name = fallback_name
+        return project
+    except Exception:
+        return None
 
 
 def _load_example_circuit(example_file: str, *, fallback_name: str) -> Circuit:
@@ -52,18 +98,13 @@ def _load_example_circuit(example_file: str, *, fallback_name: str) -> Circuit:
 
     Falls back to an empty circuit when the example cannot be loaded.
     """
-    for path in _candidate_example_paths(example_file):
-        if not path.exists():
-            continue
-        try:
-            project = Project.load(path)
-            circuit = project.get_active_circuit()
-            # Prefer project/template naming over generic circuit keys.
-            if not circuit.name or circuit.name.lower() in {"main", "untitled", "untitled project"}:
-                circuit.name = project.name or fallback_name
-            return circuit
-        except Exception:
-            continue
+    project = _load_example_project(example_file, fallback_name=fallback_name)
+    if project is not None:
+        circuit = project.get_active_circuit()
+        # Prefer project/template naming over generic circuit keys.
+        if not circuit.name or circuit.name.lower() in {"main", "untitled", "untitled project"}:
+            circuit.name = project.name or fallback_name
+        return circuit
 
     return Circuit(name=fallback_name)
 
@@ -76,14 +117,10 @@ def _load_example_project(example_file: str, *, fallback_name: str) -> Project |
     for path in _candidate_example_paths(example_file):
         if not path.exists():
             continue
-        try:
-            project = Project.load(path)
-            if not project.name:
-                project.name = fallback_name
+        project = _load_project_from_path(path, fallback_name=fallback_name)
+        if project is not None:
             return project
-        except Exception:
-            continue
-    return None
+    return _load_project_from_packaged_resource(example_file, fallback_name=fallback_name)
 
 
 def _example_factory(example_file: str, fallback_name: str) -> Callable[[], Circuit]:
@@ -96,6 +133,13 @@ def _example_factory(example_file: str, fallback_name: str) -> Callable[[], Circ
 
 
 # Template registry backed by full example projects (components + wires + probes + scopes).
+_TEMPLATE_EXAMPLE_FILES: dict[str, str] = {
+    "buck_converter": "buck_converter.pulsim",
+    "boost_converter": "boost_converter.pulsim",
+    "flyback_converter": "flyback_converter.pulsim",
+    "buck_converter_closed_loop": "buck_converter_closed_loop.pulsim",
+}
+
 TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
     "buck_converter": (
         TemplateInfo(
@@ -108,7 +152,7 @@ TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
             ),
             tags=["dc-dc", "step-down", "buck", "switching"],
         ),
-        _example_factory("buck_converter.pulsim", "Buck Converter"),
+        _example_factory(_TEMPLATE_EXAMPLE_FILES["buck_converter"], "Buck Converter"),
     ),
     "boost_converter": (
         TemplateInfo(
@@ -121,7 +165,7 @@ TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
             ),
             tags=["dc-dc", "step-up", "boost", "switching"],
         ),
-        _example_factory("boost_converter.pulsim", "Boost Converter"),
+        _example_factory(_TEMPLATE_EXAMPLE_FILES["boost_converter"], "Boost Converter"),
     ),
     "flyback_converter": (
         TemplateInfo(
@@ -134,7 +178,7 @@ TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
             ),
             tags=["dc-dc", "flyback", "isolated", "switching"],
         ),
-        _example_factory("flyback_converter.pulsim", "Flyback Converter"),
+        _example_factory(_TEMPLATE_EXAMPLE_FILES["flyback_converter"], "Flyback Converter"),
     ),
     "buck_converter_closed_loop": (
         TemplateInfo(
@@ -147,7 +191,10 @@ TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
             ),
             tags=["dc-dc", "buck", "closed-loop", "control"],
         ),
-        _example_factory("buck_converter_closed_loop.pulsim", "Buck Converter (Closed Loop)"),
+        _example_factory(
+            _TEMPLATE_EXAMPLE_FILES["buck_converter_closed_loop"],
+            "Buck Converter (Closed Loop)",
+        ),
     ),
 }
 
@@ -194,13 +241,7 @@ class TemplateService:
             return None
 
         template_info, _ = TEMPLATES[template_id]
-        example_map = {
-            "buck_converter": "buck_converter.pulsim",
-            "boost_converter": "boost_converter.pulsim",
-            "flyback_converter": "flyback_converter.pulsim",
-            "buck_converter_closed_loop": "buck_converter_closed_loop.pulsim",
-        }
-        example_file = example_map.get(template_id)
+        example_file = _TEMPLATE_EXAMPLE_FILES.get(template_id)
         if not example_file:
             return None
         return _load_example_project(example_file, fallback_name=template_info.name)
