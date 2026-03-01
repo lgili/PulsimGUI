@@ -20,8 +20,17 @@ def _build_simple_circuit() -> tuple[Circuit, Component, Component]:
     circuit.add_component(r2)
 
     wire = Wire()
-    # Connect R1 pin 1 (x=30) to R2 pin 0 (x=70)
-    wire.segments.append(WireSegment(x1=30.0, y1=0.0, x2=70.0, y2=0.0))
+    # Connect R1 pin 1 to R2 pin 0 using the current pin layout coordinates.
+    r1_pin_1 = r1.get_pin_position(1)
+    r2_pin_0 = r2.get_pin_position(0)
+    wire.segments.append(
+        WireSegment(
+            x1=r1_pin_1[0],
+            y1=r1_pin_1[1],
+            x2=r2_pin_0[0],
+            y2=r2_pin_0[1],
+        )
+    )
     circuit.add_wire(wire)
 
     return circuit, r1, r2
@@ -35,7 +44,7 @@ def test_detect_boundary_ports_identifies_external_nodes():
     assert len(ports) == 1
     candidate = ports[0]
     assert candidate.internal_refs[0][0] == r1.id
-    assert candidate.anchor_point == (30.0, 0.0)
+    assert candidate.anchor_point == r1.get_pin_position(1)
     assert candidate.name.startswith("R2.")
 
 
@@ -60,7 +69,7 @@ def test_create_subcircuit_from_selection_uses_candidates():
 
     # Pin should remain aligned with original anchor point
     pin = ports[0]
-    assert round(pin.x, 3) == 30.0
+    assert round(pin.x, 3) == round(r1.get_pin_position(1)[0], 3)
     assert round(pin.y, 3) == 0.0
 
     # Center should match original component position
