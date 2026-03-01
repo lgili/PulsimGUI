@@ -673,7 +673,12 @@ class SimulationSettingsDialog(QDialog):
             preset = "fast_preview"
         else:
             preset = "accurate"
-        self._on_preset_selected(preset)
+        # Keep loaded values untouched: only update visual preset selection.
+        self._selected_preset = preset
+        for key, card in self._preset_cards.items():
+            card.blockSignals(True)
+            card.setChecked(key == preset)
+            card.blockSignals(False)
 
     def _on_apply(self) -> None:
         self._store_settings()

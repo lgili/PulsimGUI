@@ -26,7 +26,7 @@ class TestUIValueChanges:
         # Check solver settings
         assert dialog._solver_combo.currentIndex() == 0  # auto
         assert dialog._step_mode_combo.currentData() == "fixed"
-        assert dialog._max_iterations_spin.value() == 50
+        assert dialog._max_iterations_spin.value() == 100
         assert not dialog._voltage_limiting_check.isChecked()
         assert dialog._max_voltage_step_spin.value() == 5.0
         assert dialog._transient_robust_mode_check.isChecked()
@@ -348,7 +348,7 @@ class TestBackendReceivesOptions:
         )
 
         assert dc_settings.strategy == "auto"
-        assert dc_settings.max_iterations == 50
+        assert dc_settings.max_iterations == 100
         assert dc_settings.enable_limiting is False
         assert dc_settings.max_voltage_step == 5.0
         assert dc_settings.gmin_initial == 1e-3
