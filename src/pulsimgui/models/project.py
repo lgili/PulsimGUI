@@ -39,6 +39,8 @@ class SimulationSettings:
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+    formulation_mode: str = "projected_wrapper"
+    direct_formulation_fallback: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -68,6 +70,8 @@ class SimulationSettings:
             "thermal_include_switching_losses": self.thermal_include_switching_losses,
             "thermal_include_conduction_losses": self.thermal_include_conduction_losses,
             "thermal_network": self.thermal_network,
+            "formulation_mode": self.formulation_mode,
+            "direct_formulation_fallback": self.direct_formulation_fallback,
         }
 
     @classmethod
@@ -76,6 +80,15 @@ class SimulationSettings:
         thermal_network = str(data.get("thermal_network", "foster") or "foster").strip().lower()
         if thermal_network not in {"foster", "cauer"}:
             thermal_network = "foster"
+        formulation_mode = str(
+            data.get("formulation_mode", "projected_wrapper") or "projected_wrapper"
+        ).strip().lower()
+        if formulation_mode in {"projected", "projectedwrapper", "native"}:
+            formulation_mode = "projected_wrapper"
+        elif formulation_mode in {"directdae", "dae"}:
+            formulation_mode = "direct"
+        if formulation_mode not in {"projected_wrapper", "direct"}:
+            formulation_mode = "projected_wrapper"
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
@@ -106,6 +119,10 @@ class SimulationSettings:
                 data.get("thermal_include_conduction_losses", True)
             ),
             thermal_network=thermal_network,
+            formulation_mode=formulation_mode,
+            direct_formulation_fallback=bool(
+                data.get("direct_formulation_fallback", True)
+            ),
         )
 
 

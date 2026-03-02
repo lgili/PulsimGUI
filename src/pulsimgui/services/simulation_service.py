@@ -95,6 +95,20 @@ def normalize_thermal_network(value: str | None) -> str:
     return raw if raw in {"foster", "cauer"} else "foster"
 
 
+def normalize_formulation_mode(value: str | None) -> str:
+    """Normalize transient formulation mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "projected": "projected_wrapper",
+        "projectedwrapper": "projected_wrapper",
+        "native": "projected_wrapper",
+        "directdae": "direct",
+        "dae": "direct",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -137,6 +151,10 @@ class SimulationSettings:
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+
+    # Transient formulation mode (supported by pulsim>=0.6.1)
+    formulation_mode: str = "projected_wrapper"
+    direct_formulation_fallback: bool = True
 
 
 @dataclass
@@ -607,6 +625,17 @@ class SimulationService(QObject):
                     solver_settings.get("thermal_network", self._settings.thermal_network)
                 )
             )
+            self._settings.formulation_mode = str(
+                normalize_formulation_mode(
+                    solver_settings.get("formulation_mode", self._settings.formulation_mode)
+                )
+            )
+            self._settings.direct_formulation_fallback = bool(
+                solver_settings.get(
+                    "direct_formulation_fallback",
+                    self._settings.direct_formulation_fallback,
+                )
+            )
 
             # Load backend runtime settings
             runtime_settings = settings_service.get_backend_runtime_settings()
@@ -641,6 +670,9 @@ class SimulationService(QObject):
         self._settings.solver = normalize_integration_method(self._settings.solver)
         self._settings.step_mode = normalize_step_mode(self._settings.step_mode)
         self._settings.thermal_network = normalize_thermal_network(self._settings.thermal_network)
+        self._settings.formulation_mode = normalize_formulation_mode(
+            self._settings.formulation_mode
+        )
         self._persist_simulation_settings()
 
     @property
@@ -806,6 +838,10 @@ class SimulationService(QObject):
                 "thermal_include_switching_losses": self._settings.thermal_include_switching_losses,
                 "thermal_include_conduction_losses": self._settings.thermal_include_conduction_losses,
                 "thermal_network": normalize_thermal_network(self._settings.thermal_network),
+                "formulation_mode": normalize_formulation_mode(self._settings.formulation_mode),
+                "direct_formulation_fallback": bool(
+                    self._settings.direct_formulation_fallback
+                ),
             }
         )
 

@@ -31,6 +31,9 @@ class TestUIValueChanges:
         assert dialog._max_voltage_step_spin.value() == 5.0
         assert dialog._transient_robust_mode_check.isChecked()
         assert dialog._transient_auto_regularize_check.isChecked()
+        assert dialog._formulation_mode_combo.currentData() == "projected_wrapper"
+        assert dialog._direct_formulation_fallback_check.isChecked()
+        assert not dialog._direct_formulation_fallback_check.isEnabled()
 
         # Check DC strategy
         assert dialog._dc_strategy_combo.currentIndex() == 0  # auto
@@ -79,6 +82,8 @@ class TestUIValueChanges:
             thermal_include_switching_losses=False,
             thermal_include_conduction_losses=True,
             thermal_network="cauer",
+            formulation_mode="direct",
+            direct_formulation_fallback=False,
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -95,6 +100,9 @@ class TestUIValueChanges:
         assert dialog._max_voltage_step_spin.value() == 10.0
         assert not dialog._transient_robust_mode_check.isChecked()
         assert not dialog._transient_auto_regularize_check.isChecked()
+        assert dialog._formulation_mode_combo.currentData() == "direct"
+        assert not dialog._direct_formulation_fallback_check.isChecked()
+        assert dialog._direct_formulation_fallback_check.isEnabled()
 
         # Check DC strategy (source is index 3)
         assert dialog._dc_strategy_combo.currentIndex() == 3
@@ -136,6 +144,10 @@ class TestUIValueChanges:
         dialog._source_steps_spin.setValue(37)
         dialog._transient_robust_mode_check.setChecked(False)
         dialog._transient_auto_regularize_check.setChecked(True)
+        dialog._formulation_mode_combo.setCurrentIndex(
+            dialog._formulation_mode_combo.findData("direct")
+        )
+        dialog._direct_formulation_fallback_check.setChecked(False)
         dialog._gmin_initial_spin.setValue(5e-3)
         dialog._gmin_final_spin.setValue(1e-10)
         dialog._rel_tol_spin.setValue(1e-6)
@@ -166,6 +178,8 @@ class TestUIValueChanges:
         assert settings.dc_source_steps == 37
         assert settings.transient_robust_mode is False
         assert settings.transient_auto_regularize is False
+        assert settings.formulation_mode == "direct"
+        assert settings.direct_formulation_fallback is False
         assert settings.gmin_initial == 5e-3
         assert settings.gmin_final == 1e-10
         assert settings.rel_tol == 1e-6

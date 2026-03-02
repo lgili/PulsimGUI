@@ -677,6 +677,19 @@ class PulsimBackend(SimulationBackend):
         raw = str(value or "").strip().lower()
         return raw if raw in {"fixed", "variable"} else "fixed"
 
+    @staticmethod
+    def _normalize_formulation_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "projected": "projected_wrapper",
+            "projectedwrapper": "projected_wrapper",
+            "native": "projected_wrapper",
+            "directdae": "direct",
+            "dae": "direct",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
+
     def _integrator_enum_name(self, method: str) -> str:
         mapping = {
             # "auto" maps to BDF1: first-order implicit method is the most stable
@@ -791,6 +804,18 @@ class PulsimBackend(SimulationBackend):
             enum_name = self._integrator_enum_name(method)
             if hasattr(self._module.Integrator, enum_name):
                 opts.integrator = getattr(self._module.Integrator, enum_name)
+
+        formulation_mode = self._normalize_formulation_mode(
+            getattr(settings, "formulation_mode", "projected_wrapper")
+        )
+        if hasattr(opts, "formulation_mode") and hasattr(self._module, "FormulationMode"):
+            enum_name = "Direct" if formulation_mode == "direct" else "ProjectedWrapper"
+            if hasattr(self._module.FormulationMode, enum_name):
+                opts.formulation_mode = getattr(self._module.FormulationMode, enum_name)
+        if hasattr(opts, "direct_formulation_fallback"):
+            opts.direct_formulation_fallback = bool(
+                getattr(settings, "direct_formulation_fallback", True)
+            )
 
         if hasattr(opts, "enable_events"):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
