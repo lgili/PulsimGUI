@@ -385,6 +385,7 @@ class SimulationSettingsDialog(QDialog):
         body_layout.setSpacing(10)
         body_layout.addWidget(self._create_newton_card(), 1)
         body_layout.addWidget(self._create_dc_card(), 1)
+        body_layout.addWidget(self._create_thermal_card(), 1)
         self._advanced_body.setVisible(False)
         layout.addWidget(self._advanced_body)
 
@@ -482,6 +483,39 @@ class SimulationSettingsDialog(QDialog):
 
         self._source_widget.setLayout(source_layout)
         form.addRow(self._source_widget)
+
+        layout.addLayout(form)
+        return card
+
+    def _create_thermal_card(self) -> QWidget:
+        card, layout = self._create_card("Thermal & Losses", "Controls for thermal analysis fidelity.")
+        form = self._create_form_layout()
+
+        self._enable_losses_check = QCheckBox("Enable electrical loss tracking")
+        self._enable_losses_check.setChecked(True)
+        self._enable_losses_check.setToolTip("Expose loss telemetry used by thermal/loss post-processing.")
+        form.addRow(self._enable_losses_check)
+
+        self._thermal_ambient_spin = QDoubleSpinBox()
+        self._thermal_ambient_spin.setRange(-80.0, 250.0)
+        self._thermal_ambient_spin.setDecimals(1)
+        self._thermal_ambient_spin.setSingleStep(1.0)
+        self._thermal_ambient_spin.setSuffix(" °C")
+        self._thermal_ambient_spin.setValue(25.0)
+        form.addRow("Ambient temperature:", self._thermal_ambient_spin)
+
+        self._thermal_network_combo = QComboBox()
+        self._thermal_network_combo.addItem("Foster", "foster")
+        self._thermal_network_combo.addItem("Cauer", "cauer")
+        form.addRow("Thermal network:", self._thermal_network_combo)
+
+        self._thermal_include_conduction_check = QCheckBox("Include conduction losses")
+        self._thermal_include_conduction_check.setChecked(True)
+        form.addRow(self._thermal_include_conduction_check)
+
+        self._thermal_include_switching_check = QCheckBox("Include switching losses")
+        self._thermal_include_switching_check.setChecked(True)
+        form.addRow(self._thermal_include_switching_check)
 
         layout.addLayout(form)
         return card
@@ -656,6 +690,17 @@ class SimulationSettingsDialog(QDialog):
         self._output_points_spin.setValue(source.output_points)
         self._enable_events_check.setChecked(bool(getattr(source, "enable_events", True)))
         self._max_step_retries_spin.setValue(max(0, int(getattr(source, "max_step_retries", 8))))
+        self._enable_losses_check.setChecked(bool(getattr(source, "enable_losses", True)))
+        self._thermal_ambient_spin.setValue(float(getattr(source, "thermal_ambient", 25.0)))
+        thermal_network = str(getattr(source, "thermal_network", "foster") or "foster").strip().lower()
+        thermal_network_idx = self._thermal_network_combo.findData(thermal_network)
+        self._thermal_network_combo.setCurrentIndex(thermal_network_idx if thermal_network_idx >= 0 else 0)
+        self._thermal_include_conduction_check.setChecked(
+            bool(getattr(source, "thermal_include_conduction_losses", True))
+        )
+        self._thermal_include_switching_check.setChecked(
+            bool(getattr(source, "thermal_include_switching_losses", True))
+        )
 
         self._update_solver_description()
         self._update_dc_strategy_description()
@@ -725,6 +770,17 @@ class SimulationSettingsDialog(QDialog):
         self._settings.output_points = self._output_points_spin.value()
         self._settings.enable_events = self._enable_events_check.isChecked()
         self._settings.max_step_retries = self._max_step_retries_spin.value()
+        self._settings.enable_losses = self._enable_losses_check.isChecked()
+        self._settings.thermal_ambient = self._thermal_ambient_spin.value()
+        self._settings.thermal_network = str(
+            self._thermal_network_combo.currentData() or "foster"
+        ).strip().lower()
+        self._settings.thermal_include_conduction_losses = (
+            self._thermal_include_conduction_check.isChecked()
+        )
+        self._settings.thermal_include_switching_losses = (
+            self._thermal_include_switching_check.isChecked()
+        )
 
     def _commit_pending_inputs(self) -> None:
         """Commit text still being edited before reading values."""

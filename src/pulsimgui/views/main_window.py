@@ -97,7 +97,10 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
-        self._thermal_service = ThermalAnalysisService(parent=self)
+        self._thermal_service = ThermalAnalysisService(
+            backend=self._simulation_service.backend,
+            parent=self,
+        )
         self._scope_windows: dict[str, ScopeWindow] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
@@ -105,6 +108,7 @@ class MainWindow(QMainWindow):
         self._component_state_cache: dict[UUID, dict] = {}
         self._sim_progress_active = False
         self._sim_progress_last_value = 0
+        self._sync_thermal_service_context()
 
         self._setup_window()
         self._create_actions()
@@ -690,8 +694,26 @@ class MainWindow(QMainWindow):
         self._sim_status_widget.setStatus(f"Backend unavailable: {warning}", is_error=True)
         self._sim_progress.setVisible(False)
 
+    def _sync_thermal_service_context(self) -> None:
+        """Keep thermal analysis service aligned with active backend and settings."""
+        runtime_settings = self._simulation_service.settings
+        self._thermal_service.backend = self._simulation_service.backend
+        self._thermal_service.ambient_temperature = float(
+            getattr(runtime_settings, "thermal_ambient", 25.0)
+        )
+        self._thermal_service.include_switching_losses = bool(
+            getattr(runtime_settings, "thermal_include_switching_losses", True)
+        )
+        self._thermal_service.include_conduction_losses = bool(
+            getattr(runtime_settings, "thermal_include_conduction_losses", True)
+        )
+        self._thermal_service.thermal_network = str(
+            getattr(runtime_settings, "thermal_network", "foster") or "foster"
+        )
+
     def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
         """Apply backend changes and optionally notify the user."""
+        self._sync_thermal_service_context()
         self._update_backend_status(info)
         if not notify:
             return
@@ -1187,6 +1209,30 @@ class MainWindow(QMainWindow):
         runtime_settings.dc_source_steps = int(project_settings.dc_source_steps)
         runtime_settings.transient_robust_mode = bool(project_settings.transient_robust_mode)
         runtime_settings.transient_auto_regularize = bool(project_settings.transient_auto_regularize)
+        runtime_settings.enable_losses = bool(
+            getattr(project_settings, "enable_losses", runtime_settings.enable_losses)
+        )
+        runtime_settings.thermal_ambient = float(
+            getattr(project_settings, "thermal_ambient", runtime_settings.thermal_ambient)
+        )
+        runtime_settings.thermal_include_switching_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_switching_losses",
+                runtime_settings.thermal_include_switching_losses,
+            )
+        )
+        runtime_settings.thermal_include_conduction_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_conduction_losses",
+                runtime_settings.thermal_include_conduction_losses,
+            )
+        )
+        runtime_settings.thermal_network = str(
+            getattr(project_settings, "thermal_network", runtime_settings.thermal_network) or "foster"
+        )
+        self._sync_thermal_service_context()
 
     def _apply_simulation_service_settings_to_project(self) -> None:
         """Persist runtime simulation settings back into the project model."""
@@ -1212,6 +1258,15 @@ class MainWindow(QMainWindow):
         project_settings.dc_source_steps = int(runtime_settings.dc_source_steps)
         project_settings.transient_robust_mode = bool(runtime_settings.transient_robust_mode)
         project_settings.transient_auto_regularize = bool(runtime_settings.transient_auto_regularize)
+        project_settings.enable_losses = bool(runtime_settings.enable_losses)
+        project_settings.thermal_ambient = float(runtime_settings.thermal_ambient)
+        project_settings.thermal_include_switching_losses = bool(
+            runtime_settings.thermal_include_switching_losses
+        )
+        project_settings.thermal_include_conduction_losses = bool(
+            runtime_settings.thermal_include_conduction_losses
+        )
+        project_settings.thermal_network = str(runtime_settings.thermal_network)
 
     # Slots
     def _on_new_project(self) -> None:
@@ -2052,9 +2107,11 @@ class MainWindow(QMainWindow):
         if circuit is None or not circuit.components:
             return None
         try:
+            circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             thermal_result = self._thermal_service.build_result(
                 circuit,
                 self._latest_electrical_result,
+                circuit_data=circuit_data,
             )
         except Exception as exc:  # pragma: no cover - UI feedback only
             self.statusBar().showMessage(f"Unable to update thermal scopes: {exc}", 5000)
@@ -2195,6 +2252,7 @@ class MainWindow(QMainWindow):
         def apply_dialog_settings() -> None:
             self._simulation_service.settings = dialog.get_settings()
             self._apply_simulation_service_settings_to_project()
+            self._sync_thermal_service_context()
             self._project.mark_dirty()
             self._update_title()
             self._update_modified_indicator()
@@ -2236,9 +2294,11 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             result = self._thermal_service.build_result(
                 circuit,
                 self._simulation_service.last_result,
+                circuit_data=circuit_data,
             )
         except Exception as exc:  # pragma: no cover - defensive dialog
             QMessageBox.warning(

@@ -50,6 +50,22 @@ class ThermalDeviceResult:
     temperature_trace: list[float] = field(default_factory=list)
     conduction_loss: float = 0.0
     switching_loss: float = 0.0
+    switching_loss_on: float = 0.0
+    switching_loss_off: float = 0.0
+    reverse_recovery_loss: float = 0.0
+    steady_state_temperature: float = 0.0
+    thermal_limit: float | None = None
+
+    def __post_init__(self) -> None:
+        detailed_switching = (
+            float(self.switching_loss_on)
+            + float(self.switching_loss_off)
+            + float(self.reverse_recovery_loss)
+        )
+        if detailed_switching > 0.0:
+            self.switching_loss = detailed_switching
+        if not self.steady_state_temperature and self.temperature_trace:
+            self.steady_state_temperature = float(self.temperature_trace[-1])
 
     @property
     def total_loss(self) -> float:
@@ -60,6 +76,13 @@ class ThermalDeviceResult:
     def peak_temperature(self) -> float:
         """Maximum junction temperature sample."""
         return max(self.temperature_trace, default=0.0)
+
+    @property
+    def exceeds_limit(self) -> bool:
+        """Return True when peak temperature exceeds configured thermal limit."""
+        if self.thermal_limit is None:
+            return False
+        return self.peak_temperature > float(self.thermal_limit)
 
 
 @dataclass
@@ -89,11 +112,19 @@ class ThermalAnalysisService(QObject):
     def __init__(
         self,
         ambient_temperature: float = 25.0,
+        include_switching_losses: bool = True,
+        include_conduction_losses: bool = True,
+        thermal_network: str = "foster",
         backend: "SimulationBackend | None" = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._ambient_temperature = ambient_temperature
+        self._include_switching_losses = bool(include_switching_losses)
+        self._include_conduction_losses = bool(include_conduction_losses)
+        self._thermal_network = str(thermal_network or "foster").strip().lower()
+        if self._thermal_network not in {"foster", "cauer"}:
+            self._thermal_network = "foster"
         self._backend = backend
 
     @property
@@ -114,6 +145,34 @@ class ThermalAnalysisService(QObject):
     def backend(self, value: "SimulationBackend | None") -> None:
         """Set the backend for thermal analysis."""
         self._backend = value
+
+    @property
+    def include_switching_losses(self) -> bool:
+        """Whether switching losses are included when running thermal analysis."""
+        return self._include_switching_losses
+
+    @include_switching_losses.setter
+    def include_switching_losses(self, value: bool) -> None:
+        self._include_switching_losses = bool(value)
+
+    @property
+    def include_conduction_losses(self) -> bool:
+        """Whether conduction losses are included when running thermal analysis."""
+        return self._include_conduction_losses
+
+    @include_conduction_losses.setter
+    def include_conduction_losses(self, value: bool) -> None:
+        self._include_conduction_losses = bool(value)
+
+    @property
+    def thermal_network(self) -> str:
+        """Selected thermal network model for backend-capable analysis."""
+        return self._thermal_network
+
+    @thermal_network.setter
+    def thermal_network(self, value: str) -> None:
+        network = str(value or "foster").strip().lower()
+        self._thermal_network = network if network in {"foster", "cauer"} else "foster"
 
     def build_result(
         self,
@@ -169,8 +228,9 @@ class ThermalAnalysisService(QObject):
             # Build settings
             settings = ThermalSettings(
                 ambient_temperature=self._ambient_temperature,
-                include_switching_losses=True,
-                include_conduction_losses=True,
+                include_switching_losses=self._include_switching_losses,
+                include_conduction_losses=self._include_conduction_losses,
+                thermal_network=self._thermal_network,
             )
 
             # Build transient result for backend
@@ -248,14 +308,35 @@ class ThermalAnalysisService(QObject):
                 )
 
             # Build device result
+            conduction = float(getattr(dev.losses, "conduction", 0.0))
+            switching_on = float(getattr(dev.losses, "switching_on", 0.0))
+            switching_off = float(getattr(dev.losses, "switching_off", 0.0))
+            reverse_recovery = float(getattr(dev.losses, "reverse_recovery", 0.0))
+            switching_total = switching_on + switching_off + reverse_recovery
+            if switching_total <= 0.0:
+                switching_total = float(getattr(dev.losses, "switching_total", 0.0))
+
+            trace = list(getattr(dev, "junction_temperature", []))
+            steady_state = float(
+                getattr(
+                    dev,
+                    "steady_state_temperature",
+                    trace[-1] if trace else self._ambient_temperature,
+                )
+            )
             devices.append(
                 ThermalDeviceResult(
-                    component_id=dev.name,
-                    component_name=dev.name,
+                    component_id=str(getattr(dev, "name", "unknown")),
+                    component_name=str(getattr(dev, "name", "unknown")),
                     stages=stages,
-                    temperature_trace=list(dev.junction_temperature),
-                    conduction_loss=dev.losses.conduction,
-                    switching_loss=dev.losses.switching_total,
+                    temperature_trace=trace,
+                    conduction_loss=conduction,
+                    switching_loss=switching_total,
+                    switching_loss_on=switching_on,
+                    switching_loss_off=switching_off,
+                    reverse_recovery_loss=reverse_recovery,
+                    steady_state_temperature=steady_state,
+                    thermal_limit=getattr(dev, "thermal_limit", None),
                 )
             )
 
@@ -331,6 +412,13 @@ class ThermalAnalysisService(QObject):
 
         conduction_loss = 3.0 + position_index * 0.8
         switching_loss = 1.5 + position_index * 0.6
+        if not self._include_conduction_losses:
+            conduction_loss = 0.0
+        if not self._include_switching_losses:
+            switching_loss = 0.0
+        switching_on = switching_loss * 0.65
+        switching_off = switching_loss * 0.35
+        thermal_limit = self._resolve_thermal_limit(component)
 
         stages = self._build_stages(component, temps)
 
@@ -341,6 +429,11 @@ class ThermalAnalysisService(QObject):
             temperature_trace=list(temps),
             conduction_loss=conduction_loss,
             switching_loss=switching_loss,
+            switching_loss_on=switching_on,
+            switching_loss_off=switching_off,
+            reverse_recovery_loss=0.0,
+            steady_state_temperature=temps[-1] if temps else self._ambient_temperature,
+            thermal_limit=thermal_limit,
         )
 
     def _build_stages(
@@ -376,3 +469,17 @@ class ThermalAnalysisService(QObject):
             devices=[],
             is_synthetic=True,
         )
+
+    @staticmethod
+    def _resolve_thermal_limit(component: "Component") -> float | None:
+        """Best-effort extraction of component thermal limit from parameter aliases."""
+        params = dict(getattr(component, "parameters", {}) or {})
+        for key in ("thermal_limit", "tj_max", "temperature_limit", "temp_max"):
+            value = params.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
