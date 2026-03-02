@@ -49,6 +49,7 @@ def _make_mock_backend(has_thermal: bool = True, return_error: bool = False):
                     peak_temperature=75.0,
                     steady_state_temperature=70.0,
                     losses=LossBreakdown(conduction=5.0, switching_on=1.0, switching_off=0.5),
+                    thermal_limit=90.0,
                     foster_stages=[
                         FosterStage(resistance=0.5, capacitance=0.01),
                         FosterStage(resistance=0.3, capacitance=0.02),
@@ -145,8 +146,14 @@ class TestBackendIntegration:
         device = thermal.devices[0]
         assert device.component_name == "M1"
         assert device.peak_temperature == 75.0
+        assert device.steady_state_temperature == 70.0
         assert device.conduction_loss == 5.0
         assert device.switching_loss == 1.5  # 1.0 + 0.5
+        assert device.switching_loss_on == 1.0
+        assert device.switching_loss_off == 0.5
+        assert device.reverse_recovery_loss == 0.0
+        assert device.thermal_limit == 90.0
+        assert device.exceeds_limit is False
         assert len(device.stages) == 2
 
     def test_fallback_to_synthetic_when_no_thermal_capability(self) -> None:
@@ -197,6 +204,26 @@ class TestBackendIntegration:
         service.backend = mock_backend
 
         assert service.backend is mock_backend
+
+    def test_service_forwards_thermal_settings_to_backend(self) -> None:
+        """Runtime thermal controls should be forwarded when calling backend."""
+        circuit = _make_circuit(1)
+        mock_backend = _make_mock_backend(has_thermal=True)
+        service = ThermalAnalysisService(backend=mock_backend)
+        service.ambient_temperature = 55.0
+        service.include_switching_losses = False
+        service.include_conduction_losses = True
+        service.thermal_network = "cauer"
+
+        service.build_result(circuit, None, circuit_data={"components": []})
+
+        assert mock_backend.run_thermal.called
+        args, _kwargs = mock_backend.run_thermal.call_args
+        settings = args[2]
+        assert settings.ambient_temperature == 55.0
+        assert settings.include_switching_losses is False
+        assert settings.include_conduction_losses is True
+        assert settings.thermal_network == "cauer"
 
 
 class TestThermalResult:

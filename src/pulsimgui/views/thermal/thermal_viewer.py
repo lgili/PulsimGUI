@@ -6,7 +6,7 @@ from typing import Optional
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QBrush
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -58,12 +58,24 @@ class ThermalViewerWidget(QWidget):
         self._temperature_plot.setLabel("left", "Temperature", units="°C")
         self._temperature_plot.setLabel("bottom", "Time", units="s")
 
-        self._loss_table = QTableWidget(0, 5)
+        self._loss_table = QTableWidget(0, 11)
         self._loss_table.setHorizontalHeaderLabels(
-            ["Device", "Conduction (W)", "Switching (W)", "Total (W)", "Percent"]
+            [
+                "Device",
+                "Conduction (W)",
+                "Sw On (W)",
+                "Sw Off (W)",
+                "Rev Rec (W)",
+                "Switching (W)",
+                "Total (W)",
+                "Share",
+                "Peak T (°C)",
+                "Limit (°C)",
+                "Status",
+            ]
         )
         self._loss_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 5):
+        for column in range(1, 11):
             self._loss_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self._loss_table.verticalHeader().setVisible(False)
         self._loss_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -193,15 +205,21 @@ class ThermalViewerWidget(QWidget):
     def _populate_network(self, result: ThermalResult) -> None:
         self._network_tree.clear()
         for device in result.devices:
+            temp_text = f"{device.peak_temperature:.1f}"
+            if device.thermal_limit is not None:
+                temp_text = f"{temp_text} / {float(device.thermal_limit):.1f}"
             top_item = QTreeWidgetItem(
                 [
                     device.component_name,
                     "-",
                     "-",
-                    f"{device.peak_temperature:.1f}",
+                    temp_text,
                 ]
             )
             self._network_tree.addTopLevelItem(top_item)
+            if device.exceeds_limit:
+                for column in range(4):
+                    top_item.setForeground(column, QBrush(QColor("#ef4444")))
             for stage in device.stages:
                 child = QTreeWidgetItem(
                     [
@@ -212,6 +230,9 @@ class ThermalViewerWidget(QWidget):
                     ]
                 )
                 top_item.addChild(child)
+                if device.exceeds_limit:
+                    for column in range(4):
+                        child.setForeground(column, QBrush(QColor("#ef4444")))
             top_item.setExpanded(True)
 
         self._network_tree.resizeColumnToContents(0)
@@ -237,26 +258,58 @@ class ThermalViewerWidget(QWidget):
     def _update_loss_summary(self, result: ThermalResult) -> None:
         self._loss_table.setRowCount(0)
         total_losses = result.total_losses() or 1.0
+        over_limit_devices = 0
+        hottest_name = "-"
+        hottest_temp = float("-inf")
 
         for device in result.devices:
             row = self._loss_table.rowCount()
             self._loss_table.insertRow(row)
             percent = (device.total_loss / total_losses) * 100.0
+            if device.peak_temperature > hottest_temp:
+                hottest_temp = device.peak_temperature
+                hottest_name = device.component_name
+            if device.exceeds_limit:
+                over_limit_devices += 1
+
+            if device.thermal_limit is None:
+                status_text = "No limit"
+                limit_text = "-"
+            elif device.exceeds_limit:
+                status_text = "OVERLIMIT"
+                limit_text = f"{float(device.thermal_limit):.1f}"
+            else:
+                status_text = "OK"
+                limit_text = f"{float(device.thermal_limit):.1f}"
+
             values = [
                 device.component_name,
                 f"{device.conduction_loss:.2f}",
+                f"{device.switching_loss_on:.2f}",
+                f"{device.switching_loss_off:.2f}",
+                f"{device.reverse_recovery_loss:.2f}",
                 f"{device.switching_loss:.2f}",
                 f"{device.total_loss:.2f}",
                 f"{percent:.1f}%",
+                f"{device.peak_temperature:.1f}",
+                limit_text,
+                status_text,
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if device.exceeds_limit:
+                    item.setForeground(QBrush(QColor("#ef4444")))
+                elif column == 10 and status_text == "OK":
+                    item.setForeground(QBrush(QColor("#22c55e")))
                 self._loss_table.setItem(row, column, item)
 
         self._render_loss_chart(result)
         self._loss_caption.setText(
-            f"Total loss: {result.total_losses():.2f} W    Ambient: {result.ambient_temperature:.1f} °C"
+            "Total loss: "
+            f"{result.total_losses():.2f} W    Ambient: {result.ambient_temperature:.1f} °C"
+            f"    Over limit: {over_limit_devices}"
+            f"    Hottest: {hottest_name} ({hottest_temp:.1f} °C)"
         )
 
     def _render_loss_chart(self, result: ThermalResult) -> None:
@@ -266,26 +319,44 @@ class ThermalViewerWidget(QWidget):
         if not x_positions:
             return
 
-        width = 0.35
+        width = 0.17
         conduction_heights = [device.conduction_loss for device in result.devices]
-        switching_heights = [device.switching_loss for device in result.devices]
+        switching_on_heights = [device.switching_loss_on for device in result.devices]
+        switching_off_heights = [device.switching_loss_off for device in result.devices]
+        reverse_recovery_heights = [device.reverse_recovery_loss for device in result.devices]
 
         conduction_bar = pg.BarGraphItem(
-            x=[x - width / 2 for x in x_positions],
+            x=[x - (width * 1.5) for x in x_positions],
             height=conduction_heights,
             width=width,
             brush=palette[0],
             pen=pg.mkPen(color=palette[0])
         )
-        switching_bar = pg.BarGraphItem(
-            x=[x + width / 2 for x in x_positions],
-            height=switching_heights,
+        switching_on_bar = pg.BarGraphItem(
+            x=[x - (width * 0.5) for x in x_positions],
+            height=switching_on_heights,
             width=width,
             brush=palette[1],
             pen=pg.mkPen(color=palette[1])
         )
+        switching_off_bar = pg.BarGraphItem(
+            x=[x + (width * 0.5) for x in x_positions],
+            height=switching_off_heights,
+            width=width,
+            brush=palette[2],
+            pen=pg.mkPen(color=palette[2])
+        )
+        reverse_recovery_bar = pg.BarGraphItem(
+            x=[x + (width * 1.5) for x in x_positions],
+            height=reverse_recovery_heights,
+            width=width,
+            brush=palette[3],
+            pen=pg.mkPen(color=palette[3])
+        )
         self._loss_plot.addItem(conduction_bar)
-        self._loss_plot.addItem(switching_bar)
+        self._loss_plot.addItem(switching_on_bar)
+        self._loss_plot.addItem(switching_off_bar)
+        self._loss_plot.addItem(reverse_recovery_bar)
 
         axis = self._loss_plot.getAxis("bottom")
         axis.setTicks([[ (x, result.devices[x].component_name) for x in x_positions ]])
@@ -295,7 +366,9 @@ class ThermalViewerWidget(QWidget):
             legend = self._loss_plot.addLegend()
         legend.clear()
         legend.addItem(conduction_bar, "Conduction")
-        legend.addItem(switching_bar, "Switching")
+        legend.addItem(switching_on_bar, "Sw On")
+        legend.addItem(switching_off_bar, "Sw Off")
+        legend.addItem(reverse_recovery_bar, "Rev Rec")
 
     # ------------------------------------------------------------------
     def _clear_views(self) -> None:

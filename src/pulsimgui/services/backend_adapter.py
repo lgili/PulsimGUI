@@ -796,6 +796,15 @@ class PulsimBackend(SimulationBackend):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
         if hasattr(opts, "max_step_retries"):
             opts.max_step_retries = max(0, int(getattr(settings, "max_step_retries", 8)))
+        if hasattr(opts, "enable_losses"):
+            opts.enable_losses = bool(getattr(settings, "enable_losses", True))
+
+        thermal_cfg = getattr(opts, "thermal", None)
+        if thermal_cfg is not None:
+            if hasattr(thermal_cfg, "ambient"):
+                thermal_cfg.ambient = float(getattr(settings, "thermal_ambient", 25.0))
+            if hasattr(thermal_cfg, "enable"):
+                thermal_cfg.enable = bool(getattr(settings, "enable_losses", True))
 
         # Fallback policy: enable transient gmin stepping for switching circuit convergence.
         # These settings match the validated PulsimCore buck converter benchmark.
@@ -2018,9 +2027,25 @@ class PulsimBackend(SimulationBackend):
             thermal_sim.set_ambient(settings.ambient_temperature)
 
         if hasattr(thermal_sim, "include_switching_losses"):
-            thermal_sim.include_switching_losses = settings.include_switching_losses
+            try:
+                thermal_sim.include_switching_losses = settings.include_switching_losses
+            except Exception:
+                pass
         if hasattr(thermal_sim, "include_conduction_losses"):
-            thermal_sim.include_conduction_losses = settings.include_conduction_losses
+            try:
+                thermal_sim.include_conduction_losses = settings.include_conduction_losses
+            except Exception:
+                pass
+        if hasattr(thermal_sim, "set_thermal_network"):
+            try:
+                thermal_sim.set_thermal_network(settings.thermal_network)
+            except Exception:
+                pass
+        elif hasattr(thermal_sim, "thermal_network"):
+            try:
+                thermal_sim.thermal_network = settings.thermal_network
+            except Exception:
+                pass
 
         if not hasattr(thermal_sim, "run"):
             return None
@@ -2039,6 +2064,13 @@ class PulsimBackend(SimulationBackend):
         create_simple_model = getattr(self._module, "create_simple_thermal_model", None)
         if simulator_cls is None or not callable(create_simple_model):
             return None
+        create_network_model = create_simple_model
+        if settings.thermal_network == "cauer":
+            for model_name in ("create_simple_cauer_model", "create_cauer_thermal_model"):
+                candidate = getattr(self._module, model_name, None)
+                if callable(candidate):
+                    create_network_model = candidate
+                    break
 
         times = [float(t) for t in (electrical_result.time or [])]
         if len(times) < 2:
@@ -2067,7 +2099,10 @@ class PulsimBackend(SimulationBackend):
 
             rth = 0.8 + (0.15 * index)
             tau = 0.02 + (0.004 * index)
-            network = create_simple_model(rth, tau, device_name)
+            try:
+                network = create_network_model(rth, tau, device_name)
+            except TypeError:
+                network = create_simple_model(rth, tau, device_name)
             thermal_sim = simulator_cls(network, settings.ambient_temperature)
             if hasattr(thermal_sim, "set_ambient"):
                 thermal_sim.set_ambient(settings.ambient_temperature)

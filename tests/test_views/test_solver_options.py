@@ -46,6 +46,11 @@ class TestUIValueChanges:
         assert dialog._output_points_spin.value() == 10000
         assert dialog._enable_events_check.isChecked()
         assert dialog._max_step_retries_spin.value() == 8
+        assert dialog._enable_losses_check.isChecked()
+        assert dialog._thermal_ambient_spin.value() == 25.0
+        assert dialog._thermal_network_combo.currentData() == "foster"
+        assert dialog._thermal_include_conduction_check.isChecked()
+        assert dialog._thermal_include_switching_check.isChecked()
 
     def test_dialog_loads_custom_settings(self, qapp) -> None:
         """Test that dialog loads custom settings correctly."""
@@ -69,6 +74,11 @@ class TestUIValueChanges:
             output_points=5000,
             enable_events=False,
             max_step_retries=17,
+            enable_losses=False,
+            thermal_ambient=40.0,
+            thermal_include_switching_losses=False,
+            thermal_include_conduction_losses=True,
+            thermal_network="cauer",
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -102,6 +112,11 @@ class TestUIValueChanges:
         assert dialog._output_points_spin.value() == 5000
         assert not dialog._enable_events_check.isChecked()
         assert dialog._max_step_retries_spin.value() == 17
+        assert not dialog._enable_losses_check.isChecked()
+        assert dialog._thermal_ambient_spin.value() == 40.0
+        assert dialog._thermal_network_combo.currentData() == "cauer"
+        assert dialog._thermal_include_conduction_check.isChecked()
+        assert not dialog._thermal_include_switching_check.isChecked()
 
     def test_dialog_saves_settings_on_accept(self, qapp) -> None:
         """Test that dialog saves UI values back to settings."""
@@ -128,6 +143,13 @@ class TestUIValueChanges:
         dialog._output_points_spin.setValue(20000)
         dialog._enable_events_check.setChecked(False)
         dialog._max_step_retries_spin.setValue(12)
+        dialog._enable_losses_check.setChecked(False)
+        dialog._thermal_ambient_spin.setValue(42.0)
+        dialog._thermal_network_combo.setCurrentIndex(
+            dialog._thermal_network_combo.findData("cauer")
+        )
+        dialog._thermal_include_conduction_check.setChecked(True)
+        dialog._thermal_include_switching_check.setChecked(False)
 
         # Simulate accept
         dialog._on_accept()
@@ -151,6 +173,11 @@ class TestUIValueChanges:
         assert settings.output_points == 20000
         assert settings.enable_events is False
         assert settings.max_step_retries == 12
+        assert settings.enable_losses is False
+        assert settings.thermal_ambient == 42.0
+        assert settings.thermal_network == "cauer"
+        assert settings.thermal_include_conduction_losses is True
+        assert settings.thermal_include_switching_losses is False
 
     def test_dialog_apply_emits_signal_and_keeps_dialog_open(self, qapp) -> None:
         """Apply should store settings and emit settings_applied without closing dialog."""

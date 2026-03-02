@@ -93,12 +93,18 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
         dc_source_steps=21,
         transient_robust_mode=False,
         transient_auto_regularize=False,
+        enable_losses=False,
+        thermal_ambient=37.5,
+        thermal_include_switching_losses=False,
+        thermal_include_conduction_losses=True,
+        thermal_network="cauer",
     )
 
     assert fake_settings.sim_settings is not None
     assert fake_settings.sim_settings["t_stop"] == 5e-3
     assert fake_settings.sim_settings["solver"] == "trapezoidal"
     assert fake_settings.sim_settings["output_points"] == 5000
+    assert fake_settings.sim_settings["enable_losses"] is False
 
     assert fake_settings.solver_settings is not None
     assert fake_settings.solver_settings["max_newton_iterations"] == 80
@@ -106,6 +112,10 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
     assert fake_settings.solver_settings["dc_source_steps"] == 21
     assert fake_settings.solver_settings["transient_robust_mode"] is False
     assert fake_settings.solver_settings["transient_auto_regularize"] is False
+    assert fake_settings.solver_settings["thermal_ambient"] == 37.5
+    assert fake_settings.solver_settings["thermal_include_switching_losses"] is False
+    assert fake_settings.solver_settings["thermal_include_conduction_losses"] is True
+    assert fake_settings.solver_settings["thermal_network"] == "cauer"
 
 
 def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch) -> None:
@@ -116,6 +126,10 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
             "dc_source_steps": 33,
             "transient_robust_mode": False,
             "transient_auto_regularize": False,
+            "thermal_ambient": 30.0,
+            "thermal_include_switching_losses": False,
+            "thermal_include_conduction_losses": False,
+            "thermal_network": "cauer",
         }
     )
     service = SimulationService(settings_service=fake_settings)
@@ -124,6 +138,10 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
     assert service.settings.dc_source_steps == 33
     assert service.settings.transient_robust_mode is False
     assert service.settings.transient_auto_regularize is False
+    assert service.settings.thermal_ambient == 30.0
+    assert service.settings.thermal_include_switching_losses is False
+    assert service.settings.thermal_include_conduction_losses is False
+    assert service.settings.thermal_network == "cauer"
 
 
 def test_default_runtime_target_version_loaded_when_settings_empty(monkeypatch) -> None:

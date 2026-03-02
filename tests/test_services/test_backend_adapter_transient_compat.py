@@ -406,6 +406,7 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.integrator = _Integrator.TRBDF2
             self.enable_events = True
             self.max_step_retries = 8
+            self.enable_losses = True
 
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
@@ -452,6 +453,7 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         step_mode="variable",
         enable_events=False,
         max_step_retries=12,
+        enable_losses=False,
         t_start=0.0,
         t_stop=1e-3,
         t_step=1e-6,
@@ -476,3 +478,4 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].integrator == _Integrator.Trapezoidal
     assert seen["options"].enable_events is False
     assert seen["options"].max_step_retries == 12
+    assert seen["options"].enable_losses is False
