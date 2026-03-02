@@ -24,12 +24,13 @@ class IconLabel(QWidget):
         self._dark_mode = False
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(5)
 
         # Icon label
         self._icon_label = QLabel()
-        self._icon_label.setFixedSize(14, 14)
+        self._icon_label.setFixedSize(18, 16)
+        self._icon_label.setStyleSheet("padding: 0px; margin: 0px;")
         self._update_icon()
         layout.addWidget(self._icon_label)
 
@@ -43,7 +44,7 @@ class IconLabel(QWidget):
         """Update the icon with current color."""
         icon = IconService.get_icon(self._icon_name, self._icon_color)
         if not icon.isNull():
-            pixmap = icon.pixmap(14, 14)
+            pixmap = icon.pixmap(16, 16)
             self._icon_label.setPixmap(pixmap)
 
     def _set_icon_state(self, icon_name: str | None = None, color: str | None = None) -> None:
@@ -86,7 +87,7 @@ class IconLabel(QWidget):
 
     def setMinimumWidth(self, width: int) -> None:
         """Set minimum width for text label."""
-        self._text_label.setMinimumWidth(width - 22)  # Account for icon and spacing
+        self._text_label.setMinimumWidth(width - 28)  # Account for icon container and spacing
 
 
 class CoordinateWidget(QWidget):
@@ -114,10 +115,11 @@ class CoordinateWidget(QWidget):
 
         # Icon
         self._icon_label = QLabel()
-        self._icon_label.setFixedSize(14, 14)
+        self._icon_label.setFixedSize(18, 16)
+        self._icon_label.setStyleSheet("padding: 0px; margin: 0px;")
         icon = IconService.get_icon("crosshairs", self._icon_color)
         if not icon.isNull():
-            self._icon_label.setPixmap(icon.pixmap(14, 14))
+            self._icon_label.setPixmap(icon.pixmap(16, 16))
         layout.addWidget(self._icon_label)
 
         # Stacked widget for display/edit modes
@@ -204,7 +206,7 @@ class CoordinateWidget(QWidget):
         self._focus_border_color = theme.colors.input_focus_border
         icon = IconService.get_icon("crosshairs", self._icon_color)
         if not icon.isNull():
-            self._icon_label.setPixmap(icon.pixmap(14, 14))
+            self._icon_label.setPixmap(icon.pixmap(16, 16))
         self._display_label.setStyleSheet(f"color: {theme.colors.statusbar_foreground};")
         self.setStyleSheet(f"""
             QLineEdit {{
