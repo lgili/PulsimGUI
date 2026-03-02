@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-DEFAULT_BACKEND_TARGET_VERSION = "v0.6.0"
+DEFAULT_BACKEND_TARGET_VERSION = "v0.6.1"
 
 
 def normalize_backend_version(version: str | None) -> str:
