@@ -30,6 +30,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import pulsim as ps
 from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
+from pulsimgui.services.signal_evaluator import SIGNAL_TYPES
 from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.models.project import Project
@@ -54,6 +55,7 @@ def load_circuit_data(path: Path) -> dict:
         "components": [],
         "node_map": {},
         "node_aliases": alias_map,
+        "wires": [wire.to_dict() for wire in gui_circuit.wires.values()],
     }
     for comp in gui_circuit.components.values():
         d = comp.to_dict()
@@ -77,7 +79,6 @@ def run(t_stop: float = 5e-3, dt: float = 0.2e-6) -> None:
     circuit_data = load_circuit_data(CIRCUIT_FILE)
 
     # Print signal block summary
-    from pulsim.signal_evaluator import SIGNAL_TYPES
     sig_comps = [c for c in circuit_data["components"] if c["type"] in SIGNAL_TYPES]
     print(f"Signal blocks found: {len(sig_comps)}")
     for c in sig_comps:

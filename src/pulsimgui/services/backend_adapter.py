@@ -834,7 +834,46 @@ class PulsimBackend(SimulationBackend):
         callbacks.progress(5.0, "Running transient with SimulationOptions...")
         options = self._build_simulation_options(settings, dt, newton_opts, linear_solver)
         simulator = self._module.Simulator(circuit, options)
-        native_result = simulator.run_transient(x0) if x0 is not None else simulator.run_transient()
+        native_result: Any | None = None
+        run_error: Exception | None = None
+
+        def _run_native() -> None:
+            nonlocal native_result, run_error
+            try:
+                native_result = (
+                    simulator.run_transient(x0) if x0 is not None else simulator.run_transient()
+                )
+            except Exception as exc:  # pragma: no cover - delegated backend call
+                run_error = exc
+
+        worker = threading.Thread(
+            target=_run_native,
+            name="pulsim-simulator-transient",
+            daemon=True,
+        )
+        worker.start()
+
+        # The SimulationOptions path is blocking in the backend and does not
+        # stream progress. Emit a keepalive progress ramp so GUI users don't
+        # see a frozen 5% status on long runs.
+        start_time = time.monotonic()
+        keepalive_span_seconds = 20.0
+        while worker.is_alive():
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                elapsed = time.monotonic() - start_time
+                progress = 5.0 + min(89.0, (elapsed / keepalive_span_seconds) * 89.0)
+                callbacks.progress(
+                    progress,
+                    f"Running transient with SimulationOptions... ({elapsed:.0f}s elapsed)",
+                )
+        worker.join()
+
+        if run_error is not None:
+            raise run_error
+        if native_result is None:
+            result.error_message = "Transient failed: backend returned no result."
+            return result
 
         success = getattr(native_result, "success", True)
         if callable(success):

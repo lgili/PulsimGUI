@@ -103,6 +103,8 @@ class MainWindow(QMainWindow):
         self._latest_electrical_result: SimulationResult | None = None
         self._latest_thermal_waveform: SimulationResult | None = None
         self._component_state_cache: dict[UUID, dict] = {}
+        self._sim_progress_active = False
+        self._sim_progress_last_value = 0
 
         self._setup_window()
         self._create_actions()
@@ -532,14 +534,17 @@ class MainWindow(QMainWindow):
 
         # Coordinate display with icon
         self._coord_widget = CoordinateWidget()
+        self._coord_widget.setMinimumWidth(132)
         status_bar.addWidget(self._coord_widget)
 
         # Zoom level with icon
         self._zoom_widget = ZoomWidget()
+        self._zoom_widget.setMinimumWidth(86)
         status_bar.addWidget(self._zoom_widget)
 
         # Selection count with icon
         self._selection_widget = SelectionWidget()
+        self._selection_widget.setMinimumWidth(126)
         self._selection_widget.hide()  # Hidden when nothing selected
         status_bar.addWidget(self._selection_widget)
 
@@ -559,10 +564,12 @@ class MainWindow(QMainWindow):
 
         # Simulation status with icon
         self._sim_status_widget = SimulationStatusWidget()
+        self._sim_status_widget.setMinimumWidth(210)
         status_bar.addPermanentWidget(self._sim_status_widget)
 
         # Modified indicator with icon
         self._modified_widget = ModifiedWidget()
+        self._modified_widget.setMinimumWidth(96)
         self._modified_widget.hide()  # Hidden when saved
         status_bar.addPermanentWidget(self._modified_widget)
 
@@ -2249,6 +2256,20 @@ class MainWindow(QMainWindow):
         is_running = state in (SimulationState.RUNNING, SimulationState.PAUSED)
         is_paused = state == SimulationState.PAUSED
 
+        if is_running and not self._sim_progress_active:
+            self._sim_progress_last_value = 0
+            self._sim_progress.setRange(0, 100)
+            self._sim_progress.setValue(0)
+        elif not is_running and self._sim_progress_active:
+            self._sim_progress.setRange(0, 100)
+            if state == SimulationState.COMPLETED:
+                self._sim_progress_last_value = 100
+                self._sim_progress.setValue(100)
+            else:
+                self._sim_progress_last_value = 0
+                self._sim_progress.setValue(0)
+        self._sim_progress_active = is_running
+
         self._update_simulation_actions()
         self._sim_progress.setVisible(is_running)
 
@@ -2278,15 +2299,22 @@ class MainWindow(QMainWindow):
         if not math.isfinite(value):
             return
 
+        if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 100:
+            self._sim_progress.setRange(0, 100)
+
         if value < 0:
-            if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 0:
-                self._sim_progress.setRange(0, 0)
+            # Keep determinate, monotonic progress even when backend enters
+            # compatibility fallback paths that report indeterminate states.
+            clamped = min(99, self._sim_progress_last_value + 1)
         else:
-            if self._sim_progress.minimum() == 0 and self._sim_progress.maximum() == 0:
-                self._sim_progress.setRange(0, 100)
             clamped = max(0, min(100, int(value)))
-            if clamped != self._sim_progress.value():
-                self._sim_progress.setValue(clamped)
+
+        if clamped < self._sim_progress_last_value:
+            clamped = self._sim_progress_last_value
+
+        if clamped != self._sim_progress.value():
+            self._sim_progress.setValue(clamped)
+        self._sim_progress_last_value = clamped
 
         if message and message != self._sim_status_widget.text():
             self._sim_status_widget.setStatus(message, is_running=True)

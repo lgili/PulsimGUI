@@ -5,18 +5,18 @@
   "modified": "2026-02-28T17:58:35.282719",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.01,
-    "dt": 2e-06,
-    "max_step": 2e-06,
+    "tstop": 0.002,
+    "dt": 1e-06,
+    "max_step": 1e-06,
     "tstart": 0.0,
-    "abstol": 1e-09,
-    "reltol": 1e-06,
-    "solver": "bdf2",
-    "step_mode": "variable",
-    "output_points": 50000,
+    "abstol": 1e-06,
+    "reltol": 0.0001,
+    "solver": "bdf1",
+    "step_mode": "fixed",
+    "output_points": 10000,
     "enable_events": true,
     "max_step_retries": 8,
-    "max_iterations": 80,
+    "max_iterations": 100,
     "enable_voltage_limiting": true,
     "max_voltage_step": 2.0,
     "dc_strategy": "gmin",
@@ -435,10 +435,10 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "kp": 1.0,
-            "ki": 100.0,
-            "output_min": -1.0,
-            "output_max": 1.0
+            "kp": 0.08,
+            "ki": 0.0,
+            "output_min": 0.0,
+            "output_max": 0.95
           },
           "pins": [
             {
@@ -452,36 +452,6 @@
               "name": "OUT",
               "x": 40.0,
               "y": 0.0
-            }
-          ]
-        },
-        {
-          "id": "0d1dc448-b8d7-40f3-ad47-ab7320c11e04",
-          "type": "PWM_GENERATOR",
-          "name": "PWM2",
-          "x": 60.0,
-          "y": 440.0,
-          "rotation": 0,
-          "mirrored_h": false,
-          "mirrored_v": false,
-          "parameters": {
-            "frequency": 10000.0,
-            "duty_cycle": 0.5,
-            "carrier": "sawtooth",
-            "amplitude": 20.0
-          },
-          "pins": [
-            {
-              "index": 0,
-              "name": "OUT",
-              "x": 40.0,
-              "y": 0.0
-            },
-            {
-              "index": 1,
-              "name": "DUTY_IN",
-              "x": -40.0,
-              "y": 20.0
             }
           ]
         }
@@ -910,14 +880,17 @@
               "x1": 320.0,
               "y1": 120.0,
               "x2": 320.0,
-              "y2": 120.0
+              "y2": 200.0
             }
           ],
           "start_connection": {
             "component_id": "00000000-0001-0000-0000-000000000001",
             "pin_index": 0
           },
-          "end_connection": null,
+          "end_connection": {
+            "component_id": "00000000-0001-0000-0000-000000000003",
+            "pin_index": 0
+          },
           "junctions": [
             [
               320.0,
@@ -981,30 +954,6 @@
           "alias": "SW"
         },
         {
-          "id": "3c622bd1-6974-4edf-aead-c8ff26cf6fae",
-          "segments": [
-            {
-              "x1": 320.0,
-              "y1": 120.0,
-              "x2": 320.0,
-              "y2": 200.0
-            }
-          ],
-          "start_connection": null,
-          "end_connection": {
-            "component_id": "00000000-0001-0000-0000-000000000003",
-            "pin_index": 0
-          },
-          "junctions": [
-            [
-              320.0,
-              120.0
-            ]
-          ],
-          "node_name": "",
-          "alias": ""
-        },
-        {
           "id": "94163b85-89a9-461f-9547-9f5274168601",
           "segments": [
             {
@@ -1022,22 +971,6 @@
             "component_id": "00000000-0001-0000-0000-000000000003",
             "pin_index": 1
           },
-          "junctions": [],
-          "node_name": "",
-          "alias": ""
-        },
-        {
-          "id": "82a70bc7-7193-4c82-bbe7-42a90303272b",
-          "segments": [
-            {
-              "x1": 200.0,
-              "y1": 240.0,
-              "x2": 200.0,
-              "y2": 240.0
-            }
-          ],
-          "start_connection": null,
-          "end_connection": null,
           "junctions": [],
           "node_name": "",
           "alias": ""
@@ -1074,73 +1007,33 @@
           "alias": ""
         },
         {
-          "id": "627b35a1-b7dd-4eab-bf67-3d554264e79f",
-          "segments": [
-            {
-              "x1": 400.0,
-              "y1": 240.0,
-              "x2": 420.0,
-              "y2": 240.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "00000000-0001-0000-0000-000000000010",
-            "pin_index": 0
-          },
-          "end_connection": {
-            "component_id": "00000000-0001-0000-0000-000000000005",
-            "pin_index": 0
-          },
-          "junctions": [
-            [
-              400.0,
-              240.0
-            ],
-            [
-              420.0,
-              240.0
-            ]
-          ],
-          "node_name": "",
-          "alias": ""
-        },
-        {
           "id": "e2e044b0-d8c0-4177-8a15-1a45bd841f5a",
           "segments": [
             {
               "x1": 820.0,
-              "y1": 320.0,
+              "y1": 360.0,
               "x2": 760.0,
-              "y2": 320.0
+              "y2": 360.0
             },
             {
               "x1": 760.0,
-              "y1": 320.0,
-              "x2": 780.0,
-              "y2": 320.0
-            },
-            {
-              "x1": 780.0,
-              "y1": 320.0,
-              "x2": 780.0,
-              "y2": 220.0
-            },
-            {
-              "x1": 780.0,
-              "y1": 220.0,
-              "x2": 780.0,
-              "y2": 220.0
+              "y1": 360.0,
+              "x2": 760.0,
+              "y2": 260.0
             }
           ],
           "start_connection": {
             "component_id": "98a2e8fd-8636-440d-b19f-b2fc072e52fb",
-            "pin_index": 0
+            "pin_index": 1
           },
-          "end_connection": null,
+          "end_connection": {
+            "component_id": "00000000-0001-0000-0000-000000000011",
+            "pin_index": 2
+          },
           "junctions": [
             [
-              780.0,
-              220.0
+              760.0,
+              360.0
             ]
           ],
           "node_name": "",
@@ -1151,26 +1044,31 @@
           "segments": [
             {
               "x1": 820.0,
-              "y1": 360.0,
-              "x2": 820.0,
-              "y2": 460.0
+              "y1": 320.0,
+              "x2": 760.0,
+              "y2": 320.0
             },
             {
-              "x1": 820.0,
-              "y1": 460.0,
+              "x1": 760.0,
+              "y1": 320.0,
               "x2": 760.0,
               "y2": 460.0
             }
           ],
           "start_connection": {
             "component_id": "98a2e8fd-8636-440d-b19f-b2fc072e52fb",
-            "pin_index": 1
+            "pin_index": 0
           },
           "end_connection": {
             "component_id": "a01a6b72-59b9-4f5e-b7ea-f874d493f876",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              760.0,
+              320.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         },
@@ -1200,21 +1098,42 @@
           "id": "3df625ad-19d2-4f7c-94e2-ce3e87b23ade",
           "segments": [
             {
-              "x1": 240.0,
-              "y1": 220.0,
-              "x2": 240.0,
-              "y2": 220.0
+              "x1": 1100.0,
+              "y1": 340.0,
+              "x2": 1100.0,
+              "y2": 180.0
+            },
+            {
+              "x1": 1100.0,
+              "y1": 180.0,
+              "x2": 160.0,
+              "y2": 180.0
+            },
+            {
+              "x1": 160.0,
+              "y1": 180.0,
+              "x2": 160.0,
+              "y2": 240.0
             }
           ],
           "start_connection": {
-            "component_id": "3058eded-ce96-4daf-b4ce-9ffdeb52206d",
-            "pin_index": 0
+            "component_id": "069646ce-5d70-4e77-b630-6003a18181e0",
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "3058eded-ce96-4daf-b4ce-9ffdeb52206d",
-            "pin_index": 0
+            "pin_index": 1
           },
-          "junctions": [],
+          "junctions": [
+            [
+              1100.0,
+              180.0
+            ],
+            [
+              160.0,
+              180.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         }
