@@ -392,6 +392,46 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         Trapezoidal = "trap"
         TRBDF2 = "trbdf2"
 
+    class _FormulationMode:
+        ProjectedWrapper = "projected"
+        Direct = "direct"
+
+    class _ControlUpdateMode:
+        Auto = "auto"
+        Continuous = "continuous"
+        Discrete = "discrete"
+
+    class _ThermalDeviceTelemetry:
+        def __init__(self) -> None:
+            self.device_name = "M1"
+            self.enabled = True
+            self.final_temperature = 61.0
+            self.peak_temperature = 73.0
+            self.average_temperature = 58.0
+
+    class _ThermalSummary:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.ambient = 25.0
+            self.max_temperature = 73.0
+            self.device_temperatures = [_ThermalDeviceTelemetry()]
+
+    class _ComponentElectrothermal:
+        def __init__(self) -> None:
+            self.component_name = "M1"
+            self.thermal_enabled = True
+            self.conduction = 1.2
+            self.turn_on = 0.3
+            self.turn_off = 0.25
+            self.reverse_recovery = 0.0
+            self.total_loss = 1.75
+            self.total_energy = 0.0175
+            self.average_power = 1.75
+            self.peak_power = 3.1
+            self.final_temperature = 61.0
+            self.peak_temperature = 73.0
+            self.average_temperature = 58.0
+
     class _SimulationOptions:
         def __init__(self) -> None:
             self.tstart = 0.0
@@ -407,6 +447,10 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.enable_events = True
             self.max_step_retries = 8
             self.enable_losses = True
+            self.formulation_mode = _FormulationMode.ProjectedWrapper
+            self.direct_formulation_fallback = True
+            self.control_mode = _ControlUpdateMode.Auto
+            self.control_sample_time = 0.0
 
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
@@ -420,6 +464,8 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
                 states=[[0.0], [1.25]],
                 success=True,
                 message="",
+                thermal_summary=_ThermalSummary(),
+                component_electrothermal=[_ComponentElectrothermal()],
             )
 
     def run_transient(*_args, **_kwargs):  # noqa: ANN001
@@ -435,6 +481,8 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         Simulator=_Simulator,
         StepMode=_StepMode,
         Integrator=_Integrator,
+        FormulationMode=_FormulationMode,
+        ControlUpdateMode=_ControlUpdateMode,
         run_transient=run_transient,
     )
 
@@ -454,6 +502,10 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         enable_events=False,
         max_step_retries=12,
         enable_losses=False,
+        formulation_mode="direct",
+        direct_formulation_fallback=False,
+        control_mode="discrete",
+        control_sample_time=5e-6,
         t_start=0.0,
         t_stop=1e-3,
         t_step=1e-6,
@@ -479,3 +531,37 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].enable_events is False
     assert seen["options"].max_step_retries == 12
     assert seen["options"].enable_losses is False
+    assert seen["options"].formulation_mode == _FormulationMode.Direct
+    assert seen["options"].direct_formulation_fallback is False
+    assert seen["options"].control_mode == _ControlUpdateMode.Discrete
+    assert seen["options"].control_sample_time == 5e-6
+    assert result.statistics["thermal_summary"]["enabled"] is True
+    assert result.statistics["thermal_summary"]["max_temperature"] == 73.0
+    assert result.statistics["electrothermal_component_count"] == 1
+    assert result.statistics["component_electrothermal"][0]["component_name"] == "M1"
+
+
+def test_extract_thermal_device_names_includes_resistor() -> None:
+    backend = PulsimBackend(
+        SimpleNamespace(__version__="2.0.0"),
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    names = backend._extract_thermal_device_names(
+        {
+            "components": [
+                {"type": "RESISTOR", "name": "Rloss"},
+                {"type": "MOSFET_N", "name": "M1"},
+                {"type": "CAPACITOR", "name": "C1"},
+            ]
+        }
+    )
+
+    assert "Rloss" in names
+    assert "M1" in names
+    assert "C1" not in names

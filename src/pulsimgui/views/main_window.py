@@ -51,6 +51,8 @@ from pulsimgui.services.simulation_service import (
     SimulationService,
     SimulationState,
     ParameterSweepResult,
+    normalize_control_mode,
+    normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
 )
@@ -1232,6 +1234,29 @@ class MainWindow(QMainWindow):
         runtime_settings.thermal_network = str(
             getattr(project_settings, "thermal_network", runtime_settings.thermal_network) or "foster"
         )
+        runtime_settings.formulation_mode = normalize_formulation_mode(
+            getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
+        )
+        runtime_settings.direct_formulation_fallback = bool(
+            getattr(
+                project_settings,
+                "direct_formulation_fallback",
+                runtime_settings.direct_formulation_fallback,
+            )
+        )
+        runtime_settings.control_mode = normalize_control_mode(
+            getattr(project_settings, "control_mode", runtime_settings.control_mode)
+        )
+        runtime_settings.control_sample_time = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "control_sample_time",
+                    runtime_settings.control_sample_time,
+                )
+            ),
+        )
         self._sync_thermal_service_context()
 
     def _apply_simulation_service_settings_to_project(self) -> None:
@@ -1267,6 +1292,17 @@ class MainWindow(QMainWindow):
             runtime_settings.thermal_include_conduction_losses
         )
         project_settings.thermal_network = str(runtime_settings.thermal_network)
+        project_settings.formulation_mode = normalize_formulation_mode(
+            runtime_settings.formulation_mode
+        )
+        project_settings.direct_formulation_fallback = bool(
+            runtime_settings.direct_formulation_fallback
+        )
+        project_settings.control_mode = normalize_control_mode(runtime_settings.control_mode)
+        project_settings.control_sample_time = max(
+            0.0,
+            float(runtime_settings.control_sample_time),
+        )
 
     # Slots
     def _on_new_project(self) -> None:
