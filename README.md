@@ -25,6 +25,7 @@
 - Schematic editor with drag-and-drop workflow.
 - Component library focused on power electronics.
 - Transient simulation with advanced solver controls.
+- Advanced backend telemetry for convergence, fallback, and loss/thermal diagnostics.
 - Integrated waveform viewer with signal measurements.
 - Ready-to-run examples (`RC`, `buck`, `boost`, and more).
 
@@ -86,6 +87,17 @@ python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
 In the app: `Preferences → Simulation → Backend Runtime`.
+
+## Runtime Telemetry
+
+With modern Pulsim backends, transient runs expose structured diagnostics in `SimulationResult.statistics`, including solver/backend telemetry and electrothermal summaries:
+
+- `linear_solver_telemetry`
+- `backend_telemetry`
+- `fallback_trace`
+- `loss_summary`
+- `thermal_summary`
+- `component_electrothermal`
 
 ## Development
 
