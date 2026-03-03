@@ -980,6 +980,44 @@ class PulsimBackend(SimulationBackend):
             callbacks.data_point(result.time[-1], final_sample)
 
         result.statistics["execution_path"] = "simulator_options"
+        for field_name in (
+            "total_steps",
+            "newton_iterations_total",
+            "timestep_rejections",
+            "total_time_seconds",
+        ):
+            value = self._coerce_telemetry_scalar(getattr(native_result, field_name, None))
+            if value is not None:
+                result.statistics[field_name] = value
+
+        message_value = str(getattr(native_result, "message", "") or "").strip()
+        if message_value:
+            result.statistics["message"] = message_value
+
+        status_value = getattr(native_result, "final_status", None)
+        if status_value is not None:
+            status_name = self._coerce_telemetry_scalar(status_value)
+            if status_name is None and hasattr(self._module, "SolverStatus"):
+                try:
+                    status_name = str(self._module.SolverStatus(status_value).name)
+                except Exception:
+                    status_name = str(status_value)
+            if status_name is not None:
+                result.statistics["status"] = status_name
+
+        diagnostic_value = getattr(native_result, "diagnostic", None)
+        if diagnostic_value is not None:
+            diagnostic_name = self._coerce_telemetry_scalar(diagnostic_value)
+            if diagnostic_name is None and hasattr(self._module, "SimulationDiagnosticCode"):
+                try:
+                    diagnostic_name = str(
+                        self._module.SimulationDiagnosticCode(diagnostic_value).name
+                    )
+                except Exception:
+                    diagnostic_name = str(diagnostic_value)
+            if diagnostic_name is not None:
+                result.statistics["diagnostic"] = diagnostic_name
+
         self._append_electrothermal_statistics(result.statistics, native_result)
         callbacks.progress(100.0, "Simulation complete")
         return result
@@ -2431,15 +2469,91 @@ class PulsimBackend(SimulationBackend):
         out: dict[str, Any] = {}
         for field in fields:
             value = PulsimBackend._extract_telemetry_field(payload, field)
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                out[field] = value
-            elif isinstance(value, str):
-                out[field] = value
-            elif isinstance(value, (int, float)):
-                out[field] = float(value)
+            coerced = PulsimBackend._coerce_telemetry_scalar(value)
+            if coerced is not None:
+                out[field] = coerced
         return out
+
+    @staticmethod
+    def _coerce_telemetry_scalar(value: Any) -> bool | float | str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value)
+        enum_name = getattr(value, "name", None)
+        if isinstance(enum_name, str):
+            return enum_name
+        return None
+
+    @staticmethod
+    def _serialize_loss_breakdown(payload: Any) -> dict[str, Any]:
+        breakdown = PulsimBackend._serialize_telemetry_item(
+            payload,
+            ("conduction", "turn_on", "turn_off", "reverse_recovery"),
+        )
+        if not breakdown:
+            return {}
+
+        conduction = float(breakdown.get("conduction", 0.0) or 0.0)
+        turn_on = float(breakdown.get("turn_on", 0.0) or 0.0)
+        turn_off = float(breakdown.get("turn_off", 0.0) or 0.0)
+        reverse_recovery = float(breakdown.get("reverse_recovery", 0.0) or 0.0)
+        breakdown["switching"] = turn_on + turn_off + reverse_recovery
+        breakdown["total"] = conduction + float(breakdown["switching"])
+        return breakdown
+
+    @staticmethod
+    def _serialize_loss_result(payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+
+        out = PulsimBackend._serialize_telemetry_item(
+            payload,
+            (
+                "device_name",
+                "total_energy",
+                "average_power",
+                "peak_power",
+                "rms_current",
+                "avg_current",
+                "efficiency_contribution",
+            ),
+        )
+        breakdown = PulsimBackend._serialize_loss_breakdown(
+            PulsimBackend._extract_telemetry_field(payload, "breakdown")
+        )
+        if breakdown:
+            out["breakdown"] = breakdown
+        return out
+
+    @staticmethod
+    def _serialize_device_losses(payload: Any) -> dict[str, dict[str, Any]]:
+        if payload is None:
+            return {}
+
+        if isinstance(payload, dict):
+            iterable = payload.items()
+        else:
+            try:
+                iterable = ((None, item) for item in list(payload))
+            except TypeError:
+                iterable = ()
+
+        device_losses: dict[str, dict[str, Any]] = {}
+        for key, raw_entry in iterable:
+            entry = PulsimBackend._serialize_loss_result(raw_entry)
+            entry_name = str(entry.get("device_name") or key or "").strip()
+            if not entry_name:
+                continue
+            if not entry:
+                continue
+            entry["device_name"] = entry_name
+            device_losses[entry_name] = entry
+        return device_losses
 
     def _append_electrothermal_statistics(
         self,
@@ -2447,6 +2561,113 @@ class PulsimBackend(SimulationBackend):
         native_result: Any,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        linear_solver_telemetry = self._extract_telemetry_field(payload, "linear_solver_telemetry")
+        if linear_solver_telemetry is None:
+            linear_solver_telemetry = getattr(native_result, "linear_solver_telemetry", None)
+        linear_data = self._serialize_telemetry_item(
+            linear_solver_telemetry,
+            (
+                "total_solve_calls",
+                "total_analyze_calls",
+                "total_factorize_calls",
+                "total_iterations",
+                "total_fallbacks",
+                "last_iterations",
+                "last_error",
+                "total_analyze_time_seconds",
+                "total_factorize_time_seconds",
+                "total_solve_time_seconds",
+                "last_analyze_time_seconds",
+                "last_factorize_time_seconds",
+                "last_solve_time_seconds",
+                "last_solver",
+                "last_preconditioner",
+            ),
+        )
+        if linear_data:
+            statistics["linear_solver_telemetry"] = linear_data
+
+        backend_telemetry = self._extract_telemetry_field(payload, "backend_telemetry")
+        if backend_telemetry is None:
+            backend_telemetry = getattr(native_result, "backend_telemetry", None)
+        backend_data = self._serialize_telemetry_item(
+            backend_telemetry,
+            (
+                "requested_backend",
+                "selected_backend",
+                "solver_family",
+                "formulation_mode",
+                "function_evaluations",
+                "jacobian_evaluations",
+                "nonlinear_iterations",
+                "nonlinear_convergence_failures",
+                "error_test_failures",
+                "escalation_count",
+                "reinitialization_count",
+                "backend_recovery_count",
+                "state_space_primary_steps",
+                "dae_fallback_steps",
+                "segment_non_admissible_steps",
+                "segment_model_cache_hits",
+                "segment_model_cache_misses",
+                "linear_factor_cache_hits",
+                "linear_factor_cache_misses",
+                "linear_factor_cache_invalidations",
+                "linear_factor_cache_last_invalidation_reason",
+                "reserved_output_samples",
+                "time_series_reallocations",
+                "state_series_reallocations",
+                "virtual_channel_reallocations",
+                "equation_assemble_system_calls",
+                "equation_assemble_residual_calls",
+                "equation_assemble_system_time_seconds",
+                "equation_assemble_residual_time_seconds",
+                "model_regularization_events",
+                "model_regularization_last_changed",
+                "model_regularization_last_intensity",
+                "failure_reason",
+            ),
+        )
+        if backend_data:
+            statistics["backend_telemetry"] = backend_data
+
+        fallback_trace = self._extract_telemetry_field(payload, "fallback_trace")
+        if fallback_trace is None:
+            fallback_trace = getattr(native_result, "fallback_trace", None)
+        fallback_data = self._serialize_telemetry_items(
+            fallback_trace,
+            ("step_index", "retry_index", "time", "dt", "reason", "solver_status", "action"),
+        )
+        if fallback_data:
+            statistics["fallback_trace"] = fallback_data
+            statistics["fallback_trace_count"] = len(fallback_data)
+
+        loss_summary = self._extract_telemetry_field(payload, "loss_summary")
+        if loss_summary is None:
+            loss_summary = getattr(native_result, "loss_summary", None)
+        summary_data = self._serialize_telemetry_item(
+            loss_summary,
+            (
+                "total_loss",
+                "total_conduction",
+                "total_switching",
+                "input_power",
+                "output_power",
+                "efficiency",
+            ),
+        )
+        device_losses = self._serialize_device_losses(
+            self._extract_telemetry_field(loss_summary, "device_losses")
+        )
+        if device_losses:
+            summary_data["device_losses"] = device_losses
+        if summary_data:
+            statistics["loss_summary"] = summary_data
+            if isinstance(summary_data.get("total_loss"), (int, float)):
+                statistics["system_total_loss"] = float(summary_data["total_loss"])
+            if device_losses:
+                statistics["loss_device_count"] = len(device_losses)
+
         thermal_summary = self._extract_telemetry_field(payload, "thermal_summary")
         if thermal_summary is None:
             thermal_summary = getattr(native_result, "thermal_summary", None)

@@ -432,6 +432,98 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.peak_temperature = 73.0
             self.average_temperature = 58.0
 
+    class _LinearSolverTelemetry:
+        def __init__(self) -> None:
+            self.total_solve_calls = 11
+            self.total_analyze_calls = 4
+            self.total_factorize_calls = 4
+            self.total_iterations = 19
+            self.total_fallbacks = 0
+            self.last_iterations = 2
+            self.last_error = 0.0
+            self.total_analyze_time_seconds = 0.001
+            self.total_factorize_time_seconds = 0.002
+            self.total_solve_time_seconds = 0.003
+            self.last_analyze_time_seconds = 0.0001
+            self.last_factorize_time_seconds = 0.0002
+            self.last_solve_time_seconds = 0.0003
+            self.last_solver = "KLU"
+            self.last_preconditioner = "none"
+
+    class _BackendTelemetry:
+        def __init__(self) -> None:
+            self.requested_backend = "auto"
+            self.selected_backend = "native"
+            self.solver_family = "dae"
+            self.formulation_mode = "projected_wrapper"
+            self.function_evaluations = 50
+            self.jacobian_evaluations = 12
+            self.nonlinear_iterations = 23
+            self.nonlinear_convergence_failures = 0
+            self.error_test_failures = 0
+            self.escalation_count = 0
+            self.reinitialization_count = 0
+            self.backend_recovery_count = 0
+            self.state_space_primary_steps = 200
+            self.dae_fallback_steps = 0
+            self.segment_non_admissible_steps = 0
+            self.segment_model_cache_hits = 10
+            self.segment_model_cache_misses = 2
+            self.linear_factor_cache_hits = 15
+            self.linear_factor_cache_misses = 1
+            self.linear_factor_cache_invalidations = 0
+            self.linear_factor_cache_last_invalidation_reason = ""
+            self.reserved_output_samples = 4096
+            self.time_series_reallocations = 0
+            self.state_series_reallocations = 0
+            self.virtual_channel_reallocations = 0
+            self.equation_assemble_system_calls = 300
+            self.equation_assemble_residual_calls = 0
+            self.equation_assemble_system_time_seconds = 0.01
+            self.equation_assemble_residual_time_seconds = 0.0
+            self.model_regularization_events = 0
+            self.model_regularization_last_changed = ""
+            self.model_regularization_last_intensity = 0.0
+            self.failure_reason = ""
+
+    class _FallbackTraceEntry:
+        def __init__(self) -> None:
+            self.step_index = 7
+            self.retry_index = 1
+            self.time = 2.0e-6
+            self.dt = 5.0e-7
+            self.reason = "nonlinear_residual"
+            self.solver_status = "RetryScheduled"
+            self.action = "reduce_dt"
+
+    class _LossBreakdown:
+        def __init__(self) -> None:
+            self.conduction = 1.2
+            self.turn_on = 0.3
+            self.turn_off = 0.25
+            self.reverse_recovery = 0.0
+
+    class _LossResult:
+        def __init__(self) -> None:
+            self.device_name = "M1"
+            self.breakdown = _LossBreakdown()
+            self.total_energy = 0.0175
+            self.average_power = 1.75
+            self.peak_power = 3.1
+            self.rms_current = 4.2
+            self.avg_current = 3.0
+            self.efficiency_contribution = 0.98
+
+    class _SystemLossSummary:
+        def __init__(self) -> None:
+            self.device_losses = {"M1": _LossResult()}
+            self.total_loss = 1.75
+            self.total_conduction = 1.2
+            self.total_switching = 0.55
+            self.input_power = 100.0
+            self.output_power = 98.25
+            self.efficiency = 98.25
+
     class _SimulationOptions:
         def __init__(self) -> None:
             self.tstart = 0.0
@@ -464,6 +556,16 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
                 states=[[0.0], [1.25]],
                 success=True,
                 message="",
+                total_steps=2,
+                newton_iterations_total=3,
+                timestep_rejections=0,
+                total_time_seconds=0.004,
+                final_status=SimpleNamespace(name="Success"),
+                diagnostic=SimpleNamespace(name="None"),
+                linear_solver_telemetry=_LinearSolverTelemetry(),
+                fallback_trace=[_FallbackTraceEntry()],
+                backend_telemetry=_BackendTelemetry(),
+                loss_summary=_SystemLossSummary(),
                 thermal_summary=_ThermalSummary(),
                 component_electrothermal=[_ComponentElectrothermal()],
             )
@@ -535,6 +637,19 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].direct_formulation_fallback is False
     assert seen["options"].control_mode == _ControlUpdateMode.Discrete
     assert seen["options"].control_sample_time == 5e-6
+    assert result.statistics["total_steps"] == 2.0
+    assert result.statistics["status"] == "Success"
+    assert result.statistics["diagnostic"] == "None"
+    assert result.statistics["linear_solver_telemetry"]["total_solve_calls"] == 11.0
+    assert result.statistics["backend_telemetry"]["selected_backend"] == "native"
+    assert result.statistics["fallback_trace_count"] == 1
+    assert result.statistics["fallback_trace"][0]["action"] == "reduce_dt"
+    assert result.statistics["loss_summary"]["total_loss"] == 1.75
+    assert result.statistics["loss_summary"]["device_losses"]["M1"]["device_name"] == "M1"
+    assert (
+        result.statistics["loss_summary"]["device_losses"]["M1"]["breakdown"]["turn_on"] == 0.3
+    )
+    assert result.statistics["loss_device_count"] == 1
     assert result.statistics["thermal_summary"]["enabled"] is True
     assert result.statistics["thermal_summary"]["max_temperature"] == 73.0
     assert result.statistics["electrothermal_component_count"] == 1
