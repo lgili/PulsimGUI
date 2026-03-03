@@ -77,7 +77,7 @@ python3 -m pulsimgui
 
 ## Recommended Backend
 
-For reproducible behavior, use **`pulsim v0.6.1`**.
+For reproducible behavior, use **`pulsim v0.6.3`**.
 
 Quick check:
 

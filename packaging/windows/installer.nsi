@@ -6,7 +6,7 @@
 
 ; Application metadata
 !define APP_NAME "PulsimGui"
-!define APP_VERSION "0.6.0"
+!define APP_VERSION "0.6.1"
 !define APP_PUBLISHER "Luiz Gili"
 !define APP_URL "https://github.com/lgili/PulsimGui"
 !define APP_EXE "PulsimGui.exe"
