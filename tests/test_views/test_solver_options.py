@@ -34,6 +34,9 @@ class TestUIValueChanges:
         assert dialog._formulation_mode_combo.currentData() == "projected_wrapper"
         assert dialog._direct_formulation_fallback_check.isChecked()
         assert not dialog._direct_formulation_fallback_check.isEnabled()
+        assert dialog._control_mode_combo.currentData() == "auto"
+        assert dialog._control_sample_time_spin.value() == 0.0
+        assert not dialog._control_sample_time_spin.isEnabled()
 
         # Check DC strategy
         assert dialog._dc_strategy_combo.currentIndex() == 0  # auto
@@ -84,6 +87,8 @@ class TestUIValueChanges:
             thermal_network="cauer",
             formulation_mode="direct",
             direct_formulation_fallback=False,
+            control_mode="discrete",
+            control_sample_time=2.5e-6,
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -103,6 +108,9 @@ class TestUIValueChanges:
         assert dialog._formulation_mode_combo.currentData() == "direct"
         assert not dialog._direct_formulation_fallback_check.isChecked()
         assert dialog._direct_formulation_fallback_check.isEnabled()
+        assert dialog._control_mode_combo.currentData() == "discrete"
+        assert dialog._control_sample_time_spin.value() == pytest.approx(2.5e-6)
+        assert dialog._control_sample_time_spin.isEnabled()
 
         # Check DC strategy (source is index 3)
         assert dialog._dc_strategy_combo.currentIndex() == 3
@@ -148,6 +156,10 @@ class TestUIValueChanges:
             dialog._formulation_mode_combo.findData("direct")
         )
         dialog._direct_formulation_fallback_check.setChecked(False)
+        dialog._control_mode_combo.setCurrentIndex(
+            dialog._control_mode_combo.findData("discrete")
+        )
+        dialog._control_sample_time_spin.setValue(3.0e-6)
         dialog._gmin_initial_spin.setValue(5e-3)
         dialog._gmin_final_spin.setValue(1e-10)
         dialog._rel_tol_spin.setValue(1e-6)
@@ -180,6 +192,8 @@ class TestUIValueChanges:
         assert settings.transient_auto_regularize is False
         assert settings.formulation_mode == "direct"
         assert settings.direct_formulation_fallback is False
+        assert settings.control_mode == "discrete"
+        assert settings.control_sample_time == pytest.approx(3.0e-6)
         assert settings.gmin_initial == 5e-3
         assert settings.gmin_final == 1e-10
         assert settings.rel_tol == 1e-6

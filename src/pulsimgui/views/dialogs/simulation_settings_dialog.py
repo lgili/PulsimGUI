@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationSettings,
+    normalize_control_mode,
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
@@ -441,6 +442,24 @@ class SimulationSettingsDialog(QDialog):
         self._direct_formulation_fallback_check.setChecked(True)
         form.addRow(self._direct_formulation_fallback_check)
 
+        self._control_mode_combo = QComboBox()
+        self._control_mode_combo.addItem("Auto (backend decides)", "auto")
+        self._control_mode_combo.addItem("Continuous (every solver step)", "continuous")
+        self._control_mode_combo.addItem("Discrete (sampled controller)", "discrete")
+        self._control_mode_combo.currentIndexChanged.connect(self._on_control_mode_changed)
+        form.addRow("Control update mode:", self._control_mode_combo)
+
+        self._control_sample_time_spin = QDoubleSpinBox()
+        self._control_sample_time_spin.setRange(0.0, 1e3)
+        self._control_sample_time_spin.setDecimals(12)
+        self._control_sample_time_spin.setSingleStep(1e-6)
+        self._control_sample_time_spin.setSuffix(" s")
+        self._control_sample_time_spin.setToolTip(
+            "Used when control update mode is Discrete."
+        )
+        self._control_sample_time_spin.setValue(0.0)
+        form.addRow("Control sample time:", self._control_sample_time_spin)
+
         self._transient_robust_mode_check.toggled.connect(
             self._transient_auto_regularize_check.setEnabled
         )
@@ -705,6 +724,13 @@ class SimulationSettingsDialog(QDialog):
             bool(getattr(source, "direct_formulation_fallback", True))
         )
         self._on_formulation_mode_changed(self._formulation_mode_combo.currentIndex())
+        control_mode = normalize_control_mode(getattr(source, "control_mode", "auto"))
+        control_mode_idx = self._control_mode_combo.findData(control_mode)
+        self._control_mode_combo.setCurrentIndex(control_mode_idx if control_mode_idx >= 0 else 0)
+        self._control_sample_time_spin.setValue(
+            max(0.0, float(getattr(source, "control_sample_time", 0.0)))
+        )
+        self._on_control_mode_changed(self._control_mode_combo.currentIndex())
 
         dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
         self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(source.dc_strategy, 0))
@@ -791,6 +817,13 @@ class SimulationSettingsDialog(QDialog):
         self._settings.direct_formulation_fallback = (
             self._direct_formulation_fallback_check.isChecked()
         )
+        self._settings.control_mode = normalize_control_mode(
+            str(self._control_mode_combo.currentData() or "auto")
+        )
+        control_sample_time = max(0.0, float(self._control_sample_time_spin.value()))
+        if self._settings.control_mode == "discrete" and control_sample_time <= 0.0:
+            control_sample_time = max(float(self._settings.t_step), 1e-12)
+        self._settings.control_sample_time = control_sample_time
 
         dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
         self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
@@ -873,6 +906,13 @@ class SimulationSettingsDialog(QDialog):
         """Enable direct-mode fallback option only when direct mode is selected."""
         direct_mode = str(self._formulation_mode_combo.currentData() or "") == "direct"
         self._direct_formulation_fallback_check.setEnabled(direct_mode)
+
+    def _on_control_mode_changed(self, _index: int) -> None:
+        """Enable control sample time only for discrete control update mode."""
+        discrete_mode = str(self._control_mode_combo.currentData() or "") == "discrete"
+        self._control_sample_time_spin.setEnabled(discrete_mode)
+        if discrete_mode and self._control_sample_time_spin.value() <= 0.0:
+            self._control_sample_time_spin.setValue(max(float(self._t_step_edit.value), 1e-12))
 
     def _update_effective_step(self) -> None:
         """Update effective step display."""

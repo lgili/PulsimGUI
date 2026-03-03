@@ -109,6 +109,18 @@ def normalize_formulation_mode(value: str | None) -> str:
     return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
 
 
+def normalize_control_mode(value: str | None) -> str:
+    """Normalize control update scheduling mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "sampled": "discrete",
+        "sample": "discrete",
+        "continuous_time": "continuous",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -155,6 +167,8 @@ class SimulationSettings:
     # Transient formulation mode (supported by pulsim>=0.6.1)
     formulation_mode: str = "projected_wrapper"
     direct_formulation_fallback: bool = True
+    control_mode: str = "auto"
+    control_sample_time: float = 0.0
 
 
 @dataclass
@@ -636,6 +650,20 @@ class SimulationService(QObject):
                     self._settings.direct_formulation_fallback,
                 )
             )
+            self._settings.control_mode = str(
+                normalize_control_mode(
+                    solver_settings.get("control_mode", self._settings.control_mode)
+                )
+            )
+            self._settings.control_sample_time = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "control_sample_time",
+                        self._settings.control_sample_time,
+                    )
+                ),
+            )
 
             # Load backend runtime settings
             runtime_settings = settings_service.get_backend_runtime_settings()
@@ -673,6 +701,8 @@ class SimulationService(QObject):
         self._settings.formulation_mode = normalize_formulation_mode(
             self._settings.formulation_mode
         )
+        self._settings.control_mode = normalize_control_mode(self._settings.control_mode)
+        self._settings.control_sample_time = max(0.0, float(self._settings.control_sample_time))
         self._persist_simulation_settings()
 
     @property
@@ -842,6 +872,8 @@ class SimulationService(QObject):
                 "direct_formulation_fallback": bool(
                     self._settings.direct_formulation_fallback
                 ),
+                "control_mode": normalize_control_mode(self._settings.control_mode),
+                "control_sample_time": max(0.0, float(self._settings.control_sample_time)),
             }
         )
 

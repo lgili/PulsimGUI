@@ -690,6 +690,17 @@ class PulsimBackend(SimulationBackend):
         normalized = aliases.get(raw, raw)
         return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
 
+    @staticmethod
+    def _normalize_control_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "sampled": "discrete",
+            "sample": "discrete",
+            "continuous_time": "continuous",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
     def _integrator_enum_name(self, method: str) -> str:
         mapping = {
             # "auto" maps to BDF1: first-order implicit method is the most stable
@@ -816,6 +827,21 @@ class PulsimBackend(SimulationBackend):
             opts.direct_formulation_fallback = bool(
                 getattr(settings, "direct_formulation_fallback", True)
             )
+        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        if hasattr(opts, "control_mode") and hasattr(self._module, "ControlUpdateMode"):
+            enum_map = {
+                "auto": "Auto",
+                "continuous": "Continuous",
+                "discrete": "Discrete",
+            }
+            enum_name = enum_map.get(control_mode, "Auto")
+            if hasattr(self._module.ControlUpdateMode, enum_name):
+                opts.control_mode = getattr(self._module.ControlUpdateMode, enum_name)
+        if hasattr(opts, "control_sample_time"):
+            control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+            if control_mode == "discrete" and control_sample_time <= 0.0:
+                control_sample_time = max(float(getattr(settings, "t_step", dt)), 1e-12)
+            opts.control_sample_time = control_sample_time
 
         if hasattr(opts, "enable_events"):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
@@ -954,6 +980,7 @@ class PulsimBackend(SimulationBackend):
             callbacks.data_point(result.time[-1], final_sample)
 
         result.statistics["execution_path"] = "simulator_options"
+        self._append_electrothermal_statistics(result.statistics, native_result)
         callbacks.progress(100.0, "Simulation complete")
         return result
 
@@ -2187,6 +2214,7 @@ class PulsimBackend(SimulationBackend):
             "TRIAC",
             "SWITCH",
             "TRANSFORMER",
+            "RESISTOR",
         }
         names: list[str] = []
         seen: set[str] = set()
@@ -2362,7 +2390,122 @@ class PulsimBackend(SimulationBackend):
             return f"Steps: {int(steps)}"
         return "Running..."
 
+    @staticmethod
+    def _extract_telemetry_field(payload: Any, field: str) -> Any | None:
+        if isinstance(payload, dict):
+            return payload.get(field)
+        return getattr(payload, field, None)
+
+    @staticmethod
+    def _serialize_telemetry_items(payload: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, dict):
+            item = PulsimBackend._serialize_telemetry_item(payload, fields)
+            return [item] if item else []
+        if isinstance(payload, (list, tuple)):
+            return [
+                item
+                for item in (
+                    PulsimBackend._serialize_telemetry_item(entry, fields) for entry in payload
+                )
+                if item
+            ]
+        try:
+            iterable = list(payload)
+        except TypeError:
+            item = PulsimBackend._serialize_telemetry_item(payload, fields)
+            return [item] if item else []
+        return [
+            item
+            for item in (
+                PulsimBackend._serialize_telemetry_item(entry, fields) for entry in iterable
+            )
+            if item
+        ]
+
+    @staticmethod
+    def _serialize_telemetry_item(payload: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+        if payload is None:
+            return {}
+        out: dict[str, Any] = {}
+        for field in fields:
+            value = PulsimBackend._extract_telemetry_field(payload, field)
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                out[field] = value
+            elif isinstance(value, str):
+                out[field] = value
+            elif isinstance(value, (int, float)):
+                out[field] = float(value)
+        return out
+
+    def _append_electrothermal_statistics(
+        self,
+        statistics: dict[str, Any],
+        native_result: Any,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        thermal_summary = self._extract_telemetry_field(payload, "thermal_summary")
+        if thermal_summary is None:
+            thermal_summary = getattr(native_result, "thermal_summary", None)
+
+        summary_data = self._serialize_telemetry_item(
+            thermal_summary,
+            ("enabled", "ambient", "max_temperature"),
+        )
+        device_data = self._serialize_telemetry_items(
+            self._extract_telemetry_field(thermal_summary, "device_temperatures"),
+            (
+                "device_name",
+                "enabled",
+                "final_temperature",
+                "peak_temperature",
+                "average_temperature",
+            ),
+        )
+        if device_data:
+            summary_data["device_temperatures"] = device_data
+        if summary_data:
+            statistics["thermal_summary"] = summary_data
+            if isinstance(summary_data.get("max_temperature"), (int, float)):
+                statistics["thermal_max_temperature"] = float(summary_data["max_temperature"])
+
+        component_electrothermal = self._extract_telemetry_field(payload, "component_electrothermal")
+        if component_electrothermal is None:
+            component_electrothermal = getattr(native_result, "component_electrothermal", None)
+        component_data = self._serialize_telemetry_items(
+            component_electrothermal,
+            (
+                "component_name",
+                "thermal_enabled",
+                "conduction",
+                "turn_on",
+                "turn_off",
+                "reverse_recovery",
+                "total_loss",
+                "total_energy",
+                "average_power",
+                "peak_power",
+                "final_temperature",
+                "peak_temperature",
+                "average_temperature",
+            ),
+        )
+        if component_data:
+            statistics["component_electrothermal"] = component_data
+            statistics["electrothermal_component_count"] = len(component_data)
+            peak_temperatures = [
+                float(item["peak_temperature"])
+                for item in component_data
+                if isinstance(item.get("peak_temperature"), (int, float))
+            ]
+            if peak_temperatures:
+                statistics["electrothermal_peak_temperature"] = max(peak_temperatures)
+
     def _populate_backend_result(self, backend_result: BackendRunResult, sim_result: Any) -> None:
+        payload: dict[str, Any] | None = None
         if hasattr(sim_result, "to_dict"):
             payload = sim_result.to_dict()
             backend_result.time = list(payload.get("time", []))
@@ -2391,6 +2534,7 @@ class PulsimBackend(SimulationBackend):
                     )
             except Exception:  # pragma: no cover - best-effort cast
                 backend_result.statistics["status"] = status_value
+        self._append_electrothermal_statistics(backend_result.statistics, sim_result, payload)
 
     def _compute_time_step(self, settings: "SimulationSettings") -> float:
         duration = settings.t_stop - settings.t_start

@@ -100,6 +100,8 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
         thermal_network="cauer",
         formulation_mode="direct",
         direct_formulation_fallback=False,
+        control_mode="discrete",
+        control_sample_time=2e-6,
     )
 
     assert fake_settings.sim_settings is not None
@@ -120,6 +122,8 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
     assert fake_settings.solver_settings["thermal_network"] == "cauer"
     assert fake_settings.solver_settings["formulation_mode"] == "direct"
     assert fake_settings.solver_settings["direct_formulation_fallback"] is False
+    assert fake_settings.solver_settings["control_mode"] == "discrete"
+    assert fake_settings.solver_settings["control_sample_time"] == 2e-6
 
 
 def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch) -> None:
@@ -136,6 +140,8 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
             "thermal_network": "cauer",
             "formulation_mode": "direct",
             "direct_formulation_fallback": False,
+            "control_mode": "discrete",
+            "control_sample_time": 1e-6,
         }
     )
     service = SimulationService(settings_service=fake_settings)
@@ -150,6 +156,8 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
     assert service.settings.thermal_network == "cauer"
     assert service.settings.formulation_mode == "direct"
     assert service.settings.direct_formulation_fallback is False
+    assert service.settings.control_mode == "discrete"
+    assert service.settings.control_sample_time == 1e-6
 
 
 def test_default_runtime_target_version_loaded_when_settings_empty(monkeypatch) -> None:
