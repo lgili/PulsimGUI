@@ -33,6 +33,7 @@ from pulsimgui.services.simulation_service import (
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
+    normalize_thermal_policy,
 )
 from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.properties import SILineEdit
@@ -544,6 +545,30 @@ class SimulationSettingsDialog(QDialog):
         self._thermal_network_combo.addItem("Cauer", "cauer")
         form.addRow("Thermal network:", self._thermal_network_combo)
 
+        self._thermal_policy_combo = QComboBox()
+        self._thermal_policy_combo.addItem("Loss + temperature scaling", "loss_with_temperature_scaling")
+        self._thermal_policy_combo.addItem("Loss only", "loss_only")
+        self._thermal_policy_combo.setToolTip(
+            "Defines if losses are temperature-scaled during electrothermal coupling."
+        )
+        form.addRow("Coupling policy:", self._thermal_policy_combo)
+
+        self._thermal_default_rth_spin = QDoubleSpinBox()
+        self._thermal_default_rth_spin.setRange(0.0, 1e6)
+        self._thermal_default_rth_spin.setDecimals(4)
+        self._thermal_default_rth_spin.setSingleStep(0.1)
+        self._thermal_default_rth_spin.setValue(1.0)
+        self._thermal_default_rth_spin.setSuffix(" K/W")
+        form.addRow("Default Rth:", self._thermal_default_rth_spin)
+
+        self._thermal_default_cth_spin = QDoubleSpinBox()
+        self._thermal_default_cth_spin.setRange(0.0, 1e6)
+        self._thermal_default_cth_spin.setDecimals(4)
+        self._thermal_default_cth_spin.setSingleStep(0.1)
+        self._thermal_default_cth_spin.setValue(0.1)
+        self._thermal_default_cth_spin.setSuffix(" J/K")
+        form.addRow("Default Cth:", self._thermal_default_cth_spin)
+
         self._thermal_include_conduction_check = QCheckBox("Include conduction losses")
         self._thermal_include_conduction_check.setChecked(True)
         form.addRow(self._thermal_include_conduction_check)
@@ -746,6 +771,24 @@ class SimulationSettingsDialog(QDialog):
         thermal_network = str(getattr(source, "thermal_network", "foster") or "foster").strip().lower()
         thermal_network_idx = self._thermal_network_combo.findData(thermal_network)
         self._thermal_network_combo.setCurrentIndex(thermal_network_idx if thermal_network_idx >= 0 else 0)
+        thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(
+                    source,
+                    "thermal_policy",
+                    "loss_with_temperature_scaling",
+                )
+                or "loss_with_temperature_scaling"
+            )
+        )
+        thermal_policy_idx = self._thermal_policy_combo.findData(thermal_policy)
+        self._thermal_policy_combo.setCurrentIndex(thermal_policy_idx if thermal_policy_idx >= 0 else 0)
+        self._thermal_default_rth_spin.setValue(
+            max(0.0, float(getattr(source, "thermal_default_rth", 1.0)))
+        )
+        self._thermal_default_cth_spin.setValue(
+            max(0.0, float(getattr(source, "thermal_default_cth", 0.1)))
+        )
         self._thermal_include_conduction_check.setChecked(
             bool(getattr(source, "thermal_include_conduction_losses", True))
         )
@@ -839,6 +882,20 @@ class SimulationSettingsDialog(QDialog):
         self._settings.thermal_network = str(
             self._thermal_network_combo.currentData() or "foster"
         ).strip().lower()
+        self._settings.thermal_policy = normalize_thermal_policy(
+            str(
+                self._thermal_policy_combo.currentData()
+                or "loss_with_temperature_scaling"
+            )
+        )
+        self._settings.thermal_default_rth = max(
+            0.0,
+            float(self._thermal_default_rth_spin.value()),
+        )
+        self._settings.thermal_default_cth = max(
+            0.0,
+            float(self._thermal_default_cth_spin.value()),
+        )
         self._settings.thermal_include_conduction_losses = (
             self._thermal_include_conduction_check.isChecked()
         )

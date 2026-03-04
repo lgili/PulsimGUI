@@ -32,6 +32,7 @@ from pulsimgui.commands.component_commands import (
 from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     ComponentType,
     THERMAL_PORT_PARAMETER,
     can_connect_measurement_pins,
@@ -55,6 +56,7 @@ from pulsimgui.services.simulation_service import (
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
+    normalize_thermal_policy,
 )
 from pulsimgui.services.thermal_service import ThermalAnalysisService
 from pulsimgui.services.theme_service import ThemeService, Theme
@@ -269,6 +271,10 @@ class MainWindow(QMainWindow):
         self.action_select_all = QAction("Select &All", self)
         self.action_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
 
+        self.action_rename_signal = QAction("&Rename Signal...", self)
+        self.action_rename_signal.setShortcut(QKeySequence("F2"))
+        self.action_rename_signal.triggered.connect(self._on_rename_signal)
+
         self.action_create_subcircuit = QAction("Create &Subcircuit...", self)
         self.action_create_subcircuit.setEnabled(False)
         self.action_create_subcircuit.triggered.connect(self._on_create_subcircuit)
@@ -426,6 +432,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_delete)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_select_all)
+        edit_menu.addAction(self.action_rename_signal)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
@@ -1234,6 +1241,36 @@ class MainWindow(QMainWindow):
         runtime_settings.thermal_network = str(
             getattr(project_settings, "thermal_network", runtime_settings.thermal_network) or "foster"
         )
+        runtime_settings.thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(
+                    project_settings,
+                    "thermal_policy",
+                    runtime_settings.thermal_policy,
+                )
+                or "loss_with_temperature_scaling"
+            )
+        )
+        runtime_settings.thermal_default_rth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_rth",
+                    runtime_settings.thermal_default_rth,
+                )
+            ),
+        )
+        runtime_settings.thermal_default_cth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_cth",
+                    runtime_settings.thermal_default_cth,
+                )
+            ),
+        )
         runtime_settings.formulation_mode = normalize_formulation_mode(
             getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
         )
@@ -1292,6 +1329,17 @@ class MainWindow(QMainWindow):
             runtime_settings.thermal_include_conduction_losses
         )
         project_settings.thermal_network = str(runtime_settings.thermal_network)
+        project_settings.thermal_policy = normalize_thermal_policy(
+            str(runtime_settings.thermal_policy)
+        )
+        project_settings.thermal_default_rth = max(
+            0.0,
+            float(runtime_settings.thermal_default_rth),
+        )
+        project_settings.thermal_default_cth = max(
+            0.0,
+            float(runtime_settings.thermal_default_cth),
+        )
         project_settings.formulation_mode = normalize_formulation_mode(
             runtime_settings.formulation_mode
         )
@@ -1905,7 +1953,11 @@ class MainWindow(QMainWindow):
             ):
                 return False
             # Never allow mixing circuit/signal/thermal domains on a direct wire connection.
-            return pin_connection_domain(left_component, left_pin) == pin_connection_domain(right_component, right_pin)
+            left_domain = pin_connection_domain(left_component, left_pin)
+            right_domain = pin_connection_domain(right_component, right_pin)
+            if left_domain == right_domain:
+                return True
+            return CONNECTION_DOMAIN_ANY in {left_domain, right_domain}
 
         for ref in (start_ref, end_ref):
             if ref is None:
@@ -1920,6 +1972,12 @@ class MainWindow(QMainWindow):
         self._project.mark_dirty()
         self._update_modified_indicator()
         self._refresh_scope_window_bindings()
+
+    def _on_rename_signal(self) -> None:
+        """Rename selected wire alias."""
+        if self._schematic_view.rename_selected_wire():
+            return
+        self.statusBar().showMessage("Select a wire to rename.", 3000)
 
     def _on_scope_open_requested(self, component) -> None:
         """Open (or focus) a dedicated window for the requested scope."""
@@ -2472,6 +2530,21 @@ class MainWindow(QMainWindow):
                 probe_name = component.name or "VoltageProbe"
                 enriched.signals[format_signal_key("VP", probe_name)] = [
                     plus[idx] - minus[idx] for idx in range(samples)
+                ]
+
+            if component.type == ComponentType.VOLTAGE_PROBE_GND:
+                node = self._probe_node_series(
+                    enriched,
+                    node_map.get((str(component.id), 0)),
+                    alias_map,
+                )
+                if node is None:
+                    continue
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(node), len(enriched.time))
+                probe_name = component.name or "VoltageProbeGND"
+                enriched.signals[format_signal_key("VP", probe_name)] = [
+                    node[idx] * scale for idx in range(samples)
                 ]
 
             if component.type == ComponentType.CURRENT_PROBE:

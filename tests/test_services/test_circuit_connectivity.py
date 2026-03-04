@@ -227,6 +227,34 @@ def test_converter_uses_virtual_component_for_unmapped_types() -> None:
     assert metadata["notes"] == "[\"demo\", \"virtual\"]"
 
 
+def test_converter_maps_delay_block_delay_time_to_backend_delay() -> None:
+    """Delay block should forward delay_time using backend's expected delay key."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "dly1",
+                "type": "DELAY_BLOCK",
+                "name": "DLY1",
+                "parameters": {"delay_time": 2.5e-4},
+                "pin_nodes": ["1", "2"],
+            }
+        ],
+        "node_map": {"dly1": ["1", "2"]},
+        "node_aliases": {"1": "IN", "2": "OUT"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    comp_type, _name, _nodes, numeric_params, _metadata = converted.virtual_components[0]
+    assert comp_type == "delay_block"
+    assert numeric_params["delay_time"] == pytest.approx(2.5e-4)
+    assert numeric_params["delay"] == pytest.approx(2.5e-4)
+
+
 def test_converter_prefers_native_switch_and_snubber_methods() -> None:
     """When backend has native methods, converter should not downgrade to virtual."""
     fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
@@ -403,6 +431,58 @@ def test_build_node_map_does_not_merge_cross_domain_shared_points() -> None:
     resistor_node = node_map[(str(resistor.id), 1)]
     controller_node = node_map[(str(controller.id), 0)]
     assert resistor_node != controller_node
+
+
+def test_build_node_map_merges_goto_from_with_same_label() -> None:
+    """Goto/From labels with same net name should bridge distant wires."""
+    circuit = Circuit(name="goto-from-merge")
+    r1 = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    r2 = Component(type=ComponentType.RESISTOR, name="R2", x=320.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="G1", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=240.0, y=100.0)
+    goto.parameters["net_label"] = "BUS_A"
+    from_label.parameters["net_label"] = "BUS_A"
+
+    circuit.add_component(r1)
+    circuit.add_component(r2)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    x1, y1 = r1.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    x2, y2 = r2.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, x2, y2)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(r1.id), 1)] == node_map[(str(r2.id), 0)]
+
+
+def test_build_node_map_does_not_merge_goto_from_across_domains() -> None:
+    """Same label must not short circuit and signal domains together."""
+    circuit = Circuit(name="goto-from-domain-isolation")
+    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    controller = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=300.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="G1", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=240.0, y=100.0)
+    goto.parameters["net_label"] = "BUS_X"
+    from_label.parameters["net_label"] = "BUS_X"
+
+    circuit.add_component(resistor)
+    circuit.add_component(controller)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    xr, yr = resistor.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    xc, yc = controller.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(xr, yr, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, xc, yc)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(resistor.id), 1)] != node_map[(str(controller.id), 0)]
 
 
 def test_buck_example_keeps_vin_sw_and_vout_as_distinct_nets() -> None:

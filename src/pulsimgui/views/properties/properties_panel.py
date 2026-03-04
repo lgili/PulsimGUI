@@ -1127,13 +1127,23 @@ class PropertiesPanel(QWidget):
             "initial_current": "A",
             "vth": "V",
             "vce_sat": "V",
+            "v_ce_sat": "V",
             "ron": "Ω",
             "roff": "Ω",
             "rs": "Ω",
             "rds_on": "Ω",
+            "g_on": "S",
+            "g_off": "S",
             "lm": "H",
             "frequency": "Hz",
             "amplitude": "V",
+            "switching_eon_j": "J",
+            "switching_eoff_j": "J",
+            "switching_err_j": "J",
+            "thermal_rth": "K/W",
+            "thermal_cth": "J/K",
+            "thermal_temp_init": "°C",
+            "thermal_temp_ref": "°C",
         }
         return units.get(name, "")
 

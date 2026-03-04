@@ -1617,6 +1617,130 @@ class VoltageProbeItem(ComponentItem):
         painter.drawText(QRectF(-10, -10, 20, 20), Qt.AlignmentFlag.AlignCenter, "V")
 
 
+class VoltageProbeGndItem(ComponentItem):
+    """Graphics item for single-ended voltage probe (node referenced to GND)."""
+
+    def boundingRect(self) -> QRectF:
+        return self._with_pin_bounds(QRectF(-24, -20, 48, 40))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        pin_in = self._pin_position_by_name("IN", QPointF(-25, 0))
+        pin_out = self._pin_position_by_name("OUT", QPointF(25, 0))
+        radius = 10.0
+
+        circuit_color = self._domain_base_color(CONNECTION_DOMAIN_CIRCUIT)
+        signal_color = self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
+        painter.setPen(self._symbol_pen(2.0, circuit_color))
+        painter.drawLine(pin_in, QPointF(-radius, 0))
+        painter.setPen(self._symbol_pen(2.0, signal_color))
+        painter.drawLine(QPointF(radius, 0), pin_out)
+
+        painter.setPen(self._symbol_pen(2.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(0, 0), radius, radius)
+
+        painter.setPen(self._symbol_pen(2.2, self._accent_red()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(11)
+        painter.setFont(font)
+        painter.drawText(QRectF(-9, -9, 18, 18), Qt.AlignmentFlag.AlignCenter, "V")
+
+        ground_y = radius + 5.0
+        painter.setPen(self._symbol_pen(1.7, self._muted_color()))
+        painter.drawLine(QPointF(0, radius), QPointF(0, ground_y))
+        painter.drawLine(QPointF(-6, ground_y), QPointF(6, ground_y))
+        painter.drawLine(QPointF(-4, ground_y + 3), QPointF(4, ground_y + 3))
+        painter.drawLine(QPointF(-2, ground_y + 6), QPointF(2, ground_y + 6))
+
+
+class _NetLabelItem(ComponentItem):
+    """Shared drawing logic for Goto/From net labels."""
+
+    _ARROW_RIGHT = True
+
+    def __init__(self, component: Component, parent: QGraphicsItem | None = None):
+        super().__init__(component, parent)
+        self._name_label.setVisible(False)
+        self._value_label.setVisible(False)
+
+    def _update_labels(self) -> None:
+        # Net labels are rendered inside the symbol body.
+        self._name_label.setVisible(False)
+        self._value_label.setVisible(False)
+
+    def _label_text(self) -> str:
+        text = str(self._component.parameters.get("net_label", "") or "").strip()
+        if text:
+            return text
+        return self._component.name or "NET"
+
+    def boundingRect(self) -> QRectF:
+        text = self._label_text()
+        width = max(44.0, min(160.0, 24.0 + float(len(text)) * 7.2))
+        x = -4.0 if self._ARROW_RIGHT else -width + 4.0
+        return self._with_pin_bounds(QRectF(x, -12.0, width, 24.0))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        rect = self.boundingRect()
+        pin_pos = self._pin_position_by_index(0, QPointF(0, 0))
+        text = self._label_text()
+
+        body_color = self._surface_color()
+        stroke = self._line_color()
+        arrow_tip_x = rect.right() if self._ARROW_RIGHT else rect.left()
+        notch_x = rect.left() + 12.0 if self._ARROW_RIGHT else rect.right() - 12.0
+
+        polygon = (
+            QPolygonF(
+                [
+                    QPointF(rect.left(), rect.top()),
+                    QPointF(notch_x, rect.top()),
+                    QPointF(arrow_tip_x, 0.0),
+                    QPointF(notch_x, rect.bottom()),
+                    QPointF(rect.left(), rect.bottom()),
+                ]
+            )
+            if self._ARROW_RIGHT
+            else QPolygonF(
+                [
+                    QPointF(rect.right(), rect.top()),
+                    QPointF(notch_x, rect.top()),
+                    QPointF(arrow_tip_x, 0.0),
+                    QPointF(notch_x, rect.bottom()),
+                    QPointF(rect.right(), rect.bottom()),
+                ]
+            )
+        )
+
+        painter.setPen(self._symbol_pen(1.8, stroke))
+        painter.setBrush(body_color)
+        painter.drawPolygon(polygon)
+
+        painter.setPen(self._lead_pen(1.8))
+        lead_end_x = rect.left() if self._ARROW_RIGHT else rect.right()
+        painter.drawLine(pin_pos, QPointF(lead_end_x, 0.0))
+
+        painter.setPen(self._symbol_pen(1.0, self._muted_color()))
+        font = QFont(painter.font())
+        font.setPointSize(8)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(rect.adjusted(6, 1, -6, -1), Qt.AlignmentFlag.AlignCenter, text)
+
+
+class GotoLabelItem(_NetLabelItem):
+    """Graphics item for Goto label."""
+
+    _ARROW_RIGHT = True
+
+
+class FromLabelItem(_NetLabelItem):
+    """Graphics item for From label."""
+
+    _ARROW_RIGHT = False
+
+
 class CurrentProbeItem(ComponentItem):
     """Graphics item for current probe (clamp meter style)."""
 
@@ -1792,6 +1916,7 @@ def create_component_item(component: Component) -> ComponentItem:
 
         # Measurement
         ComponentType.VOLTAGE_PROBE: VoltageProbeItem,
+        ComponentType.VOLTAGE_PROBE_GND: VoltageProbeGndItem,
         ComponentType.CURRENT_PROBE: CurrentProbeItem,
         ComponentType.POWER_PROBE: PowerProbeItem,
 
@@ -1802,6 +1927,8 @@ def create_component_item(component: Component) -> ComponentItem:
         # Signal routing
         ComponentType.SIGNAL_MUX: SignalMuxItem,
         ComponentType.SIGNAL_DEMUX: SignalDemuxItem,
+        ComponentType.GOTO_LABEL: GotoLabelItem,
+        ComponentType.FROM_LABEL: FromLabelItem,
 
         # Magnetic
         ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,

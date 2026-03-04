@@ -525,6 +525,14 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.efficiency = 98.25
 
     class _SimulationOptions:
+        class _Thermal:
+            def __init__(self) -> None:
+                self.ambient = 25.0
+                self.enable = True
+                self.policy = None
+                self.default_rth = 1.0
+                self.default_cth = 0.1
+
         def __init__(self) -> None:
             self.tstart = 0.0
             self.tstop = 0.0
@@ -543,6 +551,28 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.direct_formulation_fallback = True
             self.control_mode = _ControlUpdateMode.Auto
             self.control_sample_time = 0.0
+            self.thermal = self._Thermal()
+            self.switching_energy: dict[str, Any] = {}
+            self.thermal_devices: dict[str, Any] = {}
+
+    class _ThermalCouplingPolicy:
+        LossOnly = object()
+        LossWithTemperatureScaling = object()
+
+    class _SwitchingEnergy:
+        def __init__(self) -> None:
+            self.eon = 0.0
+            self.eoff = 0.0
+            self.err = 0.0
+
+    class _ThermalDeviceConfig:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.rth = 1.0
+            self.cth = 0.1
+            self.temp_init = 25.0
+            self.temp_ref = 25.0
+            self.alpha = 0.004
 
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
@@ -585,6 +615,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         Integrator=_Integrator,
         FormulationMode=_FormulationMode,
         ControlUpdateMode=_ControlUpdateMode,
+        ThermalCouplingPolicy=_ThermalCouplingPolicy,
+        SwitchingEnergy=_SwitchingEnergy,
+        ThermalDeviceConfig=_ThermalDeviceConfig,
         run_transient=run_transient,
     )
 
@@ -604,6 +637,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         enable_events=False,
         max_step_retries=12,
         enable_losses=False,
+        thermal_policy="loss_only",
+        thermal_default_rth=2.1,
+        thermal_default_cth=0.33,
         formulation_mode="direct",
         direct_formulation_fallback=False,
         control_mode="discrete",
@@ -613,8 +649,23 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         t_step=1e-6,
     )
 
+    circuit_data = _simple_circuit_data()
+    circuit_data["components"][1]["parameters"].update(
+        {
+            "switching_eon_j": 1.2e-6,
+            "switching_eoff_j": 2.4e-6,
+            "switching_err_j": 3.6e-6,
+            "thermal_enabled": False,
+            "thermal_rth": 4.4,
+            "thermal_cth": 0.55,
+            "thermal_temp_init": 45.0,
+            "thermal_temp_ref": 35.0,
+            "thermal_alpha": 0.007,
+        }
+    )
+
     result = backend.run_transient(
-        _simple_circuit_data(),
+        circuit_data,
         settings,
         BackendCallbacks(
             progress=lambda *_: None,
@@ -637,6 +688,20 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].direct_formulation_fallback is False
     assert seen["options"].control_mode == _ControlUpdateMode.Discrete
     assert seen["options"].control_sample_time == 5e-6
+    assert seen["options"].thermal.default_rth == 2.1
+    assert seen["options"].thermal.default_cth == 0.33
+    assert seen["options"].thermal.policy == _ThermalCouplingPolicy.LossOnly
+    assert "R1" in seen["options"].switching_energy
+    assert seen["options"].switching_energy["R1"].eon == 1.2e-6
+    assert seen["options"].switching_energy["R1"].eoff == 2.4e-6
+    assert seen["options"].switching_energy["R1"].err == 3.6e-6
+    assert "R1" in seen["options"].thermal_devices
+    assert seen["options"].thermal_devices["R1"].enabled is False
+    assert seen["options"].thermal_devices["R1"].rth == 4.4
+    assert seen["options"].thermal_devices["R1"].cth == 0.55
+    assert seen["options"].thermal_devices["R1"].temp_init == 45.0
+    assert seen["options"].thermal_devices["R1"].temp_ref == 35.0
+    assert seen["options"].thermal_devices["R1"].alpha == 0.007
     assert result.statistics["total_steps"] == 2.0
     assert result.statistics["status"] == "Success"
     assert result.statistics["diagnostic"] == "None"

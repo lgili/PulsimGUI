@@ -77,9 +77,52 @@ def install_dependencies() -> None:
     ], check=True)
 
 
+def ensure_windows_icon() -> None:
+    """Ensure .ico exists so Windows executable embeds branded icon."""
+    if platform.system() != "Windows":
+        return
+
+    ico_path = PACKAGING_DIR / "icons" / "pulsimgui.ico"
+    if ico_path.exists():
+        return
+
+    png_path = PACKAGING_DIR / "icons" / "pulsimgui.png"
+    if not png_path.exists():
+        print(f"  Warning: missing icon source {png_path}; building without .ico")
+        return
+
+    script = rf"""
+Add-Type -AssemblyName System.Drawing
+$bitmap = [System.Drawing.Bitmap]::FromFile('{png_path}')
+try {{
+  $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+  try {{
+    $stream = [System.IO.File]::Create('{ico_path}')
+    try {{
+      $icon.Save($stream)
+    }} finally {{
+      $stream.Dispose()
+    }}
+  }} finally {{
+    $icon.Dispose()
+  }}
+}} finally {{
+  $bitmap.Dispose()
+}}
+"""
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
+        if ico_path.exists():
+            print(f"Generated Windows icon: {ico_path}")
+    except Exception as exc:
+        print(f"  Warning: failed to generate .ico from PNG ({exc})")
+
+
 def build_pyinstaller() -> Path:
     """Build with PyInstaller."""
     print("Building with PyInstaller...")
+
+    ensure_windows_icon()
 
     # Install the package first
     subprocess.run([

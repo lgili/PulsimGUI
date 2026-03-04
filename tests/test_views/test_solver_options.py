@@ -55,6 +55,9 @@ class TestUIValueChanges:
         assert dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 25.0
         assert dialog._thermal_network_combo.currentData() == "foster"
+        assert dialog._thermal_policy_combo.currentData() == "loss_with_temperature_scaling"
+        assert dialog._thermal_default_rth_spin.value() == 1.0
+        assert dialog._thermal_default_cth_spin.value() == 0.1
         assert dialog._thermal_include_conduction_check.isChecked()
         assert dialog._thermal_include_switching_check.isChecked()
 
@@ -85,6 +88,9 @@ class TestUIValueChanges:
             thermal_include_switching_losses=False,
             thermal_include_conduction_losses=True,
             thermal_network="cauer",
+            thermal_policy="loss_only",
+            thermal_default_rth=2.4,
+            thermal_default_cth=0.35,
             formulation_mode="direct",
             direct_formulation_fallback=False,
             control_mode="discrete",
@@ -131,6 +137,9 @@ class TestUIValueChanges:
         assert not dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 40.0
         assert dialog._thermal_network_combo.currentData() == "cauer"
+        assert dialog._thermal_policy_combo.currentData() == "loss_only"
+        assert dialog._thermal_default_rth_spin.value() == pytest.approx(2.4)
+        assert dialog._thermal_default_cth_spin.value() == pytest.approx(0.35)
         assert dialog._thermal_include_conduction_check.isChecked()
         assert not dialog._thermal_include_switching_check.isChecked()
 
@@ -172,6 +181,11 @@ class TestUIValueChanges:
         dialog._thermal_network_combo.setCurrentIndex(
             dialog._thermal_network_combo.findData("cauer")
         )
+        dialog._thermal_policy_combo.setCurrentIndex(
+            dialog._thermal_policy_combo.findData("loss_only")
+        )
+        dialog._thermal_default_rth_spin.setValue(3.3)
+        dialog._thermal_default_cth_spin.setValue(0.44)
         dialog._thermal_include_conduction_check.setChecked(True)
         dialog._thermal_include_switching_check.setChecked(False)
 
@@ -204,6 +218,9 @@ class TestUIValueChanges:
         assert settings.enable_losses is False
         assert settings.thermal_ambient == 42.0
         assert settings.thermal_network == "cauer"
+        assert settings.thermal_policy == "loss_only"
+        assert settings.thermal_default_rth == pytest.approx(3.3)
+        assert settings.thermal_default_cth == pytest.approx(0.44)
         assert settings.thermal_include_conduction_losses is True
         assert settings.thermal_include_switching_losses is False
 

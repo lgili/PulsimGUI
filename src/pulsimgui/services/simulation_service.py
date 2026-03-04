@@ -95,6 +95,21 @@ def normalize_thermal_network(value: str | None) -> str:
     return raw if raw in {"foster", "cauer"} else "foster"
 
 
+def normalize_thermal_policy(value: str | None) -> str:
+    """Normalize electrothermal coupling policy setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "losswithtemperaturescaling": "loss_with_temperature_scaling",
+        "temperature_scaling": "loss_with_temperature_scaling",
+        "loss_only": "loss_only",
+        "lossonly": "loss_only",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in {"loss_only", "loss_with_temperature_scaling"}:
+        return "loss_with_temperature_scaling"
+    return normalized
+
+
 def normalize_formulation_mode(value: str | None) -> str:
     """Normalize transient formulation mode setting."""
     raw = (value or "").strip().lower()
@@ -163,6 +178,9 @@ class SimulationSettings:
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+    thermal_policy: str = "loss_with_temperature_scaling"
+    thermal_default_rth: float = 1.0
+    thermal_default_cth: float = 0.1
 
     # Transient formulation mode (supported by pulsim>=0.6.1)
     formulation_mode: str = "projected_wrapper"
@@ -639,6 +657,29 @@ class SimulationService(QObject):
                     solver_settings.get("thermal_network", self._settings.thermal_network)
                 )
             )
+            self._settings.thermal_policy = str(
+                normalize_thermal_policy(
+                    solver_settings.get("thermal_policy", self._settings.thermal_policy)
+                )
+            )
+            self._settings.thermal_default_rth = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "thermal_default_rth",
+                        self._settings.thermal_default_rth,
+                    )
+                ),
+            )
+            self._settings.thermal_default_cth = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "thermal_default_cth",
+                        self._settings.thermal_default_cth,
+                    )
+                ),
+            )
             self._settings.formulation_mode = str(
                 normalize_formulation_mode(
                     solver_settings.get("formulation_mode", self._settings.formulation_mode)
@@ -698,6 +739,9 @@ class SimulationService(QObject):
         self._settings.solver = normalize_integration_method(self._settings.solver)
         self._settings.step_mode = normalize_step_mode(self._settings.step_mode)
         self._settings.thermal_network = normalize_thermal_network(self._settings.thermal_network)
+        self._settings.thermal_policy = normalize_thermal_policy(self._settings.thermal_policy)
+        self._settings.thermal_default_rth = max(0.0, float(self._settings.thermal_default_rth))
+        self._settings.thermal_default_cth = max(0.0, float(self._settings.thermal_default_cth))
         self._settings.formulation_mode = normalize_formulation_mode(
             self._settings.formulation_mode
         )
@@ -868,6 +912,9 @@ class SimulationService(QObject):
                 "thermal_include_switching_losses": self._settings.thermal_include_switching_losses,
                 "thermal_include_conduction_losses": self._settings.thermal_include_conduction_losses,
                 "thermal_network": normalize_thermal_network(self._settings.thermal_network),
+                "thermal_policy": normalize_thermal_policy(self._settings.thermal_policy),
+                "thermal_default_rth": max(0.0, float(self._settings.thermal_default_rth)),
+                "thermal_default_cth": max(0.0, float(self._settings.thermal_default_cth)),
                 "formulation_mode": normalize_formulation_mode(self._settings.formulation_mode),
                 "direct_formulation_fallback": bool(
                     self._settings.direct_formulation_fallback

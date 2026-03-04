@@ -1,6 +1,7 @@
 """Tests for Component model."""
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
     Component,
     ComponentType,
@@ -9,6 +10,7 @@ from pulsimgui.models.component import (
     THERMAL_PORT_PIN_NAME,
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
     can_connect_measurement_pins,
+    pin_connection_domain,
     set_thermal_port_enabled,
 )
 
@@ -164,6 +166,19 @@ class TestComponent:
         probe = Component(type=ComponentType.CURRENT_PROBE)
         assert len(probe.pins) == 3
         assert probe.pins[2].name == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+    def test_voltage_probe_gnd_has_single_input_and_scope_output(self):
+        probe = Component(type=ComponentType.VOLTAGE_PROBE_GND)
+        assert len(probe.pins) == 2
+        assert probe.pins[0].name == "IN"
+        assert probe.pins[1].name == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+    def test_goto_and_from_pins_use_any_domain(self):
+        goto = Component(type=ComponentType.GOTO_LABEL, parameters={"net_label": "BUS_A"})
+        from_label = Component(type=ComponentType.FROM_LABEL, parameters={"net_label": "BUS_A"})
+
+        assert pin_connection_domain(goto, 0) == CONNECTION_DOMAIN_ANY
+        assert pin_connection_domain(from_label, 0) == CONNECTION_DOMAIN_ANY
 
     def test_scope_connection_rules_for_electrical_probes(self):
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")

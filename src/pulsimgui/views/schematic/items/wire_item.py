@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
@@ -122,9 +123,11 @@ class WireItem(QGraphicsPathItem):
             if domain:
                 domains.add(domain)
 
-        if CONNECTION_DOMAIN_THERMAL in domains:
+        effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+
+        if CONNECTION_DOMAIN_THERMAL in effective_domains:
             return CONNECTION_DOMAIN_THERMAL
-        if CONNECTION_DOMAIN_SIGNAL in domains:
+        if CONNECTION_DOMAIN_SIGNAL in effective_domains:
             return CONNECTION_DOMAIN_SIGNAL
         return CONNECTION_DOMAIN_CIRCUIT
 

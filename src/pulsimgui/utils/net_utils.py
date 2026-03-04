@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
@@ -68,6 +69,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     point_domains: dict[str, str] = {}
     pin_refs: list[tuple[str, int, str]] = []
     ground_pin_refs: set[str] = set()
+    label_pin_refs: list[tuple[str, str]] = []
 
     # Register all component pins
     for comp in circuit.components.values():
@@ -80,6 +82,10 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
             pin_refs.append((comp_id, pin_idx, pin_ref))
             if comp.type == ComponentType.GROUND:
                 ground_pin_refs.add(pin_ref)
+            if comp.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+                label = str(comp.parameters.get("net_label", "") or "").strip()
+                if label:
+                    label_pin_refs.append((label, pin_ref))
 
     # Register wire endpoints/junctions and preserve explicit segment connectivity
     for wire in circuit.wires.values():
@@ -93,6 +99,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
 
     # Merge points that are geometrically coincident (within tolerance)
     _merge_nearby_points(point_positions, point_domains, uf)
+    _union_labelled_nets(label_pin_refs, point_domains, uf)
 
     # Any net touching a ground component pin is forced to node "0"
     ground_roots = {uf.find(pin_ref) for pin_ref in ground_pin_refs}
@@ -144,6 +151,16 @@ def build_node_alias_map(
                 alias_map[node_id] = alias
             elif fallback and node_id not in alias_map:
                 alias_map[node_id] = fallback
+
+    for component in circuit.components.values():
+        if component.type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+            continue
+        label = str(component.parameters.get("net_label", "") or "").strip()
+        if not label:
+            continue
+        node_id = node_map.get((str(component.id), 0))
+        if node_id and node_id not in alias_map:
+            alias_map[node_id] = label
 
     return alias_map
 
@@ -239,7 +256,10 @@ def _merge_nearby_points(
             for dy in (-1, 0, 1):
                 neighbor_key = (key[0] + dx, key[1] + dy)
                 for other_ref, ox, oy in buckets.get(neighbor_key, []):
-                    if point_domains.get(point_ref) != point_domains.get(other_ref):
+                    if not _domains_compatible(
+                        point_domains.get(point_ref),
+                        point_domains.get(other_ref),
+                    ):
                         continue
                     if abs(px - ox) < PIN_HIT_TOLERANCE and abs(py - oy) < PIN_HIT_TOLERANCE:
                         uf.union(point_ref, other_ref)
@@ -249,6 +269,80 @@ def _merge_nearby_points(
 
 def _bucket_key(x: float, y: float, bucket_size: float) -> tuple[int, int]:
     return int(round(x / bucket_size)), int(round(y / bucket_size))
+
+
+def _domains_compatible(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
+
+
+def _union_labelled_nets(
+    label_pin_refs: list[tuple[str, str]],
+    point_domains: dict[str, str],
+    uf: _UnionFind,
+) -> None:
+    """Union Goto/From nets that share the same label.
+
+    Label links are domain-aware: if the same label is used in more than one
+    concrete domain (circuit/signal/thermal), those domains stay isolated.
+    """
+    if not label_pin_refs:
+        return
+
+    grouped: dict[str, list[str]] = {}
+    for label, pin_ref in label_pin_refs:
+        grouped.setdefault(label, []).append(pin_ref)
+
+    root_domains: dict[str, set[str]] = {}
+    for point_ref, domain in point_domains.items():
+        if domain == CONNECTION_DOMAIN_ANY:
+            continue
+        root = uf.find(point_ref)
+        root_domains.setdefault(root, set()).add(domain)
+
+    def _bucket_for_ref(pin_ref: str) -> str | None:
+        domains = root_domains.get(uf.find(pin_ref), set())
+        if len(domains) == 1:
+            return next(iter(domains))
+        if not domains:
+            return CONNECTION_DOMAIN_ANY
+        return None
+
+    for refs in grouped.values():
+        by_domain: dict[str, list[str]] = {
+            CONNECTION_DOMAIN_CIRCUIT: [],
+            CONNECTION_DOMAIN_SIGNAL: [],
+            CONNECTION_DOMAIN_THERMAL: [],
+        }
+        wildcard_refs: list[str] = []
+        for ref in refs:
+            bucket = _bucket_for_ref(ref)
+            if bucket in by_domain:
+                by_domain[bucket].append(ref)
+            elif bucket == CONNECTION_DOMAIN_ANY:
+                wildcard_refs.append(ref)
+
+        specific_domains = [domain for domain, domain_refs in by_domain.items() if domain_refs]
+
+        for domain_refs in by_domain.values():
+            if len(domain_refs) < 2:
+                continue
+            head = domain_refs[0]
+            for other in domain_refs[1:]:
+                uf.union(head, other)
+
+        if len(specific_domains) == 1:
+            target_domain = specific_domains[0]
+            anchor = by_domain[target_domain][0]
+            for ref in wildcard_refs:
+                uf.union(anchor, ref)
+        elif not specific_domains and len(wildcard_refs) >= 2:
+            head = wildcard_refs[0]
+            for other in wildcard_refs[1:]:
+                uf.union(head, other)
 
 
 def _point_on_segment(point: tuple[float, float], segment: WireSegment) -> bool:
@@ -308,8 +402,10 @@ def _wire_domain(circuit: Circuit, wire: Wire) -> str:
                         domains.add(pin_connection_domain(component, pin_index))
                         break
 
-    if CONNECTION_DOMAIN_THERMAL in domains:
+    effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+
+    if CONNECTION_DOMAIN_THERMAL in effective_domains:
         return CONNECTION_DOMAIN_THERMAL
-    if CONNECTION_DOMAIN_SIGNAL in domains:
+    if CONNECTION_DOMAIN_SIGNAL in effective_domains:
         return CONNECTION_DOMAIN_SIGNAL
     return CONNECTION_DOMAIN_CIRCUIT

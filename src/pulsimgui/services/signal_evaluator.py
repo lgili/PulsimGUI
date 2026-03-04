@@ -195,8 +195,8 @@ except Exception:
                     self._state[comp_id] = a - b
 
                 elif ctype == "LIMITER":
-                    lo = float(params.get("lower_limit", -1e9))
-                    hi = float(params.get("upper_limit", 1e9))
+                    lo = float(params.get("output_min", params.get("lower_limit", -1e9)))
+                    hi = float(params.get("output_max", params.get("upper_limit", 1e9)))
                     value = inputs[0] if inputs else 0.0
                     self._state[comp_id] = max(lo, min(hi, value))
 
@@ -250,6 +250,19 @@ except Exception:
                     ctl = self._controllers.get(comp_id)
                     if ctl is not None and not isinstance(ctl, dict) and hasattr(ctl, "update"):
                         self._state[comp_id] = float(ctl.update(inputs[0] if inputs else 0.0))
+                    elif isinstance(ctl, dict):
+                        inp = inputs[0] if inputs else 0.0
+                        upper = float(ctl.get("upper", 0.5))
+                        lower = float(ctl.get("lower", -0.5))
+                        high = float(ctl.get("high", 1.0))
+                        low = float(ctl.get("low", 0.0))
+                        state = float(ctl.get("state", low))
+                        if inp >= upper:
+                            state = high
+                        elif inp <= lower:
+                            state = low
+                        ctl["state"] = state
+                        self._state[comp_id] = state
                     else:
                         self._state[comp_id] = inputs[0] if inputs else 0.0
 
@@ -257,6 +270,22 @@ except Exception:
                     ctl = self._controllers.get(comp_id)
                     if ctl is not None and not isinstance(ctl, dict) and hasattr(ctl, "update"):
                         self._state[comp_id] = float(ctl.update(inputs[0] if inputs else 0.0, t))
+                    elif isinstance(ctl, dict):
+                        inp = inputs[0] if inputs else 0.0
+                        period = max(
+                            1e-15,
+                            float(
+                                params.get(
+                                    "sample_period",
+                                    params.get("sample_time", 1e-4),
+                                )
+                            ),
+                        )
+                        last_sample = float(ctl.get("last_sample_time", -1.0))
+                        if last_sample < 0.0 or (t - last_sample) >= period:
+                            ctl["value"] = inp
+                            ctl["last_sample_time"] = t
+                        self._state[comp_id] = float(ctl.get("value", inp))
                     else:
                         self._state[comp_id] = inputs[0] if inputs else 0.0
 
@@ -282,7 +311,14 @@ except Exception:
                 if hasattr(ctl, "reset"):
                     ctl.reset()
                 elif isinstance(ctl, dict):
-                    ctl.update({"integral": 0.0, "t_prev": -1.0})
+                    if "integral" in ctl:
+                        ctl["integral"] = 0.0
+                    if "t_prev" in ctl:
+                        ctl["t_prev"] = -1.0
+                    if "state" in ctl:
+                        ctl["state"] = float(ctl.get("low", 0.0))
+                    if "last_sample_time" in ctl:
+                        ctl["last_sample_time"] = -1.0
 
         def _collect_signal_components(self) -> None:
             for comp in self._circuit_data.get("components", []):
@@ -419,28 +455,51 @@ except Exception:
 
                 elif ctype == "HYSTERESIS":
                     hyst_cls = _NATIVE.get("HysteresisController")
+                    threshold = float(params.get("threshold", params.get("setpoint", 0.0)))
+                    hysteresis = float(params.get("hysteresis", params.get("band", 0.0)))
+                    if hysteresis <= 0.0:
+                        upper_legacy = float(params.get("upper_threshold", threshold + 0.5))
+                        lower_legacy = float(params.get("lower_threshold", threshold - 0.5))
+                        hysteresis = abs(upper_legacy - lower_legacy)
+                        threshold = (upper_legacy + lower_legacy) / 2.0
+                    upper = threshold + hysteresis / 2.0
+                    lower = threshold - hysteresis / 2.0
+                    out_high = float(params.get("high", params.get("output_high", 1.0)))
+                    out_low = float(params.get("low", params.get("output_low", 0.0)))
                     if hyst_cls is not None:
                         try:
-                            upper = float(params.get("upper_threshold", 0.5))
-                            lower = float(params.get("lower_threshold", -0.5))
                             self._controllers[comp_id] = hyst_cls(
-                                upper,
-                                upper - lower,
-                                float(params.get("output_high", 1.0)),
-                                float(params.get("output_low", 0.0)),
+                                threshold,
+                                max(hysteresis, 1e-15),
+                                out_high,
+                                out_low,
                             )
                             continue
                         except Exception:
                             pass
+                    self._controllers[comp_id] = {
+                        "upper": upper,
+                        "lower": lower,
+                        "high": out_high,
+                        "low": out_low,
+                        "state": out_low,
+                    }
 
                 elif ctype == "SAMPLE_HOLD":
                     sh_cls = _NATIVE.get("SampleHold")
+                    sample_period = float(
+                        params.get("sample_period", params.get("sample_time", 1e-4))
+                    )
                     if sh_cls is not None:
                         try:
-                            self._controllers[comp_id] = sh_cls(float(params.get("sample_time", 1e-4)))
+                            self._controllers[comp_id] = sh_cls(sample_period)
                             continue
                         except Exception:
                             pass
+                    self._controllers[comp_id] = {
+                        "value": 0.0,
+                        "last_sample_time": -1.0,
+                    }
 
                 elif ctype == "INTEGRATOR":
                     self._controllers[comp_id] = {"integral": 0.0, "t_prev": -1.0}

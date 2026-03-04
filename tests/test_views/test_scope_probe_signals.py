@@ -93,3 +93,30 @@ def test_voltage_probe_resolves_raw_backend_voltage_key_without_n_prefix() -> No
     key = format_signal_key("VP", "VP2")
     assert key in enriched.signals
     assert enriched.signals[key] == [2.0, 4.0]
+
+
+def test_single_ended_voltage_probe_generates_node_to_ground_signal() -> None:
+    """Node-referenced probe should export VP directly from connected node voltage."""
+    circuit = Circuit(name="single-ended-voltage-probe")
+    probe = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="VPG1", x=120.0, y=120.0)
+    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=210.0, y=130.0)
+    circuit.add_component(probe)
+    circuit.add_component(resistor)
+
+    _connect_pins(circuit, probe, 0, resistor, 0)
+
+    node_map = build_node_map(circuit)
+    in_node = node_map[(str(probe.id), 0)]
+
+    result = SimulationResult(
+        time=[0.0, 1.0],
+        signals={f"V(N{in_node})": [1.2, 2.4]},
+    )
+    host = _ResultHost(circuit)
+    _bind_result_helpers(host)
+
+    enriched = MainWindow._result_with_probe_signals(host, result)
+
+    key = format_signal_key("VP", "VPG1")
+    assert key in enriched.signals
+    assert enriched.signals[key] == [1.2, 2.4]

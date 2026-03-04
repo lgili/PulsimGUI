@@ -21,10 +21,13 @@ THERMAL_SIGNAL_EXCLUDED_TYPES = {
     ComponentType.ELECTRICAL_SCOPE,
     ComponentType.THERMAL_SCOPE,
     ComponentType.VOLTAGE_PROBE,
+    ComponentType.VOLTAGE_PROBE_GND,
     ComponentType.CURRENT_PROBE,
     ComponentType.POWER_PROBE,
     ComponentType.SIGNAL_MUX,
     ComponentType.SIGNAL_DEMUX,
+    ComponentType.GOTO_LABEL,
+    ComponentType.FROM_LABEL,
 }
 
 
@@ -218,7 +221,7 @@ def _resolve_node_signals(
                     ignored,
                 )
             )
-        elif component.type == ComponentType.VOLTAGE_PROBE and pin_name in (
+        elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND) and pin_name in (
             VOLTAGE_PROBE_OUTPUT_PIN_NAME,
             "+",
             "-",

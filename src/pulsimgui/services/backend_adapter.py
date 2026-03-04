@@ -524,6 +524,7 @@ class PulsimBackend(SimulationBackend):
                 x0 = self._build_initial_state(circuit, attempt_settings)
                 attempt_result = self._run_transient_once(
                     circuit,
+                    circuit_data,
                     attempt_settings,
                     callbacks,
                     dt,
@@ -701,6 +702,179 @@ class PulsimBackend(SimulationBackend):
         normalized = aliases.get(raw, raw)
         return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
 
+    @staticmethod
+    def _normalize_thermal_policy(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "losswithtemperaturescaling": "loss_with_temperature_scaling",
+            "temperature_scaling": "loss_with_temperature_scaling",
+            "lossonly": "loss_only",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in {"loss_only", "loss_with_temperature_scaling"}:
+            return "loss_with_temperature_scaling"
+        return normalized
+
+    @staticmethod
+    def _component_name(component: dict[str, Any]) -> str:
+        return str(component.get("name") or component.get("id") or "").strip()
+
+    @staticmethod
+    def _first_numeric(params: dict[str, Any], keys: tuple[str, ...], default: float) -> float:
+        for key in keys:
+            if key not in params:
+                continue
+            try:
+                return float(params.get(key))
+            except (TypeError, ValueError):
+                continue
+        return float(default)
+
+    def _make_switching_energy_config(self, eon: float, eoff: float, err: float) -> Any:
+        config_cls = getattr(self._module, "SwitchingEnergy", None)
+        if config_cls is None:
+            return {
+                "eon": float(eon),
+                "eoff": float(eoff),
+                "err": float(err),
+            }
+        config = config_cls()
+        if hasattr(config, "eon"):
+            config.eon = float(eon)
+        if hasattr(config, "eoff"):
+            config.eoff = float(eoff)
+        if hasattr(config, "err"):
+            config.err = float(err)
+        return config
+
+    def _make_thermal_device_config(
+        self,
+        *,
+        enabled: bool,
+        rth: float,
+        cth: float,
+        temp_init: float,
+        temp_ref: float,
+        alpha: float,
+    ) -> Any:
+        config_cls = getattr(self._module, "ThermalDeviceConfig", None)
+        if config_cls is None:
+            return {
+                "enabled": bool(enabled),
+                "rth": float(rth),
+                "cth": float(cth),
+                "temp_init": float(temp_init),
+                "temp_ref": float(temp_ref),
+                "alpha": float(alpha),
+            }
+        config = config_cls()
+        if hasattr(config, "enabled"):
+            config.enabled = bool(enabled)
+        if hasattr(config, "rth"):
+            config.rth = float(rth)
+        if hasattr(config, "cth"):
+            config.cth = float(cth)
+        if hasattr(config, "temp_init"):
+            config.temp_init = float(temp_init)
+        if hasattr(config, "temp_ref"):
+            config.temp_ref = float(temp_ref)
+        if hasattr(config, "alpha"):
+            config.alpha = float(alpha)
+        return config
+
+    def _build_switching_energy_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        energy_map: dict[str, Any] = {}
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+
+            eon = self._first_numeric(
+                params,
+                ("switching_eon_j", "switching_eon", "e_on", "eon"),
+                0.0,
+            )
+            eoff = self._first_numeric(
+                params,
+                ("switching_eoff_j", "switching_eoff", "e_off", "eoff"),
+                0.0,
+            )
+            err = self._first_numeric(
+                params,
+                ("switching_err_j", "switching_err", "err", "e_rr"),
+                0.0,
+            )
+            if abs(eon) + abs(eoff) + abs(err) <= 0.0:
+                continue
+            energy_map[name] = self._make_switching_energy_config(eon, eoff, err)
+        return energy_map
+
+    def _build_thermal_device_map(
+        self,
+        circuit_data: dict[str, Any],
+        settings: "SimulationSettings",
+    ) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        thermal_map: dict[str, Any] = {}
+        override_keys = {
+            "thermal_enabled",
+            "thermal_rth",
+            "thermal_cth",
+            "thermal_temp_init",
+            "thermal_temp_ref",
+            "thermal_alpha",
+        }
+        default_rth = max(0.0, float(getattr(settings, "thermal_default_rth", 1.0)))
+        default_cth = max(0.0, float(getattr(settings, "thermal_default_cth", 0.1)))
+        default_temp = float(getattr(settings, "thermal_ambient", 25.0))
+
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            if not (override_keys & set(params.keys())):
+                continue
+
+            enabled = bool(params.get("thermal_enabled", True))
+            rth = max(
+                0.0,
+                self._first_numeric(params, ("thermal_rth", "rth", "rth_ja"), default_rth),
+            )
+            cth = max(
+                0.0,
+                self._first_numeric(params, ("thermal_cth", "cth"), default_cth),
+            )
+            temp_init = self._first_numeric(
+                params,
+                ("thermal_temp_init", "temp_init", "temperature_init"),
+                default_temp,
+            )
+            temp_ref = self._first_numeric(
+                params,
+                ("thermal_temp_ref", "temp_ref", "temperature_ref"),
+                default_temp,
+            )
+            alpha = max(
+                0.0,
+                self._first_numeric(params, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
+            )
+            thermal_map[name] = self._make_thermal_device_config(
+                enabled=enabled,
+                rth=rth,
+                cth=cth,
+                temp_init=temp_init,
+                temp_ref=temp_ref,
+                alpha=alpha,
+            )
+        return thermal_map
+
     def _integrator_enum_name(self, method: str) -> str:
         mapping = {
             # "auto" maps to BDF1: first-order implicit method is the most stable
@@ -759,6 +933,7 @@ class PulsimBackend(SimulationBackend):
         dt: float,
         newton_opts: Any,
         linear_solver: Any | None,
+        circuit_data: dict[str, Any] | None = None,
     ) -> Any:
         opts = self._module.SimulationOptions()
         method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
@@ -856,6 +1031,29 @@ class PulsimBackend(SimulationBackend):
                 thermal_cfg.ambient = float(getattr(settings, "thermal_ambient", 25.0))
             if hasattr(thermal_cfg, "enable"):
                 thermal_cfg.enable = bool(getattr(settings, "enable_losses", True))
+            if hasattr(thermal_cfg, "default_rth"):
+                thermal_cfg.default_rth = max(
+                    0.0,
+                    float(getattr(settings, "thermal_default_rth", 1.0)),
+                )
+            if hasattr(thermal_cfg, "default_cth"):
+                thermal_cfg.default_cth = max(
+                    0.0,
+                    float(getattr(settings, "thermal_default_cth", 0.1)),
+                )
+            if hasattr(thermal_cfg, "policy") and hasattr(self._module, "ThermalCouplingPolicy"):
+                policy = self._normalize_thermal_policy(
+                    getattr(settings, "thermal_policy", "loss_with_temperature_scaling")
+                )
+                enum_name = "LossOnly" if policy == "loss_only" else "LossWithTemperatureScaling"
+                if hasattr(self._module.ThermalCouplingPolicy, enum_name):
+                    thermal_cfg.policy = getattr(self._module.ThermalCouplingPolicy, enum_name)
+
+        if hasattr(opts, "switching_energy") and circuit_data is not None:
+            opts.switching_energy = self._build_switching_energy_map(circuit_data)
+
+        if hasattr(opts, "thermal_devices") and circuit_data is not None:
+            opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
 
         # Fallback policy: enable transient gmin stepping for switching circuit convergence.
         # These settings match the validated PulsimCore buck converter benchmark.
@@ -879,6 +1077,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_via_simulator(
         self,
         circuit: Any,
+        circuit_data: dict[str, Any],
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         signal_names: list[str],
@@ -892,7 +1091,13 @@ class PulsimBackend(SimulationBackend):
             result.signals[name] = []
 
         callbacks.progress(5.0, "Running transient with SimulationOptions...")
-        options = self._build_simulation_options(settings, dt, newton_opts, linear_solver)
+        options = self._build_simulation_options(
+            settings,
+            dt,
+            newton_opts,
+            linear_solver,
+            circuit_data,
+        )
         simulator = self._module.Simulator(circuit, options)
         native_result: Any | None = None
         run_error: Exception | None = None
@@ -1025,6 +1230,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_once(
         self,
         circuit: Any,
+        circuit_data: dict[str, Any],
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         dt: float,
@@ -1043,6 +1249,7 @@ class PulsimBackend(SimulationBackend):
             try:
                 simulator_result = self._run_transient_via_simulator(
                     circuit,
+                    circuit_data,
                     settings,
                     callbacks,
                     signal_names,

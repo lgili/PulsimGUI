@@ -98,6 +98,9 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
         thermal_include_switching_losses=False,
         thermal_include_conduction_losses=True,
         thermal_network="cauer",
+        thermal_policy="loss_only",
+        thermal_default_rth=2.5,
+        thermal_default_cth=0.4,
         formulation_mode="direct",
         direct_formulation_fallback=False,
         control_mode="discrete",
@@ -120,6 +123,9 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
     assert fake_settings.solver_settings["thermal_include_switching_losses"] is False
     assert fake_settings.solver_settings["thermal_include_conduction_losses"] is True
     assert fake_settings.solver_settings["thermal_network"] == "cauer"
+    assert fake_settings.solver_settings["thermal_policy"] == "loss_only"
+    assert fake_settings.solver_settings["thermal_default_rth"] == 2.5
+    assert fake_settings.solver_settings["thermal_default_cth"] == 0.4
     assert fake_settings.solver_settings["formulation_mode"] == "direct"
     assert fake_settings.solver_settings["direct_formulation_fallback"] is False
     assert fake_settings.solver_settings["control_mode"] == "discrete"
@@ -138,6 +144,9 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
             "thermal_include_switching_losses": False,
             "thermal_include_conduction_losses": False,
             "thermal_network": "cauer",
+            "thermal_policy": "loss_only",
+            "thermal_default_rth": 1.8,
+            "thermal_default_cth": 0.22,
             "formulation_mode": "direct",
             "direct_formulation_fallback": False,
             "control_mode": "discrete",
@@ -154,6 +163,9 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
     assert service.settings.thermal_include_switching_losses is False
     assert service.settings.thermal_include_conduction_losses is False
     assert service.settings.thermal_network == "cauer"
+    assert service.settings.thermal_policy == "loss_only"
+    assert service.settings.thermal_default_rth == 1.8
+    assert service.settings.thermal_default_cth == 0.22
     assert service.settings.formulation_mode == "direct"
     assert service.settings.direct_formulation_fallback is False
     assert service.settings.control_mode == "discrete"

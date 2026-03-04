@@ -24,12 +24,15 @@ class CircuitConverter:
     _INSTRUMENTATION_COMPONENTS = {
         # Measurement / visualization – GUI-only, no backend counterpart
         ComponentType.VOLTAGE_PROBE,
+        ComponentType.VOLTAGE_PROBE_GND,
         ComponentType.CURRENT_PROBE,
         ComponentType.POWER_PROBE,
         ComponentType.ELECTRICAL_SCOPE,
         ComponentType.THERMAL_SCOPE,
         ComponentType.SIGNAL_MUX,
         ComponentType.SIGNAL_DEMUX,
+        ComponentType.GOTO_LABEL,
+        ComponentType.FROM_LABEL,
         # Signal-domain control blocks – evaluated by SignalEvaluator in Python;
         # they do not map to any C++ circuit element.
         ComponentType.CONSTANT,
@@ -51,6 +54,25 @@ class CircuitConverter:
     # Most types follow the simple .name.lower() convention; exceptions are listed here.
     _BACKEND_TYPE_MAP: dict[ComponentType, str] = {
         ComponentType.SUBTRACTOR: "subtraction",
+    }
+
+    _ATTRIBUTE_ALIASES: dict[str, tuple[str, ...]] = {
+        "vce_sat": ("v_ce_sat",),
+        "v_ce_sat": ("vce_sat",),
+        "open_loop_gain": ("gain",),
+        "gain": ("open_loop_gain",),
+        "offset": ("vos",),
+        "vos": ("offset",),
+        "output_min": ("min", "rail_low"),
+        "output_max": ("max", "rail_high"),
+        "lower_limit": ("output_min", "min", "rail_low"),
+        "upper_limit": ("output_max", "max", "rail_high"),
+        "output_low": ("low",),
+        "output_high": ("high",),
+        "sample_time": ("sample_period",),
+        "sample_period": ("sample_time",),
+        "delay_time": ("delay",),
+        "delay": ("delay_time",),
     }
 
     def build(self, circuit_data: dict) -> Any:
@@ -554,13 +576,25 @@ class CircuitConverter:
         return nodes[:count]
 
     def _assign_attributes(self, target: Any, values: dict) -> None:
+        has_explicit_g_on = "g_on" in values
+        has_explicit_g_off = "g_off" in values
+
         for key, value in values.items():
-            attr = key
-            if not hasattr(target, attr) and attr.endswith("_"):
-                attr = attr[:-1]
-            if not hasattr(target, attr):
-                continue
-            setattr(target, attr, value)
+            if key in {"rds_on", "ron"} and not has_explicit_g_on and hasattr(target, "g_on"):
+                g_on = self._conductance_from_resistance(value)
+                if g_on is not None:
+                    setattr(target, "g_on", g_on)
+                    continue
+            if key in {"roff"} and not has_explicit_g_off and hasattr(target, "g_off"):
+                g_off = self._conductance_from_resistance(value)
+                if g_off is not None:
+                    setattr(target, "g_off", g_off)
+                    continue
+
+            for attr in self._attribute_candidates(str(key)):
+                if hasattr(target, attr):
+                    setattr(target, attr, value)
+                    break
 
     def _add_virtual_component(
         self,
@@ -574,8 +608,9 @@ class CircuitConverter:
         node_indices = [self._node_index(circuit, node_name, node_cache) for node_name in nodes]
         numeric_params: dict[str, float] = {}
         metadata: dict[str, str] = {"component_type": comp_type.name}
+        normalized_params = self._normalize_virtual_component_params(comp_type, params)
 
-        for key, value in params.items():
+        for key, value in normalized_params.items():
             param_name = str(key)
             if isinstance(value, bool):
                 numeric_params[param_name] = 1.0 if value else 0.0
@@ -606,6 +641,93 @@ class CircuitConverter:
             raise CircuitConversionError(
                 f"Backend converter failed to add virtual component '{comp_type.name}': {exc}"
             ) from exc
+
+    def _attribute_candidates(self, key: str) -> tuple[str, ...]:
+        values: list[str] = [key]
+        if key.endswith("_"):
+            values.append(key[:-1])
+        if "_" in key:
+            values.append(key.rstrip("_"))
+        values.extend(self._ATTRIBUTE_ALIASES.get(key, ()))
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if value and value not in seen:
+                ordered.append(value)
+                seen.add(value)
+        return tuple(ordered)
+
+    @staticmethod
+    def _conductance_from_resistance(value: Any) -> float | None:
+        try:
+            resistance = abs(float(value))
+        except (TypeError, ValueError):
+            return None
+        if resistance <= 0.0:
+            return None
+        return 1.0 / max(resistance, 1e-30)
+
+    def _normalize_virtual_component_params(
+        self,
+        comp_type: ComponentType,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(params)
+
+        if "lower_limit" in normalized and "output_min" not in normalized:
+            normalized["output_min"] = normalized["lower_limit"]
+        if "upper_limit" in normalized and "output_max" not in normalized:
+            normalized["output_max"] = normalized["upper_limit"]
+        if "output_min" in normalized:
+            normalized.setdefault("min", normalized["output_min"])
+        if "output_max" in normalized:
+            normalized.setdefault("max", normalized["output_max"])
+
+        if "output_low" in normalized and "low" not in normalized:
+            normalized["low"] = normalized["output_low"]
+        if "output_high" in normalized and "high" not in normalized:
+            normalized["high"] = normalized["output_high"]
+
+        if "upper_threshold" in normalized or "lower_threshold" in normalized:
+            try:
+                upper = float(normalized.get("upper_threshold", normalized.get("threshold", 0.5)))
+                lower = float(normalized.get("lower_threshold", normalized.get("threshold", -0.5)))
+            except (TypeError, ValueError):
+                upper = 0.5
+                lower = -0.5
+            if "threshold" not in normalized:
+                normalized["threshold"] = (upper + lower) / 2.0
+            if "hysteresis" not in normalized:
+                normalized["hysteresis"] = abs(upper - lower)
+
+        if "sample_time" in normalized and "sample_period" not in normalized:
+            normalized["sample_period"] = normalized["sample_time"]
+
+        if "delay_time" in normalized and "delay" not in normalized:
+            normalized["delay"] = normalized["delay_time"]
+        if "delay" in normalized and "delay_time" not in normalized:
+            normalized["delay_time"] = normalized["delay"]
+
+        if comp_type in (ComponentType.PI_CONTROLLER, ComponentType.PID_CONTROLLER):
+            normalized.setdefault("anti_windup", True)
+
+        if comp_type == ComponentType.OP_AMP:
+            if "open_loop_gain" in normalized and "gain" not in normalized:
+                normalized["gain"] = normalized["open_loop_gain"]
+            if "offset" in normalized and "vos" not in normalized:
+                normalized["vos"] = normalized["offset"]
+            if "rail_low" in normalized and "output_min" not in normalized:
+                normalized["output_min"] = normalized["rail_low"]
+            if "rail_high" in normalized and "output_max" not in normalized:
+                normalized["output_max"] = normalized["rail_high"]
+
+        if comp_type == ComponentType.COMPARATOR:
+            normalized.setdefault("threshold", float(normalized.get("vos", 0.0) or 0.0))
+            normalized.setdefault("high", 1.0)
+            normalized.setdefault("low", 0.0)
+
+        return normalized
 
     def _as_float(self, value: Any, *, default: float) -> float:
         try:
