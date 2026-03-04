@@ -115,6 +115,7 @@ class ThermalAnalysisService(QObject):
         include_switching_losses: bool = True,
         include_conduction_losses: bool = True,
         thermal_network: str = "foster",
+        allow_synthetic_fallback: bool = True,
         backend: "SimulationBackend | None" = None,
         parent: QObject | None = None,
     ):
@@ -123,6 +124,7 @@ class ThermalAnalysisService(QObject):
         self._include_switching_losses = bool(include_switching_losses)
         self._include_conduction_losses = bool(include_conduction_losses)
         self._thermal_network = str(thermal_network or "foster").strip().lower()
+        self._allow_synthetic_fallback = bool(allow_synthetic_fallback)
         if self._thermal_network not in {"foster", "cauer"}:
             self._thermal_network = "foster"
         self._backend = backend
@@ -202,7 +204,31 @@ class ThermalAnalysisService(QObject):
             if result is not None:
                 self.result_generated.emit(result)
                 return result
+            if not self._allow_synthetic_fallback:
+                result = ThermalResult(
+                    time=self._resolve_time_axis(electrical_result),
+                    devices=[],
+                    ambient_temperature=self._ambient_temperature,
+                    is_synthetic=False,
+                    error_message=(
+                        "Backend thermal analysis failed and synthetic fallback is disabled."
+                    ),
+                )
+                self.result_generated.emit(result)
+                return result
             logger.debug("Backend thermal analysis failed, using synthetic fallback")
+        elif not self._allow_synthetic_fallback:
+            result = ThermalResult(
+                time=self._resolve_time_axis(electrical_result),
+                devices=[],
+                ambient_temperature=self._ambient_temperature,
+                is_synthetic=False,
+                error_message=(
+                    "Thermal backend capability unavailable and synthetic fallback is disabled."
+                ),
+            )
+            self.result_generated.emit(result)
+            return result
 
         # Fall back to synthetic generation
         result = self._build_synthetic_result(circuit, electrical_result, max_devices)

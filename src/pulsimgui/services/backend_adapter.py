@@ -41,6 +41,29 @@ from pulsimgui.services.backend_types import (
 )
 
 _SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
+_SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
+    {
+        "CONSTANT",
+        "GAIN",
+        "SUM",
+        "SUBTRACTOR",
+        "LIMITER",
+        "RATE_LIMITER",
+        "PI_CONTROLLER",
+        "PID_CONTROLLER",
+        "PWM_GENERATOR",
+        "VOLTAGE_PROBE",
+        "CURRENT_PROBE",
+        "POWER_PROBE",
+        "INTEGRATOR",
+        "DIFFERENTIATOR",
+        "HYSTERESIS",
+        "SAMPLE_HOLD",
+        "MATH_BLOCK",
+        "SIGNAL_MUX",
+        "SIGNAL_DEMUX",
+    }
+)
 
 
 @dataclass
@@ -511,7 +534,14 @@ class PulsimBackend(SimulationBackend):
                 result.error_message = str(exc)
                 return result
             except Exception as exc:
-                log.warning("Signal evaluator setup failed (ignored): %s", exc)
+                if self._circuit_uses_signal_blocks(circuit_data):
+                    result.error_message = (
+                        "Signal-domain control blocks require backend support from "
+                        "pulsim.signal_evaluator. "
+                        f"Details: {exc}"
+                    )
+                    return result
+                log.debug("Signal evaluator setup skipped: %s", exc)
 
             dt = base_dt * profile.dt_scale
 
@@ -673,6 +703,16 @@ class PulsimBackend(SimulationBackend):
         if not periods:
             return 0.0
         return max(1e-12, min(periods))
+
+    def _circuit_uses_signal_blocks(self, circuit_data: dict[str, Any]) -> bool:
+        """Return True when circuit includes signal-domain control components."""
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        signal_types = SIGNAL_TYPES if SIGNAL_TYPES else _SIGNAL_BLOCK_TYPES_FALLBACK
+        for component in components:
+            comp_type = str(component.get("type", "")).upper()
+            if comp_type in signal_types:
+                return True
+        return False
 
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
         """Resolve labels for transient state-vector signals."""
@@ -2360,7 +2400,7 @@ class PulsimBackend(SimulationBackend):
         electrical_result: TransientResult,
         settings: ThermalSettings,
     ) -> ThermalResult:
-        """Run thermal simulation using PulsimCore ThermalSimulator."""
+        """Run thermal simulation using backend-native ThermalSimulator APIs only."""
         if not self.has_capability("thermal"):
             return ThermalResult(
                 error_message="Thermal simulation not supported by this backend version",
@@ -2377,12 +2417,11 @@ class PulsimBackend(SimulationBackend):
             if direct_result is not None:
                 return direct_result
 
-            waveform_result = self._run_thermal_from_waveforms(circuit_data, electrical_result, settings)
-            if waveform_result is not None:
-                return waveform_result
-
             return ThermalResult(
-                error_message="No compatible thermal API available for this backend version",
+                error_message=(
+                    "No compatible native thermal API available for this backend version. "
+                    "GUI thermal fallback is disabled; upgrade backend thermal support."
+                ),
                 is_synthetic=True,
             )
 

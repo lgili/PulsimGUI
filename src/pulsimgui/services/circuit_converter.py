@@ -23,8 +23,6 @@ class CircuitConverter:
 
     _INSTRUMENTATION_COMPONENTS = {
         # Measurement / visualization – GUI-only, no backend counterpart
-        ComponentType.VOLTAGE_PROBE,
-        ComponentType.VOLTAGE_PROBE_GND,
         ComponentType.CURRENT_PROBE,
         ComponentType.POWER_PROBE,
         ComponentType.ELECTRICAL_SCOPE,
@@ -33,8 +31,9 @@ class CircuitConverter:
         ComponentType.SIGNAL_DEMUX,
         ComponentType.GOTO_LABEL,
         ComponentType.FROM_LABEL,
-        # Signal-domain control blocks – evaluated by SignalEvaluator in Python;
-        # they do not map to any C++ circuit element.
+        # Signal-domain control blocks are evaluated by the backend-provided
+        # signal evaluator (pulsim.signal_evaluator) and therefore do not map
+        # to direct C++ circuit elements in this converter.
         ComponentType.CONSTANT,
         ComponentType.GAIN,
         ComponentType.SUM,
@@ -54,6 +53,7 @@ class CircuitConverter:
     # Most types follow the simple .name.lower() convention; exceptions are listed here.
     _BACKEND_TYPE_MAP: dict[ComponentType, str] = {
         ComponentType.SUBTRACTOR: "subtraction",
+        ComponentType.VOLTAGE_PROBE_GND: "voltage_probe",
     }
 
     _ATTRIBUTE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -96,7 +96,7 @@ class CircuitConverter:
             comp_type = self._component_type(component.get("type"))
             if self._should_skip_component(comp_type):
                 continue
-            nodes = self._resolve_nodes(component, node_map, alias_map)
+            nodes = self._resolve_nodes(component, comp_type, node_map, alias_map)
             name = self._component_name(component, comp_type)
             resolved_components.append((component, comp_type, name, nodes))
 
@@ -134,6 +134,7 @@ class CircuitConverter:
     def _resolve_nodes(
         self,
         component: dict,
+        comp_type: ComponentType,
         node_map: dict[str, list[str]],
         alias_map: dict[str, str],
     ) -> list[str]:
@@ -146,6 +147,10 @@ class CircuitConverter:
         resolved: list[str] = []
         for raw in pin_nodes:
             if raw is None or raw == "":
+                # Voltage probes may carry an unconnected GUI-only output pin.
+                if comp_type in {ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND}:
+                    resolved.append("0")
+                    continue
                 raise CircuitConversionError(
                     f"Unmapped node for component '{component.get('name') or comp_id}'"
                 )
@@ -222,6 +227,12 @@ class CircuitConverter:
             ComponentType.SNUBBER_RC,
         }:
             return nodes[:2]
+
+        if comp_type == ComponentType.VOLTAGE_PROBE:
+            return nodes[:2]
+
+        if comp_type == ComponentType.VOLTAGE_PROBE_GND:
+            return nodes[:1]
 
         if comp_type in {ComponentType.MOSFET_N, ComponentType.MOSFET_P, ComponentType.IGBT}:
             return nodes[:3]
@@ -605,7 +616,8 @@ class CircuitConverter:
         params: dict[str, Any],
         node_cache: dict[str, int],
     ) -> None:
-        node_indices = [self._node_index(circuit, node_name, node_cache) for node_name in nodes]
+        virtual_nodes = self._virtual_component_nodes(comp_type, nodes)
+        node_indices = [self._node_index(circuit, node_name, node_cache) for node_name in virtual_nodes]
         numeric_params: dict[str, float] = {}
         metadata: dict[str, str] = {"component_type": comp_type.name}
         normalized_params = self._normalize_virtual_component_params(comp_type, params)
@@ -641,6 +653,15 @@ class CircuitConverter:
             raise CircuitConversionError(
                 f"Backend converter failed to add virtual component '{comp_type.name}': {exc}"
             ) from exc
+
+    def _virtual_component_nodes(self, comp_type: ComponentType, nodes: list[str]) -> list[str]:
+        """Return node subset/normalization used for backend virtual components."""
+        if comp_type == ComponentType.VOLTAGE_PROBE:
+            return nodes[:2]
+        if comp_type == ComponentType.VOLTAGE_PROBE_GND:
+            in_node = nodes[0] if nodes else "0"
+            return [in_node, "0"]
+        return nodes
 
     def _attribute_candidates(self, key: str) -> tuple[str, ...]:
         values: list[str] = [key]

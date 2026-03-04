@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
             backend=self._simulation_service.backend,
+            allow_synthetic_fallback=False,
             parent=self,
         )
         self._scope_windows: dict[str, ScopeWindow] = {}
@@ -2525,6 +2526,20 @@ class MainWindow(QMainWindow):
 
         for component in circuit.components.values():
             if component.type == ComponentType.VOLTAGE_PROBE:
+                probe_name = component.name or "VoltageProbe"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is not None:
+                    scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                    samples = min(len(backend_series), len(enriched.time))
+                    enriched.signals[format_signal_key("VP", probe_name)] = [
+                        backend_series[idx] * scale for idx in range(samples)
+                    ]
+                    continue
+
                 plus = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
                 minus = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
                 if plus is None and minus is None:
@@ -2536,12 +2551,25 @@ class MainWindow(QMainWindow):
                 if plus is None:
                     continue
                 samples = min(len(plus), len(minus), len(enriched.time))
-                probe_name = component.name or "VoltageProbe"
                 enriched.signals[format_signal_key("VP", probe_name)] = [
                     plus[idx] - minus[idx] for idx in range(samples)
                 ]
 
             if component.type == ComponentType.VOLTAGE_PROBE_GND:
+                probe_name = component.name or "VoltageProbeGND"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is not None:
+                    scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                    samples = min(len(backend_series), len(enriched.time))
+                    enriched.signals[format_signal_key("VP", probe_name)] = [
+                        backend_series[idx] * scale for idx in range(samples)
+                    ]
+                    continue
+
                 node = self._probe_node_series(
                     enriched,
                     node_map.get((str(component.id), 0)),
@@ -2551,31 +2579,39 @@ class MainWindow(QMainWindow):
                     continue
                 scale = float(component.parameters.get("scale", 1.0) or 1.0)
                 samples = min(len(node), len(enriched.time))
-                probe_name = component.name or "VoltageProbeGND"
                 enriched.signals[format_signal_key("VP", probe_name)] = [
                     node[idx] * scale for idx in range(samples)
                 ]
 
             if component.type == ComponentType.CURRENT_PROBE:
-                node_in = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
-                node_out = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
-                if node_in is None and node_out is None:
-                    continue
-                if node_in is None and node_out is not None:
-                    node_in = [0.0] * len(node_out)
-                if node_out is None and node_in is not None:
-                    node_out = [0.0] * len(node_in)
-                if node_in is None or node_out is None:
-                    continue
-
-                scale = float(component.parameters.get("scale", 1.0) or 1.0)
-                samples = min(len(node_in), len(node_out), len(enriched.time))
                 probe_name = component.name or "CurrentProbe"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is None:
+                    continue
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(backend_series), len(enriched.time))
                 enriched.signals[format_signal_key("IP", probe_name)] = [
-                    (node_in[idx] - node_out[idx]) * scale for idx in range(samples)
+                    backend_series[idx] * scale for idx in range(samples)
                 ]
 
         return enriched
+
+    @staticmethod
+    def _probe_backend_series(
+        result: SimulationResult,
+        component_name: str,
+        component_id: str,
+    ) -> list[float] | None:
+        """Resolve backend-native probe channel names to a signal series."""
+        for key in (component_name, component_id):
+            series = result.signals.get(key)
+            if series is not None:
+                return list(series)
+        return None
 
     def _probe_node_series(
         self,
