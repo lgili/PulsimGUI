@@ -23,8 +23,6 @@ class CircuitConverter:
 
     _INSTRUMENTATION_COMPONENTS = {
         # Measurement / visualization – GUI-only, no backend counterpart
-        ComponentType.CURRENT_PROBE,
-        ComponentType.POWER_PROBE,
         ComponentType.ELECTRICAL_SCOPE,
         ComponentType.THERMAL_SCOPE,
         ComponentType.SIGNAL_MUX,
@@ -48,6 +46,26 @@ class CircuitConverter:
         ComponentType.SAMPLE_HOLD,
         ComponentType.MATH_BLOCK,
     }
+
+    _PROBE_TARGET_CANDIDATES = frozenset(
+        {
+            ComponentType.RESISTOR,
+            ComponentType.CAPACITOR,
+            ComponentType.INDUCTOR,
+            ComponentType.VOLTAGE_SOURCE,
+            ComponentType.CURRENT_SOURCE,
+            ComponentType.DIODE,
+            ComponentType.ZENER_DIODE,
+            ComponentType.LED,
+            ComponentType.MOSFET_N,
+            ComponentType.MOSFET_P,
+            ComponentType.IGBT,
+            ComponentType.TRANSFORMER,
+            ComponentType.SWITCH,
+            ComponentType.SNUBBER_RC,
+            ComponentType.PWM_GENERATOR,
+        }
+    )
 
     # Map GUI ComponentType enum names to the lowercase backend type strings.
     # Most types follow the simple .name.lower() convention; exceptions are listed here.
@@ -102,12 +120,28 @@ class CircuitConverter:
 
         # Some Pulsim versions expect all non-ground nodes to exist before devices are added.
         self._predeclare_nodes(circuit, resolved_components, node_cache)
+        probe_target_overrides = self._infer_probe_target_overrides(resolved_components)
 
         for component, comp_type, name, nodes in resolved_components:
             if comp_type == ComponentType.GROUND:
                 continue
 
-            self._add_component(circuit, comp_type, name, component, nodes, node_cache)
+            params_override: dict[str, Any] | None = None
+            comp_id = str(component.get("id") or "")
+            inferred_target = probe_target_overrides.get(comp_id)
+            if inferred_target:
+                params_override = dict(component.get("parameters", {}) or {})
+                params_override.setdefault("target_component", inferred_target)
+
+            self._add_component(
+                circuit,
+                comp_type,
+                name,
+                component,
+                nodes,
+                node_cache,
+                params_override=params_override,
+            )
 
             if name and (component.get("x") is not None or component.get("y") is not None):
                 positions_to_apply.append((name, component))
@@ -145,10 +179,10 @@ class CircuitConverter:
                 f"Missing connectivity for component '{component.get('name') or comp_id}'"
             )
         resolved: list[str] = []
-        for raw in pin_nodes:
+        for pin_index, raw in enumerate(pin_nodes):
             if raw is None or raw == "":
-                # Voltage probes may carry an unconnected GUI-only output pin.
-                if comp_type in {ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND}:
+                # Probe output pins may be intentionally unconnected in the GUI.
+                if self._allows_unmapped_pin(comp_type, pin_index):
                     resolved.append("0")
                     continue
                 raise CircuitConversionError(
@@ -156,6 +190,16 @@ class CircuitConverter:
                 )
             resolved.append(self._node_label(raw, alias_map))
         return resolved
+
+    @staticmethod
+    def _allows_unmapped_pin(comp_type: ComponentType, pin_index: int) -> bool:
+        if comp_type == ComponentType.VOLTAGE_PROBE:
+            return pin_index == 2
+        if comp_type == ComponentType.VOLTAGE_PROBE_GND:
+            return pin_index == 1
+        if comp_type == ComponentType.CURRENT_PROBE:
+            return pin_index == 2
+        return False
 
     def _node_label(self, node_id: str, alias_map: dict[str, str]) -> str:
         if node_id == "0":
@@ -234,6 +278,12 @@ class CircuitConverter:
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
             return nodes[:1]
 
+        if comp_type == ComponentType.CURRENT_PROBE:
+            return nodes[:2]
+
+        if comp_type == ComponentType.POWER_PROBE:
+            return nodes[:2]
+
         if comp_type in {ComponentType.MOSFET_N, ComponentType.MOSFET_P, ComponentType.IGBT}:
             return nodes[:3]
 
@@ -270,8 +320,10 @@ class CircuitConverter:
         component: dict,
         nodes: list[str],
         node_cache: dict[str, int],
+        *,
+        params_override: dict[str, Any] | None = None,
     ) -> None:
-        params = component.get("parameters", {}) or {}
+        params = params_override if params_override is not None else (component.get("parameters", {}) or {})
 
         if comp_type == ComponentType.RESISTOR:
             n1, n2 = self._require_nodes(name, nodes, 2)
@@ -661,7 +713,91 @@ class CircuitConverter:
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
             in_node = nodes[0] if nodes else "0"
             return [in_node, "0"]
+        if comp_type == ComponentType.CURRENT_PROBE:
+            if len(nodes) >= 2:
+                return nodes[:2]
+            if len(nodes) == 1:
+                return [nodes[0], "0"]
+            return ["0", "0"]
+        if comp_type == ComponentType.POWER_PROBE:
+            if len(nodes) >= 2:
+                return nodes[:2]
+            if len(nodes) == 1:
+                return [nodes[0], "0"]
+            return ["0", "0"]
         return nodes
+
+    def _infer_probe_target_overrides(
+        self,
+        components: list[tuple[dict, ComponentType, str, list[str]]],
+    ) -> dict[str, str]:
+        """Infer best-effort target_component metadata for current/power probes."""
+        branch_candidates: list[tuple[str, set[str]]] = []
+        for _component, comp_type, name, nodes in components:
+            if comp_type in self._PROBE_TARGET_CANDIDATES:
+                branch_candidates.append((name, set(nodes)))
+
+        if not branch_candidates:
+            return {}
+
+        inferred: dict[str, str] = {}
+        for component, comp_type, _name, nodes in components:
+            comp_id = str(component.get("id") or "")
+            if not comp_id:
+                continue
+
+            target: str | None = None
+            if comp_type == ComponentType.CURRENT_PROBE:
+                target = self._infer_probe_target(nodes[:2], branch_candidates, prefer_second_node=True)
+            elif comp_type == ComponentType.POWER_PROBE:
+                current_nodes = nodes[2:4] if len(nodes) >= 4 else nodes[:2]
+                target = self._infer_probe_target(
+                    current_nodes,
+                    branch_candidates,
+                    prefer_second_node=False,
+                )
+
+            if target:
+                inferred[comp_id] = target
+
+        return inferred
+
+    @staticmethod
+    def _infer_probe_target(
+        probe_nodes: list[str],
+        candidates: list[tuple[str, set[str]]],
+        *,
+        prefer_second_node: bool,
+    ) -> str | None:
+        if not probe_nodes:
+            return None
+
+        first_node = probe_nodes[0]
+        second_node = probe_nodes[1] if len(probe_nodes) > 1 else None
+        preferred_node = second_node if (prefer_second_node and second_node is not None) else first_node
+        fallback_node = first_node if preferred_node == second_node else second_node
+
+        if second_node is not None:
+            same_branch = [
+                candidate_name
+                for candidate_name, candidate_nodes in candidates
+                if first_node in candidate_nodes and second_node in candidate_nodes
+            ]
+            if same_branch:
+                return same_branch[0]
+
+        for node in (preferred_node, fallback_node):
+            if node is None:
+                continue
+            touching = [
+                candidate_name
+                for candidate_name, candidate_nodes in candidates
+                if node in candidate_nodes
+            ]
+            if touching:
+                return touching[0]
+
+        return None
 
     def _attribute_candidates(self, key: str) -> tuple[str, ...]:
         values: list[str] = [key]

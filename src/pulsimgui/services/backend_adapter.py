@@ -52,9 +52,6 @@ _SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
         "PI_CONTROLLER",
         "PID_CONTROLLER",
         "PWM_GENERATOR",
-        "VOLTAGE_PROBE",
-        "CURRENT_PROBE",
-        "POWER_PROBE",
         "INTEGRATOR",
         "DIFFERENTIATOR",
         "HYSTERESIS",
@@ -64,6 +61,7 @@ _SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
         "SIGNAL_DEMUX",
     }
 )
+_PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
 
 
 @dataclass
@@ -744,6 +742,140 @@ class PulsimBackend(SimulationBackend):
         return normalized
 
     @staticmethod
+    def _extract_virtual_channel_metadata(source: Any) -> dict[str, Any]:
+        metadata_attr = getattr(source, "virtual_channel_metadata", None)
+        if metadata_attr is None:
+            return {}
+        try:
+            raw_metadata = metadata_attr() if callable(metadata_attr) else metadata_attr
+        except Exception:
+            return {}
+        return raw_metadata if isinstance(raw_metadata, dict) else {}
+
+    @staticmethod
+    def _virtual_component_type(metadata_entry: Any) -> str:
+        if isinstance(metadata_entry, dict):
+            return str(metadata_entry.get("component_type") or "").strip().lower()
+        return str(getattr(metadata_entry, "component_type", "") or "").strip().lower()
+
+    def _probe_virtual_channels(self, *sources: Any) -> dict[str, str]:
+        channels: dict[str, str] = {}
+        for source in sources:
+            metadata = self._extract_virtual_channel_metadata(source)
+            if not metadata:
+                continue
+            for channel_name, metadata_entry in metadata.items():
+                comp_type = self._virtual_component_type(metadata_entry)
+                if comp_type in _PROBE_COMPONENT_TYPES:
+                    channels[str(channel_name)] = comp_type
+        return channels
+
+    def _merge_native_virtual_probe_channels(
+        self,
+        circuit: Any,
+        native_result: Any,
+        result: BackendRunResult,
+    ) -> None:
+        """Use backend-native virtual channel arrays when available."""
+        if not result.time:
+            return
+
+        probe_channels = self._probe_virtual_channels(native_result, circuit)
+        if not probe_channels:
+            return
+
+        virtual_channels_attr = getattr(native_result, "virtual_channels", None)
+        if virtual_channels_attr is None:
+            return
+        try:
+            raw_virtual_channels = (
+                virtual_channels_attr() if callable(virtual_channels_attr) else virtual_channels_attr
+            )
+        except Exception:
+            return
+        if not isinstance(raw_virtual_channels, dict):
+            return
+
+        sample_count = len(result.time)
+        for channel_name in probe_channels:
+            series = raw_virtual_channels.get(channel_name)
+            if series is None:
+                continue
+            try:
+                values = [float(value) for value in list(series)[:sample_count]]
+            except (TypeError, ValueError):
+                continue
+            if not values:
+                continue
+            if len(values) < sample_count:
+                values.extend([0.0] * (sample_count - len(values)))
+            result.signals[channel_name] = values
+
+    def _ensure_virtual_probe_channels(
+        self,
+        circuit: Any,
+        result: BackendRunResult,
+        signal_names: list[str],
+    ) -> None:
+        """Fill missing probe channels by evaluating backend virtual probes."""
+        if not result.time:
+            return
+
+        probe_channels = self._probe_virtual_channels(circuit)
+        if not probe_channels:
+            return
+
+        sample_count = len(result.time)
+        missing_channels = [
+            channel_name
+            for channel_name in probe_channels
+            if len(result.signals.get(channel_name, [])) < sample_count
+        ]
+        if not missing_channels:
+            return
+
+        evaluate = getattr(circuit, "evaluate_virtual_signals", None)
+        if not callable(evaluate):
+            return
+
+        ordered_signal_names = (
+            [name for name in signal_names if name in result.signals]
+            if signal_names
+            else list(result.signals.keys())
+        )
+        if not ordered_signal_names:
+            return
+
+        ordered_series = [result.signals.get(name, []) for name in ordered_signal_names]
+        evaluated_channels: dict[str, list[float]] = {
+            channel_name: [] for channel_name in missing_channels
+        }
+
+        for sample_index in range(sample_count):
+            state = [
+                float(series[sample_index]) if sample_index < len(series) else 0.0
+                for series in ordered_series
+            ]
+            try:
+                probe_values = evaluate(state)
+            except Exception as exc:
+                log.debug("Virtual probe evaluation skipped: %s", exc)
+                return
+
+            if not isinstance(probe_values, dict):
+                return
+
+            for channel_name in missing_channels:
+                try:
+                    value = float(probe_values.get(channel_name, 0.0))
+                except (TypeError, ValueError):
+                    value = 0.0
+                evaluated_channels[channel_name].append(value)
+
+        for channel_name, values in evaluated_channels.items():
+            result.signals[channel_name] = values
+
+    @staticmethod
     def _normalize_signal_name(raw_name: str) -> str:
         """Normalize backend signal names for waveform display."""
         name = str(raw_name or "").strip()
@@ -1303,6 +1435,8 @@ class PulsimBackend(SimulationBackend):
                 if idx < len(state):
                     result.signals.setdefault(name, []).append(float(state[idx]))
 
+        self._merge_native_virtual_probe_channels(circuit, native_result, result)
+
         if result.time:
             final_sample = {
                 name: values[-1]
@@ -1372,6 +1506,12 @@ class PulsimBackend(SimulationBackend):
         for name in signal_names:
             result.signals[name] = []
 
+        def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
+            if run_result.error_message:
+                return run_result
+            self._ensure_virtual_probe_channels(circuit, run_result, signal_names)
+            return run_result
+
         if self._should_use_simulation_options(settings):
             try:
                 simulator_result = self._run_transient_via_simulator(
@@ -1386,7 +1526,7 @@ class PulsimBackend(SimulationBackend):
                     linear_solver,
                 )
                 if not simulator_result.error_message:
-                    return simulator_result
+                    return _finalize_attempt(simulator_result)
                 result.statistics["simulator_options_error"] = simulator_result.error_message
                 if "cancel" in simulator_result.error_message.lower():
                     return simulator_result
@@ -1415,7 +1555,7 @@ class PulsimBackend(SimulationBackend):
                 linear_solver,
             )
             if not chunked_result.error_message:
-                return chunked_result
+                return _finalize_attempt(chunked_result)
             if "cancel" in chunked_result.error_message.lower():
                 return chunked_result
             if hasattr(self._module, "run_transient_streaming"):
@@ -1439,7 +1579,7 @@ class PulsimBackend(SimulationBackend):
                     streaming_result.statistics["compatibility_error"] = (
                         chunked_result.error_message
                     )
-                    return streaming_result
+                    return _finalize_attempt(streaming_result)
                 streaming_result.error_message = (
                     f"{chunked_result.error_message} | Fallback error: "
                     f"{streaming_result.error_message}"
@@ -1448,10 +1588,10 @@ class PulsimBackend(SimulationBackend):
             return chunked_result
 
         if hasattr(self._module, "run_transient_shared"):
-            return self._run_transient_shared(
+            return _finalize_attempt(self._run_transient_shared(
                 circuit, settings, callbacks, result,
                 signal_names, dt, x0, newton_opts, linear_solver,
-            )
+            ))
 
         if hasattr(self._module, "run_transient_streaming"):
             streaming_result = self._run_transient_streaming(
@@ -1459,15 +1599,15 @@ class PulsimBackend(SimulationBackend):
                 signal_names, dt, x0, newton_opts, linear_solver,
             )
             if not streaming_result.error_message:
-                return streaming_result
+                return _finalize_attempt(streaming_result)
             if "cancel" in streaming_result.error_message.lower():
                 return streaming_result
             return streaming_result
 
-        return self._run_transient_chunked(
+        return _finalize_attempt(self._run_transient_chunked(
             circuit, settings, callbacks, result,
             signal_names, dt, x0, newton_opts, linear_solver,
-        )
+        ))
 
     def _build_transient_retry_profiles(
         self,

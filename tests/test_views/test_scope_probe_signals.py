@@ -1,26 +1,12 @@
-"""Regression tests for probe-derived scope signals."""
+"""Regression tests for backend-owned probe scope signals."""
 
 from __future__ import annotations
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.utils.net_utils import build_node_map
 from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.main_window import MainWindow
-
-
-def _connect_pins(
-    circuit: Circuit,
-    left: Component,
-    left_pin: int,
-    right: Component,
-    right_pin: int,
-) -> None:
-    x1, y1 = left.get_pin_position(left_pin)
-    x2, y2 = right.get_pin_position(right_pin)
-    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, x2, y2)]))
 
 
 class _ResultHost:
@@ -33,90 +19,73 @@ class _ResultHost:
         return self._circuit
 
 
-def _bind_result_helpers(host: _ResultHost) -> None:
-    host._probe_node_series = MainWindow._probe_node_series.__get__(host, _ResultHost)
-
-
-def test_voltage_probe_keeps_signal_when_plus_pin_is_ground_reference() -> None:
-    """VP signal should still be generated when the probe plus pin sits on GND."""
-    circuit = Circuit(name="voltage-probe-gnd-plus")
+def test_voltage_probe_uses_backend_channel_by_name() -> None:
+    circuit = Circuit(name="voltage-probe-by-name")
     probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1", x=120.0, y=120.0)
-    ground = Component(type=ComponentType.GROUND, name="GND1", x=60.0, y=130.0)
-    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=210.0, y=130.0)
     circuit.add_component(probe)
-    circuit.add_component(ground)
-    circuit.add_component(resistor)
 
-    _connect_pins(circuit, probe, 0, ground, 0)   # + on ground
-    _connect_pins(circuit, probe, 1, resistor, 0)  # - on non-ground node
-
-    node_map = build_node_map(circuit)
-    minus_node = node_map[(str(probe.id), 1)]
-
-    # Simulate backend output that does not expose V(0), only non-ground nodes.
     result = SimulationResult(
         time=[0.0, 1.0],
-        signals={f"V(N{minus_node})": [3.0, 5.0]},
+        signals={"VP1": [3.0, 5.0]},
     )
     host = _ResultHost(circuit)
-    _bind_result_helpers(host)
-
     enriched = MainWindow._result_with_probe_signals(host, result)
 
     key = format_signal_key("VP", "VP1")
     assert key in enriched.signals
-    assert enriched.signals[key] == [-3.0, -5.0]
+    assert enriched.signals[key] == [3.0, 5.0]
 
 
-def test_voltage_probe_resolves_raw_backend_voltage_key_without_n_prefix() -> None:
-    """VP generation should accept raw V(node_id) keys returned by compatibility backends."""
-    circuit = Circuit(name="voltage-probe-raw-key")
-    probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP2", x=120.0, y=120.0)
-    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=210.0, y=130.0)
-    circuit.add_component(probe)
-    circuit.add_component(resistor)
-
-    _connect_pins(circuit, probe, 0, resistor, 0)  # + on non-ground node
-
-    node_map = build_node_map(circuit)
-    plus_node = node_map[(str(probe.id), 0)]
-
-    result = SimulationResult(
-        time=[0.0, 1.0],
-        signals={f"V({plus_node})": [2.0, 4.0]},
-    )
-    host = _ResultHost(circuit)
-    _bind_result_helpers(host)
-
-    enriched = MainWindow._result_with_probe_signals(host, result)
-
-    key = format_signal_key("VP", "VP2")
-    assert key in enriched.signals
-    assert enriched.signals[key] == [2.0, 4.0]
-
-
-def test_single_ended_voltage_probe_generates_node_to_ground_signal() -> None:
-    """Node-referenced probe should export VP directly from connected node voltage."""
-    circuit = Circuit(name="single-ended-voltage-probe")
+def test_voltage_probe_uses_backend_channel_by_component_id() -> None:
+    circuit = Circuit(name="voltage-probe-by-id")
     probe = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="VPG1", x=120.0, y=120.0)
-    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=210.0, y=130.0)
     circuit.add_component(probe)
-    circuit.add_component(resistor)
-
-    _connect_pins(circuit, probe, 0, resistor, 0)
-
-    node_map = build_node_map(circuit)
-    in_node = node_map[(str(probe.id), 0)]
 
     result = SimulationResult(
         time=[0.0, 1.0],
-        signals={f"V(N{in_node})": [1.2, 2.4]},
+        signals={str(probe.id): [1.2, 2.4]},
     )
     host = _ResultHost(circuit)
-    _bind_result_helpers(host)
-
     enriched = MainWindow._result_with_probe_signals(host, result)
 
     key = format_signal_key("VP", "VPG1")
     assert key in enriched.signals
     assert enriched.signals[key] == [1.2, 2.4]
+
+
+def test_voltage_probe_skips_when_backend_channel_is_missing() -> None:
+    circuit = Circuit(name="voltage-probe-missing")
+    probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP2", x=120.0, y=120.0)
+    circuit.add_component(probe)
+
+    result = SimulationResult(
+        time=[0.0, 1.0],
+        signals={"V(N1)": [0.2, 0.4]},
+    )
+    host = _ResultHost(circuit)
+    enriched = MainWindow._result_with_probe_signals(host, result)
+
+    assert format_signal_key("VP", "VP2") not in enriched.signals
+
+
+def test_current_and_power_probes_use_backend_channels() -> None:
+    circuit = Circuit(name="current-power-probes")
+    current_probe = Component(type=ComponentType.CURRENT_PROBE, name="IP1", x=120.0, y=120.0)
+    power_probe = Component(type=ComponentType.POWER_PROBE, name="PP1", x=220.0, y=120.0)
+    current_probe.parameters["scale"] = 2.0
+    power_probe.parameters["scale"] = 0.5
+    circuit.add_component(current_probe)
+    circuit.add_component(power_probe)
+
+    result = SimulationResult(
+        time=[0.0, 1.0],
+        signals={
+            "IP1": [1.0, 1.5],
+            "PP1": [10.0, 20.0],
+        },
+    )
+    host = _ResultHost(circuit)
+    enriched = MainWindow._result_with_probe_signals(host, result)
+
+    assert enriched.signals[format_signal_key("IP", "IP1")] == [2.0, 3.0]
+    assert enriched.signals[format_signal_key("PP", "PP1")] == [5.0, 10.0]

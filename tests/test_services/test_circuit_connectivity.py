@@ -255,6 +255,78 @@ def test_converter_maps_delay_block_delay_time_to_backend_delay() -> None:
     assert numeric_params["delay"] == pytest.approx(2.5e-4)
 
 
+def test_converter_maps_current_probe_to_virtual_backend_component() -> None:
+    """Current probe should be emitted as backend current_probe virtual component."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "ip1",
+                "type": "CURRENT_PROBE",
+                "name": "IP1",
+                "parameters": {},
+                "pin_nodes": ["1", "2", ""],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 10.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"ip1": ["1", "2", ""], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VIN", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {name: (comp_type, nodes, numeric_params, metadata) for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components}
+    assert "IP1" in by_name
+    comp_type, nodes, _numeric_params, metadata = by_name["IP1"]
+    assert comp_type == "current_probe"
+    assert nodes == [1, 2]
+    assert metadata.get("target_component") == "R1"
+
+
+def test_converter_maps_power_probe_to_virtual_backend_component() -> None:
+    """Power probe should be emitted as backend power_probe virtual component."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "pp1",
+                "type": "POWER_PROBE",
+                "name": "PP1",
+                "parameters": {},
+                "pin_nodes": ["1", "0", "2", "0"],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 5.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"pp1": ["1", "0", "2", "0"], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VOUT", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {name: (comp_type, nodes, numeric_params, metadata) for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components}
+    assert "PP1" in by_name
+    comp_type, nodes, _numeric_params, metadata = by_name["PP1"]
+    assert comp_type == "power_probe"
+    assert nodes == [1, 0]
+    assert metadata.get("target_component") == "R1"
+
+
 def test_converter_prefers_native_switch_and_snubber_methods() -> None:
     """When backend has native methods, converter should not downgrade to virtual."""
     fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
