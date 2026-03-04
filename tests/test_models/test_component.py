@@ -11,6 +11,7 @@ from pulsimgui.models.component import (
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
     can_connect_measurement_pins,
     pin_connection_domain,
+    set_scope_channel_count,
     set_thermal_port_enabled,
 )
 
@@ -195,3 +196,21 @@ class TestComponent:
 
         assert can_connect_measurement_pins(scope, 0, resistor, 2)
         assert not can_connect_measurement_pins(scope, 0, resistor, 1)
+
+    def test_scope_channel_count_expands_pin_layout(self):
+        scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
+        assert len(scope.pins) == 2
+
+        set_scope_channel_count(scope, 6)
+        assert scope.parameters["channel_count"] == 6
+        assert len(scope.pins) == 6
+        assert [pin.name for pin in scope.pins] == ["CH1", "CH2", "CH3", "CH4", "CH5", "CH6"]
+
+    def test_scope_channel_count_allows_up_to_sixteen_channels(self):
+        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1")
+        set_scope_channel_count(scope, 16)
+
+        assert scope.parameters["channel_count"] == 16
+        assert len(scope.pins) == 16
+        assert scope.pins[0].name == "CH1"
+        assert scope.pins[-1].name == "CH16"

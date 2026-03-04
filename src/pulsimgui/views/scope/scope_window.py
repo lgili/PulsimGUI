@@ -1851,7 +1851,10 @@ class ScopeWindow(QWidget):
         self._stacked_signal_list.set_signals(list(valid_signals.keys()))
         self._apply_stacked_trace_colors()
 
-        default_visible = {next(iter(valid_signals))} if not previous_visible else previous_visible
+        if previous_visible:
+            default_visible = {name for name in previous_visible if name in valid_signals}
+        else:
+            default_visible = set(valid_signals.keys())
         for name in valid_signals:
             self._stacked_signal_list.set_signal_visible(name, name in default_visible)
 

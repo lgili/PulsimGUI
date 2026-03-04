@@ -1029,7 +1029,7 @@ class Component:
         )
 
 
-SCOPE_CHANNEL_LIMITS = (1, 8)
+SCOPE_CHANNEL_LIMITS = (1, 16)
 MUX_CHANNEL_LIMITS = (2, 16)
 SUM_INPUT_LIMITS = (2, 16)
 

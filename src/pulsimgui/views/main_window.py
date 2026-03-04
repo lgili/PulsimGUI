@@ -2093,6 +2093,15 @@ class MainWindow(QMainWindow):
         # Find and update the corresponding component item in the scene
         for item in self._schematic_scene.items():
             if isinstance(item, ComponentItem) and item.component is edited_component:
+                pin_layout_changed = name in {
+                    THERMAL_PORT_PARAMETER,
+                    "channel_count",
+                    "input_count",
+                    "output_count",
+                    "signs",
+                }
+                if pin_layout_changed:
+                    item.prepareGeometryChange()
                 # Update position if changed
                 if name == "position_x":
                     item.setPos(edited_component.x, edited_component.y)
@@ -2103,7 +2112,7 @@ class MainWindow(QMainWindow):
                     item.update_transform()
                 elif name == "mirror_h" or name == "mirror_v":
                     item.update_transform()
-                elif name == THERMAL_PORT_PARAMETER:
+                elif pin_layout_changed:
                     self._schematic_scene.update_connected_wires(item)
                 # Update name label
                 item._name_label.setText(edited_component.name)
