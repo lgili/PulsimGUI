@@ -40,6 +40,8 @@ from pulsimgui.services.backend_types import (
     LossBreakdown,
 )
 
+_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
+
 
 @dataclass
 class BackendInfo:
@@ -497,19 +499,20 @@ class PulsimBackend(SimulationBackend):
                 result.error_message = str(exc)
                 return result
 
+            attempt_settings = self._apply_transient_retry_profile(settings, profile)
+
             # --- Signal-flow evaluator for closed-loop control blocks ---
             try:
                 sig_evaluator = SignalEvaluator(circuit_data)
                 sig_evaluator.build()
                 if sig_evaluator.has_signal_blocks():
-                    self._attach_signal_evaluator(circuit, sig_evaluator, circuit_data)
+                    self._attach_signal_evaluator(circuit, sig_evaluator, circuit_data, attempt_settings)
             except AlgebraicLoopError as exc:
                 result.error_message = str(exc)
                 return result
             except Exception as exc:
                 log.warning("Signal evaluator setup failed (ignored): %s", exc)
 
-            attempt_settings = self._apply_transient_retry_profile(settings, profile)
             dt = base_dt * profile.dt_scale
 
             if hasattr(circuit, "set_timestep"):
@@ -567,6 +570,7 @@ class PulsimBackend(SimulationBackend):
         circuit: Any,
         evaluator: "SignalEvaluator",
         circuit_data: dict,
+        settings: "SimulationSettings",
     ) -> None:
         """Wire closed-loop PWM duty callbacks from the signal evaluator.
 
@@ -600,13 +604,42 @@ class PulsimBackend(SimulationBackend):
             for c in circuit_data.get("components", [])
         }
 
+        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+        if sample_time <= 0.0 and control_mode in {"auto", "discrete"}:
+            inferred = self._infer_pwm_sample_time(circuit_data)
+            if inferred > 0.0:
+                sample_time = inferred
+
+        # Shared cache so multiple PWM callbacks at the same simulation time
+        # evaluate the signal graph only once.
+        state_cache: dict[str, Any] = {
+            "last_eval_t": None,
+            "next_eval_t": None,
+            "outputs": {},
+        }
+
+        def _step_cached(t: float) -> dict[str, float]:
+            if sample_time <= 0.0:
+                if state_cache["last_eval_t"] != t:
+                    state_cache["outputs"] = evaluator.step(t)
+                    state_cache["last_eval_t"] = t
+                return state_cache["outputs"]
+
+            next_eval_t = state_cache["next_eval_t"]
+            if next_eval_t is None or t >= next_eval_t:
+                state_cache["outputs"] = evaluator.step(t)
+                state_cache["last_eval_t"] = t
+                state_cache["next_eval_t"] = t + sample_time
+            return state_cache["outputs"]
+
         for comp_id in evaluator.pwm_components():
             pwm_name = id_to_name.get(comp_id, comp_id)
             try:
                 circuit.set_pwm_duty_callback(
                     pwm_name,
-                    lambda t, pid=comp_id, ev=evaluator: max(
-                        0.0, min(1.0, ev.step(t).get(pid, 0.5))
+                    lambda t, pid=comp_id: max(
+                        0.0, min(1.0, _step_cached(t).get(pid, 0.5))
                     ),
                 )
                 log.debug(
@@ -620,6 +653,26 @@ class PulsimBackend(SimulationBackend):
                     pwm_name,
                     exc,
                 )
+
+    def _infer_pwm_sample_time(self, circuit_data: dict[str, Any]) -> float:
+        """Infer a control sample time from PWM generator frequencies."""
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        periods: list[float] = []
+        for component in components:
+            if str(component.get("type", "")).upper() != "PWM_GENERATOR":
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            try:
+                freq = float(params.get("frequency", 0.0))
+            except (TypeError, ValueError):
+                freq = 0.0
+            if freq > 0.0:
+                periods.append(1.0 / freq)
+        if not periods:
+            return 0.0
+        return max(1e-12, min(periods))
 
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
         """Resolve labels for transient state-vector signals."""
@@ -894,10 +947,32 @@ class PulsimBackend(SimulationBackend):
         return mapping.get(method, "BDF1")
 
     def _should_use_simulation_options(self, settings: "SimulationSettings") -> bool:
-        # Always prefer the full SimulationOptions path when the backend supports it.
-        # This enables Newton damping, fallback gmin policy, and other features
-        # that are critical for switching power converter convergence.
-        return hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")
+        # Use SimulationOptions only when the backend API is new enough.
+        # Legacy/early backends can expose SimulationOptions/Simulator but still
+        # run as a fully blocking path with poor runtime for closed-loop
+        # electrothermal cases.
+        if not (hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")):
+            return False
+
+        # Require modern control/progress API markers before enabling this path.
+        # Without these markers, prefer compatibility transient execution.
+        required_markers = ("SimulationController", "ProgressCallbackConfig", "SimulationProgress")
+        if not all(hasattr(self._module, marker) for marker in required_markers):
+            return False
+
+        parsed_version = self.info.parsed_version
+        if parsed_version is None:
+            try:
+                parsed_version = BackendVersion.from_string(str(self.info.version))
+                self.info.parsed_version = parsed_version
+            except ValueError:
+                log.warning(
+                    "Could not parse backend version '%s'; using compatibility transient path.",
+                    self.info.version,
+                )
+                return False
+
+        return parsed_version.is_compatible_with(_SIMULATION_OPTIONS_MIN_BACKEND)
 
     def _build_dc_convergence_config(self, settings: "SimulationSettings") -> Any | None:
         config_cls = getattr(self._module, "DCConvergenceConfig", None)
@@ -1122,12 +1197,24 @@ class PulsimBackend(SimulationBackend):
         # stream progress. Emit a keepalive progress ramp so GUI users don't
         # see a frozen 5% status on long runs.
         start_time = time.monotonic()
-        keepalive_span_seconds = 20.0
+        # Keep progress responsive for long-running simulations:
+        # - 0..20s: fast ramp from 5% to 94%
+        # - >20s: slow tail from 94% to 99% so UI never appears frozen
+        primary_span_seconds = 20.0
+        tail_span_seconds = 120.0
         while worker.is_alive():
             worker.join(timeout=1.0)
             if worker.is_alive():
                 elapsed = time.monotonic() - start_time
-                progress = 5.0 + min(89.0, (elapsed / keepalive_span_seconds) * 89.0)
+                if elapsed <= primary_span_seconds:
+                    progress = 5.0 + (elapsed / primary_span_seconds) * 89.0
+                else:
+                    tail_progress = min(
+                        5.0,
+                        ((elapsed - primary_span_seconds) / tail_span_seconds) * 5.0,
+                    )
+                    progress = 94.0 + tail_progress
+                progress = min(99.0, progress)
                 callbacks.progress(
                     progress,
                     f"Running transient with SimulationOptions... ({elapsed:.0f}s elapsed)",

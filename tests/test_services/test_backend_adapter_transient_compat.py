@@ -380,6 +380,118 @@ def test_transient_uses_signal_names_when_available() -> None:
     assert result.signals["I(V1)"] == [-0.001, -0.002]
 
 
+def test_transient_skips_simulation_options_for_legacy_backend_versions() -> None:
+    """Legacy backends should use compatibility transient path even if Simulator exists."""
+    seen: dict[str, int] = {"run_transient_calls": 0, "simulator_calls": 0}
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[0.0, 1e-3], states=[[0.0], [1.0]], success=True, message="")
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **_kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args)
+        seen["run_transient_calls"] += 1
+        return [t_start, t_stop], [[0.0], [1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="0.5.1",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="0.5.1",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert seen["run_transient_calls"] == 1
+    assert seen["simulator_calls"] == 0
+
+
+def test_transient_skips_simulation_options_without_modern_markers() -> None:
+    """Even on new versions, Simulator path requires modern progress/control markers."""
+    seen: dict[str, int] = {"run_transient_calls": 0, "simulator_calls": 0}
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[0.0, 1e-3], states=[[0.0], [1.0]], success=True, message="")
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **_kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args)
+        seen["run_transient_calls"] += 1
+        return [t_start, t_stop], [[0.0], [1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert seen["run_transient_calls"] == 1
+    assert seen["simulator_calls"] == 0
+
+
 def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     """Adapter should use SimulationOptions path when advanced controls are requested."""
     seen: dict[str, Any] = {"run_transient_calls": 0}
@@ -574,6 +686,15 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.temp_ref = 25.0
             self.alpha = 0.004
 
+    class _SimulationController:
+        pass
+
+    class _ProgressCallbackConfig:
+        pass
+
+    class _SimulationProgress:
+        pass
+
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
             _ = circuit
@@ -618,6 +739,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         ThermalCouplingPolicy=_ThermalCouplingPolicy,
         SwitchingEnergy=_SwitchingEnergy,
         ThermalDeviceConfig=_ThermalDeviceConfig,
+        SimulationController=_SimulationController,
+        ProgressCallbackConfig=_ProgressCallbackConfig,
+        SimulationProgress=_SimulationProgress,
         run_transient=run_transient,
     )
 
