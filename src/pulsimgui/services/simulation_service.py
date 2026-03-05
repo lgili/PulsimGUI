@@ -34,6 +34,11 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
+from pulsimgui.services.signal_evaluator import (
+    BACKEND_SIGNAL_EVALUATOR_AVAILABLE,
+    BACKEND_SIGNAL_EVALUATOR_ERROR,
+    SIGNAL_TYPES,
+)
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -70,6 +75,81 @@ _SUPPORTED_INTEGRATION_METHODS = {
     "rosenbrockw",
     "sdirk2",
 }
+
+_SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
+    {
+        "CONSTANT",
+        "GAIN",
+        "SUM",
+        "SUBTRACTOR",
+        "LIMITER",
+        "RATE_LIMITER",
+        "PI_CONTROLLER",
+        "PID_CONTROLLER",
+        "PWM_GENERATOR",
+        "INTEGRATOR",
+        "DIFFERENTIATOR",
+        "HYSTERESIS",
+        "SAMPLE_HOLD",
+        "MATH_BLOCK",
+        "SIGNAL_MUX",
+        "SIGNAL_DEMUX",
+    }
+)
+
+_SWITCHABLE_TARGET_TYPES = frozenset({
+    "MOSFET_N",
+    "MOSFET_P",
+    "MOSFET",
+    "IGBT",
+    "SWITCH",
+    "VOLTAGE_CONTROLLED_SWITCH",
+    "VCSWITCH",
+})
+
+_THERMAL_SUPPORTED_COMPONENT_TYPES = frozenset({
+    "RESISTOR",
+    "DIODE",
+    "MOSFET_N",
+    "MOSFET_P",
+    "MOSFET",
+    "IGBT",
+    "BJT_NPN",
+    "BJT_PNP",
+})
+
+_NON_ELECTRICAL_COMPONENT_TYPES = frozenset({
+    "PI_CONTROLLER",
+    "PID_CONTROLLER",
+    "MATH_BLOCK",
+    "PWM_GENERATOR",
+    "GAIN",
+    "SUM",
+    "SUBTRACTOR",
+    "CONSTANT",
+    "INTEGRATOR",
+    "DIFFERENTIATOR",
+    "LIMITER",
+    "RATE_LIMITER",
+    "HYSTERESIS",
+    "LOOKUP_TABLE",
+    "TRANSFER_FUNCTION",
+    "DELAY_BLOCK",
+    "SAMPLE_HOLD",
+    "STATE_MACHINE",
+    "VOLTAGE_PROBE",
+    "VOLTAGE_PROBE_GND",
+    "CURRENT_PROBE",
+    "POWER_PROBE",
+    "ELECTRICAL_SCOPE",
+    "THERMAL_SCOPE",
+    "SIGNAL_MUX",
+    "SIGNAL_DEMUX",
+    "GOTO_LABEL",
+    "FROM_LABEL",
+    "SUBCIRCUIT",
+    "GROUND",
+})
 
 
 def normalize_integration_method(value: str | None) -> str:
@@ -384,6 +464,8 @@ class SimulationWorker(QThread):
             result.statistics = dict(backend_result.statistics)
             result.error_message = backend_result.error_message
 
+            self._append_runtime_contract_checks(result)
+
             if self._cancelled and not result.error_message:
                 result.error_message = "Simulation cancelled"
 
@@ -446,6 +528,169 @@ class SimulationWorker(QThread):
             handler()
         except Exception:
             pass
+
+    def _append_runtime_contract_checks(self, result: SimulationResult) -> None:
+        """Attach physical-consistency checks and KPI-style diagnostics."""
+        stats = result.statistics
+        warnings: list[str] = []
+        diagnostic_code = str(stats.get("diagnostic", "") or "").strip().lower()
+        if diagnostic_code == "invalid_thermal_configuration":
+            warnings.append(
+                "Backend diagnostic invalid_thermal_configuration: check global and per-device thermal parameters."
+            )
+            if not result.error_message:
+                result.error_message = (
+                    "invalid_thermal_configuration: check simulation thermal defaults "
+                    "and per-component thermal parameters."
+                )
+
+        if not result.time:
+            stats["runtime_contract_ok"] = False
+            if not warnings:
+                warnings.append("No transient samples returned.")
+            stats["runtime_contract_warnings"] = warnings
+            return
+
+        final_time = float(result.time[-1])
+        target_time = float(getattr(self._settings, "t_stop", final_time))
+        time_tol = max(1e-12, abs(target_time) * 1e-3, float(getattr(self._settings, "t_step", 0.0)) * 2.0)
+        time_ok = abs(final_time - target_time) <= time_tol
+        stats["runtime_time_target"] = target_time
+        stats["runtime_time_final"] = final_time
+        stats["runtime_time_within_tolerance"] = time_ok
+        if not time_ok:
+            warnings.append("Final time does not match configured tstop within tolerance.")
+
+        components = (
+            self._circuit_data.get("components", [])
+            if isinstance(self._circuit_data, dict)
+            else []
+        )
+        pwm_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() == "PWM_GENERATOR"
+        ]
+        pi_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() in {"PI_CONTROLLER", "PID_CONTROLLER"}
+        ]
+
+        missing_channels: list[str] = []
+        for component in pi_components:
+            name = str(component.get("name") or "").strip()
+            if name and name not in result.signals:
+                missing_channels.append(name)
+        for component in pwm_components:
+            name = str(component.get("name") or "").strip()
+            duty_key = f"{name}.duty" if name else ""
+            if duty_key and duty_key not in result.signals:
+                missing_channels.append(duty_key)
+        if missing_channels:
+            warnings.append(f"Missing expected control channels: {', '.join(sorted(set(missing_channels)))}.")
+        stats["runtime_missing_control_channels"] = sorted(set(missing_channels))
+
+        duty_limit_ok = True
+        for component in pwm_components:
+            name = str(component.get("name") or "").strip()
+            if not name:
+                continue
+            duty_key = f"{name}.duty"
+            duty_series = result.signals.get(duty_key)
+            if not duty_series:
+                continue
+            params = component.get("parameters", {}) if isinstance(component.get("parameters"), dict) else {}
+            duty_min = float(params.get("duty_min", 0.0))
+            duty_max = float(params.get("duty_max", 1.0))
+            if any((value < duty_min - 1e-9) or (value > duty_max + 1e-9) for value in duty_series):
+                duty_limit_ok = False
+                warnings.append(f"Channel {duty_key} exceeded configured limits [{duty_min}, {duty_max}].")
+        stats["runtime_pwm_duty_within_limits"] = duty_limit_ok
+
+        duration = max(0.0, float(result.time[-1] - result.time[0]))
+        stats["runtime_duration"] = duration
+
+        loss_summary = stats.get("loss_summary") if isinstance(stats.get("loss_summary"), dict) else {}
+        thermal_summary = (
+            stats.get("thermal_summary") if isinstance(stats.get("thermal_summary"), dict) else {}
+        )
+        component_rows = (
+            stats.get("component_electrothermal")
+            if isinstance(stats.get("component_electrothermal"), list)
+            else []
+        )
+
+        total_loss = float(loss_summary.get("total_loss", 0.0) or 0.0)
+        stats["runtime_total_loss_positive"] = total_loss > 0.0 if self._settings.enable_losses else True
+        if self._settings.enable_losses and total_loss <= 0.0:
+            warnings.append("Loss summary reported non-positive total loss in a losses-enabled run.")
+
+        thermal_enabled = bool(thermal_summary.get("enabled", False))
+        ambient = float(thermal_summary.get("ambient", self._settings.thermal_ambient) or self._settings.thermal_ambient)
+        max_temperature = float(thermal_summary.get("max_temperature", ambient) or ambient)
+        thermal_ok = (not self._settings.enable_losses) or (thermal_enabled and max_temperature >= ambient)
+        stats["runtime_thermal_summary_ok"] = thermal_ok
+        if self._settings.enable_losses and not thermal_ok:
+            warnings.append("Thermal summary is inconsistent (disabled or max_temperature < ambient).")
+
+        non_virtual_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() not in _NON_ELECTRICAL_COMPONENT_TYPES
+        ]
+        expected_component_count = len(non_virtual_components)
+        observed_component_count = len(component_rows)
+        coverage_rate = (
+            float(observed_component_count) / float(expected_component_count)
+            if expected_component_count > 0
+            else 1.0
+        )
+        coverage_gap = max(0, expected_component_count - observed_component_count)
+        stats["component_coverage_rate"] = coverage_rate
+        stats["component_coverage_gap"] = coverage_gap
+        if coverage_gap > 0:
+            warnings.append(
+                f"Component electrothermal coverage gap: expected {expected_component_count}, got {observed_component_count}."
+            )
+
+        total_energy = 0.0
+        for row in component_rows:
+            if not isinstance(row, dict):
+                continue
+            total_energy += float(row.get("total_energy", 0.0) or 0.0)
+        expected_energy = total_loss * duration
+        loss_consistency_error = (
+            abs(total_energy - expected_energy) / max(abs(expected_energy), 1e-12)
+            if expected_energy > 0.0
+            else 0.0
+        )
+        stats["component_loss_summary_consistency_error"] = loss_consistency_error
+        if loss_consistency_error > 5e-2:
+            warnings.append("High loss consistency error between component energies and loss_summary.")
+
+        thermal_by_name: dict[str, float] = {}
+        for entry in thermal_summary.get("device_temperatures", []) if isinstance(thermal_summary.get("device_temperatures"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("device_name") or "").strip()
+            if not name:
+                continue
+            thermal_by_name[name] = float(entry.get("peak_temperature", entry.get("final_temperature", ambient)) or ambient)
+
+        max_peak_delta = 0.0
+        for row in component_rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("component_name") or "").strip()
+            if not name or name not in thermal_by_name:
+                continue
+            row_peak = float(row.get("peak_temperature", row.get("final_temperature", ambient)) or ambient)
+            max_peak_delta = max(max_peak_delta, abs(row_peak - thermal_by_name[name]))
+        stats["component_thermal_summary_consistency_error"] = max_peak_delta
+        if max_peak_delta > 2.0:
+            warnings.append("High thermal consistency error between component_electrothermal and thermal_summary.")
+
+        runtime_ok = not warnings and not result.error_message
+        stats["runtime_contract_ok"] = runtime_ok
+        stats["runtime_contract_warnings"] = warnings
 
 
 class ParameterSweepWorker(QThread):
@@ -820,6 +1065,29 @@ class SimulationService(QObject):
         status = info.status or "unavailable"
         return f"Backend '{info.name}' is not available (status: {status})."
 
+    def signal_evaluator_issue(self, circuit_data: dict | None = None) -> str | None:
+        """Return compatibility guidance for signal-domain control blocks."""
+        if not self.is_backend_ready:
+            return None
+
+        info = self._backend.info
+        if (info.identifier or "").strip().lower() != "pulsim":
+            return None
+
+        if BACKEND_SIGNAL_EVALUATOR_AVAILABLE:
+            return None
+
+        if circuit_data is not None and not self._circuit_uses_signal_blocks(circuit_data):
+            return None
+
+        detail = BACKEND_SIGNAL_EVALUATOR_ERROR or (
+            "SignalEvaluator requires backend support from pulsim.signal_evaluator."
+        )
+        return (
+            "Signal-domain control blocks are unavailable in the active backend runtime. "
+            f"{detail}"
+        )
+
     def set_backend_preference(self, identifier: str) -> BackendInfo:
         """Switch to the requested backend if possible."""
         if self.is_running:
@@ -932,9 +1200,228 @@ class SimulationService(QObject):
         self.error.emit(f"Simulation backend unavailable: {issue}")
         return False
 
+    @staticmethod
+    def _circuit_uses_signal_blocks(circuit_data: dict[str, Any]) -> bool:
+        """Return True when the serialized circuit includes control blocks."""
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        signal_types = SIGNAL_TYPES if SIGNAL_TYPES else _SIGNAL_BLOCK_TYPES_FALLBACK
+        for component in components:
+            comp_type = str(component.get("type", "")).upper()
+            if comp_type in signal_types:
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_component_type(raw_value: Any) -> str:
+        raw = str(raw_value or "").strip().upper().replace("-", "_")
+        aliases = {
+            "M": "MOSFET",
+            "NMOS": "MOSFET_N",
+            "PMOS": "MOSFET_P",
+            "Q": "IGBT",
+            "BJTNPN": "BJT_NPN",
+            "BJTPNP": "BJT_PNP",
+            "VCSWITCH": "VOLTAGE_CONTROLLED_SWITCH",
+            "S": "SWITCH",
+        }
+        return aliases.get(raw, raw)
+
+    @staticmethod
+    def _to_finite_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed):
+            return None
+        return parsed
+
+    @staticmethod
+    def _component_thermal_payload(component: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        component_thermal = component.get("thermal")
+        if isinstance(component_thermal, dict):
+            if "enabled" in component_thermal:
+                payload["thermal_enabled"] = component_thermal.get("enabled")
+            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+                if key in component_thermal:
+                    payload[f"thermal_{key}"] = component_thermal.get(key)
+
+        nested_thermal = parameters.get("thermal")
+        if isinstance(nested_thermal, dict):
+            if "enabled" in nested_thermal and "thermal_enabled" not in payload:
+                payload["thermal_enabled"] = nested_thermal.get("enabled")
+            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+                thermal_key = f"thermal_{key}"
+                if key in nested_thermal and thermal_key not in payload:
+                    payload[thermal_key] = nested_thermal.get(key)
+
+        for key in (
+            "thermal_enabled",
+            "enable_thermal_port",
+            "thermal_rth",
+            "thermal_cth",
+            "thermal_temp_init",
+            "thermal_temp_ref",
+            "thermal_alpha",
+            "rth",
+            "cth",
+            "temp_init",
+            "temp_ref",
+            "alpha",
+        ):
+            if key in parameters:
+                payload[key] = parameters.get(key)
+        return payload
+
+    @staticmethod
+    def _component_thermal_enabled(thermal_payload: dict[str, Any]) -> bool:
+        return bool(
+            thermal_payload.get("thermal_enabled", False)
+            or thermal_payload.get("enable_thermal_port", False)
+        )
+
+    def _prevalidate_runtime_contract(self, circuit_data: dict[str, Any]) -> str | None:
+        """Validate control and electrothermal constraints before backend execution."""
+        control_mode = normalize_control_mode(self._settings.control_mode)
+        sample_time = float(self._settings.control_sample_time)
+        if control_mode == "discrete" and sample_time <= 0.0:
+            return (
+                "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED: "
+                "control.mode=discrete requires control.sample_time > 0."
+            )
+
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        by_name: dict[str, str] = {}
+        thermal_enabled_components = 0
+        simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
+        thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
+
+        for component in components:
+            comp_type = self._normalize_component_type(component.get("type", ""))
+            comp_name = str(component.get("name") or component.get("id") or "").strip()
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            if comp_name:
+                by_name[comp_name] = comp_type
+
+            if comp_type != "PWM_GENERATOR":
+                continue
+            target = str(params.get("target_component") or "").strip()
+            if not target:
+                continue
+            target_type = by_name.get(target)
+            if target_type is None:
+                return (
+                    "PULSIM_YAML_E_CONTROL_TARGET_INVALID: "
+                    f"PWM target_component '{target}' was not found."
+                )
+            if target_type not in _SWITCHABLE_TARGET_TYPES:
+                return (
+                    "PULSIM_YAML_E_CONTROL_TARGET_INVALID: "
+                    f"target_component '{target}' must be switchable (mosfet/igbt/switch/vcswitch)."
+                )
+
+        for component in components:
+            comp_type = self._normalize_component_type(component.get("type", ""))
+            comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            thermal_payload = self._component_thermal_payload(component, params)
+            if not self._component_thermal_enabled(thermal_payload):
+                continue
+
+            thermal_enabled_components += 1
+            if comp_type not in _THERMAL_SUPPORTED_COMPONENT_TYPES:
+                return (
+                    "PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT: "
+                    f"component '{comp_name}' ({comp_type}) does not support thermal enablement."
+                )
+
+            has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
+            has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
+            if not has_rth or not has_cth:
+                return (
+                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                    f"component '{comp_name}' thermal requires rth and cth."
+                )
+
+            rth = self._to_finite_float(
+                thermal_payload.get("thermal_rth", thermal_payload.get("rth"))
+            )
+            cth = self._to_finite_float(
+                thermal_payload.get("thermal_cth", thermal_payload.get("cth"))
+            )
+            temp_init = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_temp_init",
+                    thermal_payload.get("temp_init", self._settings.thermal_ambient),
+                )
+            )
+            temp_ref = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_temp_ref",
+                    thermal_payload.get("temp_ref", self._settings.thermal_ambient),
+                )
+            )
+            alpha = self._to_finite_float(
+                thermal_payload.get("thermal_alpha", thermal_payload.get("alpha", 0.004))
+            )
+
+            if (
+                rth is None
+                or cth is None
+                or temp_init is None
+                or temp_ref is None
+                or alpha is None
+                or rth <= 0.0
+                or cth < 0.0
+            ):
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    f"component '{comp_name}' requires rth>0, cth>=0 and finite temp_init/temp_ref/alpha."
+                )
+
+        if thermal_enabled_components > 0:
+            thermal_enabled = bool(
+                thermal_cfg.get("enabled", bool(self._settings.enable_losses))
+            ) if isinstance(thermal_cfg, dict) else bool(self._settings.enable_losses)
+            if not thermal_enabled:
+                return (
+                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                    "component thermal requires simulation.thermal.enabled=true."
+                )
+            if not bool(self._settings.enable_losses):
+                return (
+                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                    "thermal-enabled components require simulation.enable_losses=true."
+                )
+            ambient = self._to_finite_float(self._settings.thermal_ambient)
+            default_rth = self._to_finite_float(self._settings.thermal_default_rth)
+            default_cth = self._to_finite_float(self._settings.thermal_default_cth)
+            if (
+                ambient is None
+                or default_rth is None
+                or default_cth is None
+                or default_rth <= 0.0
+                or default_cth < 0.0
+            ):
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    "global thermal config requires finite ambient, default_rth>0, default_cth>=0."
+                )
+
+        return None
+
     def run_transient(self, circuit_data: dict) -> None:
         """Run a transient simulation."""
         if not self._ensure_backend_ready():
+            return
+        signal_issue = self.signal_evaluator_issue(circuit_data)
+        if signal_issue:
+            self.error.emit(signal_issue)
+            return
+        contract_issue = self._prevalidate_runtime_contract(circuit_data)
+        if contract_issue:
+            self.error.emit(contract_issue)
             return
         if self.is_running:
             self.error.emit("Simulation already running")
@@ -1010,21 +1497,11 @@ class SimulationService(QObject):
                     self.progress.emit(100, "DC analysis complete")
                     self._set_state(SimulationState.COMPLETED)
             else:
-                # Fallback to placeholder
-                result.node_voltages = {
-                    "V(out)": 5.0,
-                    "V(in)": 10.0,
-                    "V(gnd)": 0.0,
-                }
-                result.branch_currents = {
-                    "I(R1)": 0.005,
-                    "I(V1)": -0.005,
-                }
-                result.power_dissipation = {
-                    "P(R1)": 0.025,
-                }
-                self.progress.emit(100, "DC analysis complete (placeholder)")
-                self._set_state(SimulationState.COMPLETED)
+                result.error_message = (
+                    f"DC analysis is not available in backend {self._backend.info.label()}."
+                )
+                self._set_state(SimulationState.ERROR)
+                self.error.emit(result.error_message)
 
             self.dc_finished.emit(result)
 
@@ -1108,6 +1585,14 @@ class SimulationService(QObject):
     ) -> None:
         """Run a parameter sweep across multiple simulations."""
         if not self._ensure_backend_ready():
+            return
+        signal_issue = self.signal_evaluator_issue(circuit_data)
+        if signal_issue:
+            self.error.emit(signal_issue)
+            return
+        contract_issue = self._prevalidate_runtime_contract(circuit_data)
+        if contract_issue:
+            self.error.emit(contract_issue)
             return
         if self.is_running:
             self.error.emit("Simulation already running")
@@ -1197,7 +1682,33 @@ class SimulationService(QObject):
 
     def convert_gui_circuit(self, project) -> dict:
         """Convert GUI project/circuit to simulation data format."""
+        control_mode = normalize_control_mode(self._settings.control_mode)
+        control_sample_time = max(0.0, float(self._settings.control_sample_time))
+        control_cfg: dict[str, Any] = {"mode": control_mode}
+        if control_sample_time > 0.0 or control_mode == "discrete":
+            control_cfg["sample_time"] = max(control_sample_time, 1e-12)
+
         circuit_data = {
+            "schema": "pulsim-v1",
+            "version": 1,
+            "simulation": {
+                "tstart": float(self._settings.t_start),
+                "tstop": float(self._settings.t_stop),
+                "dt": float(self._settings.t_step),
+                "step_mode": normalize_step_mode(self._settings.step_mode),
+                "formulation": normalize_formulation_mode(self._settings.formulation_mode),
+                "direct_formulation_fallback": bool(self._settings.direct_formulation_fallback),
+                "enable_events": bool(self._settings.enable_events),
+                "enable_losses": bool(self._settings.enable_losses),
+                "control": control_cfg,
+                "thermal": {
+                    "enabled": bool(self._settings.enable_losses),
+                    "ambient": float(self._settings.thermal_ambient),
+                    "policy": normalize_thermal_policy(self._settings.thermal_policy),
+                    "default_rth": max(0.0, float(self._settings.thermal_default_rth)),
+                    "default_cth": max(0.0, float(self._settings.thermal_default_cth)),
+                },
+            },
             "components": [],
             "wires": [],
             "nodes": {},

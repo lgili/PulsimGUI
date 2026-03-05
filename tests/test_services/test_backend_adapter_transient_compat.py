@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
+from pulsimgui.services.backend_types import ThermalSettings, TransientResult
 from pulsimgui.services.simulation_service import SimulationSettings
 
 
@@ -705,6 +706,11 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             return SimpleNamespace(
                 time=[0.0, 1e-6],
                 states=[[0.0], [1.25]],
+                virtual_channels={
+                    "PI1": [0.2, 0.25],
+                    "PWM1.duty": [0.45, 0.5],
+                    "Xout": [0.0, 1.25],
+                },
                 success=True,
                 message="",
                 total_steps=2,
@@ -801,6 +807,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
 
     assert result.error_message == ""
     assert result.signals["V(OUT)"] == [0.0, 1.25]
+    assert result.signals["PI1"] == [0.2, 0.25]
+    assert result.signals["PWM1.duty"] == [0.45, 0.5]
+    assert result.signals["Xout"] == [0.0, 1.25]
     assert seen["run_transient_calls"] == 0
     assert seen["options"].adaptive_timestep is True
     assert seen["options"].step_mode == _StepMode.Variable
@@ -845,9 +854,23 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert result.statistics["component_electrothermal"][0]["component_name"] == "M1"
 
 
-def test_extract_thermal_device_names_includes_resistor() -> None:
+def test_run_thermal_fails_when_native_api_is_missing() -> None:
+    class _FallbackThermalSimulator:
+        def __init__(self, *args: Any) -> None:  # noqa: ANN401
+            self._args = args
+
+        def simulate(self, times: list[float], powers: list[float]) -> list[float]:
+            _ = times
+            return [30.0 + float(power) * 0.1 for power in powers]
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        ThermalSimulator=_FallbackThermalSimulator,
+    )
+
     backend = PulsimBackend(
-        SimpleNamespace(__version__="2.0.0"),
+        fake_module,
         BackendInfo(
             identifier="pulsim",
             name="Pulsim",
@@ -856,16 +879,17 @@ def test_extract_thermal_device_names_includes_resistor() -> None:
         ),
     )
 
-    names = backend._extract_thermal_device_names(
-        {
-            "components": [
-                {"type": "RESISTOR", "name": "Rloss"},
-                {"type": "MOSFET_N", "name": "M1"},
-                {"type": "CAPACITOR", "name": "C1"},
-            ]
-        }
+    electrical_result = TransientResult(
+        time=[0.0, 1e-6, 2e-6],
+        signals={"P(R1)": [1.0, 2.0, 3.0]},
+    )
+    thermal_result = backend.run_thermal(
+        _simple_circuit_data(),
+        electrical_result,
+        ThermalSettings(ambient_temperature=25.0),
     )
 
-    assert "Rloss" in names
-    assert "M1" in names
-    assert "C1" not in names
+    assert "no compatible native thermal api" in thermal_result.error_message.lower()
+    assert thermal_result.time == []
+    assert thermal_result.devices == []
+    assert thermal_result.is_synthetic is False

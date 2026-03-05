@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
-from pulsimgui.services.signal_evaluator import AlgebraicLoopError, SignalEvaluator
+from pulsimgui.services.signal_evaluator import AlgebraicLoopError, SIGNAL_TYPES, SignalEvaluator
 from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
@@ -781,8 +781,6 @@ class PulsimBackend(SimulationBackend):
             return
 
         probe_channels = self._probe_virtual_channels(native_result, circuit)
-        if not probe_channels:
-            return
 
         virtual_channels_attr = getattr(native_result, "virtual_channels", None)
         if virtual_channels_attr is None:
@@ -797,8 +795,11 @@ class PulsimBackend(SimulationBackend):
             return
 
         sample_count = len(result.time)
-        for channel_name in probe_channels:
-            series = raw_virtual_channels.get(channel_name)
+        merged_channels: list[str] = []
+        for raw_name, series in raw_virtual_channels.items():
+            channel_name = str(raw_name or "").strip()
+            if not channel_name:
+                continue
             if series is None:
                 continue
             try:
@@ -810,6 +811,14 @@ class PulsimBackend(SimulationBackend):
             if len(values) < sample_count:
                 values.extend([0.0] * (sample_count - len(values)))
             result.signals[channel_name] = values
+            merged_channels.append(channel_name)
+
+        if merged_channels:
+            result.statistics["virtual_channel_names"] = sorted(set(merged_channels))
+            if probe_channels:
+                result.statistics["virtual_probe_channels"] = sorted(
+                    {name for name in merged_channels if name in probe_channels}
+                )
 
     def _ensure_virtual_probe_channels(
         self,
@@ -1064,31 +1073,45 @@ class PulsimBackend(SimulationBackend):
             params = component.get("parameters")
             if not isinstance(params, dict):
                 continue
-            if not (override_keys & set(params.keys())):
+            component_thermal = component.get("thermal")
+            if not isinstance(component_thermal, dict):
+                component_thermal = {}
+            nested_thermal = params.get("thermal")
+            if not isinstance(nested_thermal, dict):
+                nested_thermal = {}
+
+            if not (override_keys & set(params.keys())) and not component_thermal and not nested_thermal:
                 continue
 
-            enabled = bool(params.get("thermal_enabled", True))
+            thermal_payload: dict[str, Any] = {}
+            thermal_payload.update(component_thermal)
+            thermal_payload.update(nested_thermal)
+            thermal_payload.update(params)
+            if "enabled" in thermal_payload and "thermal_enabled" not in thermal_payload:
+                thermal_payload["thermal_enabled"] = thermal_payload.get("enabled")
+
+            enabled = bool(thermal_payload.get("thermal_enabled", True))
             rth = max(
                 0.0,
-                self._first_numeric(params, ("thermal_rth", "rth", "rth_ja"), default_rth),
+                self._first_numeric(thermal_payload, ("thermal_rth", "rth", "rth_ja"), default_rth),
             )
             cth = max(
                 0.0,
-                self._first_numeric(params, ("thermal_cth", "cth"), default_cth),
+                self._first_numeric(thermal_payload, ("thermal_cth", "cth"), default_cth),
             )
             temp_init = self._first_numeric(
-                params,
+                thermal_payload,
                 ("thermal_temp_init", "temp_init", "temperature_init"),
                 default_temp,
             )
             temp_ref = self._first_numeric(
-                params,
+                thermal_payload,
                 ("thermal_temp_ref", "temp_ref", "temperature_ref"),
                 default_temp,
             )
             alpha = max(
                 0.0,
-                self._first_numeric(params, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
+                self._first_numeric(thermal_payload, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
             )
             thermal_map[name] = self._make_thermal_device_config(
                 enabled=enabled,
@@ -2544,13 +2567,13 @@ class PulsimBackend(SimulationBackend):
         if not self.has_capability("thermal"):
             return ThermalResult(
                 error_message="Thermal simulation not supported by this backend version",
-                is_synthetic=True,
+                is_synthetic=False,
             )
 
         try:
             circuit = self._converter.build(circuit_data)
         except CircuitConversionError as exc:
-            return ThermalResult(error_message=str(exc), is_synthetic=True)
+            return ThermalResult(error_message=str(exc), is_synthetic=False)
 
         try:
             direct_result = self._run_thermal_native(circuit, electrical_result, settings)
@@ -2560,13 +2583,13 @@ class PulsimBackend(SimulationBackend):
             return ThermalResult(
                 error_message=(
                     "No compatible native thermal API available for this backend version. "
-                    "GUI thermal fallback is disabled; upgrade backend thermal support."
+                    "Upgrade backend thermal support to use thermal analysis."
                 ),
-                is_synthetic=True,
+                is_synthetic=False,
             )
 
         except Exception as exc:
-            return ThermalResult(error_message=str(exc), is_synthetic=True)
+            return ThermalResult(error_message=str(exc), is_synthetic=False)
 
     def _run_thermal_native(
         self,
@@ -2615,193 +2638,6 @@ class PulsimBackend(SimulationBackend):
 
         native_result = thermal_sim.run(electrical_result.time, electrical_result.signals)
         return self._convert_thermal_result(native_result, settings)
-
-    def _run_thermal_from_waveforms(
-        self,
-        circuit_data: dict,
-        electrical_result: TransientResult,
-        settings: ThermalSettings,
-    ) -> ThermalResult | None:
-        """Run thermal using Foster-network API with per-device power waveforms."""
-        simulator_cls = getattr(self._module, "ThermalSimulator", None)
-        create_simple_model = getattr(self._module, "create_simple_thermal_model", None)
-        if simulator_cls is None or not callable(create_simple_model):
-            return None
-        create_network_model = create_simple_model
-        if settings.thermal_network == "cauer":
-            for model_name in ("create_simple_cauer_model", "create_cauer_thermal_model"):
-                candidate = getattr(self._module, model_name, None)
-                if callable(candidate):
-                    create_network_model = candidate
-                    break
-
-        times = [float(t) for t in (electrical_result.time or [])]
-        if len(times) < 2:
-            return None
-
-        device_names = self._extract_thermal_device_names(circuit_data)
-        if not device_names:
-            return None
-
-        devices: list[ThermalDeviceResult] = []
-        used_real_power = False
-
-        for index, device_name in enumerate(device_names):
-            measured_power = self._extract_power_trace(device_name, electrical_result.signals, len(times))
-            if measured_power:
-                used_real_power = True
-                powers = measured_power
-            else:
-                fallback_power = 2.0 + (0.4 * index)
-                powers = [fallback_power] * len(times)
-
-            if len(powers) < len(times):
-                powers = powers + [powers[-1] if powers else 0.0] * (len(times) - len(powers))
-            elif len(powers) > len(times):
-                powers = powers[: len(times)]
-
-            rth = 0.8 + (0.15 * index)
-            tau = 0.02 + (0.004 * index)
-            try:
-                network = create_network_model(rth, tau, device_name)
-            except TypeError:
-                network = create_simple_model(rth, tau, device_name)
-            thermal_sim = simulator_cls(network, settings.ambient_temperature)
-            if hasattr(thermal_sim, "set_ambient"):
-                thermal_sim.set_ambient(settings.ambient_temperature)
-            elif hasattr(thermal_sim, "set_ambient_temperature"):
-                thermal_sim.set_ambient_temperature(settings.ambient_temperature)
-
-            if not hasattr(thermal_sim, "simulate"):
-                return None
-
-            temps = [float(value) for value in thermal_sim.simulate(times, powers)]
-            avg_power = sum(float(abs(value)) for value in powers) / max(1, len(powers))
-
-            conduction = 0.0
-            switching_on = 0.0
-            if settings.include_conduction_losses and settings.include_switching_losses:
-                conduction = avg_power * 0.7
-                switching_on = avg_power * 0.3
-            elif settings.include_conduction_losses:
-                conduction = avg_power
-            elif settings.include_switching_losses:
-                switching_on = avg_power
-
-            devices.append(ThermalDeviceResult(
-                name=device_name,
-                junction_temperature=temps,
-                peak_temperature=max(temps) if temps else settings.ambient_temperature,
-                steady_state_temperature=temps[-1] if temps else settings.ambient_temperature,
-                losses=LossBreakdown(
-                    conduction=conduction,
-                    switching_on=switching_on,
-                ),
-                foster_stages=self._extract_foster_stages(network),
-            ))
-
-        if not devices:
-            return None
-
-        return ThermalResult(
-            time=times,
-            devices=devices,
-            ambient_temperature=settings.ambient_temperature,
-            is_synthetic=not used_real_power,
-        )
-
-    def _extract_thermal_device_names(self, circuit_data: dict) -> list[str]:
-        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
-        thermal_types = {
-            "DIODE",
-            "ZENER_DIODE",
-            "LED",
-            "MOSFET_N",
-            "MOSFET_P",
-            "IGBT",
-            "BJT_NPN",
-            "BJT_PNP",
-            "THYRISTOR",
-            "TRIAC",
-            "SWITCH",
-            "TRANSFORMER",
-            "RESISTOR",
-        }
-        names: list[str] = []
-        seen: set[str] = set()
-        for component in components:
-            comp_type = str(component.get("type", "")).strip().upper()
-            if comp_type not in thermal_types:
-                continue
-            name = str(component.get("name") or component.get("id") or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            names.append(name)
-        return names
-
-    def _extract_power_trace(
-        self,
-        device_name: str,
-        signals: dict[str, list[float]],
-        expected_points: int,
-    ) -> list[float]:
-        if not signals:
-            return []
-
-        key_candidates = (
-            f"P({device_name})",
-            f"p({device_name})",
-            f"power:{device_name}",
-            f"{device_name}:power",
-        )
-        for key in key_candidates:
-            series = signals.get(key)
-            if series:
-                return [float(value) for value in series[:expected_points]]
-
-        device_lower = device_name.lower()
-        for key, series in signals.items():
-            if not series:
-                continue
-            key_lower = str(key).lower()
-            if key_lower.startswith("p(") and device_lower in key_lower:
-                return [float(value) for value in series[:expected_points]]
-
-        total_series = signals.get("P(total)") or signals.get("p(total)")
-        if total_series:
-            return [float(value) for value in total_series[:expected_points]]
-        return []
-
-    def _extract_foster_stages(self, network: Any) -> list[FosterStage]:
-        stages_attr = getattr(network, "stages", None)
-        if stages_attr is None:
-            return []
-
-        try:
-            raw_stages = stages_attr() if callable(stages_attr) else list(stages_attr)
-        except Exception:
-            return []
-
-        stages: list[FosterStage] = []
-        for stage in raw_stages:
-            resistance = getattr(stage, "Rth", 0.0)
-            resistance = resistance() if callable(resistance) else resistance
-
-            capacitance = getattr(stage, "Cth", 0.0)
-            capacitance = capacitance() if callable(capacitance) else capacitance
-
-            if (capacitance is None or float(capacitance) == 0.0) and hasattr(stage, "tau"):
-                tau = getattr(stage, "tau")
-                tau = tau() if callable(tau) else tau
-                if resistance:
-                    capacitance = float(tau) / max(float(resistance), 1e-12)
-
-            stages.append(FosterStage(
-                resistance=float(resistance),
-                capacitance=float(capacitance) if capacitance is not None else 0.0,
-            ))
-        return stages
 
     def _convert_thermal_result(self, native_result: Any, settings: ThermalSettings) -> ThermalResult:
         """Convert PulsimCore thermal result to GUI ThermalResult."""
