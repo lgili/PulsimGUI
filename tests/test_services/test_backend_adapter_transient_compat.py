@@ -381,6 +381,60 @@ def test_transient_uses_signal_names_when_available() -> None:
     assert result.signals["I(V1)"] == [-0.001, -0.002]
 
 
+def test_transient_shared_streaming_emits_scalar_samples() -> None:
+    """Shared-memory transient path should stream lightweight scalar samples."""
+    payloads: list[dict[str, Any]] = []
+
+    def run_transient_shared(*args):  # noqa: ANN001
+        time_buffer = args[-5]
+        states_buffer = args[-4]
+        status_buffer = args[-3]
+
+        time_buffer[:3] = [0.0, 5e-4, 1e-3]
+        states_buffer[:3, 0] = [0.0, 0.5, 1.0]
+        status_buffer[0] = 3
+        status_buffer[1] = 1
+        return True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_shared=run_transient_shared,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(t_start=0.0, t_stop=1e-3, t_step=1e-6),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda _time, sample: payloads.append(dict(sample)),
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert len(result.time) == 3
+    first_signal = next(iter(result.signals.values()))
+    assert first_signal == [0.0, 0.5, 1.0]
+    assert payloads
+    assert all("_chunk_time" not in payload for payload in payloads)
+    assert all("_chunk_signals" not in payload for payload in payloads)
+    assert not any("_full_data" in payload for payload in payloads)
+
+
 def test_transient_skips_simulation_options_for_legacy_backend_versions() -> None:
     """Legacy backends should use compatibility transient path even if Simulator exists."""
     seen: dict[str, int] = {"run_transient_calls": 0, "simulator_calls": 0}

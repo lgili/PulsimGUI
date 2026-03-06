@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from pulsimgui.models.component import (
@@ -73,7 +74,10 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     label_pin_refs: list[tuple[str, str]] = []
 
     # Register all component pins
-    for comp in circuit.components.values():
+    for comp_index, comp in enumerate(circuit.components.values()):
+        if comp_index and comp_index % 128 == 0:
+            # Cooperative yield to reduce GIL starvation on large projects.
+            time.sleep(0)
         comp_id = str(comp.id)
         for pin_idx, _pin in enumerate(comp.pins):
             pin_ref = f"pin:{comp_id}:{pin_idx}"
@@ -90,7 +94,9 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
                     label_pin_refs.append((label, pin_ref))
 
     # Register wire endpoints/junctions and preserve explicit segment connectivity
-    for wire in circuit.wires.values():
+    for wire_index, wire in enumerate(circuit.wires.values()):
+        if wire_index and wire_index % 128 == 0:
+            time.sleep(0)
         start_ref, end_ref = _register_wire_points(
             wire,
             uf,
@@ -118,7 +124,9 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     root_to_node: dict[str, str] = {}
     node_counter = 1
 
-    for comp_id, pin_idx, pin_ref in pin_refs:
+    for pin_index, (comp_id, pin_idx, pin_ref) in enumerate(pin_refs):
+        if pin_index and pin_index % 256 == 0:
+            time.sleep(0)
         root = uf.find(pin_ref)
         node_name = root_to_node.get(root)
         if node_name is None:
@@ -146,7 +154,9 @@ def build_node_alias_map(
     """
 
     alias_map: dict[str, str] = {}
-    for wire in circuit.wires.values():
+    for wire_index, wire in enumerate(circuit.wires.values()):
+        if wire_index and wire_index % 128 == 0:
+            time.sleep(0)
         alias = (wire.alias or "").strip()
         fallback = (wire.node_name or "").strip()
         if not wire.segments:
@@ -162,7 +172,9 @@ def build_node_alias_map(
             elif fallback and node_id not in alias_map:
                 alias_map[node_id] = fallback
 
-    for component in circuit.components.values():
+    for comp_index, component in enumerate(circuit.components.values()):
+        if comp_index and comp_index % 128 == 0:
+            time.sleep(0)
         if component.type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
             continue
         label = str(component.parameters.get("net_label", "") or "").strip()
@@ -305,7 +317,9 @@ def _merge_nearby_points(
     bucket_size = PIN_HIT_TOLERANCE
     buckets: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
 
-    for point_ref, (px, py) in point_positions.items():
+    for point_index, (point_ref, (px, py)) in enumerate(point_positions.items()):
+        if point_index and point_index % 512 == 0:
+            time.sleep(0)
         key = _bucket_key(px, py, bucket_size)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):

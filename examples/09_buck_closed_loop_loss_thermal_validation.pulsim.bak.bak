@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "Buck Closed-Loop Loss + Thermal Validation",
   "created": "2024-01-01T00:00:00",
-  "modified": "2026-03-06T18:22:41.090689",
+  "modified": "2026-03-06T18:05:58.949232",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 2.0,
@@ -15,7 +15,7 @@
     "step_mode": "variable",
     "output_points": 50000,
     "enable_events": true,
-    "max_step_retries": 9,
+    "max_step_retries": 8,
     "enable_losses": true,
     "max_iterations": 80,
     "enable_voltage_limiting": true,
@@ -366,7 +366,7 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "value": 6.0
+            "value": 4.0
           },
           "pins": [
             {

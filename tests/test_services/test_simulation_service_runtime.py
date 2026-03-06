@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from dataclasses import dataclass
 
 from pulsimgui.models.component import Component, ComponentType
@@ -543,3 +544,79 @@ def test_worker_maps_invalid_thermal_configuration_diagnostic_to_error() -> None
 
     assert "invalid_thermal_configuration" in result.error_message
     assert result.statistics["runtime_contract_ok"] is False
+
+
+def test_worker_builds_circuit_data_before_running_backend() -> None:
+    seen: dict[str, object] = {}
+
+    class _Backend:
+        def run_transient(self, circuit_data, _settings, _callbacks):  # noqa: ANN001
+            seen["backend_circuit_data"] = circuit_data
+            return SimpleNamespace(
+                time=[0.0, 1e-6],
+                signals={"V(out)": [0.0, 1.0]},
+                statistics={},
+                error_message="",
+            )
+
+    source = {"source": "project"}
+
+    def _builder(payload):  # noqa: ANN001
+        seen["builder_payload"] = payload
+        return {"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]}
+
+    def _validator(circuit_data):  # noqa: ANN001
+        seen["validator_data"] = circuit_data
+        return None
+
+    worker = SimulationWorker(
+        backend=_Backend(),  # type: ignore[arg-type]
+        circuit_data=None,
+        settings=SimulationSettings(),
+        circuit_source=source,
+        circuit_builder=_builder,
+        contract_validator=_validator,
+    )
+
+    results: list[SimulationResult] = []
+    errors: list[str] = []
+    worker.finished_signal.connect(results.append)
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert not errors
+    assert seen["builder_payload"] == source
+    assert seen["validator_data"] == seen["backend_circuit_data"]
+    assert isinstance(seen["backend_circuit_data"], dict)
+    assert results
+    assert results[0].error_message == ""
+    assert results[0].time == [0.0, 1e-6]
+
+
+def test_worker_stops_before_backend_when_contract_validator_fails() -> None:
+    class _Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_transient(self, _circuit_data, _settings, _callbacks):  # noqa: ANN001
+            self.calls += 1
+            return SimpleNamespace(time=[], signals={}, statistics={}, error_message="")
+
+    backend = _Backend()
+    worker = SimulationWorker(
+        backend=backend,  # type: ignore[arg-type]
+        circuit_data={"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]},
+        settings=SimulationSettings(control_mode="discrete", control_sample_time=0.0),
+        contract_validator=lambda _data: "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED",
+    )
+
+    results: list[SimulationResult] = []
+    errors: list[str] = []
+    worker.finished_signal.connect(results.append)
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert backend.calls == 0
+    assert errors == ["PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"]
+    assert results
+    assert results[0].error_message == "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"

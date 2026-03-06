@@ -2578,9 +2578,16 @@ class MainWindow(QMainWindow):
     # Simulation handlers
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
+        if not self._sim_progress_active:
+            self._sim_progress_last_value = 0
+            self._sim_progress.setRange(0, 100)
+            self._sim_progress.setValue(0)
+            self._sim_progress.setVisible(True)
+        self._sim_status_widget.setStatus("Preparing simulation...", is_running=True)
+        QApplication.processEvents()
+
         self._apply_project_simulation_settings_to_service()
-        circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-        self._simulation_service.run_transient(circuit_data)
+        self._simulation_service.run_transient_project(self._project)
 
     def _on_stop_simulation(self) -> None:
         """Stop current simulation."""

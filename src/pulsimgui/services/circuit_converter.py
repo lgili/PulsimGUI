@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from pulsimgui.models.component import ComponentType
@@ -110,7 +111,9 @@ class CircuitConverter:
         positions_to_apply = []
         resolved_components: list[tuple[dict, ComponentType, str, list[str]]] = []
 
-        for component in components:
+        for component_index, component in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
             comp_type = self._component_type(component.get("type"))
             comp_id = str(component.get("id") or "")
             if comp_id in suppressed_control_component_ids:
@@ -127,7 +130,9 @@ class CircuitConverter:
             name = self._component_name(component, comp_type)
             resolved_components.append((component, comp_type, name, nodes))
 
-        for source in synthetic_setpoint_sources:
+        for source_index, source in enumerate(synthetic_setpoint_sources):
+            if source_index and source_index % 128 == 0:
+                time.sleep(0)
             source_name = str(source["name"])
             source_node = str(source["node"])
             source_value = float(source["value"])
@@ -155,7 +160,9 @@ class CircuitConverter:
         self._predeclare_nodes(circuit, resolved_components, node_cache)
         probe_target_overrides = self._infer_probe_target_overrides(resolved_components)
 
-        for component, comp_type, name, nodes in resolved_components:
+        for resolved_index, (component, comp_type, name, nodes) in enumerate(resolved_components):
+            if resolved_index and resolved_index % 128 == 0:
+                time.sleep(0)
             if comp_type == ComponentType.GROUND:
                 continue
 
@@ -280,7 +287,9 @@ class CircuitConverter:
         components: list[tuple[dict, ComponentType, str, list[str]]],
         cache: dict[str, int],
     ) -> None:
-        for _component, comp_type, _name, nodes in components:
+        for component_index, (_component, comp_type, _name, nodes) in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
             if comp_type == ComponentType.GROUND:
                 continue
             for node in self._nodes_to_predeclare(comp_type, nodes):

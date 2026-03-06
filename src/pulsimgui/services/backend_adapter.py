@@ -479,6 +479,7 @@ class PulsimBackend(SimulationBackend):
         result = BackendRunResult()
 
         callbacks.progress(0.0, "Starting Pulsim simulation...")
+        time.sleep(0)
 
         try:
             base_dt = self._compute_time_step(settings)
@@ -492,6 +493,8 @@ class PulsimBackend(SimulationBackend):
         for retry_index, profile in enumerate(retry_profiles):
             if retry_index > 0:
                 callbacks.progress(2.0, f"Retrying convergence with profile '{profile.name}'...")
+            callbacks.progress(3.0, "Building circuit model...")
+            time.sleep(0)
 
             try:
                 circuit = self._converter.build(circuit_data)
@@ -1628,6 +1631,44 @@ class PulsimBackend(SimulationBackend):
                     "SimulationOptions unavailable; retrying compatibility transient...",
                 )
 
+        prefer_nonblocking = self._should_prefer_nonblocking_transient(settings, dt)
+        if prefer_nonblocking:
+            if hasattr(self._module, "run_transient_streaming"):
+                streaming_result = self._run_transient_streaming(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not streaming_result.error_message:
+                    streaming_result.statistics["execution_preference"] = "nonblocking_streaming"
+                    return _finalize_attempt(streaming_result)
+                if "cancel" in streaming_result.error_message.lower():
+                    return streaming_result
+
+            if hasattr(self._module, "run_transient_shared"):
+                shared_result = self._run_transient_shared(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not shared_result.error_message:
+                    shared_result.statistics["execution_preference"] = "nonblocking_shared"
+                    return _finalize_attempt(shared_result)
+                if "cancel" in shared_result.error_message.lower():
+                    return shared_result
+
         # Prefer robust run_transient path first to match notebook behavior.
         if hasattr(self._module, "run_transient"):
             chunked_result = self._run_transient_chunked(
@@ -1695,6 +1736,18 @@ class PulsimBackend(SimulationBackend):
             circuit, settings, callbacks, result,
             signal_names, dt, x0, newton_opts, linear_solver,
         ))
+
+    def _should_prefer_nonblocking_transient(
+        self,
+        settings: "SimulationSettings",
+        dt: float,
+    ) -> bool:
+        """Prefer shared/streaming APIs for long runs to keep UI responsive."""
+        duration = max(0.0, float(getattr(settings, "t_stop", 0.0)) - float(getattr(settings, "t_start", 0.0)))
+        if dt <= 0.0:
+            return duration >= 0.5
+        estimated_steps = int(duration / dt) if duration > 0.0 else 0
+        return duration >= 0.5 or estimated_steps >= 200_000
 
     def _build_transient_retry_profiles(
         self,
@@ -1792,9 +1845,7 @@ class PulsimBackend(SimulationBackend):
             The actual data comes from the final returned arrays which have
             full resolution. We just use this callback to trigger UI updates.
             """
-            # Just trigger a progress update - actual data comes at the end
-            # Send a dummy point to trigger waveform update
-            callbacks.data_point(t, state_dict)
+            _ = (t, state_dict)
 
         def progress_callback(percent: float, message: str) -> None:
             """Called by C++ backend for progress updates."""
@@ -1810,7 +1861,7 @@ class PulsimBackend(SimulationBackend):
 
         # Use fewer callbacks (50) to reduce GIL overhead
         # The returned data will have full resolution
-        total_steps = int((settings.t_stop - settings.t_start) / dt)
+        total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
         emit_interval = max(1, total_steps // 50)
 
         transient_args = self._compose_transient_args(
@@ -1959,23 +2010,6 @@ class PulsimBackend(SimulationBackend):
                     current_time = time_buffer[current_index - 1]
                     callbacks.progress(progress, f"Simulating: t={current_time*1e6:.1f}µs")
 
-                # Send numpy array views directly to UI (zero-copy!)
-                # Using _np suffix to indicate numpy arrays
-                streaming_data = {
-                    "_time_np": time_buffer[:current_index],
-                    "_signals_np": {
-                        name: states_buffer[:current_index, i]
-                        for i, name in enumerate(signal_names)
-                    },
-                    "_current_index": current_index,
-                }
-                last_sample = {
-                    name: float(states_buffer[current_index - 1, i])
-                    for i, name in enumerate(signal_names)
-                }
-                last_sample["_full_data"] = streaming_data
-                callbacks.data_point(float(time_buffer[current_index - 1]), last_sample)
-
                 last_index = current_index
 
             time.sleep(poll_interval)
@@ -1994,6 +2028,9 @@ class PulsimBackend(SimulationBackend):
         if final_status == 2 or not sim_success[0]:  # Error
             result.error_message = sim_message[0] or "Simulation failed"
             return result
+
+        if final_index > last_index:
+            last_index = final_index
 
         callbacks.progress(95.0, "Finalizing results...")
 

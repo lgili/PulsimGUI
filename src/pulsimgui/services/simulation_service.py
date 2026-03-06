@@ -9,9 +9,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
-from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, Signal
+from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, QTimer, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
@@ -396,14 +396,21 @@ class SimulationWorker(QThread):
     def __init__(
         self,
         backend: SimulationBackend,
-        circuit_data: dict,
+        circuit_data: dict | None,
         settings: SimulationSettings,
+        *,
+        circuit_source: Any | None = None,
+        circuit_builder: Callable[[Any], dict] | None = None,
+        contract_validator: Callable[[dict], str | None] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._backend = backend
         self._circuit_data = circuit_data
         self._settings = settings
+        self._circuit_source = circuit_source
+        self._circuit_builder = circuit_builder
+        self._contract_validator = contract_validator
         self._cancelled = False
         self._paused = False
         self._mutex = QMutex()
@@ -416,6 +423,27 @@ class SimulationWorker(QThread):
 
         try:
             self._thread_ident = threading.get_ident()
+
+            if self._circuit_data is None:
+                if self._circuit_builder is None:
+                    raise ValueError("Circuit builder is required when circuit_data is not provided.")
+                self.progress.emit(-1, "Preparing circuit model...")
+                self._circuit_data = self._circuit_builder(self._circuit_source)
+                if not isinstance(self._circuit_data, dict):
+                    raise ValueError("Circuit builder returned invalid data format.")
+
+            if self._cancelled:
+                result.error_message = "Simulation cancelled"
+                self.finished_signal.emit(result)
+                return
+
+            if self._contract_validator is not None:
+                contract_issue = self._contract_validator(self._circuit_data)
+                if contract_issue:
+                    result.error_message = contract_issue
+                    self.error.emit(contract_issue)
+                    self.finished_signal.emit(result)
+                    return
 
             # Emit initial progress immediately so user sees feedback
             self.progress.emit(0, "Starting simulation...")
@@ -1237,7 +1265,9 @@ class SimulationService(QObject):
         simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
         thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
 
-        for component in components:
+        for component_index, component in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
             comp_type = self._normalize_component_type(component.get("type", ""))
             comp_name = str(component.get("name") or component.get("id") or "").strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
@@ -1261,7 +1291,9 @@ class SimulationService(QObject):
                     f"target_component '{target}' must be switchable (mosfet/igbt/switch/vcswitch)."
                 )
 
-        for component in components:
+        for component_index, component in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
             comp_type = self._normalize_component_type(component.get("type", ""))
             comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
@@ -1368,14 +1400,51 @@ class SimulationService(QObject):
         # Emit immediate feedback so UI shows activity right away
         self.progress.emit(-1, "Starting simulation...")
 
-        # Create and start worker thread
-        self._worker = SimulationWorker(self._backend, circuit_data, self._settings)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.data_point.connect(self._on_data_point)
-        self._worker.finished_signal.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.start()
+        # Create worker thread (deferred start to let UI paint first)
+        worker = SimulationWorker(self._backend, circuit_data, self._settings)
+        self._attach_and_schedule_worker(worker)
+
+    def run_transient_project(self, project: Any) -> None:
+        """Run transient simulation converting the GUI project off the UI thread."""
+        if not self._ensure_backend_ready():
+            return
+        if self.is_running:
+            self.error.emit("Simulation already running")
+            return
+
+        self._set_state(SimulationState.RUNNING)
+        self.progress.emit(-1, "Preparing simulation...")
+
+        worker = SimulationWorker(
+            self._backend,
+            None,
+            self._settings,
+            circuit_source=project,
+            circuit_builder=self.convert_gui_circuit,
+            contract_validator=self._prevalidate_runtime_contract,
+        )
+        self._attach_and_schedule_worker(worker)
+
+    def _attach_and_schedule_worker(self, worker: SimulationWorker) -> None:
+        """Attach worker signals and start on next event-loop turn."""
+        self._worker = worker
+        worker.progress.connect(self._on_progress)
+        worker.data_point.connect(self._on_data_point)
+        worker.finished_signal.connect(self._on_finished)
+        worker.error.connect(self._on_error)
+        worker.finished.connect(worker.deleteLater)
+        QTimer.singleShot(0, self._start_pending_worker)
+
+    def _start_pending_worker(self) -> None:
+        """Start the queued simulation worker if state is still running."""
+        worker = self._worker
+        if worker is None:
+            return
+        if self._state not in (SimulationState.RUNNING, SimulationState.PAUSED):
+            return
+        if worker.isRunning():
+            return
+        worker.start(QThread.Priority.LowPriority)
 
     def run_dc_operating_point(
         self,
@@ -1546,10 +1615,12 @@ class SimulationService(QObject):
 
     def stop(self) -> None:
         """Stop the current simulation."""
-        if self._worker and self._worker.isRunning():
+        if self._worker:
             self._worker.cancel()
-            self._worker.wait(5000)  # Wait up to 5 seconds
-            self._set_state(SimulationState.CANCELLED)
+            if self._worker.isRunning():
+                self._worker.wait(5000)  # Wait up to 5 seconds
+            if self._state in (SimulationState.RUNNING, SimulationState.PAUSED):
+                self._set_state(SimulationState.CANCELLED)
 
         if self._sweep_worker and self._sweep_worker.isRunning():
             self._sweep_worker.cancel()
@@ -1663,7 +1734,10 @@ class SimulationService(QObject):
 
         component_node_map: dict[str, list[str]] = {}
 
-        for comp in circuit.components.values():
+        for comp_index, comp in enumerate(circuit.components.values()):
+            if comp_index and comp_index % 128 == 0:
+                # Cooperative yield keeps UI responsive during very large netlist conversion.
+                time.sleep(0)
             comp_dict = comp.to_dict()
             comp_dict["parameters"] = copy.deepcopy(comp.parameters)
             comp_id = str(comp.id)
@@ -1679,7 +1753,9 @@ class SimulationService(QObject):
 
         circuit_data["node_map"] = component_node_map
 
-        for wire in circuit.wires.values():
+        for wire_index, wire in enumerate(circuit.wires.values()):
+            if wire_index and wire_index % 128 == 0:
+                time.sleep(0)
             circuit_data["wires"].append(wire.to_dict())
 
         return circuit_data
