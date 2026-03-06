@@ -68,6 +68,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     point_positions: dict[str, tuple[float, float]] = {}
     point_domains: dict[str, str] = {}
     pin_refs: list[tuple[str, int, str]] = []
+    pin_ref_map: dict[tuple[str, int], str] = {}
     ground_pin_refs: set[str] = set()
     label_pin_refs: list[tuple[str, str]] = []
 
@@ -80,6 +81,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
             point_positions[pin_ref] = comp.get_pin_position(pin_idx)
             point_domains[pin_ref] = pin_connection_domain(comp, pin_idx)
             pin_refs.append((comp_id, pin_idx, pin_ref))
+            pin_ref_map[(comp_id, pin_idx)] = pin_ref
             if comp.type == ComponentType.GROUND:
                 ground_pin_refs.add(pin_ref)
             if comp.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
@@ -89,12 +91,20 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
 
     # Register wire endpoints/junctions and preserve explicit segment connectivity
     for wire in circuit.wires.values():
-        _register_wire_points(
+        start_ref, end_ref = _register_wire_points(
             wire,
             uf,
             point_positions,
             point_domains,
             _wire_domain(circuit, wire),
+        )
+        _union_explicit_wire_endpoints(
+            wire,
+            start_ref,
+            end_ref,
+            pin_ref_map,
+            point_domains,
+            uf,
         )
 
     # Merge points that are geometrically coincident (within tolerance)
@@ -208,20 +218,25 @@ def _register_wire_points(
     point_positions: dict[str, tuple[float, float]],
     point_domains: dict[str, str],
     wire_domain: str,
-) -> None:
+) -> tuple[str | None, str | None]:
     """Register wire points and explicit wire-internal connectivity."""
+    start_ref: str | None = None
+    end_ref: str | None = None
 
     # Segment endpoints are always connected by the segment itself.
     for seg_idx, seg in enumerate(wire.segments):
-        start_ref = f"wire:{wire.id}:seg:{seg_idx}:start"
-        end_ref = f"wire:{wire.id}:seg:{seg_idx}:end"
-        uf.add(start_ref)
-        uf.add(end_ref)
-        point_positions[start_ref] = (seg.x1, seg.y1)
-        point_positions[end_ref] = (seg.x2, seg.y2)
-        point_domains[start_ref] = wire_domain
-        point_domains[end_ref] = wire_domain
-        uf.union(start_ref, end_ref)
+        seg_start_ref = f"wire:{wire.id}:seg:{seg_idx}:start"
+        seg_end_ref = f"wire:{wire.id}:seg:{seg_idx}:end"
+        if seg_idx == 0:
+            start_ref = seg_start_ref
+        end_ref = seg_end_ref
+        uf.add(seg_start_ref)
+        uf.add(seg_end_ref)
+        point_positions[seg_start_ref] = (seg.x1, seg.y1)
+        point_positions[seg_end_ref] = (seg.x2, seg.y2)
+        point_domains[seg_start_ref] = wire_domain
+        point_domains[seg_end_ref] = wire_domain
+        uf.union(seg_start_ref, seg_end_ref)
 
     # Junctions are explicit connection points that may split crossing wires.
     for j_idx, (jx, jy) in enumerate(wire.junctions or []):
@@ -235,6 +250,46 @@ def _register_wire_points(
             if _point_on_segment((jx, jy), seg):
                 uf.union(j_ref, f"wire:{wire.id}:seg:{seg_idx}:start")
                 uf.union(j_ref, f"wire:{wire.id}:seg:{seg_idx}:end")
+
+    return start_ref, end_ref
+
+
+def _union_explicit_wire_endpoints(
+    wire: Wire,
+    start_ref: str | None,
+    end_ref: str | None,
+    pin_ref_map: dict[tuple[str, int], str],
+    point_domains: dict[str, str],
+    uf: _UnionFind,
+) -> None:
+    """Prefer explicit wire endpoint metadata when available.
+
+    GUI files persist ``start_connection`` / ``end_connection`` metadata. This
+    keeps connectivity robust even when stored wire endpoint coordinates become
+    stale after pin-layout updates (for example thermal-port migrations).
+    """
+
+    endpoint_specs = (
+        (wire.start_connection, start_ref),
+        (wire.end_connection, end_ref),
+    )
+    for connection, endpoint_ref in endpoint_specs:
+        if connection is None or endpoint_ref is None:
+            continue
+        comp_id = str(connection.component_id)
+        try:
+            pin_index = int(connection.pin_index)
+        except (TypeError, ValueError):
+            continue
+        pin_ref = pin_ref_map.get((comp_id, pin_index))
+        if pin_ref is None:
+            continue
+        if not _domains_compatible(
+            point_domains.get(endpoint_ref),
+            point_domains.get(pin_ref),
+        ):
+            continue
+        uf.union(endpoint_ref, pin_ref)
 
 
 def _merge_nearby_points(

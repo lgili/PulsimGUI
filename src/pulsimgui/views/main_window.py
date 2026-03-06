@@ -2750,14 +2750,20 @@ class MainWindow(QMainWindow):
         if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 100:
             self._sim_progress.setRange(0, 100)
 
+        lowered_message = str(message or "").strip().lower()
+        retrying_convergence = "retrying convergence with profile" in lowered_message
+        if retrying_convergence:
+            # Each retry starts a new attempt; reset local monotonic baseline so
+            # progress can move again from low values instead of appearing stuck.
+            self._sim_progress_last_value = 0
+
         if value < 0:
-            # Keep determinate, monotonic progress even when backend enters
-            # compatibility fallback paths that report indeterminate states.
-            clamped = min(99, self._sim_progress_last_value + 1)
+            # Keep the last known determinate value for indeterminate callbacks.
+            clamped = self._sim_progress_last_value
         else:
             clamped = max(0, min(100, int(value)))
 
-        if clamped < self._sim_progress_last_value:
+        if clamped < self._sim_progress_last_value and not retrying_convergence:
             clamped = self._sim_progress_last_value
 
         if clamped != self._sim_progress.value():

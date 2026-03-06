@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_THERMAL,
     Component,
     ComponentType,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
     THERMAL_PORT_PIN_NAME,
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
+    pin_connection_domain,
 )
 from pulsimgui.utils.net_utils import build_node_map, build_node_alias_map
 from pulsimgui.utils.signal_utils import format_signal_key
@@ -280,7 +282,12 @@ def _resolve_thermal_node_signals(
             continue
         if _pin_index >= len(component.pins):
             continue
-        if component.pins[_pin_index].name != THERMAL_PORT_PIN_NAME:
+        pin_name = component.pins[_pin_index].name
+        pin_is_thermal = (
+            pin_name == THERMAL_PORT_PIN_NAME
+            or pin_connection_domain(component, _pin_index) == CONNECTION_DOMAIN_THERMAL
+        )
+        if not pin_is_thermal:
             continue
         if component.type in THERMAL_SIGNAL_EXCLUDED_TYPES:
             continue

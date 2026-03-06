@@ -255,11 +255,27 @@ THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SNUBBER_RC,
 }
 
+THERMAL_PARAMETER_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.RESISTOR,
+    ComponentType.DIODE,
+    ComponentType.MOSFET_N,
+    ComponentType.MOSFET_P,
+    ComponentType.IGBT,
+    ComponentType.BJT_NPN,
+    ComponentType.BJT_PNP,
+}
+
 
 def supports_thermal_port(component_type: ComponentType) -> bool:
     """Return True when component type can expose a thermal measurement port."""
 
     return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
+def supports_electrothermal_parameters(component_type: ComponentType) -> bool:
+    """Return True when the component supports electrothermal Rth/Cth parameters."""
+
+    return component_type in THERMAL_PARAMETER_SUPPORTED_TYPES
 
 
 def _pin_name(component: "Component", pin_index: int) -> str:
@@ -1129,8 +1145,18 @@ def _synchronize_thermal_port(component: Component) -> None:
         component.parameters.pop(THERMAL_PORT_PARAMETER, None)
         return
 
-    enabled = bool(component.parameters.get(THERMAL_PORT_PARAMETER, False))
+    serialized_has_thermal_pin = any(pin.name == THERMAL_PORT_PIN_NAME for pin in component.pins)
+    raw_enabled = component.parameters.get(THERMAL_PORT_PARAMETER, None)
+    if raw_enabled is None and serialized_has_thermal_pin:
+        enabled = True
+    else:
+        enabled = bool(raw_enabled)
     component.parameters[THERMAL_PORT_PARAMETER] = enabled
+
+    thermal_active = bool(component.parameters.get("thermal_enabled", False) or enabled)
+    if supports_electrothermal_parameters(component.type) and thermal_active:
+        for key, default in DEFAULT_THERMAL_DEVICE_PARAMS.items():
+            component.parameters.setdefault(key, default)
 
     base_pins = DEFAULT_PINS.get(component.type, [])
     if not base_pins:

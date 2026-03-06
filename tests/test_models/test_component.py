@@ -158,6 +158,81 @@ class TestComponent:
         pi = Component(type=ComponentType.PI_CONTROLLER)
         assert THERMAL_PORT_PARAMETER not in pi.parameters
 
+    def test_legacy_mosfet_with_thermal_enabled_backfills_required_params(self):
+        legacy = Component.from_dict(
+            {
+                "id": "6a7f6ecf-1f5c-4a17-89a1-53b8d57d1401",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {
+                    "vth": 2.0,
+                    "kp": 0.1,
+                    "thermal_enabled": True,
+                },
+                "pins": [],
+            }
+        )
+
+        assert legacy.parameters["thermal_enabled"] is True
+        assert legacy.parameters["thermal_rth"] > 0.0
+        assert legacy.parameters["thermal_cth"] >= 0.0
+        assert "thermal_temp_init" in legacy.parameters
+        assert "thermal_temp_ref" in legacy.parameters
+        assert "thermal_alpha" in legacy.parameters
+
+    def test_legacy_mosfet_with_thermal_port_enabled_backfills_required_params(self):
+        legacy = Component.from_dict(
+            {
+                "id": "3d2fd604-df76-4dd1-bc78-f0ac63ee4934",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {
+                    "vth": 2.0,
+                    "kp": 0.1,
+                    THERMAL_PORT_PARAMETER: True,
+                },
+                "pins": [],
+            }
+        )
+
+        assert legacy.parameters[THERMAL_PORT_PARAMETER] is True
+        assert legacy.parameters["thermal_enabled"] is True
+        assert legacy.parameters["thermal_rth"] > 0.0
+        assert legacy.parameters["thermal_cth"] >= 0.0
+
+    def test_legacy_component_with_serialized_th_pin_keeps_thermal_port_enabled(self):
+        legacy = Component.from_dict(
+            {
+                "id": "12a177d5-c6d2-4f54-9f31-fb5f0cc874cf",
+                "type": "RESISTOR",
+                "name": "R1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {"resistance": 1000.0},
+                "pins": [
+                    {"index": 0, "name": "1", "x": -30.0, "y": 0.0},
+                    {"index": 1, "name": "2", "x": 30.0, "y": 0.0},
+                    {"index": 2, "name": THERMAL_PORT_PIN_NAME, "x": 0.0, "y": 20.0},
+                ],
+            }
+        )
+
+        assert legacy.parameters[THERMAL_PORT_PARAMETER] is True
+        assert legacy.pins[-1].name == THERMAL_PORT_PIN_NAME
+
     def test_voltage_probe_has_scope_output_pin(self):
         probe = Component(type=ComponentType.VOLTAGE_PROBE)
         assert len(probe.pins) == 3

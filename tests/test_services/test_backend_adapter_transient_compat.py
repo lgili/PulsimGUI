@@ -437,8 +437,8 @@ def test_transient_skips_simulation_options_for_legacy_backend_versions() -> Non
     assert seen["simulator_calls"] == 0
 
 
-def test_transient_skips_simulation_options_without_modern_markers() -> None:
-    """Even on new versions, Simulator path requires modern progress/control markers."""
+def test_transient_uses_simulation_options_without_modern_markers() -> None:
+    """SimulationOptions path should work even when progress marker classes are absent."""
     seen: dict[str, int] = {"run_transient_calls": 0, "simulator_calls": 0}
 
     class _SimulationOptions:
@@ -489,8 +489,8 @@ def test_transient_skips_simulation_options_without_modern_markers() -> None:
     )
 
     assert result.error_message == ""
-    assert seen["run_transient_calls"] == 1
-    assert seen["simulator_calls"] == 0
+    assert seen["run_transient_calls"] == 0
+    assert seen["simulator_calls"] == 1
 
 
 def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
@@ -696,6 +696,13 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     class _SimulationProgress:
         pass
 
+    class _VirtualChannelMeta:
+        def __init__(self, component_type: str, source_component: str, domain: str, unit: str) -> None:
+            self.component_type = component_type
+            self.source_component = source_component
+            self.domain = domain
+            self.unit = unit
+
     class _Simulator:
         def __init__(self, circuit, options) -> None:  # noqa: ANN001
             _ = circuit
@@ -710,6 +717,13 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
                     "PI1": [0.2, 0.25],
                     "PWM1.duty": [0.45, 0.5],
                     "Xout": [0.0, 1.25],
+                    "T(M1)": [25.0, 26.5],
+                },
+                virtual_channel_metadata={
+                    "PI1": _VirtualChannelMeta("pi_controller", "PI1", "control", ""),
+                    "PWM1.duty": _VirtualChannelMeta("pwm_generator", "PWM1", "control", ""),
+                    "Xout": _VirtualChannelMeta("voltage_probe", "Xout", "instrumentation", "V"),
+                    "T(M1)": _VirtualChannelMeta("thermal_trace", "M1", "thermal", "degC"),
                 },
                 success=True,
                 message="",
@@ -810,6 +824,7 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert result.signals["PI1"] == [0.2, 0.25]
     assert result.signals["PWM1.duty"] == [0.45, 0.5]
     assert result.signals["Xout"] == [0.0, 1.25]
+    assert result.signals["T(M1)"] == [25.0, 26.5]
     assert seen["run_transient_calls"] == 0
     assert seen["options"].adaptive_timestep is True
     assert seen["options"].step_mode == _StepMode.Variable
@@ -842,6 +857,10 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert result.statistics["backend_telemetry"]["selected_backend"] == "native"
     assert result.statistics["fallback_trace_count"] == 1
     assert result.statistics["fallback_trace"][0]["action"] == "reduce_dt"
+    assert result.statistics["virtual_channel_metadata"]["T(M1)"]["domain"] == "thermal"
+    assert result.statistics["virtual_channel_metadata"]["T(M1)"]["source_component"] == "M1"
+    assert result.statistics["virtual_channel_metadata"]["T(M1)"]["unit"] == "degC"
+    assert "T(M1)" in result.statistics["virtual_thermal_channels"]
     assert result.statistics["loss_summary"]["total_loss"] == 1.75
     assert result.statistics["loss_summary"]["device_losses"]["M1"]["device_name"] == "M1"
     assert (
