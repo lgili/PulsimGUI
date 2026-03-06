@@ -96,6 +96,22 @@ def test_electrical_scope_resolves_voltage_probe_output_signal() -> None:
     assert bindings[0].signals[0].signal_key == format_signal_key("VP", "VP1")
 
 
+def test_electrical_scope_resolves_single_ended_voltage_probe_output_signal() -> None:
+    """Electrical scope should resolve VP signal key for node-to-ground probe."""
+    circuit = Circuit(name="electrical-scope-voltage-probe-gnd")
+    probe = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="VPG1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
+    circuit.add_component(probe)
+    circuit.add_component(scope)
+    _connect_pins(circuit, probe, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "VPG1"
+    assert bindings[0].signals[0].signal_key == format_signal_key("VP", "VPG1")
+
+
 def test_electrical_scope_rejects_legacy_voltage_probe_pin_connection() -> None:
     """Legacy VP + / - to scope wiring should be ignored due domain mismatch."""
     circuit = Circuit(name="electrical-scope-voltage-probe-legacy")
@@ -152,3 +168,29 @@ def test_electrical_scope_rejects_legacy_current_probe_out_connection() -> None:
     bindings = build_scope_channel_bindings(scope, circuit)
     assert bindings
     assert bindings[0].signals == []
+
+
+def test_multiple_scopes_resolve_signals_independently() -> None:
+    """Each scope should resolve its own connected probe signal even with multiple scopes present."""
+    circuit = Circuit(name="multi-scope")
+
+    probe_a = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="VPG_A", x=120.0, y=80.0)
+    probe_b = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="VPG_B", x=120.0, y=180.0)
+    scope_a = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES_A", x=240.0, y=90.0)
+    scope_b = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES_B", x=240.0, y=190.0)
+
+    circuit.add_component(probe_a)
+    circuit.add_component(probe_b)
+    circuit.add_component(scope_a)
+    circuit.add_component(scope_b)
+
+    _connect_pins(circuit, probe_a, 1, scope_a, 0)
+    _connect_pins(circuit, probe_b, 1, scope_b, 0)
+
+    bindings_a = build_scope_channel_bindings(scope_a, circuit)
+    bindings_b = build_scope_channel_bindings(scope_b, circuit)
+
+    assert bindings_a and bindings_a[0].signals
+    assert bindings_b and bindings_b[0].signals
+    assert bindings_a[0].signals[0].signal_key == format_signal_key("VP", "VPG_A")
+    assert bindings_b[0].signals[0].signal_key == format_signal_key("VP", "VPG_B")

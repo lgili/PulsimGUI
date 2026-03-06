@@ -51,14 +51,14 @@ python3 -m pulsimgui
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-Expected project baseline: `0.6.0`.
+Expected project baseline: `0.6.2`.
 
 ## Recommended In-App Runtime Settings
 
 Open `Preferences → Simulation → Backend Runtime`:
 
 - `Source`: `PyPI`
-- `Target version`: `v0.6.1`
+- `Target version`: `v0.6.5`
 - `Auto-sync backend on startup`: enabled
 
 ## Common Issues

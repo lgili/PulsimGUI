@@ -2182,6 +2182,15 @@ class WaveformViewer(QWidget):
 
         # Convert to numpy array once (much faster for pyqtgraph)
         time_array = np.asarray(time_data, dtype=np.float64)
+        display_indices: np.ndarray | None = None
+        if time_array.size > MAX_DISPLAY_POINTS:
+            stride = max(1, time_array.size // MAX_DISPLAY_POINTS)
+            display_indices = np.arange(0, time_array.size, stride, dtype=np.int64)
+            if display_indices.size == 0 or int(display_indices[-1]) != time_array.size - 1:
+                display_indices = np.append(display_indices, time_array.size - 1)
+            time_plot = time_array[display_indices]
+        else:
+            time_plot = time_array
 
         # Update or create traces for each signal
         for name, values in self._streaming_signals.items():
@@ -2194,26 +2203,30 @@ class WaveformViewer(QWidget):
                 aligned_values[-values_array.size:] = values_array
             else:
                 aligned_values = values_array[: time_array.size]
+            if display_indices is not None:
+                plot_values = aligned_values[display_indices]
+            else:
+                plot_values = aligned_values
 
             if name in self._streaming_traces:
                 # Fast update - just set new data
-                self._streaming_traces[name].setData(time_array, aligned_values)
+                self._streaming_traces[name].setData(time_plot, plot_values)
             else:
                 # Create new trace (only happens once per signal)
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
                 pen = self._resolve_trace_pen(name, color)
                 trace = self._plot_widget.plot(
-                    time_array, aligned_values, pen=pen, name=name,
+                    time_plot, plot_values, pen=pen, name=name,
                     skipFiniteCheck=True,
                 )
                 self._configure_trace_performance(trace, len(time_array))
                 self._streaming_traces[name] = trace
 
         # Set view to show waveform growing from start
-        if len(time_array) > 0:
-            t_start = float(time_array[0])
-            t_current = float(time_array[-1])
+        if len(time_plot) > 0:
+            t_start = float(time_plot[0])
+            t_current = float(time_plot[-1])
             t_range = t_current - t_start
 
             if t_range > 0:

@@ -289,16 +289,14 @@ class TestThermalWorkflow:
     """Integration tests for thermal simulation."""
 
     def test_mosfet_thermal_analysis(self) -> None:
-        """Test thermal analysis on MOSFET switch.
+        """Test thermal analysis requires backend support.
 
         GUI Validation:
         1. Load mosfet_switch circuit
         2. Run Transient simulation (PWM switching)
         3. Open Thermal Viewer
-        4. Verify junction temperature shows rise from losses
-        5. Check thermal badge shows "Real Data" or "(Synthetic Data)"
+        4. Verify clear error is reported when thermal backend is unavailable
         """
-        # ThermalAnalysisService generates synthetic data without backend
         service = ThermalAnalysisService()
 
         from pulsimgui.models.circuit import Circuit
@@ -309,13 +307,13 @@ class TestThermalWorkflow:
         mosfet = Component(type=ComponentType.MOSFET_N, name="M1")
         circuit.add_component(mosfet)
 
-        # Build thermal result (synthetic)
+        # Build thermal result without backend should fail explicitly
         thermal_result = service.build_result(circuit, None)
 
         assert thermal_result is not None
-        assert thermal_result.is_synthetic  # No backend, so synthetic
-        assert len(thermal_result.devices) == 1
-        assert thermal_result.devices[0].component_name == "M1"
+        assert thermal_result.is_synthetic is False
+        assert thermal_result.devices == []
+        assert "not configured" in thermal_result.error_message.lower()
 
     def test_thermal_with_backend(self) -> None:
         """Test thermal analysis with mock backend.
@@ -454,7 +452,7 @@ class TestCombinedWorkflow:
         transient_result = backend.run_transient(circuit_data, settings, callbacks)
         assert transient_result.error_message == ""
 
-        # Thermal analysis (synthetic without real backend)
+        # Thermal analysis without a thermal backend should return explicit error
         from pulsimgui.models.circuit import Circuit
         from pulsimgui.models.component import Component, ComponentType
 
@@ -465,3 +463,5 @@ class TestCombinedWorkflow:
         thermal_service = ThermalAnalysisService()
         thermal_result = thermal_service.build_result(circuit, None)
         assert thermal_result is not None
+        assert thermal_result.is_synthetic is False
+        assert "not configured" in thermal_result.error_message.lower()

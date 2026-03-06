@@ -29,9 +29,11 @@ from PySide6.QtWidgets import (
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationSettings,
+    normalize_control_mode,
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
+    normalize_thermal_policy,
 )
 from pulsimgui.services.theme_service import Theme
 from pulsimgui.views.properties import SILineEdit
@@ -441,6 +443,24 @@ class SimulationSettingsDialog(QDialog):
         self._direct_formulation_fallback_check.setChecked(True)
         form.addRow(self._direct_formulation_fallback_check)
 
+        self._control_mode_combo = QComboBox()
+        self._control_mode_combo.addItem("Auto (backend decides)", "auto")
+        self._control_mode_combo.addItem("Continuous (every solver step)", "continuous")
+        self._control_mode_combo.addItem("Discrete (sampled controller)", "discrete")
+        self._control_mode_combo.currentIndexChanged.connect(self._on_control_mode_changed)
+        form.addRow("Control update mode:", self._control_mode_combo)
+
+        self._control_sample_time_spin = QDoubleSpinBox()
+        self._control_sample_time_spin.setRange(0.0, 1e3)
+        self._control_sample_time_spin.setDecimals(12)
+        self._control_sample_time_spin.setSingleStep(1e-6)
+        self._control_sample_time_spin.setSuffix(" s")
+        self._control_sample_time_spin.setToolTip(
+            "Used when control update mode is Discrete."
+        )
+        self._control_sample_time_spin.setValue(0.0)
+        form.addRow("Control sample time:", self._control_sample_time_spin)
+
         self._transient_robust_mode_check.toggled.connect(
             self._transient_auto_regularize_check.setEnabled
         )
@@ -524,6 +544,30 @@ class SimulationSettingsDialog(QDialog):
         self._thermal_network_combo.addItem("Foster", "foster")
         self._thermal_network_combo.addItem("Cauer", "cauer")
         form.addRow("Thermal network:", self._thermal_network_combo)
+
+        self._thermal_policy_combo = QComboBox()
+        self._thermal_policy_combo.addItem("Loss + temperature scaling", "loss_with_temperature_scaling")
+        self._thermal_policy_combo.addItem("Loss only", "loss_only")
+        self._thermal_policy_combo.setToolTip(
+            "Defines if losses are temperature-scaled during electrothermal coupling."
+        )
+        form.addRow("Coupling policy:", self._thermal_policy_combo)
+
+        self._thermal_default_rth_spin = QDoubleSpinBox()
+        self._thermal_default_rth_spin.setRange(0.0, 1e6)
+        self._thermal_default_rth_spin.setDecimals(4)
+        self._thermal_default_rth_spin.setSingleStep(0.1)
+        self._thermal_default_rth_spin.setValue(1.0)
+        self._thermal_default_rth_spin.setSuffix(" K/W")
+        form.addRow("Default Rth:", self._thermal_default_rth_spin)
+
+        self._thermal_default_cth_spin = QDoubleSpinBox()
+        self._thermal_default_cth_spin.setRange(0.0, 1e6)
+        self._thermal_default_cth_spin.setDecimals(4)
+        self._thermal_default_cth_spin.setSingleStep(0.1)
+        self._thermal_default_cth_spin.setValue(0.1)
+        self._thermal_default_cth_spin.setSuffix(" J/K")
+        form.addRow("Default Cth:", self._thermal_default_cth_spin)
 
         self._thermal_include_conduction_check = QCheckBox("Include conduction losses")
         self._thermal_include_conduction_check.setChecked(True)
@@ -705,6 +749,13 @@ class SimulationSettingsDialog(QDialog):
             bool(getattr(source, "direct_formulation_fallback", True))
         )
         self._on_formulation_mode_changed(self._formulation_mode_combo.currentIndex())
+        control_mode = normalize_control_mode(getattr(source, "control_mode", "auto"))
+        control_mode_idx = self._control_mode_combo.findData(control_mode)
+        self._control_mode_combo.setCurrentIndex(control_mode_idx if control_mode_idx >= 0 else 0)
+        self._control_sample_time_spin.setValue(
+            max(0.0, float(getattr(source, "control_sample_time", 0.0)))
+        )
+        self._on_control_mode_changed(self._control_mode_combo.currentIndex())
 
         dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
         self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(source.dc_strategy, 0))
@@ -720,6 +771,24 @@ class SimulationSettingsDialog(QDialog):
         thermal_network = str(getattr(source, "thermal_network", "foster") or "foster").strip().lower()
         thermal_network_idx = self._thermal_network_combo.findData(thermal_network)
         self._thermal_network_combo.setCurrentIndex(thermal_network_idx if thermal_network_idx >= 0 else 0)
+        thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(
+                    source,
+                    "thermal_policy",
+                    "loss_with_temperature_scaling",
+                )
+                or "loss_with_temperature_scaling"
+            )
+        )
+        thermal_policy_idx = self._thermal_policy_combo.findData(thermal_policy)
+        self._thermal_policy_combo.setCurrentIndex(thermal_policy_idx if thermal_policy_idx >= 0 else 0)
+        self._thermal_default_rth_spin.setValue(
+            max(0.0, float(getattr(source, "thermal_default_rth", 1.0)))
+        )
+        self._thermal_default_cth_spin.setValue(
+            max(0.0, float(getattr(source, "thermal_default_cth", 0.1)))
+        )
         self._thermal_include_conduction_check.setChecked(
             bool(getattr(source, "thermal_include_conduction_losses", True))
         )
@@ -791,6 +860,13 @@ class SimulationSettingsDialog(QDialog):
         self._settings.direct_formulation_fallback = (
             self._direct_formulation_fallback_check.isChecked()
         )
+        self._settings.control_mode = normalize_control_mode(
+            str(self._control_mode_combo.currentData() or "auto")
+        )
+        control_sample_time = max(0.0, float(self._control_sample_time_spin.value()))
+        if self._settings.control_mode == "discrete" and control_sample_time <= 0.0:
+            control_sample_time = max(float(self._settings.t_step), 1e-12)
+        self._settings.control_sample_time = control_sample_time
 
         dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
         self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
@@ -806,6 +882,20 @@ class SimulationSettingsDialog(QDialog):
         self._settings.thermal_network = str(
             self._thermal_network_combo.currentData() or "foster"
         ).strip().lower()
+        self._settings.thermal_policy = normalize_thermal_policy(
+            str(
+                self._thermal_policy_combo.currentData()
+                or "loss_with_temperature_scaling"
+            )
+        )
+        self._settings.thermal_default_rth = max(
+            0.0,
+            float(self._thermal_default_rth_spin.value()),
+        )
+        self._settings.thermal_default_cth = max(
+            0.0,
+            float(self._thermal_default_cth_spin.value()),
+        )
         self._settings.thermal_include_conduction_losses = (
             self._thermal_include_conduction_check.isChecked()
         )
@@ -873,6 +963,13 @@ class SimulationSettingsDialog(QDialog):
         """Enable direct-mode fallback option only when direct mode is selected."""
         direct_mode = str(self._formulation_mode_combo.currentData() or "") == "direct"
         self._direct_formulation_fallback_check.setEnabled(direct_mode)
+
+    def _on_control_mode_changed(self, _index: int) -> None:
+        """Enable control sample time only for discrete control update mode."""
+        discrete_mode = str(self._control_mode_combo.currentData() or "") == "discrete"
+        self._control_sample_time_spin.setEnabled(discrete_mode)
+        if discrete_mode and self._control_sample_time_spin.value() <= 0.0:
+            self._control_sample_time_spin.setValue(max(float(self._t_step_edit.value), 1e-12))
 
     def _update_effective_step(self) -> None:
         """Update effective step display."""

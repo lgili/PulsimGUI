@@ -39,6 +39,7 @@ from pulsimgui.models.component import (
     set_mux_input_count,
     set_demux_output_count,
     set_thermal_port_enabled,
+    supports_electrothermal_parameters,
 )
 from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 from pulsimgui.resources.icons import IconService
@@ -1127,13 +1128,23 @@ class PropertiesPanel(QWidget):
             "initial_current": "A",
             "vth": "V",
             "vce_sat": "V",
+            "v_ce_sat": "V",
             "ron": "Ω",
             "roff": "Ω",
             "rs": "Ω",
             "rds_on": "Ω",
+            "g_on": "S",
+            "g_off": "S",
             "lm": "H",
             "frequency": "Hz",
             "amplitude": "V",
+            "switching_eon_j": "J",
+            "switching_eoff_j": "J",
+            "switching_err_j": "J",
+            "thermal_rth": "K/W",
+            "thermal_cth": "J/K",
+            "thermal_temp_init": "°C",
+            "thermal_temp_ref": "°C",
         }
         return units.get(name, "")
 
@@ -1151,6 +1162,9 @@ class PropertiesPanel(QWidget):
             if name == THERMAL_PORT_PARAMETER:
                 set_thermal_port_enabled(self._component, bool(value))
                 value = bool(self._component.parameters.get(THERMAL_PORT_PARAMETER, False))
+                # Legacy projects may gain new thermal fields when toggling thermal.
+                if supports_electrothermal_parameters(self._component.type):
+                    self._update_display()
             elif (
                 name == "input_count"
                 and self._component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR)

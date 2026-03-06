@@ -76,6 +76,7 @@ class ComponentType(Enum):
 
     # Measurement
     VOLTAGE_PROBE = auto()
+    VOLTAGE_PROBE_GND = auto()
     CURRENT_PROBE = auto()
     POWER_PROBE = auto()
 
@@ -86,6 +87,8 @@ class ComponentType(Enum):
     # Signal routing
     SIGNAL_MUX = auto()
     SIGNAL_DEMUX = auto()
+    GOTO_LABEL = auto()
+    FROM_LABEL = auto()
 
     # Magnetic
     SATURABLE_INDUCTOR = auto()
@@ -252,11 +255,27 @@ THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SNUBBER_RC,
 }
 
+THERMAL_PARAMETER_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.RESISTOR,
+    ComponentType.DIODE,
+    ComponentType.MOSFET_N,
+    ComponentType.MOSFET_P,
+    ComponentType.IGBT,
+    ComponentType.BJT_NPN,
+    ComponentType.BJT_PNP,
+}
+
 
 def supports_thermal_port(component_type: ComponentType) -> bool:
     """Return True when component type can expose a thermal measurement port."""
 
     return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
+def supports_electrothermal_parameters(component_type: ComponentType) -> bool:
+    """Return True when the component supports electrothermal Rth/Cth parameters."""
+
+    return component_type in THERMAL_PARAMETER_SUPPORTED_TYPES
 
 
 def _pin_name(component: "Component", pin_index: int) -> str:
@@ -274,7 +293,7 @@ def is_scope_input_pin(component: "Component", pin_index: int) -> bool:
 
 def is_voltage_probe_output_pin(component: "Component", pin_index: int) -> bool:
     """Return True when pin is the scope-facing output of a voltage probe."""
-    if component.type != ComponentType.VOLTAGE_PROBE:
+    if component.type not in (ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND):
         return False
     return _pin_name(component, pin_index) == VOLTAGE_PROBE_OUTPUT_PIN_NAME
 
@@ -338,6 +357,7 @@ def can_connect_measurement_pins(
 CONNECTION_DOMAIN_CIRCUIT = "circuit"
 CONNECTION_DOMAIN_SIGNAL = "signal"
 CONNECTION_DOMAIN_THERMAL = "thermal"
+CONNECTION_DOMAIN_ANY = "any"
 
 # Map switching-device component types to their gate/base/control pin indices.
 # These pins accept signal-domain connections (e.g. PWM output).
@@ -355,6 +375,7 @@ _CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
 SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.ELECTRICAL_SCOPE,
     ComponentType.VOLTAGE_PROBE,
+    ComponentType.VOLTAGE_PROBE_GND,
     ComponentType.CURRENT_PROBE,
     ComponentType.POWER_PROBE,
     ComponentType.SIGNAL_MUX,
@@ -385,9 +406,16 @@ THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.THERMAL_SCOPE,
 }
 
+ANY_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.GOTO_LABEL,
+    ComponentType.FROM_LABEL,
+}
+
 
 def component_connection_domain(component_type: ComponentType) -> str:
     """Return the default wiring domain used by a component family."""
+    if component_type in ANY_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_ANY
     if component_type in THERMAL_DOMAIN_COMPONENT_TYPES:
         return CONNECTION_DOMAIN_THERMAL
     if component_type in SIGNAL_DOMAIN_COMPONENT_TYPES:
@@ -397,12 +425,22 @@ def component_connection_domain(component_type: ComponentType) -> str:
 
 def pin_connection_domain(component: "Component", pin_index: int) -> str:
     """Return the effective connection domain for a specific pin."""
+    if component.type in ANY_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_ANY
+
     if component.type == ComponentType.THERMAL_SCOPE:
         return CONNECTION_DOMAIN_THERMAL
     if is_thermal_output_pin(component, pin_index):
         return CONNECTION_DOMAIN_THERMAL
 
     if component.type == ComponentType.VOLTAGE_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_voltage_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if component.type == ComponentType.VOLTAGE_PROBE_GND:
         return (
             CONNECTION_DOMAIN_SIGNAL
             if is_voltage_probe_output_pin(component, pin_index)
@@ -544,6 +582,10 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "-", 0, 20),
         Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
     ],
+    ComponentType.VOLTAGE_PROBE_GND: [
+        Pin(0, "IN", -25, 0),
+        Pin(1, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+    ],
     ComponentType.CURRENT_PROBE: [
         Pin(0, "IN", -20, 0),
         Pin(1, "OUT", 20, 0),
@@ -563,6 +605,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Signal routing
     ComponentType.SIGNAL_MUX: _default_mux_pins(4),
     ComponentType.SIGNAL_DEMUX: _default_demux_pins(4),
+    ComponentType.GOTO_LABEL: [Pin(0, "NET", 0, 0)],
+    ComponentType.FROM_LABEL: [Pin(0, "NET", 0, 0)],
 
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
@@ -587,6 +631,22 @@ def _normalize_default_pin_map() -> None:
 _normalize_default_pin_map()
 
 
+DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
+    "thermal_enabled": True,
+    "thermal_rth": 1.0,
+    "thermal_cth": 0.1,
+    "thermal_temp_init": 25.0,
+    "thermal_temp_ref": 25.0,
+    "thermal_alpha": 0.004,
+}
+
+DEFAULT_SWITCHING_ENERGY_PARAMS: dict[str, Any] = {
+    "switching_eon_j": 0.0,
+    "switching_eoff_j": 0.0,
+    "switching_err_j": 0.0,
+}
+
+
 # Default parameter templates for each component type
 DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     # Basic passive
@@ -600,37 +660,114 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.GROUND: {},
 
     # Diodes
-    ComponentType.DIODE: {"is_": 1e-14, "n": 1.0, "rs": 0.0},
-    ComponentType.ZENER_DIODE: {"vz": 5.1, "iz_test": 0.02, "zz": 5.0, "is_": 1e-14},
-    ComponentType.LED: {"vf": 2.0, "color": "red", "wavelength": 620},
+    ComponentType.DIODE: {
+        "is_": 1e-14,
+        "n": 1.0,
+        "rs": 0.0,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.ZENER_DIODE: {
+        "vz": 5.1,
+        "iz_test": 0.02,
+        "zz": 5.0,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.LED: {
+        "vf": 2.0,
+        "color": "red",
+        "wavelength": 620,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Transistors
-    ComponentType.MOSFET_N: {"vth": 2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
-    ComponentType.MOSFET_P: {"vth": -2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
-    ComponentType.IGBT: {"vth": 3.0, "vce_sat": 2.0},
-    ComponentType.BJT_NPN: {"beta": 100.0, "vbe_sat": 0.7, "vce_sat": 0.2, "is_": 1e-14},
-    ComponentType.BJT_PNP: {"beta": 100.0, "vbe_sat": -0.7, "vce_sat": -0.2, "is_": 1e-14},
-    ComponentType.THYRISTOR: {"vgt": 1.0, "igt": 0.03, "holding_current": 0.05, "vf": 1.5},
-    ComponentType.TRIAC: {"vgt": 1.5, "igt": 0.05, "holding_current": 0.05, "vf": 1.5},
+    ComponentType.MOSFET_N: {
+        "vth": 2.0,
+        "kp": 0.1,
+        "lambda_": 0.0,
+        "g_off": 1e-9,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.MOSFET_P: {
+        "vth": -2.0,
+        "kp": 0.1,
+        "lambda_": 0.0,
+        "g_off": 1e-9,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.IGBT: {
+        "vth": 3.0,
+        "g_on": 1e4,
+        "g_off": 1e-9,
+        "v_ce_sat": 2.0,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.BJT_NPN: {
+        "beta": 100.0,
+        "vbe_sat": 0.7,
+        "vce_sat": 0.2,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.BJT_PNP: {
+        "beta": 100.0,
+        "vbe_sat": -0.7,
+        "vce_sat": -0.2,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.THYRISTOR: {
+        "vgt": 1.0,
+        "igt": 0.03,
+        "holding_current": 0.05,
+        "vf": 1.5,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.TRIAC: {
+        "vgt": 1.5,
+        "igt": 0.05,
+        "holding_current": 0.05,
+        "vf": 1.5,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Switching
-    ComponentType.SWITCH: {"ron": 0.001, "roff": 1e9, "initial_state": False},
+    ComponentType.SWITCH: {
+        "ron": 0.001,
+        "roff": 1e9,
+        "initial_state": False,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Transformer
     ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3},
 
     # Analog
     ComponentType.OP_AMP: {
-        "gain": 1e5,
+        "open_loop_gain": 1e5,
         "gbw": 1e6,
         "slew_rate": 1e6,
-        "vos": 0.0,
+        "offset": 0.0,
+        "rail_low": -15.0,
+        "rail_high": 15.0,
         "rail_to_rail": False,
     },
     ComponentType.COMPARATOR: {
-        "vos": 0.0,
+        "threshold": 0.0,
         "hysteresis": 0.0,
-        "response_time": 1e-6,
+        "high": 1.0,
+        "low": 0.0,
     },
 
     # Protection
@@ -657,6 +794,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "ki": 100.0,
         "output_min": -1.0,
         "output_max": 1.0,
+        "anti_windup": True,
     },
     ComponentType.PID_CONTROLLER: {
         "kp": 1.0,
@@ -664,6 +802,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "kd": 0.01,
         "output_min": -1.0,
         "output_max": 1.0,
+        "anti_windup": True,
     },
     ComponentType.MATH_BLOCK: {
         "operation": "sum",
@@ -699,21 +838,21 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     },
     ComponentType.DIFFERENTIATOR: {
         "gain": 1.0,
-        "filter_tau": 1e-6,
+        "alpha": 0.0,
     },
     ComponentType.LIMITER: {
-        "lower_limit": -1.0,
-        "upper_limit": 1.0,
+        "output_min": -1.0,
+        "output_max": 1.0,
     },
     ComponentType.RATE_LIMITER: {
         "rising_rate": 1e6,
         "falling_rate": -1e6,
     },
     ComponentType.HYSTERESIS: {
-        "upper_threshold": 0.5,
-        "lower_threshold": -0.5,
-        "output_high": 1.0,
-        "output_low": 0.0,
+        "threshold": 0.0,
+        "hysteresis": 1.0,
+        "high": 1.0,
+        "low": 0.0,
     },
 
     # Control blocks - advanced
@@ -730,7 +869,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "delay_time": 1e-3,
     },
     ComponentType.SAMPLE_HOLD: {
-        "sample_time": 1e-4,
+        "sample_period": 1e-4,
     },
     ComponentType.STATE_MACHINE: {
         "states": ["S0", "S1"],
@@ -741,6 +880,10 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     # Measurement
     ComponentType.VOLTAGE_PROBE: {
         "display_name": "V",
+        "scale": 1.0,
+    },
+    ComponentType.VOLTAGE_PROBE_GND: {
+        "display_name": "Vg",
         "scale": 1.0,
     },
     ComponentType.CURRENT_PROBE: {
@@ -778,6 +921,12 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "output_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+    },
+    ComponentType.GOTO_LABEL: {
+        "net_label": "NET1",
+    },
+    ComponentType.FROM_LABEL: {
+        "net_label": "NET1",
     },
 
     # Magnetic
@@ -896,7 +1045,7 @@ class Component:
         )
 
 
-SCOPE_CHANNEL_LIMITS = (1, 8)
+SCOPE_CHANNEL_LIMITS = (1, 16)
 MUX_CHANNEL_LIMITS = (2, 16)
 SUM_INPUT_LIMITS = (2, 16)
 
@@ -914,9 +1063,19 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_demux(component)
     elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         _synchronize_sum_like_block(component)
-    elif component.type in (ComponentType.PI_CONTROLLER, ComponentType.PWM_GENERATOR, ComponentType.GAIN):
+    elif component.type in (
+        ComponentType.PI_CONTROLLER,
+        ComponentType.PWM_GENERATOR,
+        ComponentType.GAIN,
+        ComponentType.GOTO_LABEL,
+        ComponentType.FROM_LABEL,
+    ):
         _synchronize_default_pin_layout(component)
-    elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.CURRENT_PROBE):
+    elif component.type in (
+        ComponentType.VOLTAGE_PROBE,
+        ComponentType.VOLTAGE_PROBE_GND,
+        ComponentType.CURRENT_PROBE,
+    ):
         _synchronize_measurement_probe_pins(component)
     else:
         _synchronize_thermal_port(component)
@@ -986,8 +1145,18 @@ def _synchronize_thermal_port(component: Component) -> None:
         component.parameters.pop(THERMAL_PORT_PARAMETER, None)
         return
 
-    enabled = bool(component.parameters.get(THERMAL_PORT_PARAMETER, False))
+    serialized_has_thermal_pin = any(pin.name == THERMAL_PORT_PIN_NAME for pin in component.pins)
+    raw_enabled = component.parameters.get(THERMAL_PORT_PARAMETER, None)
+    if raw_enabled is None and serialized_has_thermal_pin:
+        enabled = True
+    else:
+        enabled = bool(raw_enabled)
     component.parameters[THERMAL_PORT_PARAMETER] = enabled
+
+    thermal_active = bool(component.parameters.get("thermal_enabled", False) or enabled)
+    if supports_electrothermal_parameters(component.type) and thermal_active:
+        for key, default in DEFAULT_THERMAL_DEVICE_PARAMS.items():
+            component.parameters.setdefault(key, default)
 
     base_pins = DEFAULT_PINS.get(component.type, [])
     if not base_pins:

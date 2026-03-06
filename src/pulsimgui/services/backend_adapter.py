@@ -20,7 +20,6 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
-from pulsimgui.services.signal_evaluator import AlgebraicLoopError, SignalEvaluator
 from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
@@ -39,6 +38,9 @@ from pulsimgui.services.backend_types import (
     FosterStage,
     LossBreakdown,
 )
+
+_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
+_PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
 
 
 @dataclass
@@ -477,6 +479,7 @@ class PulsimBackend(SimulationBackend):
         result = BackendRunResult()
 
         callbacks.progress(0.0, "Starting Pulsim simulation...")
+        time.sleep(0)
 
         try:
             base_dt = self._compute_time_step(settings)
@@ -490,24 +493,14 @@ class PulsimBackend(SimulationBackend):
         for retry_index, profile in enumerate(retry_profiles):
             if retry_index > 0:
                 callbacks.progress(2.0, f"Retrying convergence with profile '{profile.name}'...")
+            callbacks.progress(3.0, "Building circuit model...")
+            time.sleep(0)
 
             try:
                 circuit = self._converter.build(circuit_data)
             except CircuitConversionError as exc:
                 result.error_message = str(exc)
                 return result
-
-            # --- Signal-flow evaluator for closed-loop control blocks ---
-            try:
-                sig_evaluator = SignalEvaluator(circuit_data)
-                sig_evaluator.build()
-                if sig_evaluator.has_signal_blocks():
-                    self._attach_signal_evaluator(circuit, sig_evaluator, circuit_data)
-            except AlgebraicLoopError as exc:
-                result.error_message = str(exc)
-                return result
-            except Exception as exc:
-                log.warning("Signal evaluator setup failed (ignored): %s", exc)
 
             attempt_settings = self._apply_transient_retry_profile(settings, profile)
             dt = base_dt * profile.dt_scale
@@ -524,6 +517,7 @@ class PulsimBackend(SimulationBackend):
                 x0 = self._build_initial_state(circuit, attempt_settings)
                 attempt_result = self._run_transient_once(
                     circuit,
+                    circuit_data,
                     attempt_settings,
                     callbacks,
                     dt,
@@ -557,69 +551,6 @@ class PulsimBackend(SimulationBackend):
             result.error_message = retry_errors[-1]
         return result
 
-    # ------------------------------------------------------------------
-    # Signal evaluator helpers
-    # ------------------------------------------------------------------
-
-    def _attach_signal_evaluator(
-        self,
-        circuit: Any,
-        evaluator: "SignalEvaluator",
-        circuit_data: dict,
-    ) -> None:
-        """Wire closed-loop PWM duty callbacks from the signal evaluator.
-
-        For each PWM_GENERATOR that has a DUTY_IN signal wire connected,
-        registers a ``set_pwm_duty_callback`` on the C++ circuit so the
-        computed duty is applied every simulation step.
-        """
-        if not hasattr(circuit, "set_pwm_duty_callback"):
-            # Backend version does not support dynamic duty – fall back to
-            # a one-shot static duty computed from the initial signal chain.
-            for comp_id, pwm_name in evaluator.pwm_components().items():
-                if hasattr(circuit, "set_pwm_duty"):
-                    duty = evaluator.step(0.0).get(comp_id, 0.5)
-                    circuit.set_pwm_duty(
-                        pwm_name, max(0.0, min(1.0, duty))
-                    )
-            return
-
-        # Build a name look-up from component id → backend name
-        # (same logic as CircuitConverter._component_name)
-        def _comp_backend_name(comp: dict) -> str:
-            name = (comp.get("name") or "").strip()
-            if name:
-                return name
-            comp_id = comp.get("id", "")
-            suffix = comp_id[:6] if comp_id else comp.get("type", "")
-            return f"{comp.get('type', 'COMP')}_{suffix}"
-
-        id_to_name: dict[str, str] = {
-            str(c["id"]): _comp_backend_name(c)
-            for c in circuit_data.get("components", [])
-        }
-
-        for comp_id in evaluator.pwm_components():
-            pwm_name = id_to_name.get(comp_id, comp_id)
-            try:
-                circuit.set_pwm_duty_callback(
-                    pwm_name,
-                    lambda t, pid=comp_id, ev=evaluator: max(
-                        0.0, min(1.0, ev.step(t).get(pid, 0.5))
-                    ),
-                )
-                log.debug(
-                    "Attached duty callback to PWM '%s' (comp_id=%s)",
-                    pwm_name,
-                    comp_id,
-                )
-            except Exception as exc:
-                log.warning(
-                    "Failed to attach duty callback to PWM '%s': %s",
-                    pwm_name,
-                    exc,
-                )
-
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
         """Resolve labels for transient state-vector signals."""
         candidates: list[str] = []
@@ -648,6 +579,209 @@ class PulsimBackend(SimulationBackend):
             seen.add(name)
             normalized.append(name)
         return normalized
+
+    @staticmethod
+    def _extract_virtual_channel_metadata(source: Any) -> dict[str, Any]:
+        metadata_attr = getattr(source, "virtual_channel_metadata", None)
+        if metadata_attr is None:
+            return {}
+        try:
+            raw_metadata = metadata_attr() if callable(metadata_attr) else metadata_attr
+        except Exception:
+            return {}
+        return raw_metadata if isinstance(raw_metadata, dict) else {}
+
+    @staticmethod
+    def _virtual_metadata_field(metadata_entry: Any, field: str) -> Any:
+        if isinstance(metadata_entry, dict):
+            return metadata_entry.get(field)
+        return getattr(metadata_entry, field, None)
+
+    @staticmethod
+    def _virtual_component_type(metadata_entry: Any) -> str:
+        return str(
+            PulsimBackend._virtual_metadata_field(metadata_entry, "component_type") or ""
+        ).strip().lower()
+
+    @classmethod
+    def _serialize_virtual_channel_metadata(
+        cls,
+        *sources: Any,
+    ) -> dict[str, dict[str, str]]:
+        serialized: dict[str, dict[str, str]] = {}
+        for source in sources:
+            raw_map = cls._extract_virtual_channel_metadata(source)
+            if not raw_map:
+                continue
+            for raw_name, entry in raw_map.items():
+                channel_name = str(raw_name or "").strip()
+                if not channel_name:
+                    continue
+                component_type = str(
+                    cls._virtual_metadata_field(entry, "component_type") or ""
+                ).strip()
+                source_component = str(
+                    cls._virtual_metadata_field(entry, "source_component") or ""
+                ).strip()
+                domain = str(
+                    cls._virtual_metadata_field(entry, "domain") or ""
+                ).strip().lower()
+                unit = str(
+                    cls._virtual_metadata_field(entry, "unit") or ""
+                ).strip()
+
+                payload = {
+                    "component_type": component_type,
+                    "source_component": source_component,
+                    "domain": domain,
+                    "unit": unit,
+                }
+                serialized[channel_name] = payload
+        return serialized
+
+    def _probe_virtual_channels(self, *sources: Any) -> dict[str, str]:
+        channels: dict[str, str] = {}
+        for source in sources:
+            metadata = self._extract_virtual_channel_metadata(source)
+            if not metadata:
+                continue
+            for channel_name, metadata_entry in metadata.items():
+                comp_type = self._virtual_component_type(metadata_entry)
+                if comp_type in _PROBE_COMPONENT_TYPES:
+                    channels[str(channel_name)] = comp_type
+        return channels
+
+    def _merge_native_virtual_probe_channels(
+        self,
+        circuit: Any,
+        native_result: Any,
+        result: BackendRunResult,
+    ) -> None:
+        """Use backend-native virtual channel arrays when available."""
+        if not result.time:
+            return
+
+        probe_channels = self._probe_virtual_channels(native_result, circuit)
+        channel_metadata = self._serialize_virtual_channel_metadata(native_result, circuit)
+
+        virtual_channels_attr = getattr(native_result, "virtual_channels", None)
+        if virtual_channels_attr is None:
+            return
+        try:
+            raw_virtual_channels = (
+                virtual_channels_attr() if callable(virtual_channels_attr) else virtual_channels_attr
+            )
+        except Exception:
+            return
+        if not isinstance(raw_virtual_channels, dict):
+            return
+
+        sample_count = len(result.time)
+        merged_channels: list[str] = []
+        for raw_name, series in raw_virtual_channels.items():
+            channel_name = str(raw_name or "").strip()
+            if not channel_name:
+                continue
+            if series is None:
+                continue
+            try:
+                values = [float(value) for value in list(series)[:sample_count]]
+            except (TypeError, ValueError):
+                continue
+            if not values:
+                continue
+            if len(values) < sample_count:
+                values.extend([0.0] * (sample_count - len(values)))
+            result.signals[channel_name] = values
+            merged_channels.append(channel_name)
+
+        if merged_channels:
+            result.statistics["virtual_channel_names"] = sorted(set(merged_channels))
+            if channel_metadata:
+                result.statistics["virtual_channel_metadata"] = channel_metadata
+            if probe_channels:
+                result.statistics["virtual_probe_channels"] = sorted(
+                    {name for name in merged_channels if name in probe_channels}
+                )
+            if channel_metadata:
+                thermal_channels = [
+                    name
+                    for name in merged_channels
+                    if (
+                        str(channel_metadata.get(name, {}).get("domain", "")).strip().lower()
+                        == "thermal"
+                        or str(
+                            channel_metadata.get(name, {}).get("component_type", "")
+                        ).strip().lower()
+                        == "thermal_trace"
+                    )
+                ]
+                if thermal_channels:
+                    result.statistics["virtual_thermal_channels"] = sorted(set(thermal_channels))
+
+    def _ensure_virtual_probe_channels(
+        self,
+        circuit: Any,
+        result: BackendRunResult,
+        signal_names: list[str],
+    ) -> None:
+        """Fill missing probe channels by evaluating backend virtual probes."""
+        if not result.time:
+            return
+
+        probe_channels = self._probe_virtual_channels(circuit)
+        if not probe_channels:
+            return
+
+        sample_count = len(result.time)
+        missing_channels = [
+            channel_name
+            for channel_name in probe_channels
+            if len(result.signals.get(channel_name, [])) < sample_count
+        ]
+        if not missing_channels:
+            return
+
+        evaluate = getattr(circuit, "evaluate_virtual_signals", None)
+        if not callable(evaluate):
+            return
+
+        ordered_signal_names = (
+            [name for name in signal_names if name in result.signals]
+            if signal_names
+            else list(result.signals.keys())
+        )
+        if not ordered_signal_names:
+            return
+
+        ordered_series = [result.signals.get(name, []) for name in ordered_signal_names]
+        evaluated_channels: dict[str, list[float]] = {
+            channel_name: [] for channel_name in missing_channels
+        }
+
+        for sample_index in range(sample_count):
+            state = [
+                float(series[sample_index]) if sample_index < len(series) else 0.0
+                for series in ordered_series
+            ]
+            try:
+                probe_values = evaluate(state)
+            except Exception as exc:
+                log.debug("Virtual probe evaluation skipped: %s", exc)
+                return
+
+            if not isinstance(probe_values, dict):
+                return
+
+            for channel_name in missing_channels:
+                try:
+                    value = float(probe_values.get(channel_name, 0.0))
+                except (TypeError, ValueError):
+                    value = 0.0
+                evaluated_channels[channel_name].append(value)
+
+        for channel_name, values in evaluated_channels.items():
+            result.signals[channel_name] = values
 
     @staticmethod
     def _normalize_signal_name(raw_name: str) -> str:
@@ -690,6 +824,204 @@ class PulsimBackend(SimulationBackend):
         normalized = aliases.get(raw, raw)
         return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
 
+    @staticmethod
+    def _normalize_control_mode(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "sampled": "discrete",
+            "sample": "discrete",
+            "continuous_time": "continuous",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
+    @staticmethod
+    def _normalize_thermal_policy(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "losswithtemperaturescaling": "loss_with_temperature_scaling",
+            "temperature_scaling": "loss_with_temperature_scaling",
+            "lossonly": "loss_only",
+        }
+        normalized = aliases.get(raw, raw)
+        if normalized not in {"loss_only", "loss_with_temperature_scaling"}:
+            return "loss_with_temperature_scaling"
+        return normalized
+
+    @staticmethod
+    def _component_name(component: dict[str, Any]) -> str:
+        return str(component.get("name") or component.get("id") or "").strip()
+
+    @staticmethod
+    def _first_numeric(params: dict[str, Any], keys: tuple[str, ...], default: float) -> float:
+        for key in keys:
+            if key not in params:
+                continue
+            try:
+                return float(params.get(key))
+            except (TypeError, ValueError):
+                continue
+        return float(default)
+
+    def _make_switching_energy_config(self, eon: float, eoff: float, err: float) -> Any:
+        config_cls = getattr(self._module, "SwitchingEnergy", None)
+        if config_cls is None:
+            return {
+                "eon": float(eon),
+                "eoff": float(eoff),
+                "err": float(err),
+            }
+        config = config_cls()
+        if hasattr(config, "eon"):
+            config.eon = float(eon)
+        if hasattr(config, "eoff"):
+            config.eoff = float(eoff)
+        if hasattr(config, "err"):
+            config.err = float(err)
+        return config
+
+    def _make_thermal_device_config(
+        self,
+        *,
+        enabled: bool,
+        rth: float,
+        cth: float,
+        temp_init: float,
+        temp_ref: float,
+        alpha: float,
+    ) -> Any:
+        config_cls = getattr(self._module, "ThermalDeviceConfig", None)
+        if config_cls is None:
+            return {
+                "enabled": bool(enabled),
+                "rth": float(rth),
+                "cth": float(cth),
+                "temp_init": float(temp_init),
+                "temp_ref": float(temp_ref),
+                "alpha": float(alpha),
+            }
+        config = config_cls()
+        if hasattr(config, "enabled"):
+            config.enabled = bool(enabled)
+        if hasattr(config, "rth"):
+            config.rth = float(rth)
+        if hasattr(config, "cth"):
+            config.cth = float(cth)
+        if hasattr(config, "temp_init"):
+            config.temp_init = float(temp_init)
+        if hasattr(config, "temp_ref"):
+            config.temp_ref = float(temp_ref)
+        if hasattr(config, "alpha"):
+            config.alpha = float(alpha)
+        return config
+
+    def _build_switching_energy_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        energy_map: dict[str, Any] = {}
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+
+            eon = self._first_numeric(
+                params,
+                ("switching_eon_j", "switching_eon", "e_on", "eon"),
+                0.0,
+            )
+            eoff = self._first_numeric(
+                params,
+                ("switching_eoff_j", "switching_eoff", "e_off", "eoff"),
+                0.0,
+            )
+            err = self._first_numeric(
+                params,
+                ("switching_err_j", "switching_err", "err", "e_rr"),
+                0.0,
+            )
+            if abs(eon) + abs(eoff) + abs(err) <= 0.0:
+                continue
+            energy_map[name] = self._make_switching_energy_config(eon, eoff, err)
+        return energy_map
+
+    def _build_thermal_device_map(
+        self,
+        circuit_data: dict[str, Any],
+        settings: "SimulationSettings",
+    ) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        thermal_map: dict[str, Any] = {}
+        override_keys = {
+            "thermal_enabled",
+            "thermal_rth",
+            "thermal_cth",
+            "thermal_temp_init",
+            "thermal_temp_ref",
+            "thermal_alpha",
+        }
+        default_rth = max(0.0, float(getattr(settings, "thermal_default_rth", 1.0)))
+        default_cth = max(0.0, float(getattr(settings, "thermal_default_cth", 0.1)))
+        default_temp = float(getattr(settings, "thermal_ambient", 25.0))
+
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            component_thermal = component.get("thermal")
+            if not isinstance(component_thermal, dict):
+                component_thermal = {}
+            nested_thermal = params.get("thermal")
+            if not isinstance(nested_thermal, dict):
+                nested_thermal = {}
+
+            if not (override_keys & set(params.keys())) and not component_thermal and not nested_thermal:
+                continue
+
+            thermal_payload: dict[str, Any] = {}
+            thermal_payload.update(component_thermal)
+            thermal_payload.update(nested_thermal)
+            thermal_payload.update(params)
+            if "enabled" in thermal_payload and "thermal_enabled" not in thermal_payload:
+                thermal_payload["thermal_enabled"] = thermal_payload.get("enabled")
+
+            enabled = bool(thermal_payload.get("thermal_enabled", True))
+            rth = max(
+                0.0,
+                self._first_numeric(thermal_payload, ("thermal_rth", "rth", "rth_ja"), default_rth),
+            )
+            cth = max(
+                0.0,
+                self._first_numeric(thermal_payload, ("thermal_cth", "cth"), default_cth),
+            )
+            temp_init = self._first_numeric(
+                thermal_payload,
+                ("thermal_temp_init", "temp_init", "temperature_init"),
+                default_temp,
+            )
+            temp_ref = self._first_numeric(
+                thermal_payload,
+                ("thermal_temp_ref", "temp_ref", "temperature_ref"),
+                default_temp,
+            )
+            alpha = max(
+                0.0,
+                self._first_numeric(thermal_payload, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
+            )
+            thermal_map[name] = self._make_thermal_device_config(
+                enabled=enabled,
+                rth=rth,
+                cth=cth,
+                temp_init=temp_init,
+                temp_ref=temp_ref,
+                alpha=alpha,
+            )
+        return thermal_map
+
     def _integrator_enum_name(self, method: str) -> str:
         mapping = {
             # "auto" maps to BDF1: first-order implicit method is the most stable
@@ -709,10 +1041,26 @@ class PulsimBackend(SimulationBackend):
         return mapping.get(method, "BDF1")
 
     def _should_use_simulation_options(self, settings: "SimulationSettings") -> bool:
-        # Always prefer the full SimulationOptions path when the backend supports it.
-        # This enables Newton damping, fallback gmin policy, and other features
-        # that are critical for switching power converter convergence.
-        return hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")
+        # Use SimulationOptions only when the backend API is new enough.
+        # Legacy/early backends can expose SimulationOptions/Simulator but still
+        # run as a fully blocking path with poor runtime for closed-loop
+        # electrothermal cases.
+        if not (hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")):
+            return False
+
+        parsed_version = self.info.parsed_version
+        if parsed_version is None:
+            try:
+                parsed_version = BackendVersion.from_string(str(self.info.version))
+                self.info.parsed_version = parsed_version
+            except ValueError:
+                log.warning(
+                    "Could not parse backend version '%s'; using compatibility transient path.",
+                    self.info.version,
+                )
+                return False
+
+        return parsed_version.is_compatible_with(_SIMULATION_OPTIONS_MIN_BACKEND)
 
     def _build_dc_convergence_config(self, settings: "SimulationSettings") -> Any | None:
         config_cls = getattr(self._module, "DCConvergenceConfig", None)
@@ -742,14 +1090,188 @@ class PulsimBackend(SimulationBackend):
                 config.source_config.max_steps = source_steps
         return config
 
+    def _build_simulation_options_from_yaml_parser(
+        self,
+        settings: "SimulationSettings",
+    ) -> Any | None:
+        """Build SimulationOptions via backend YamlParser defaults.
+
+        This avoids drift from backend-internal defaults that are not exposed
+        as writable Python attributes on SimulationOptions.
+        """
+        parser_cls = getattr(self._module, "YamlParser", None)
+        if parser_cls is None:
+            return None
+
+        parser_options_cls = getattr(self._module, "YamlParserOptions", None)
+        try:
+            parser = (
+                parser_cls(parser_options_cls())
+                if parser_options_cls is not None
+                else parser_cls()
+            )
+        except Exception as exc:
+            log.debug("Could not instantiate backend YamlParser: %s", exc)
+            return None
+
+        method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
+        step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
+        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        thermal_policy = self._normalize_thermal_policy(
+            getattr(settings, "thermal_policy", "loss_with_temperature_scaling")
+        )
+
+        dt = max(float(getattr(settings, "t_step", 1e-6)), 1e-15)
+        dt_max = float(getattr(settings, "max_step", dt))
+        if dt_max <= 0.0:
+            dt_max = dt
+
+        integrator_tokens = {
+            "trapezoidal": "trapezoidal",
+            "bdf1": "bdf1",
+            "bdf2": "bdf2",
+            "bdf3": "bdf3",
+            "bdf4": "bdf4",
+            "bdf5": "bdf5",
+            "gear": "gear",
+            "trbdf2": "trbdf2",
+            "rosenbrockw": "rosenbrockw",
+            "sdirk2": "sdirk2",
+        }
+
+        simulation_section: dict[str, Any] = {
+            "tstart": float(settings.t_start),
+            "tstop": float(settings.t_stop),
+            "dt": float(dt),
+            "step_mode": step_mode,
+            "enable_events": bool(getattr(settings, "enable_events", True)),
+            "enable_losses": bool(getattr(settings, "enable_losses", True)),
+            "max_step_retries": max(0, int(getattr(settings, "max_step_retries", 8))),
+            "formulation": self._normalize_formulation_mode(
+                getattr(settings, "formulation_mode", "projected_wrapper")
+            ),
+            "direct_formulation_fallback": bool(
+                getattr(settings, "direct_formulation_fallback", True)
+            ),
+            "newton": {
+                "max_iterations": max(1, int(getattr(settings, "max_newton_iterations", 100))),
+                "enable_limiting": bool(getattr(settings, "enable_voltage_limiting", False)),
+                "max_voltage_step": max(0.0, float(getattr(settings, "max_voltage_step", 5.0))),
+            },
+            "control": {
+                "mode": control_mode,
+            },
+            "thermal": {
+                "enabled": bool(getattr(settings, "enable_losses", True)),
+                "ambient": float(getattr(settings, "thermal_ambient", 25.0)),
+                "policy": thermal_policy,
+                "default_rth": max(0.0, float(getattr(settings, "thermal_default_rth", 1.0))),
+                "default_cth": max(0.0, float(getattr(settings, "thermal_default_cth", 0.1))),
+            },
+        }
+        if step_mode == "variable":
+            simulation_section["dt_max"] = float(dt_max)
+
+        if method != "auto":
+            token = integrator_tokens.get(method)
+            if token:
+                simulation_section["integrator"] = token
+
+        control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+        if control_mode == "discrete" and control_sample_time <= 0.0:
+            control_sample_time = max(dt, 1e-12)
+        if control_mode == "discrete" or control_sample_time > 0.0:
+            simulation_section["control"]["sample_time"] = float(max(control_sample_time, 1e-12))
+
+        def _fmt_real(value: Any) -> str:
+            return f"{float(value):.16g}"
+
+        def _fmt_bool(value: Any) -> str:
+            return "true" if bool(value) else "false"
+
+        lines: list[str] = [
+            "schema: pulsim-v1",
+            "version: 1",
+            "simulation:",
+            f"  tstart: {_fmt_real(simulation_section['tstart'])}",
+            f"  tstop: {_fmt_real(simulation_section['tstop'])}",
+            f"  dt: {_fmt_real(simulation_section['dt'])}",
+            f"  step_mode: {simulation_section['step_mode']}",
+        ]
+        if "dt_max" in simulation_section:
+            lines.append(f"  dt_max: {_fmt_real(simulation_section['dt_max'])}")
+        if "integrator" in simulation_section:
+            lines.append(f"  integrator: {simulation_section['integrator']}")
+        lines.extend(
+            [
+                f"  enable_events: {_fmt_bool(simulation_section['enable_events'])}",
+                f"  enable_losses: {_fmt_bool(simulation_section['enable_losses'])}",
+                f"  max_step_retries: {int(simulation_section['max_step_retries'])}",
+                f"  formulation: {simulation_section['formulation']}",
+                "  direct_formulation_fallback: "
+                f"{_fmt_bool(simulation_section['direct_formulation_fallback'])}",
+                "  newton:",
+                f"    max_iterations: {int(simulation_section['newton']['max_iterations'])}",
+                "    enable_limiting: "
+                f"{_fmt_bool(simulation_section['newton']['enable_limiting'])}",
+                "    max_voltage_step: "
+                f"{_fmt_real(simulation_section['newton']['max_voltage_step'])}",
+                "  control:",
+                f"    mode: {simulation_section['control']['mode']}",
+            ]
+        )
+        if "sample_time" in simulation_section["control"]:
+            lines.append(
+                "    sample_time: "
+                f"{_fmt_real(simulation_section['control']['sample_time'])}"
+            )
+        lines.extend(
+            [
+                "  thermal:",
+                f"    enabled: {_fmt_bool(simulation_section['thermal']['enabled'])}",
+                f"    ambient: {_fmt_real(simulation_section['thermal']['ambient'])}",
+                f"    policy: {simulation_section['thermal']['policy']}",
+                f"    default_rth: {_fmt_real(simulation_section['thermal']['default_rth'])}",
+                f"    default_cth: {_fmt_real(simulation_section['thermal']['default_cth'])}",
+                "components:",
+                "  - type: resistor",
+                "    name: __opts_stub__",
+                "    nodes: [__opts_n1, 0]",
+                "    value: 1.0",
+            ]
+        )
+        payload_text = "\n".join(lines) + "\n"
+
+        try:
+            _, options = parser.load_string(payload_text)
+        except Exception as exc:
+            log.debug("YamlParser options synthesis failed: %s", exc)
+            return None
+
+        parser_errors = getattr(parser, "errors", [])
+        try:
+            parser_errors = parser_errors() if callable(parser_errors) else parser_errors
+        except Exception:
+            parser_errors = []
+        if parser_errors:
+            log.debug("YamlParser reported options synthesis errors: %s", parser_errors)
+            return None
+
+        return options
+
     def _build_simulation_options(
         self,
         settings: "SimulationSettings",
         dt: float,
         newton_opts: Any,
         linear_solver: Any | None,
+        circuit_data: dict[str, Any] | None = None,
     ) -> Any:
-        opts = self._module.SimulationOptions()
+        opts = self._build_simulation_options_from_yaml_parser(settings)
+        using_parser_defaults = opts is not None
+        if opts is None:
+            opts = self._module.SimulationOptions()
+
         method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
         step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
         dt_max = float(getattr(settings, "max_step", dt))
@@ -775,35 +1297,36 @@ class PulsimBackend(SimulationBackend):
                 except Exception:
                     pass
 
-        if hasattr(opts, "newton_options"):
-            opts.newton_options = newton_opts
-        elif hasattr(opts, "newton_opts"):
-            opts.newton_opts = newton_opts
+        if not using_parser_defaults:
+            if hasattr(opts, "newton_options"):
+                opts.newton_options = newton_opts
+            elif hasattr(opts, "newton_opts"):
+                opts.newton_opts = newton_opts
 
-        if linear_solver is not None:
-            if hasattr(opts, "linear_solver"):
-                opts.linear_solver = linear_solver
-            elif hasattr(opts, "linear_solver_config"):
-                opts.linear_solver_config = linear_solver
+            if linear_solver is not None:
+                if hasattr(opts, "linear_solver"):
+                    opts.linear_solver = linear_solver
+                elif hasattr(opts, "linear_solver_config"):
+                    opts.linear_solver_config = linear_solver
 
-        dc_config = self._build_dc_convergence_config(settings)
-        if dc_config is not None:
-            if hasattr(opts, "dc_config"):
-                opts.dc_config = dc_config
-            elif hasattr(opts, "dc_options"):
-                opts.dc_options = dc_config
+            dc_config = self._build_dc_convergence_config(settings)
+            if dc_config is not None:
+                if hasattr(opts, "dc_config"):
+                    opts.dc_config = dc_config
+                elif hasattr(opts, "dc_options"):
+                    opts.dc_options = dc_config
 
-        if hasattr(opts, "adaptive_timestep"):
-            opts.adaptive_timestep = step_mode == "variable"
-        if hasattr(opts, "step_mode") and hasattr(self._module, "StepMode"):
-            enum_name = "Variable" if step_mode == "variable" else "Fixed"
-            if hasattr(self._module.StepMode, enum_name):
-                opts.step_mode = getattr(self._module.StepMode, enum_name)
+            if hasattr(opts, "adaptive_timestep"):
+                opts.adaptive_timestep = step_mode == "variable"
+            if hasattr(opts, "step_mode") and hasattr(self._module, "StepMode"):
+                enum_name = "Variable" if step_mode == "variable" else "Fixed"
+                if hasattr(self._module.StepMode, enum_name):
+                    opts.step_mode = getattr(self._module.StepMode, enum_name)
 
-        if hasattr(opts, "integrator") and hasattr(self._module, "Integrator"):
-            enum_name = self._integrator_enum_name(method)
-            if hasattr(self._module.Integrator, enum_name):
-                opts.integrator = getattr(self._module.Integrator, enum_name)
+            if hasattr(opts, "integrator") and hasattr(self._module, "Integrator"):
+                enum_name = self._integrator_enum_name(method)
+                if hasattr(self._module.Integrator, enum_name):
+                    opts.integrator = getattr(self._module.Integrator, enum_name)
 
         formulation_mode = self._normalize_formulation_mode(
             getattr(settings, "formulation_mode", "projected_wrapper")
@@ -816,6 +1339,21 @@ class PulsimBackend(SimulationBackend):
             opts.direct_formulation_fallback = bool(
                 getattr(settings, "direct_formulation_fallback", True)
             )
+        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        if hasattr(opts, "control_mode") and hasattr(self._module, "ControlUpdateMode"):
+            enum_map = {
+                "auto": "Auto",
+                "continuous": "Continuous",
+                "discrete": "Discrete",
+            }
+            enum_name = enum_map.get(control_mode, "Auto")
+            if hasattr(self._module.ControlUpdateMode, enum_name):
+                opts.control_mode = getattr(self._module.ControlUpdateMode, enum_name)
+        if hasattr(opts, "control_sample_time"):
+            control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+            if control_mode == "discrete" and control_sample_time <= 0.0:
+                control_sample_time = max(float(getattr(settings, "t_step", dt)), 1e-12)
+            opts.control_sample_time = control_sample_time
 
         if hasattr(opts, "enable_events"):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
@@ -830,29 +1368,53 @@ class PulsimBackend(SimulationBackend):
                 thermal_cfg.ambient = float(getattr(settings, "thermal_ambient", 25.0))
             if hasattr(thermal_cfg, "enable"):
                 thermal_cfg.enable = bool(getattr(settings, "enable_losses", True))
+            if hasattr(thermal_cfg, "default_rth"):
+                thermal_cfg.default_rth = max(
+                    0.0,
+                    float(getattr(settings, "thermal_default_rth", 1.0)),
+                )
+            if hasattr(thermal_cfg, "default_cth"):
+                thermal_cfg.default_cth = max(
+                    0.0,
+                    float(getattr(settings, "thermal_default_cth", 0.1)),
+                )
+            if hasattr(thermal_cfg, "policy") and hasattr(self._module, "ThermalCouplingPolicy"):
+                policy = self._normalize_thermal_policy(
+                    getattr(settings, "thermal_policy", "loss_with_temperature_scaling")
+                )
+                enum_name = "LossOnly" if policy == "loss_only" else "LossWithTemperatureScaling"
+                if hasattr(self._module.ThermalCouplingPolicy, enum_name):
+                    thermal_cfg.policy = getattr(self._module.ThermalCouplingPolicy, enum_name)
 
-        # Fallback policy: enable transient gmin stepping for switching circuit convergence.
-        # These settings match the validated PulsimCore buck converter benchmark.
-        if hasattr(opts, "fallback_policy"):
-            fp = opts.fallback_policy
-            if hasattr(fp, "enable_transient_gmin"):
-                fp.enable_transient_gmin = True
-            if hasattr(fp, "gmin_retry_threshold"):
-                fp.gmin_retry_threshold = 1
-            if hasattr(fp, "gmin_initial"):
-                fp.gmin_initial = 1e-8
-            if hasattr(fp, "gmin_max"):
-                fp.gmin_max = 1e-4
-            if hasattr(fp, "gmin_growth"):
-                fp.gmin_growth = 10
-            if hasattr(fp, "trace_retries"):
-                fp.trace_retries = True
+        if hasattr(opts, "switching_energy") and circuit_data is not None:
+            opts.switching_energy = self._build_switching_energy_map(circuit_data)
+
+        if hasattr(opts, "thermal_devices") and circuit_data is not None:
+            opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
+
+        if not using_parser_defaults:
+            # Fallback policy: enable transient gmin stepping for switching circuit convergence.
+            if hasattr(opts, "fallback_policy"):
+                fp = opts.fallback_policy
+                if hasattr(fp, "enable_transient_gmin"):
+                    fp.enable_transient_gmin = True
+                if hasattr(fp, "gmin_retry_threshold"):
+                    fp.gmin_retry_threshold = 1
+                if hasattr(fp, "gmin_initial"):
+                    fp.gmin_initial = 1e-8
+                if hasattr(fp, "gmin_max"):
+                    fp.gmin_max = 1e-4
+                if hasattr(fp, "gmin_growth"):
+                    fp.gmin_growth = 10
+                if hasattr(fp, "trace_retries"):
+                    fp.trace_retries = True
 
         return opts
 
     def _run_transient_via_simulator(
         self,
         circuit: Any,
+        circuit_data: dict[str, Any],
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         signal_names: list[str],
@@ -866,7 +1428,13 @@ class PulsimBackend(SimulationBackend):
             result.signals[name] = []
 
         callbacks.progress(5.0, "Running transient with SimulationOptions...")
-        options = self._build_simulation_options(settings, dt, newton_opts, linear_solver)
+        options = self._build_simulation_options(
+            settings,
+            dt,
+            newton_opts,
+            linear_solver,
+            circuit_data,
+        )
         simulator = self._module.Simulator(circuit, options)
         native_result: Any | None = None
         run_error: Exception | None = None
@@ -891,12 +1459,24 @@ class PulsimBackend(SimulationBackend):
         # stream progress. Emit a keepalive progress ramp so GUI users don't
         # see a frozen 5% status on long runs.
         start_time = time.monotonic()
-        keepalive_span_seconds = 20.0
+        # Keep progress responsive for long-running simulations:
+        # - 0..20s: fast ramp from 5% to 94%
+        # - >20s: slow tail from 94% to 99% so UI never appears frozen
+        primary_span_seconds = 20.0
+        tail_span_seconds = 120.0
         while worker.is_alive():
             worker.join(timeout=1.0)
             if worker.is_alive():
                 elapsed = time.monotonic() - start_time
-                progress = 5.0 + min(89.0, (elapsed / keepalive_span_seconds) * 89.0)
+                if elapsed <= primary_span_seconds:
+                    progress = 5.0 + (elapsed / primary_span_seconds) * 89.0
+                else:
+                    tail_progress = min(
+                        5.0,
+                        ((elapsed - primary_span_seconds) / tail_span_seconds) * 5.0,
+                    )
+                    progress = 94.0 + tail_progress
+                progress = min(99.0, progress)
                 callbacks.progress(
                     progress,
                     f"Running transient with SimulationOptions... ({elapsed:.0f}s elapsed)",
@@ -945,6 +1525,8 @@ class PulsimBackend(SimulationBackend):
                 if idx < len(state):
                     result.signals.setdefault(name, []).append(float(state[idx]))
 
+        self._merge_native_virtual_probe_channels(circuit, native_result, result)
+
         if result.time:
             final_sample = {
                 name: values[-1]
@@ -954,12 +1536,52 @@ class PulsimBackend(SimulationBackend):
             callbacks.data_point(result.time[-1], final_sample)
 
         result.statistics["execution_path"] = "simulator_options"
+        for field_name in (
+            "total_steps",
+            "newton_iterations_total",
+            "timestep_rejections",
+            "total_time_seconds",
+        ):
+            value = self._coerce_telemetry_scalar(getattr(native_result, field_name, None))
+            if value is not None:
+                result.statistics[field_name] = value
+
+        message_value = str(getattr(native_result, "message", "") or "").strip()
+        if message_value:
+            result.statistics["message"] = message_value
+
+        status_value = getattr(native_result, "final_status", None)
+        if status_value is not None:
+            status_name = self._coerce_telemetry_scalar(status_value)
+            if status_name is None and hasattr(self._module, "SolverStatus"):
+                try:
+                    status_name = str(self._module.SolverStatus(status_value).name)
+                except Exception:
+                    status_name = str(status_value)
+            if status_name is not None:
+                result.statistics["status"] = status_name
+
+        diagnostic_value = getattr(native_result, "diagnostic", None)
+        if diagnostic_value is not None:
+            diagnostic_name = self._coerce_telemetry_scalar(diagnostic_value)
+            if diagnostic_name is None and hasattr(self._module, "SimulationDiagnosticCode"):
+                try:
+                    diagnostic_name = str(
+                        self._module.SimulationDiagnosticCode(diagnostic_value).name
+                    )
+                except Exception:
+                    diagnostic_name = str(diagnostic_value)
+            if diagnostic_name is not None:
+                result.statistics["diagnostic"] = diagnostic_name
+
+        self._append_electrothermal_statistics(result.statistics, native_result)
         callbacks.progress(100.0, "Simulation complete")
         return result
 
     def _run_transient_once(
         self,
         circuit: Any,
+        circuit_data: dict[str, Any],
         settings: "SimulationSettings",
         callbacks: BackendCallbacks,
         dt: float,
@@ -974,10 +1596,17 @@ class PulsimBackend(SimulationBackend):
         for name in signal_names:
             result.signals[name] = []
 
+        def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
+            if run_result.error_message:
+                return run_result
+            self._ensure_virtual_probe_channels(circuit, run_result, signal_names)
+            return run_result
+
         if self._should_use_simulation_options(settings):
             try:
                 simulator_result = self._run_transient_via_simulator(
                     circuit,
+                    circuit_data,
                     settings,
                     callbacks,
                     signal_names,
@@ -987,7 +1616,7 @@ class PulsimBackend(SimulationBackend):
                     linear_solver,
                 )
                 if not simulator_result.error_message:
-                    return simulator_result
+                    return _finalize_attempt(simulator_result)
                 result.statistics["simulator_options_error"] = simulator_result.error_message
                 if "cancel" in simulator_result.error_message.lower():
                     return simulator_result
@@ -1001,6 +1630,44 @@ class PulsimBackend(SimulationBackend):
                     5.0,
                     "SimulationOptions unavailable; retrying compatibility transient...",
                 )
+
+        prefer_nonblocking = self._should_prefer_nonblocking_transient(settings, dt)
+        if prefer_nonblocking:
+            if hasattr(self._module, "run_transient_streaming"):
+                streaming_result = self._run_transient_streaming(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not streaming_result.error_message:
+                    streaming_result.statistics["execution_preference"] = "nonblocking_streaming"
+                    return _finalize_attempt(streaming_result)
+                if "cancel" in streaming_result.error_message.lower():
+                    return streaming_result
+
+            if hasattr(self._module, "run_transient_shared"):
+                shared_result = self._run_transient_shared(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not shared_result.error_message:
+                    shared_result.statistics["execution_preference"] = "nonblocking_shared"
+                    return _finalize_attempt(shared_result)
+                if "cancel" in shared_result.error_message.lower():
+                    return shared_result
 
         # Prefer robust run_transient path first to match notebook behavior.
         if hasattr(self._module, "run_transient"):
@@ -1016,7 +1683,7 @@ class PulsimBackend(SimulationBackend):
                 linear_solver,
             )
             if not chunked_result.error_message:
-                return chunked_result
+                return _finalize_attempt(chunked_result)
             if "cancel" in chunked_result.error_message.lower():
                 return chunked_result
             if hasattr(self._module, "run_transient_streaming"):
@@ -1040,7 +1707,7 @@ class PulsimBackend(SimulationBackend):
                     streaming_result.statistics["compatibility_error"] = (
                         chunked_result.error_message
                     )
-                    return streaming_result
+                    return _finalize_attempt(streaming_result)
                 streaming_result.error_message = (
                     f"{chunked_result.error_message} | Fallback error: "
                     f"{streaming_result.error_message}"
@@ -1049,10 +1716,10 @@ class PulsimBackend(SimulationBackend):
             return chunked_result
 
         if hasattr(self._module, "run_transient_shared"):
-            return self._run_transient_shared(
+            return _finalize_attempt(self._run_transient_shared(
                 circuit, settings, callbacks, result,
                 signal_names, dt, x0, newton_opts, linear_solver,
-            )
+            ))
 
         if hasattr(self._module, "run_transient_streaming"):
             streaming_result = self._run_transient_streaming(
@@ -1060,15 +1727,27 @@ class PulsimBackend(SimulationBackend):
                 signal_names, dt, x0, newton_opts, linear_solver,
             )
             if not streaming_result.error_message:
-                return streaming_result
+                return _finalize_attempt(streaming_result)
             if "cancel" in streaming_result.error_message.lower():
                 return streaming_result
             return streaming_result
 
-        return self._run_transient_chunked(
+        return _finalize_attempt(self._run_transient_chunked(
             circuit, settings, callbacks, result,
             signal_names, dt, x0, newton_opts, linear_solver,
-        )
+        ))
+
+    def _should_prefer_nonblocking_transient(
+        self,
+        settings: "SimulationSettings",
+        dt: float,
+    ) -> bool:
+        """Prefer shared/streaming APIs for long runs to keep UI responsive."""
+        duration = max(0.0, float(getattr(settings, "t_stop", 0.0)) - float(getattr(settings, "t_start", 0.0)))
+        if dt <= 0.0:
+            return duration >= 0.5
+        estimated_steps = int(duration / dt) if duration > 0.0 else 0
+        return duration >= 0.5 or estimated_steps >= 200_000
 
     def _build_transient_retry_profiles(
         self,
@@ -1140,6 +1819,7 @@ class PulsimBackend(SimulationBackend):
             "diverg",
             "converg",
             "singular",
+            "max iterations",
             "transient failed",
             "time step too small",
             "timestep too small",
@@ -1159,19 +1839,13 @@ class PulsimBackend(SimulationBackend):
         linear_solver: Any | None,
     ) -> BackendRunResult:
         """Run transient simulation using streaming API with real-time callbacks."""
-        # Track last sent index for incremental updates
-        last_sent_index = 0
-
         def data_callback(t: float, state_dict: dict) -> None:
             """Called by C++ backend for progress - we ignore the data here.
 
             The actual data comes from the final returned arrays which have
             full resolution. We just use this callback to trigger UI updates.
             """
-            nonlocal last_sent_index
-            # Just trigger a progress update - actual data comes at the end
-            # Send a dummy point to trigger waveform update
-            callbacks.data_point(t, state_dict)
+            _ = (t, state_dict)
 
         def progress_callback(percent: float, message: str) -> None:
             """Called by C++ backend for progress updates."""
@@ -1187,7 +1861,7 @@ class PulsimBackend(SimulationBackend):
 
         # Use fewer callbacks (50) to reduce GIL overhead
         # The returned data will have full resolution
-        total_steps = int((settings.t_stop - settings.t_start) / dt)
+        total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
         emit_interval = max(1, total_steps // 50)
 
         transient_args = self._compose_transient_args(
@@ -1336,23 +2010,6 @@ class PulsimBackend(SimulationBackend):
                     current_time = time_buffer[current_index - 1]
                     callbacks.progress(progress, f"Simulating: t={current_time*1e6:.1f}µs")
 
-                # Send numpy array views directly to UI (zero-copy!)
-                # Using _np suffix to indicate numpy arrays
-                streaming_data = {
-                    "_time_np": time_buffer[:current_index],
-                    "_signals_np": {
-                        name: states_buffer[:current_index, i]
-                        for i, name in enumerate(signal_names)
-                    },
-                    "_current_index": current_index,
-                }
-                last_sample = {
-                    name: float(states_buffer[current_index - 1, i])
-                    for i, name in enumerate(signal_names)
-                }
-                last_sample["_full_data"] = streaming_data
-                callbacks.data_point(float(time_buffer[current_index - 1]), last_sample)
-
                 last_index = current_index
 
             time.sleep(poll_interval)
@@ -1371,6 +2028,9 @@ class PulsimBackend(SimulationBackend):
         if final_status == 2 or not sim_success[0]:  # Error
             result.error_message = sim_message[0] or "Simulation failed"
             return result
+
+        if final_index > last_index:
+            last_index = final_index
 
         callbacks.progress(95.0, "Finalizing results...")
 
@@ -2001,34 +2661,33 @@ class PulsimBackend(SimulationBackend):
         electrical_result: TransientResult,
         settings: ThermalSettings,
     ) -> ThermalResult:
-        """Run thermal simulation using PulsimCore ThermalSimulator."""
+        """Run thermal simulation using backend-native ThermalSimulator APIs only."""
         if not self.has_capability("thermal"):
             return ThermalResult(
                 error_message="Thermal simulation not supported by this backend version",
-                is_synthetic=True,
+                is_synthetic=False,
             )
 
         try:
             circuit = self._converter.build(circuit_data)
         except CircuitConversionError as exc:
-            return ThermalResult(error_message=str(exc), is_synthetic=True)
+            return ThermalResult(error_message=str(exc), is_synthetic=False)
 
         try:
             direct_result = self._run_thermal_native(circuit, electrical_result, settings)
             if direct_result is not None:
                 return direct_result
 
-            waveform_result = self._run_thermal_from_waveforms(circuit_data, electrical_result, settings)
-            if waveform_result is not None:
-                return waveform_result
-
             return ThermalResult(
-                error_message="No compatible thermal API available for this backend version",
-                is_synthetic=True,
+                error_message=(
+                    "No compatible native thermal API available for this backend version. "
+                    "Upgrade backend thermal support to use thermal analysis."
+                ),
+                is_synthetic=False,
             )
 
         except Exception as exc:
-            return ThermalResult(error_message=str(exc), is_synthetic=True)
+            return ThermalResult(error_message=str(exc), is_synthetic=False)
 
     def _run_thermal_native(
         self,
@@ -2077,192 +2736,6 @@ class PulsimBackend(SimulationBackend):
 
         native_result = thermal_sim.run(electrical_result.time, electrical_result.signals)
         return self._convert_thermal_result(native_result, settings)
-
-    def _run_thermal_from_waveforms(
-        self,
-        circuit_data: dict,
-        electrical_result: TransientResult,
-        settings: ThermalSettings,
-    ) -> ThermalResult | None:
-        """Run thermal using Foster-network API with per-device power waveforms."""
-        simulator_cls = getattr(self._module, "ThermalSimulator", None)
-        create_simple_model = getattr(self._module, "create_simple_thermal_model", None)
-        if simulator_cls is None or not callable(create_simple_model):
-            return None
-        create_network_model = create_simple_model
-        if settings.thermal_network == "cauer":
-            for model_name in ("create_simple_cauer_model", "create_cauer_thermal_model"):
-                candidate = getattr(self._module, model_name, None)
-                if callable(candidate):
-                    create_network_model = candidate
-                    break
-
-        times = [float(t) for t in (electrical_result.time or [])]
-        if len(times) < 2:
-            return None
-
-        device_names = self._extract_thermal_device_names(circuit_data)
-        if not device_names:
-            return None
-
-        devices: list[ThermalDeviceResult] = []
-        used_real_power = False
-
-        for index, device_name in enumerate(device_names):
-            measured_power = self._extract_power_trace(device_name, electrical_result.signals, len(times))
-            if measured_power:
-                used_real_power = True
-                powers = measured_power
-            else:
-                fallback_power = 2.0 + (0.4 * index)
-                powers = [fallback_power] * len(times)
-
-            if len(powers) < len(times):
-                powers = powers + [powers[-1] if powers else 0.0] * (len(times) - len(powers))
-            elif len(powers) > len(times):
-                powers = powers[: len(times)]
-
-            rth = 0.8 + (0.15 * index)
-            tau = 0.02 + (0.004 * index)
-            try:
-                network = create_network_model(rth, tau, device_name)
-            except TypeError:
-                network = create_simple_model(rth, tau, device_name)
-            thermal_sim = simulator_cls(network, settings.ambient_temperature)
-            if hasattr(thermal_sim, "set_ambient"):
-                thermal_sim.set_ambient(settings.ambient_temperature)
-            elif hasattr(thermal_sim, "set_ambient_temperature"):
-                thermal_sim.set_ambient_temperature(settings.ambient_temperature)
-
-            if not hasattr(thermal_sim, "simulate"):
-                return None
-
-            temps = [float(value) for value in thermal_sim.simulate(times, powers)]
-            avg_power = sum(float(abs(value)) for value in powers) / max(1, len(powers))
-
-            conduction = 0.0
-            switching_on = 0.0
-            if settings.include_conduction_losses and settings.include_switching_losses:
-                conduction = avg_power * 0.7
-                switching_on = avg_power * 0.3
-            elif settings.include_conduction_losses:
-                conduction = avg_power
-            elif settings.include_switching_losses:
-                switching_on = avg_power
-
-            devices.append(ThermalDeviceResult(
-                name=device_name,
-                junction_temperature=temps,
-                peak_temperature=max(temps) if temps else settings.ambient_temperature,
-                steady_state_temperature=temps[-1] if temps else settings.ambient_temperature,
-                losses=LossBreakdown(
-                    conduction=conduction,
-                    switching_on=switching_on,
-                ),
-                foster_stages=self._extract_foster_stages(network),
-            ))
-
-        if not devices:
-            return None
-
-        return ThermalResult(
-            time=times,
-            devices=devices,
-            ambient_temperature=settings.ambient_temperature,
-            is_synthetic=not used_real_power,
-        )
-
-    def _extract_thermal_device_names(self, circuit_data: dict) -> list[str]:
-        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
-        thermal_types = {
-            "DIODE",
-            "ZENER_DIODE",
-            "LED",
-            "MOSFET_N",
-            "MOSFET_P",
-            "IGBT",
-            "BJT_NPN",
-            "BJT_PNP",
-            "THYRISTOR",
-            "TRIAC",
-            "SWITCH",
-            "TRANSFORMER",
-        }
-        names: list[str] = []
-        seen: set[str] = set()
-        for component in components:
-            comp_type = str(component.get("type", "")).strip().upper()
-            if comp_type not in thermal_types:
-                continue
-            name = str(component.get("name") or component.get("id") or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            names.append(name)
-        return names
-
-    def _extract_power_trace(
-        self,
-        device_name: str,
-        signals: dict[str, list[float]],
-        expected_points: int,
-    ) -> list[float]:
-        if not signals:
-            return []
-
-        key_candidates = (
-            f"P({device_name})",
-            f"p({device_name})",
-            f"power:{device_name}",
-            f"{device_name}:power",
-        )
-        for key in key_candidates:
-            series = signals.get(key)
-            if series:
-                return [float(value) for value in series[:expected_points]]
-
-        device_lower = device_name.lower()
-        for key, series in signals.items():
-            if not series:
-                continue
-            key_lower = str(key).lower()
-            if key_lower.startswith("p(") and device_lower in key_lower:
-                return [float(value) for value in series[:expected_points]]
-
-        total_series = signals.get("P(total)") or signals.get("p(total)")
-        if total_series:
-            return [float(value) for value in total_series[:expected_points]]
-        return []
-
-    def _extract_foster_stages(self, network: Any) -> list[FosterStage]:
-        stages_attr = getattr(network, "stages", None)
-        if stages_attr is None:
-            return []
-
-        try:
-            raw_stages = stages_attr() if callable(stages_attr) else list(stages_attr)
-        except Exception:
-            return []
-
-        stages: list[FosterStage] = []
-        for stage in raw_stages:
-            resistance = getattr(stage, "Rth", 0.0)
-            resistance = resistance() if callable(resistance) else resistance
-
-            capacitance = getattr(stage, "Cth", 0.0)
-            capacitance = capacitance() if callable(capacitance) else capacitance
-
-            if (capacitance is None or float(capacitance) == 0.0) and hasattr(stage, "tau"):
-                tau = getattr(stage, "tau")
-                tau = tau() if callable(tau) else tau
-                if resistance:
-                    capacitance = float(tau) / max(float(resistance), 1e-12)
-
-            stages.append(FosterStage(
-                resistance=float(resistance),
-                capacitance=float(capacitance) if capacitance is not None else 0.0,
-            ))
-        return stages
 
     def _convert_thermal_result(self, native_result: Any, settings: ThermalSettings) -> ThermalResult:
         """Convert PulsimCore thermal result to GUI ThermalResult."""
@@ -2362,7 +2835,305 @@ class PulsimBackend(SimulationBackend):
             return f"Steps: {int(steps)}"
         return "Running..."
 
+    @staticmethod
+    def _extract_telemetry_field(payload: Any, field: str) -> Any | None:
+        if isinstance(payload, dict):
+            return payload.get(field)
+        return getattr(payload, field, None)
+
+    @staticmethod
+    def _serialize_telemetry_items(payload: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, dict):
+            item = PulsimBackend._serialize_telemetry_item(payload, fields)
+            return [item] if item else []
+        if isinstance(payload, (list, tuple)):
+            return [
+                item
+                for item in (
+                    PulsimBackend._serialize_telemetry_item(entry, fields) for entry in payload
+                )
+                if item
+            ]
+        try:
+            iterable = list(payload)
+        except TypeError:
+            item = PulsimBackend._serialize_telemetry_item(payload, fields)
+            return [item] if item else []
+        return [
+            item
+            for item in (
+                PulsimBackend._serialize_telemetry_item(entry, fields) for entry in iterable
+            )
+            if item
+        ]
+
+    @staticmethod
+    def _serialize_telemetry_item(payload: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+        if payload is None:
+            return {}
+        out: dict[str, Any] = {}
+        for field in fields:
+            value = PulsimBackend._extract_telemetry_field(payload, field)
+            coerced = PulsimBackend._coerce_telemetry_scalar(value)
+            if coerced is not None:
+                out[field] = coerced
+        return out
+
+    @staticmethod
+    def _coerce_telemetry_scalar(value: Any) -> bool | float | str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value)
+        enum_name = getattr(value, "name", None)
+        if isinstance(enum_name, str):
+            return enum_name
+        return None
+
+    @staticmethod
+    def _serialize_loss_breakdown(payload: Any) -> dict[str, Any]:
+        breakdown = PulsimBackend._serialize_telemetry_item(
+            payload,
+            ("conduction", "turn_on", "turn_off", "reverse_recovery"),
+        )
+        if not breakdown:
+            return {}
+
+        conduction = float(breakdown.get("conduction", 0.0) or 0.0)
+        turn_on = float(breakdown.get("turn_on", 0.0) or 0.0)
+        turn_off = float(breakdown.get("turn_off", 0.0) or 0.0)
+        reverse_recovery = float(breakdown.get("reverse_recovery", 0.0) or 0.0)
+        breakdown["switching"] = turn_on + turn_off + reverse_recovery
+        breakdown["total"] = conduction + float(breakdown["switching"])
+        return breakdown
+
+    @staticmethod
+    def _serialize_loss_result(payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+
+        out = PulsimBackend._serialize_telemetry_item(
+            payload,
+            (
+                "device_name",
+                "total_energy",
+                "average_power",
+                "peak_power",
+                "rms_current",
+                "avg_current",
+                "efficiency_contribution",
+            ),
+        )
+        breakdown = PulsimBackend._serialize_loss_breakdown(
+            PulsimBackend._extract_telemetry_field(payload, "breakdown")
+        )
+        if breakdown:
+            out["breakdown"] = breakdown
+        return out
+
+    @staticmethod
+    def _serialize_device_losses(payload: Any) -> dict[str, dict[str, Any]]:
+        if payload is None:
+            return {}
+
+        if isinstance(payload, dict):
+            iterable = payload.items()
+        else:
+            try:
+                iterable = ((None, item) for item in list(payload))
+            except TypeError:
+                iterable = ()
+
+        device_losses: dict[str, dict[str, Any]] = {}
+        for key, raw_entry in iterable:
+            entry = PulsimBackend._serialize_loss_result(raw_entry)
+            entry_name = str(entry.get("device_name") or key or "").strip()
+            if not entry_name:
+                continue
+            if not entry:
+                continue
+            entry["device_name"] = entry_name
+            device_losses[entry_name] = entry
+        return device_losses
+
+    def _append_electrothermal_statistics(
+        self,
+        statistics: dict[str, Any],
+        native_result: Any,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        linear_solver_telemetry = self._extract_telemetry_field(payload, "linear_solver_telemetry")
+        if linear_solver_telemetry is None:
+            linear_solver_telemetry = getattr(native_result, "linear_solver_telemetry", None)
+        linear_data = self._serialize_telemetry_item(
+            linear_solver_telemetry,
+            (
+                "total_solve_calls",
+                "total_analyze_calls",
+                "total_factorize_calls",
+                "total_iterations",
+                "total_fallbacks",
+                "last_iterations",
+                "last_error",
+                "total_analyze_time_seconds",
+                "total_factorize_time_seconds",
+                "total_solve_time_seconds",
+                "last_analyze_time_seconds",
+                "last_factorize_time_seconds",
+                "last_solve_time_seconds",
+                "last_solver",
+                "last_preconditioner",
+            ),
+        )
+        if linear_data:
+            statistics["linear_solver_telemetry"] = linear_data
+
+        backend_telemetry = self._extract_telemetry_field(payload, "backend_telemetry")
+        if backend_telemetry is None:
+            backend_telemetry = getattr(native_result, "backend_telemetry", None)
+        backend_data = self._serialize_telemetry_item(
+            backend_telemetry,
+            (
+                "requested_backend",
+                "selected_backend",
+                "solver_family",
+                "formulation_mode",
+                "function_evaluations",
+                "jacobian_evaluations",
+                "nonlinear_iterations",
+                "nonlinear_convergence_failures",
+                "error_test_failures",
+                "escalation_count",
+                "reinitialization_count",
+                "backend_recovery_count",
+                "state_space_primary_steps",
+                "dae_fallback_steps",
+                "segment_non_admissible_steps",
+                "segment_model_cache_hits",
+                "segment_model_cache_misses",
+                "linear_factor_cache_hits",
+                "linear_factor_cache_misses",
+                "linear_factor_cache_invalidations",
+                "linear_factor_cache_last_invalidation_reason",
+                "reserved_output_samples",
+                "time_series_reallocations",
+                "state_series_reallocations",
+                "virtual_channel_reallocations",
+                "equation_assemble_system_calls",
+                "equation_assemble_residual_calls",
+                "equation_assemble_system_time_seconds",
+                "equation_assemble_residual_time_seconds",
+                "model_regularization_events",
+                "model_regularization_last_changed",
+                "model_regularization_last_intensity",
+                "failure_reason",
+            ),
+        )
+        if backend_data:
+            statistics["backend_telemetry"] = backend_data
+
+        fallback_trace = self._extract_telemetry_field(payload, "fallback_trace")
+        if fallback_trace is None:
+            fallback_trace = getattr(native_result, "fallback_trace", None)
+        fallback_data = self._serialize_telemetry_items(
+            fallback_trace,
+            ("step_index", "retry_index", "time", "dt", "reason", "solver_status", "action"),
+        )
+        if fallback_data:
+            statistics["fallback_trace"] = fallback_data
+            statistics["fallback_trace_count"] = len(fallback_data)
+
+        loss_summary = self._extract_telemetry_field(payload, "loss_summary")
+        if loss_summary is None:
+            loss_summary = getattr(native_result, "loss_summary", None)
+        summary_data = self._serialize_telemetry_item(
+            loss_summary,
+            (
+                "total_loss",
+                "total_conduction",
+                "total_switching",
+                "input_power",
+                "output_power",
+                "efficiency",
+            ),
+        )
+        device_losses = self._serialize_device_losses(
+            self._extract_telemetry_field(loss_summary, "device_losses")
+        )
+        if device_losses:
+            summary_data["device_losses"] = device_losses
+        if summary_data:
+            statistics["loss_summary"] = summary_data
+            if isinstance(summary_data.get("total_loss"), (int, float)):
+                statistics["system_total_loss"] = float(summary_data["total_loss"])
+            if device_losses:
+                statistics["loss_device_count"] = len(device_losses)
+
+        thermal_summary = self._extract_telemetry_field(payload, "thermal_summary")
+        if thermal_summary is None:
+            thermal_summary = getattr(native_result, "thermal_summary", None)
+
+        summary_data = self._serialize_telemetry_item(
+            thermal_summary,
+            ("enabled", "ambient", "max_temperature"),
+        )
+        device_data = self._serialize_telemetry_items(
+            self._extract_telemetry_field(thermal_summary, "device_temperatures"),
+            (
+                "device_name",
+                "enabled",
+                "final_temperature",
+                "peak_temperature",
+                "average_temperature",
+            ),
+        )
+        if device_data:
+            summary_data["device_temperatures"] = device_data
+        if summary_data:
+            statistics["thermal_summary"] = summary_data
+            if isinstance(summary_data.get("max_temperature"), (int, float)):
+                statistics["thermal_max_temperature"] = float(summary_data["max_temperature"])
+
+        component_electrothermal = self._extract_telemetry_field(payload, "component_electrothermal")
+        if component_electrothermal is None:
+            component_electrothermal = getattr(native_result, "component_electrothermal", None)
+        component_data = self._serialize_telemetry_items(
+            component_electrothermal,
+            (
+                "component_name",
+                "thermal_enabled",
+                "conduction",
+                "turn_on",
+                "turn_off",
+                "reverse_recovery",
+                "total_loss",
+                "total_energy",
+                "average_power",
+                "peak_power",
+                "final_temperature",
+                "peak_temperature",
+                "average_temperature",
+            ),
+        )
+        if component_data:
+            statistics["component_electrothermal"] = component_data
+            statistics["electrothermal_component_count"] = len(component_data)
+            peak_temperatures = [
+                float(item["peak_temperature"])
+                for item in component_data
+                if isinstance(item.get("peak_temperature"), (int, float))
+            ]
+            if peak_temperatures:
+                statistics["electrothermal_peak_temperature"] = max(peak_temperatures)
+
     def _populate_backend_result(self, backend_result: BackendRunResult, sim_result: Any) -> None:
+        payload: dict[str, Any] | None = None
         if hasattr(sim_result, "to_dict"):
             payload = sim_result.to_dict()
             backend_result.time = list(payload.get("time", []))
@@ -2391,6 +3162,7 @@ class PulsimBackend(SimulationBackend):
                     )
             except Exception:  # pragma: no cover - best-effort cast
                 backend_result.statistics["status"] = status_value
+        self._append_electrothermal_statistics(backend_result.statistics, sim_result, payload)
 
     def _compute_time_step(self, settings: "SimulationSettings") -> float:
         duration = settings.t_stop - settings.t_start

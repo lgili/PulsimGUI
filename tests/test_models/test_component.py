@@ -1,6 +1,7 @@
 """Tests for Component model."""
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
     Component,
     ComponentType,
@@ -9,6 +10,8 @@ from pulsimgui.models.component import (
     THERMAL_PORT_PIN_NAME,
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
     can_connect_measurement_pins,
+    pin_connection_domain,
+    set_scope_channel_count,
     set_thermal_port_enabled,
 )
 
@@ -155,6 +158,81 @@ class TestComponent:
         pi = Component(type=ComponentType.PI_CONTROLLER)
         assert THERMAL_PORT_PARAMETER not in pi.parameters
 
+    def test_legacy_mosfet_with_thermal_enabled_backfills_required_params(self):
+        legacy = Component.from_dict(
+            {
+                "id": "6a7f6ecf-1f5c-4a17-89a1-53b8d57d1401",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {
+                    "vth": 2.0,
+                    "kp": 0.1,
+                    "thermal_enabled": True,
+                },
+                "pins": [],
+            }
+        )
+
+        assert legacy.parameters["thermal_enabled"] is True
+        assert legacy.parameters["thermal_rth"] > 0.0
+        assert legacy.parameters["thermal_cth"] >= 0.0
+        assert "thermal_temp_init" in legacy.parameters
+        assert "thermal_temp_ref" in legacy.parameters
+        assert "thermal_alpha" in legacy.parameters
+
+    def test_legacy_mosfet_with_thermal_port_enabled_backfills_required_params(self):
+        legacy = Component.from_dict(
+            {
+                "id": "3d2fd604-df76-4dd1-bc78-f0ac63ee4934",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {
+                    "vth": 2.0,
+                    "kp": 0.1,
+                    THERMAL_PORT_PARAMETER: True,
+                },
+                "pins": [],
+            }
+        )
+
+        assert legacy.parameters[THERMAL_PORT_PARAMETER] is True
+        assert legacy.parameters["thermal_enabled"] is True
+        assert legacy.parameters["thermal_rth"] > 0.0
+        assert legacy.parameters["thermal_cth"] >= 0.0
+
+    def test_legacy_component_with_serialized_th_pin_keeps_thermal_port_enabled(self):
+        legacy = Component.from_dict(
+            {
+                "id": "12a177d5-c6d2-4f54-9f31-fb5f0cc874cf",
+                "type": "RESISTOR",
+                "name": "R1",
+                "x": 0.0,
+                "y": 0.0,
+                "rotation": 0,
+                "mirrored_h": False,
+                "mirrored_v": False,
+                "parameters": {"resistance": 1000.0},
+                "pins": [
+                    {"index": 0, "name": "1", "x": -30.0, "y": 0.0},
+                    {"index": 1, "name": "2", "x": 30.0, "y": 0.0},
+                    {"index": 2, "name": THERMAL_PORT_PIN_NAME, "x": 0.0, "y": 20.0},
+                ],
+            }
+        )
+
+        assert legacy.parameters[THERMAL_PORT_PARAMETER] is True
+        assert legacy.pins[-1].name == THERMAL_PORT_PIN_NAME
+
     def test_voltage_probe_has_scope_output_pin(self):
         probe = Component(type=ComponentType.VOLTAGE_PROBE)
         assert len(probe.pins) == 3
@@ -164,6 +242,19 @@ class TestComponent:
         probe = Component(type=ComponentType.CURRENT_PROBE)
         assert len(probe.pins) == 3
         assert probe.pins[2].name == CURRENT_PROBE_OUTPUT_PIN_NAME
+
+    def test_voltage_probe_gnd_has_single_input_and_scope_output(self):
+        probe = Component(type=ComponentType.VOLTAGE_PROBE_GND)
+        assert len(probe.pins) == 2
+        assert probe.pins[0].name == "IN"
+        assert probe.pins[1].name == VOLTAGE_PROBE_OUTPUT_PIN_NAME
+
+    def test_goto_and_from_pins_use_any_domain(self):
+        goto = Component(type=ComponentType.GOTO_LABEL, parameters={"net_label": "BUS_A"})
+        from_label = Component(type=ComponentType.FROM_LABEL, parameters={"net_label": "BUS_A"})
+
+        assert pin_connection_domain(goto, 0) == CONNECTION_DOMAIN_ANY
+        assert pin_connection_domain(from_label, 0) == CONNECTION_DOMAIN_ANY
 
     def test_scope_connection_rules_for_electrical_probes(self):
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
@@ -180,3 +271,21 @@ class TestComponent:
 
         assert can_connect_measurement_pins(scope, 0, resistor, 2)
         assert not can_connect_measurement_pins(scope, 0, resistor, 1)
+
+    def test_scope_channel_count_expands_pin_layout(self):
+        scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
+        assert len(scope.pins) == 2
+
+        set_scope_channel_count(scope, 6)
+        assert scope.parameters["channel_count"] == 6
+        assert len(scope.pins) == 6
+        assert [pin.name for pin in scope.pins] == ["CH1", "CH2", "CH3", "CH4", "CH5", "CH6"]
+
+    def test_scope_channel_count_allows_up_to_sixteen_channels(self):
+        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1")
+        set_scope_channel_count(scope, 16)
+
+        assert scope.parameters["channel_count"] == 16
+        assert len(scope.pins) == 16
+        assert scope.pins[0].name == "CH1"
+        assert scope.pins[-1].name == "CH16"

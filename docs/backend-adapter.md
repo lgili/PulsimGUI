@@ -60,8 +60,40 @@ Normalized simulation output:
 - `statistics: dict[str, Any]`
 - `error_message: str`
 
+### `BackendRunResult.statistics` (telemetry keys)
+
+When using modern Pulsim backends, `statistics` can include structured diagnostics:
+
+- Core run metadata:
+  - `execution_path`
+  - `status`
+  - `diagnostic`
+  - `total_steps`
+  - `newton_iterations_total`
+  - `timestep_rejections`
+  - `total_time_seconds`
+  - `message`
+- Linear solver telemetry:
+  - `linear_solver_telemetry` (calls, iterations, timings, solver/preconditioner info)
+- Backend/runtime telemetry:
+  - `backend_telemetry` (selected backend, formulation mode, counters, cache metrics, failure reason)
+- Fallback/retry trace:
+  - `fallback_trace`
+  - `fallback_trace_count`
+- Loss and thermal telemetry:
+  - `loss_summary`
+  - `system_total_loss`
+  - `loss_device_count`
+  - `thermal_summary`
+  - `thermal_max_temperature`
+  - `component_electrothermal`
+  - `electrothermal_component_count`
+  - `electrothermal_peak_temperature`
+
+All telemetry keys are optional and depend on backend version/capabilities.
+
 ## Operational Best Practices
 
-- Pin backend to `v0.6.1` for reproducibility.
+- Pin backend to `v0.6.5` for reproducibility.
 - Keep `Auto-sync` enabled in validation environments.
 - For convergence failures, tune `step size`, `max step`, `max iterations`, and transient robustness first.

@@ -1,6 +1,6 @@
-"""Tests for the thermal analysis service with backend integration."""
+"""Tests for backend-only thermal analysis service."""
 
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -37,7 +37,7 @@ def _make_mock_backend(has_thermal: bool = True, return_error: bool = False):
     if return_error:
         backend_result = BackendThermalResult(
             error_message="Test error",
-            is_synthetic=True,
+            is_synthetic=False,
         )
     else:
         backend_result = BackendThermalResult(
@@ -63,58 +63,79 @@ def _make_mock_backend(has_thermal: bool = True, return_error: bool = False):
     return mock_backend
 
 
-class TestSyntheticThermalAnalysis:
-    """Tests for synthetic thermal data generation."""
+class TestBackendRequirement:
+    """Thermal analysis must fail explicitly without real backend support."""
 
-    def test_build_result_uses_simulation_time(self) -> None:
-        circuit = _make_circuit(2)
-        electrical = SimulationResult(time=[0.0, 0.5, 1.0], signals={})
+    def test_build_result_fails_without_backend(self) -> None:
+        circuit = _make_circuit(1)
         service = ThermalAnalysisService()
 
-        thermal = service.build_result(circuit, electrical)
+        thermal = service.build_result(circuit, None)
 
-        assert thermal.time == electrical.time
-        assert len(thermal.devices) == 2
-        assert all(len(device.stages) == 3 for device in thermal.devices)
-        assert all(
-            device.temperature_trace[-1] > thermal.ambient_temperature
-            for device in thermal.devices
-        )
+        assert thermal.is_synthetic is False
+        assert thermal.error_message
+        assert "not configured" in thermal.error_message.lower()
 
-    def test_empty_circuit_returns_default_timeline(self) -> None:
+    def test_build_result_fails_for_empty_circuit(self) -> None:
         service = ThermalAnalysisService()
 
         thermal = service.build_result(None, None)
 
-        assert thermal.devices == []
-        # Default timeline is 200 samples plus the initial point
+        assert thermal.is_synthetic is False
+        assert thermal.error_message
+        assert "no components" in thermal.error_message.lower()
         assert len(thermal.time) == 201
 
-    def test_synthetic_result_has_is_synthetic_flag(self) -> None:
-        """Verify synthetic results are marked as such."""
+    def test_fails_when_backend_has_no_thermal_capability(self) -> None:
         circuit = _make_circuit(1)
-        service = ThermalAnalysisService()
+        mock_backend = _make_mock_backend(has_thermal=False)
+        service = ThermalAnalysisService(backend=mock_backend)
 
         thermal = service.build_result(circuit, None)
 
-        assert thermal.is_synthetic is True
+        mock_backend.run_thermal.assert_not_called()
+        assert thermal.is_synthetic is False
+        assert "not supported" in thermal.error_message.lower()
 
-    def test_synthetic_result_has_no_error(self) -> None:
-        """Verify synthetic results have no error message."""
+    def test_fails_with_placeholder_backend_even_if_it_reports_thermal_capability(self) -> None:
         circuit = _make_circuit(1)
-        service = ThermalAnalysisService()
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.info = type(
+            "Info",
+            (),
+            {"identifier": "placeholder", "status": "placeholder"},
+        )()
+        service = ThermalAnalysisService(backend=mock_backend)
 
-        thermal = service.build_result(circuit, None)
+        thermal = service.build_result(circuit, None, circuit_data={"components": []})
 
-        assert thermal.error_message == ""
+        mock_backend.run_thermal.assert_not_called()
+        assert thermal.is_synthetic is False
+        assert "unavailable" in thermal.error_message.lower()
 
-    def test_empty_result_is_synthetic(self) -> None:
-        """Verify empty results are marked as synthetic."""
-        service = ThermalAnalysisService()
+    def test_fails_when_backend_returns_error(self) -> None:
+        circuit = _make_circuit(1)
+        mock_backend = _make_mock_backend(has_thermal=True, return_error=True)
+        service = ThermalAnalysisService(backend=mock_backend)
 
-        thermal = service.build_result(None, None)
+        thermal = service.build_result(circuit, None, circuit_data={"components": []})
 
-        assert thermal.is_synthetic is True
+        mock_backend.run_thermal.assert_called_once()
+        assert thermal.is_synthetic is False
+        assert "test error" in thermal.error_message.lower()
+
+    def test_fails_when_backend_throws_exception(self) -> None:
+        circuit = _make_circuit(1)
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.side_effect = RuntimeError("Backend crash")
+        service = ThermalAnalysisService(backend=mock_backend)
+
+        thermal = service.build_result(circuit, None, circuit_data={"components": []})
+
+        assert thermal.is_synthetic is False
+        assert "backend crash" in thermal.error_message.lower()
 
 
 class TestBackendIntegration:
@@ -133,6 +154,7 @@ class TestBackendIntegration:
         mock_backend.run_thermal.assert_called_once()
         # Result should not be synthetic
         assert thermal.is_synthetic is False
+        assert thermal.error_message == ""
 
     def test_backend_result_conversion(self) -> None:
         """Test that backend results are properly converted."""
@@ -155,45 +177,6 @@ class TestBackendIntegration:
         assert device.thermal_limit == 90.0
         assert device.exceeds_limit is False
         assert len(device.stages) == 2
-
-    def test_fallback_to_synthetic_when_no_thermal_capability(self) -> None:
-        """Test fallback to synthetic when backend lacks thermal."""
-        circuit = _make_circuit(1)
-        mock_backend = _make_mock_backend(has_thermal=False)
-        service = ThermalAnalysisService(backend=mock_backend)
-
-        thermal = service.build_result(circuit, None)
-
-        # Should NOT have called backend
-        mock_backend.run_thermal.assert_not_called()
-        # Result should be synthetic
-        assert thermal.is_synthetic is True
-
-    def test_fallback_to_synthetic_on_backend_error(self) -> None:
-        """Test fallback to synthetic when backend returns error."""
-        circuit = _make_circuit(1)
-        mock_backend = _make_mock_backend(has_thermal=True, return_error=True)
-        service = ThermalAnalysisService(backend=mock_backend)
-
-        thermal = service.build_result(circuit, None, circuit_data={"components": []})
-
-        # Should have called backend (which returned error)
-        mock_backend.run_thermal.assert_called_once()
-        # Result should be synthetic (fallback)
-        assert thermal.is_synthetic is True
-
-    def test_fallback_to_synthetic_on_exception(self) -> None:
-        """Test fallback to synthetic when backend throws exception."""
-        circuit = _make_circuit(1)
-        mock_backend = MagicMock()
-        mock_backend.has_capability.return_value = True
-        mock_backend.run_thermal.side_effect = RuntimeError("Backend crash")
-        service = ThermalAnalysisService(backend=mock_backend)
-
-        thermal = service.build_result(circuit, None, circuit_data={"components": []})
-
-        # Result should be synthetic (fallback)
-        assert thermal.is_synthetic is True
 
     def test_backend_property_setter(self) -> None:
         """Test that backend can be set after initialization."""
@@ -224,6 +207,226 @@ class TestBackendIntegration:
         assert settings.include_switching_losses is False
         assert settings.include_conduction_losses is True
         assert settings.thermal_network == "cauer"
+
+    def test_component_identity_maps_backend_id_to_gui_name(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "MainSwitch"
+        comp_id = str(component.id)
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            time=[0.0, 1.0],
+            devices=[
+                BackendThermalDeviceResult(
+                    name=comp_id,
+                    junction_temperature=[25.0, 55.0],
+                    peak_temperature=55.0,
+                    steady_state_temperature=55.0,
+                    losses=LossBreakdown(conduction=1.0),
+                    foster_stages=[FosterStage(resistance=0.5, capacitance=0.01)],
+                )
+            ],
+            ambient_temperature=25.0,
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        thermal = service.build_result(
+            circuit,
+            SimulationResult(time=[0.0, 1.0], signals={}),
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "MainSwitch", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        assert thermal.error_message == ""
+        assert len(thermal.devices) == 1
+        assert thermal.devices[0].component_id == comp_id
+        assert thermal.devices[0].component_name == "MainSwitch"
+
+    def test_component_identity_maps_backend_default_name_when_component_has_no_name(self) -> None:
+        circuit = Circuit(name="unnamed-thermal")
+        component = Component(type=ComponentType.MOSFET_N, name="")
+        circuit.add_component(component)
+        comp_id = str(component.id)
+        backend_default_name = f"{component.type.name}_{comp_id[:6]}"
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            time=[0.0, 1.0],
+            devices=[
+                BackendThermalDeviceResult(
+                    name=backend_default_name,
+                    junction_temperature=[25.0, 60.0],
+                    peak_temperature=60.0,
+                    steady_state_temperature=60.0,
+                    losses=LossBreakdown(conduction=1.0),
+                    foster_stages=[FosterStage(resistance=0.5, capacitance=0.01)],
+                )
+            ],
+            ambient_temperature=25.0,
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        thermal = service.build_result(
+            circuit,
+            SimulationResult(time=[0.0, 1.0], signals={}),
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        assert thermal.error_message == ""
+        assert len(thermal.devices) == 1
+        assert thermal.devices[0].component_id == comp_id
+        assert thermal.devices[0].component_name == "Mosfet N"
+
+    def test_backend_error_is_reported_when_native_thermal_api_unavailable(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "M1"
+        comp_id = str(component.id)
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            error_message="No compatible native thermal API available for this backend version.",
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        electrical = SimulationResult(
+            time=[0.0, 1.0],
+            signals={},
+            statistics={
+                "component_electrothermal": [
+                    {
+                        "component_name": "M1",
+                        "thermal_enabled": True,
+                        "conduction": 2.0,
+                        "turn_on": 0.5,
+                        "turn_off": 0.25,
+                        "final_temperature": 78.0,
+                        "peak_temperature": 81.0,
+                    }
+                ],
+                "thermal_ambient": 25.0,
+            },
+        )
+
+        thermal = service.build_result(
+            circuit,
+            electrical,
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "M1", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        assert "no compatible native thermal api" in thermal.error_message.lower()
+        assert thermal.is_synthetic is False
+        assert len(thermal.devices) == 0
+
+    def test_backend_error_does_not_use_transient_summary_as_thermal_trace(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "M1"
+        comp_id = str(component.id)
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            error_message="native thermal unavailable",
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        electrical = SimulationResult(
+            time=[0.0, 1.0, 2.0],
+            signals={},
+            statistics={
+                "thermal_summary": {
+                    "ambient": 24.0,
+                    "device_temperatures": [
+                        {
+                            "device_name": "M1",
+                            "final_temperature": 67.0,
+                            "peak_temperature": 70.0,
+                            "average_temperature": 64.0,
+                        }
+                    ],
+                }
+            },
+        )
+
+        thermal = service.build_result(
+            circuit,
+            electrical,
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "M1", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        assert "native thermal unavailable" in thermal.error_message.lower()
+        assert thermal.ambient_temperature == service.ambient_temperature
+        assert len(thermal.devices) == 0
+
+    def test_native_thermal_result_without_time_is_aligned_to_electrical_timeline(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "M1"
+        comp_id = str(component.id)
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            time=[],
+            devices=[
+                BackendThermalDeviceResult(
+                    name="M1",
+                    junction_temperature=[25.0, 50.0],
+                    peak_temperature=50.0,
+                    steady_state_temperature=50.0,
+                    losses=LossBreakdown(conduction=1.0),
+                    foster_stages=[],
+                )
+            ],
+            ambient_temperature=25.0,
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        electrical = SimulationResult(
+            time=[0.0, 1.0, 2.0, 3.0],
+            signals={},
+            statistics={},
+        )
+
+        thermal = service.build_result(
+            circuit,
+            electrical,
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "M1", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        assert thermal.error_message == ""
+        assert thermal.time == [0.0, 1.0, 2.0, 3.0]
+        assert len(thermal.devices) == 1
+        assert len(thermal.devices[0].temperature_trace) == 4
 
 
 class TestThermalResult:

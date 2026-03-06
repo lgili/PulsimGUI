@@ -10,6 +10,7 @@ from pulsimgui.services.backend_runtime_service import (
     DEFAULT_BACKEND_TARGET_VERSION,
     BackendRuntimeConfig,
     BackendRuntimeService,
+    is_backend_version_compatible,
     normalize_backend_version,
 )
 
@@ -24,7 +25,7 @@ def test_normalize_backend_version() -> None:
 def test_default_target_version() -> None:
     config = BackendRuntimeConfig()
     assert config.target_version == DEFAULT_BACKEND_TARGET_VERSION
-    assert config.normalized_target_version == "0.6.1"
+    assert config.normalized_target_version == "0.6.5"
     assert config.auto_sync is True
 
 
@@ -72,7 +73,27 @@ def test_ensure_target_version_noop_when_already_matching(monkeypatch) -> None:
 
     assert result.success
     assert not result.changed
-    assert "already matches target version" in result.message
+    assert "already satisfies target version" in result.message
+
+
+def test_ensure_target_version_noop_when_installed_is_newer(monkeypatch) -> None:
+    service = BackendRuntimeService()
+    config = BackendRuntimeConfig(target_version="0.6.4", source="pypi")
+
+    monkeypatch.setattr(service, "query_installed_version", lambda: "0.6.5")
+
+    result = service.ensure_target_version(config, force=False)
+
+    assert result.success
+    assert not result.changed
+    assert "already satisfies target version" in result.message
+
+
+def test_is_backend_version_compatible_supports_newer_versions() -> None:
+    assert is_backend_version_compatible("0.6.5", "0.6.4") is True
+    assert is_backend_version_compatible("0.7.0", "0.6.4") is True
+    assert is_backend_version_compatible("0.6.4", "0.6.4") is True
+    assert is_backend_version_compatible("0.6.3", "0.6.4") is False
 
 
 def test_install_reports_subprocess_failure(monkeypatch) -> None:

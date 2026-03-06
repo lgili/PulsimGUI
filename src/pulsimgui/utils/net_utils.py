@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
@@ -67,10 +69,15 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     point_positions: dict[str, tuple[float, float]] = {}
     point_domains: dict[str, str] = {}
     pin_refs: list[tuple[str, int, str]] = []
+    pin_ref_map: dict[tuple[str, int], str] = {}
     ground_pin_refs: set[str] = set()
+    label_pin_refs: list[tuple[str, str]] = []
 
     # Register all component pins
-    for comp in circuit.components.values():
+    for comp_index, comp in enumerate(circuit.components.values()):
+        if comp_index and comp_index % 128 == 0:
+            # Cooperative yield to reduce GIL starvation on large projects.
+            time.sleep(0)
         comp_id = str(comp.id)
         for pin_idx, _pin in enumerate(comp.pins):
             pin_ref = f"pin:{comp_id}:{pin_idx}"
@@ -78,21 +85,37 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
             point_positions[pin_ref] = comp.get_pin_position(pin_idx)
             point_domains[pin_ref] = pin_connection_domain(comp, pin_idx)
             pin_refs.append((comp_id, pin_idx, pin_ref))
+            pin_ref_map[(comp_id, pin_idx)] = pin_ref
             if comp.type == ComponentType.GROUND:
                 ground_pin_refs.add(pin_ref)
+            if comp.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+                label = str(comp.parameters.get("net_label", "") or "").strip()
+                if label:
+                    label_pin_refs.append((label, pin_ref))
 
     # Register wire endpoints/junctions and preserve explicit segment connectivity
-    for wire in circuit.wires.values():
-        _register_wire_points(
+    for wire_index, wire in enumerate(circuit.wires.values()):
+        if wire_index and wire_index % 128 == 0:
+            time.sleep(0)
+        start_ref, end_ref = _register_wire_points(
             wire,
             uf,
             point_positions,
             point_domains,
             _wire_domain(circuit, wire),
         )
+        _union_explicit_wire_endpoints(
+            wire,
+            start_ref,
+            end_ref,
+            pin_ref_map,
+            point_domains,
+            uf,
+        )
 
     # Merge points that are geometrically coincident (within tolerance)
     _merge_nearby_points(point_positions, point_domains, uf)
+    _union_labelled_nets(label_pin_refs, point_domains, uf)
 
     # Any net touching a ground component pin is forced to node "0"
     ground_roots = {uf.find(pin_ref) for pin_ref in ground_pin_refs}
@@ -101,7 +124,9 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
     root_to_node: dict[str, str] = {}
     node_counter = 1
 
-    for comp_id, pin_idx, pin_ref in pin_refs:
+    for pin_index, (comp_id, pin_idx, pin_ref) in enumerate(pin_refs):
+        if pin_index and pin_index % 256 == 0:
+            time.sleep(0)
         root = uf.find(pin_ref)
         node_name = root_to_node.get(root)
         if node_name is None:
@@ -129,7 +154,9 @@ def build_node_alias_map(
     """
 
     alias_map: dict[str, str] = {}
-    for wire in circuit.wires.values():
+    for wire_index, wire in enumerate(circuit.wires.values()):
+        if wire_index and wire_index % 128 == 0:
+            time.sleep(0)
         alias = (wire.alias or "").strip()
         fallback = (wire.node_name or "").strip()
         if not wire.segments:
@@ -144,6 +171,18 @@ def build_node_alias_map(
                 alias_map[node_id] = alias
             elif fallback and node_id not in alias_map:
                 alias_map[node_id] = fallback
+
+    for comp_index, component in enumerate(circuit.components.values()):
+        if comp_index and comp_index % 128 == 0:
+            time.sleep(0)
+        if component.type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+            continue
+        label = str(component.parameters.get("net_label", "") or "").strip()
+        if not label:
+            continue
+        node_id = node_map.get((str(component.id), 0))
+        if node_id and node_id not in alias_map:
+            alias_map[node_id] = label
 
     return alias_map
 
@@ -191,20 +230,25 @@ def _register_wire_points(
     point_positions: dict[str, tuple[float, float]],
     point_domains: dict[str, str],
     wire_domain: str,
-) -> None:
+) -> tuple[str | None, str | None]:
     """Register wire points and explicit wire-internal connectivity."""
+    start_ref: str | None = None
+    end_ref: str | None = None
 
     # Segment endpoints are always connected by the segment itself.
     for seg_idx, seg in enumerate(wire.segments):
-        start_ref = f"wire:{wire.id}:seg:{seg_idx}:start"
-        end_ref = f"wire:{wire.id}:seg:{seg_idx}:end"
-        uf.add(start_ref)
-        uf.add(end_ref)
-        point_positions[start_ref] = (seg.x1, seg.y1)
-        point_positions[end_ref] = (seg.x2, seg.y2)
-        point_domains[start_ref] = wire_domain
-        point_domains[end_ref] = wire_domain
-        uf.union(start_ref, end_ref)
+        seg_start_ref = f"wire:{wire.id}:seg:{seg_idx}:start"
+        seg_end_ref = f"wire:{wire.id}:seg:{seg_idx}:end"
+        if seg_idx == 0:
+            start_ref = seg_start_ref
+        end_ref = seg_end_ref
+        uf.add(seg_start_ref)
+        uf.add(seg_end_ref)
+        point_positions[seg_start_ref] = (seg.x1, seg.y1)
+        point_positions[seg_end_ref] = (seg.x2, seg.y2)
+        point_domains[seg_start_ref] = wire_domain
+        point_domains[seg_end_ref] = wire_domain
+        uf.union(seg_start_ref, seg_end_ref)
 
     # Junctions are explicit connection points that may split crossing wires.
     for j_idx, (jx, jy) in enumerate(wire.junctions or []):
@@ -218,6 +262,46 @@ def _register_wire_points(
             if _point_on_segment((jx, jy), seg):
                 uf.union(j_ref, f"wire:{wire.id}:seg:{seg_idx}:start")
                 uf.union(j_ref, f"wire:{wire.id}:seg:{seg_idx}:end")
+
+    return start_ref, end_ref
+
+
+def _union_explicit_wire_endpoints(
+    wire: Wire,
+    start_ref: str | None,
+    end_ref: str | None,
+    pin_ref_map: dict[tuple[str, int], str],
+    point_domains: dict[str, str],
+    uf: _UnionFind,
+) -> None:
+    """Prefer explicit wire endpoint metadata when available.
+
+    GUI files persist ``start_connection`` / ``end_connection`` metadata. This
+    keeps connectivity robust even when stored wire endpoint coordinates become
+    stale after pin-layout updates (for example thermal-port migrations).
+    """
+
+    endpoint_specs = (
+        (wire.start_connection, start_ref),
+        (wire.end_connection, end_ref),
+    )
+    for connection, endpoint_ref in endpoint_specs:
+        if connection is None or endpoint_ref is None:
+            continue
+        comp_id = str(connection.component_id)
+        try:
+            pin_index = int(connection.pin_index)
+        except (TypeError, ValueError):
+            continue
+        pin_ref = pin_ref_map.get((comp_id, pin_index))
+        if pin_ref is None:
+            continue
+        if not _domains_compatible(
+            point_domains.get(endpoint_ref),
+            point_domains.get(pin_ref),
+        ):
+            continue
+        uf.union(endpoint_ref, pin_ref)
 
 
 def _merge_nearby_points(
@@ -233,13 +317,18 @@ def _merge_nearby_points(
     bucket_size = PIN_HIT_TOLERANCE
     buckets: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
 
-    for point_ref, (px, py) in point_positions.items():
+    for point_index, (point_ref, (px, py)) in enumerate(point_positions.items()):
+        if point_index and point_index % 512 == 0:
+            time.sleep(0)
         key = _bucket_key(px, py, bucket_size)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 neighbor_key = (key[0] + dx, key[1] + dy)
                 for other_ref, ox, oy in buckets.get(neighbor_key, []):
-                    if point_domains.get(point_ref) != point_domains.get(other_ref):
+                    if not _domains_compatible(
+                        point_domains.get(point_ref),
+                        point_domains.get(other_ref),
+                    ):
                         continue
                     if abs(px - ox) < PIN_HIT_TOLERANCE and abs(py - oy) < PIN_HIT_TOLERANCE:
                         uf.union(point_ref, other_ref)
@@ -249,6 +338,80 @@ def _merge_nearby_points(
 
 def _bucket_key(x: float, y: float, bucket_size: float) -> tuple[int, int]:
     return int(round(x / bucket_size)), int(round(y / bucket_size))
+
+
+def _domains_compatible(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
+
+
+def _union_labelled_nets(
+    label_pin_refs: list[tuple[str, str]],
+    point_domains: dict[str, str],
+    uf: _UnionFind,
+) -> None:
+    """Union Goto/From nets that share the same label.
+
+    Label links are domain-aware: if the same label is used in more than one
+    concrete domain (circuit/signal/thermal), those domains stay isolated.
+    """
+    if not label_pin_refs:
+        return
+
+    grouped: dict[str, list[str]] = {}
+    for label, pin_ref in label_pin_refs:
+        grouped.setdefault(label, []).append(pin_ref)
+
+    root_domains: dict[str, set[str]] = {}
+    for point_ref, domain in point_domains.items():
+        if domain == CONNECTION_DOMAIN_ANY:
+            continue
+        root = uf.find(point_ref)
+        root_domains.setdefault(root, set()).add(domain)
+
+    def _bucket_for_ref(pin_ref: str) -> str | None:
+        domains = root_domains.get(uf.find(pin_ref), set())
+        if len(domains) == 1:
+            return next(iter(domains))
+        if not domains:
+            return CONNECTION_DOMAIN_ANY
+        return None
+
+    for refs in grouped.values():
+        by_domain: dict[str, list[str]] = {
+            CONNECTION_DOMAIN_CIRCUIT: [],
+            CONNECTION_DOMAIN_SIGNAL: [],
+            CONNECTION_DOMAIN_THERMAL: [],
+        }
+        wildcard_refs: list[str] = []
+        for ref in refs:
+            bucket = _bucket_for_ref(ref)
+            if bucket in by_domain:
+                by_domain[bucket].append(ref)
+            elif bucket == CONNECTION_DOMAIN_ANY:
+                wildcard_refs.append(ref)
+
+        specific_domains = [domain for domain, domain_refs in by_domain.items() if domain_refs]
+
+        for domain_refs in by_domain.values():
+            if len(domain_refs) < 2:
+                continue
+            head = domain_refs[0]
+            for other in domain_refs[1:]:
+                uf.union(head, other)
+
+        if len(specific_domains) == 1:
+            target_domain = specific_domains[0]
+            anchor = by_domain[target_domain][0]
+            for ref in wildcard_refs:
+                uf.union(anchor, ref)
+        elif not specific_domains and len(wildcard_refs) >= 2:
+            head = wildcard_refs[0]
+            for other in wildcard_refs[1:]:
+                uf.union(head, other)
 
 
 def _point_on_segment(point: tuple[float, float], segment: WireSegment) -> bool:
@@ -308,8 +471,10 @@ def _wire_domain(circuit: Circuit, wire: Wire) -> str:
                         domains.add(pin_connection_domain(component, pin_index))
                         break
 
-    if CONNECTION_DOMAIN_THERMAL in domains:
+    effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+
+    if CONNECTION_DOMAIN_THERMAL in effective_domains:
         return CONNECTION_DOMAIN_THERMAL
-    if CONNECTION_DOMAIN_SIGNAL in domains:
+    if CONNECTION_DOMAIN_SIGNAL in effective_domains:
         return CONNECTION_DOMAIN_SIGNAL
     return CONNECTION_DOMAIN_CIRCUIT

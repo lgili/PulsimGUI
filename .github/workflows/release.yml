@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version override (e.g. 0.6.0)"
+        description: "Optional version override (e.g. 0.6.2)"
         required: false
         default: ""
 
@@ -52,6 +52,40 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[build]"
+
+      - name: Ensure Windows app icon (.ico) for executable build
+        shell: pwsh
+        run: |
+          $icoPath = Join-Path $PWD "packaging/icons/pulsimgui.ico"
+          if (Test-Path -LiteralPath $icoPath) {
+            Write-Host "Windows icon already exists: $icoPath"
+            exit 0
+          }
+          $pngPath = Join-Path $PWD "packaging/icons/pulsimgui.png"
+          if (-not (Test-Path -LiteralPath $pngPath)) {
+            throw "Missing source icon at $pngPath"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $bitmap = [System.Drawing.Bitmap]::FromFile($pngPath)
+          try {
+            $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
+            try {
+              $stream = [System.IO.File]::Create($icoPath)
+              try {
+                $icon.Save($stream)
+              } finally {
+                $stream.Dispose()
+              }
+            } finally {
+              $icon.Dispose()
+            }
+          } finally {
+            $bitmap.Dispose()
+          }
+          if (-not (Test-Path -LiteralPath $icoPath)) {
+            throw "Failed to generate icon at $icoPath"
+          }
+          Write-Host "Generated Windows icon: $icoPath"
 
       - name: Verify backend dependency
         shell: pwsh

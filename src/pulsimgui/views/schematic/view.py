@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QA
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     Component,
     ComponentType,
@@ -458,7 +459,7 @@ class SchematicView(QGraphicsView):
             if candidate_component is None:
                 return False
             candidate_domain = pin_connection_domain(candidate_component, pin_index)
-            if candidate_domain != start_domain:
+            if not self._domains_compatible(start_domain, candidate_domain):
                 return False
             return can_connect_measurement_pins(
                 start_component,
@@ -474,7 +475,14 @@ class SchematicView(QGraphicsView):
         if self._wire_start_pin is None:
             return CONNECTION_DOMAIN_CIRCUIT
         component, pin_index = self._wire_start_pin
-        return pin_connection_domain(component, pin_index)
+        domain = pin_connection_domain(component, pin_index)
+        return CONNECTION_DOMAIN_CIRCUIT if domain == CONNECTION_DOMAIN_ANY else domain
+
+    @staticmethod
+    def _domains_compatible(left: str, right: str) -> bool:
+        if left == right:
+            return True
+        return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
         super().resizeEvent(event)
@@ -1148,6 +1156,10 @@ class SchematicView(QGraphicsView):
                 self._begin_wire_alias_edit(item)
                 return True
         return False
+
+    def rename_selected_wire(self) -> bool:
+        """Public entrypoint to rename the first selected wire."""
+        return self._maybe_start_alias_edit()
 
     def _begin_wire_alias_edit(self, wire_item: WireItem) -> None:
         if wire_item is None:

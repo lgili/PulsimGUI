@@ -368,8 +368,21 @@ def _wait_min_splash_time(app: QApplication, start_time: float, min_seconds: flo
         remaining -= step
 
 
+def _set_windows_app_user_model_id() -> None:
+    """Set explicit AppUserModelID so taskbar/start menu icon mapping is stable."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Pulsim.PulsimGui")
+    except Exception:
+        pass
+
+
 def main() -> int:
     """Run the PulsimGui application."""
+    _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(_preferred_ui_font(app.font()))

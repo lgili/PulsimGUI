@@ -39,8 +39,13 @@ class SimulationSettings:
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+    thermal_policy: str = "loss_with_temperature_scaling"
+    thermal_default_rth: float = 1.0
+    thermal_default_cth: float = 0.1
     formulation_mode: str = "projected_wrapper"
     direct_formulation_fallback: bool = True
+    control_mode: str = "auto"
+    control_sample_time: float = 0.0
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -70,8 +75,13 @@ class SimulationSettings:
             "thermal_include_switching_losses": self.thermal_include_switching_losses,
             "thermal_include_conduction_losses": self.thermal_include_conduction_losses,
             "thermal_network": self.thermal_network,
+            "thermal_policy": self.thermal_policy,
+            "thermal_default_rth": self.thermal_default_rth,
+            "thermal_default_cth": self.thermal_default_cth,
             "formulation_mode": self.formulation_mode,
             "direct_formulation_fallback": self.direct_formulation_fallback,
+            "control_mode": self.control_mode,
+            "control_sample_time": self.control_sample_time,
         }
 
     @classmethod
@@ -80,6 +90,18 @@ class SimulationSettings:
         thermal_network = str(data.get("thermal_network", "foster") or "foster").strip().lower()
         if thermal_network not in {"foster", "cauer"}:
             thermal_network = "foster"
+        thermal_policy = str(
+            data.get("thermal_policy", "loss_with_temperature_scaling")
+            or "loss_with_temperature_scaling"
+        ).strip().lower()
+        thermal_policy_aliases = {
+            "losswithtemperaturescaling": "loss_with_temperature_scaling",
+            "temperature_scaling": "loss_with_temperature_scaling",
+            "lossonly": "loss_only",
+        }
+        thermal_policy = thermal_policy_aliases.get(thermal_policy, thermal_policy)
+        if thermal_policy not in {"loss_only", "loss_with_temperature_scaling"}:
+            thermal_policy = "loss_with_temperature_scaling"
         formulation_mode = str(
             data.get("formulation_mode", "projected_wrapper") or "projected_wrapper"
         ).strip().lower()
@@ -89,6 +111,15 @@ class SimulationSettings:
             formulation_mode = "direct"
         if formulation_mode not in {"projected_wrapper", "direct"}:
             formulation_mode = "projected_wrapper"
+        control_mode = str(data.get("control_mode", "auto") or "auto").strip().lower()
+        control_mode_aliases = {
+            "sampled": "discrete",
+            "sample": "discrete",
+            "continuous_time": "continuous",
+        }
+        control_mode = control_mode_aliases.get(control_mode, control_mode)
+        if control_mode not in {"auto", "continuous", "discrete"}:
+            control_mode = "auto"
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
@@ -119,10 +150,15 @@ class SimulationSettings:
                 data.get("thermal_include_conduction_losses", True)
             ),
             thermal_network=thermal_network,
+            thermal_policy=thermal_policy,
+            thermal_default_rth=max(0.0, float(data.get("thermal_default_rth", 1.0))),
+            thermal_default_cth=max(0.0, float(data.get("thermal_default_cth", 0.1))),
             formulation_mode=formulation_mode,
             direct_formulation_fallback=bool(
                 data.get("direct_formulation_fallback", True)
             ),
+            control_mode=control_mode,
+            control_sample_time=max(0.0, float(data.get("control_sample_time", 0.0))),
         )
 
 

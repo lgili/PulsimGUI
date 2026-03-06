@@ -50,6 +50,32 @@ Core transient analysis parameters:
 - `GMIN initial` / `GMIN final` (when using `GMIN Stepping`)
 - `Source steps` (when using `Source Stepping`)
 
+### Formulation & Control
+
+- `Formulation mode`:
+  - `Projected wrapper`
+  - `Direct DAE formulation`
+- `Enable projected fallback when direct fails`
+- `Control mode`:
+  - `Auto`
+  - `Continuous`
+  - `Discrete`
+- `Control sample time`:
+  - Required (`> 0`) when `Control mode = Discrete`
+  - Ignored for `Auto` and `Continuous`
+
+### Thermal & Losses
+
+- `Enable electrical loss tracking`
+- `Ambient temperature`
+- `Thermal network`:
+  - `Foster`
+  - `Cauer`
+- `Include conduction losses`
+- `Include switching losses`
+
+These options feed backend runtime (`SimulationOptions`) and post-processing telemetry (`loss_summary`, `thermal_summary`, `component_electrothermal`).
+
 ## Backend Runtime (Preferences)
 
 ![Backend Runtime screen](../assets/images/backend-runtime.svg)
@@ -72,4 +98,4 @@ Path: `Preferences → Simulation`
 - `Absolute tolerance`: `1e-6`
 - `Output points`: `10000`
 - Transient robustness: enabled
-- Backend target: `v0.6.1`
+- Backend target: `v0.6.5`

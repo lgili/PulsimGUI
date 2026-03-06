@@ -34,6 +34,9 @@ class TestUIValueChanges:
         assert dialog._formulation_mode_combo.currentData() == "projected_wrapper"
         assert dialog._direct_formulation_fallback_check.isChecked()
         assert not dialog._direct_formulation_fallback_check.isEnabled()
+        assert dialog._control_mode_combo.currentData() == "auto"
+        assert dialog._control_sample_time_spin.value() == 0.0
+        assert not dialog._control_sample_time_spin.isEnabled()
 
         # Check DC strategy
         assert dialog._dc_strategy_combo.currentIndex() == 0  # auto
@@ -52,6 +55,9 @@ class TestUIValueChanges:
         assert dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 25.0
         assert dialog._thermal_network_combo.currentData() == "foster"
+        assert dialog._thermal_policy_combo.currentData() == "loss_with_temperature_scaling"
+        assert dialog._thermal_default_rth_spin.value() == 1.0
+        assert dialog._thermal_default_cth_spin.value() == 0.1
         assert dialog._thermal_include_conduction_check.isChecked()
         assert dialog._thermal_include_switching_check.isChecked()
 
@@ -82,8 +88,13 @@ class TestUIValueChanges:
             thermal_include_switching_losses=False,
             thermal_include_conduction_losses=True,
             thermal_network="cauer",
+            thermal_policy="loss_only",
+            thermal_default_rth=2.4,
+            thermal_default_cth=0.35,
             formulation_mode="direct",
             direct_formulation_fallback=False,
+            control_mode="discrete",
+            control_sample_time=2.5e-6,
         )
         dialog = SimulationSettingsDialog(settings)
 
@@ -103,6 +114,9 @@ class TestUIValueChanges:
         assert dialog._formulation_mode_combo.currentData() == "direct"
         assert not dialog._direct_formulation_fallback_check.isChecked()
         assert dialog._direct_formulation_fallback_check.isEnabled()
+        assert dialog._control_mode_combo.currentData() == "discrete"
+        assert dialog._control_sample_time_spin.value() == pytest.approx(2.5e-6)
+        assert dialog._control_sample_time_spin.isEnabled()
 
         # Check DC strategy (source is index 3)
         assert dialog._dc_strategy_combo.currentIndex() == 3
@@ -123,6 +137,9 @@ class TestUIValueChanges:
         assert not dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 40.0
         assert dialog._thermal_network_combo.currentData() == "cauer"
+        assert dialog._thermal_policy_combo.currentData() == "loss_only"
+        assert dialog._thermal_default_rth_spin.value() == pytest.approx(2.4)
+        assert dialog._thermal_default_cth_spin.value() == pytest.approx(0.35)
         assert dialog._thermal_include_conduction_check.isChecked()
         assert not dialog._thermal_include_switching_check.isChecked()
 
@@ -148,6 +165,10 @@ class TestUIValueChanges:
             dialog._formulation_mode_combo.findData("direct")
         )
         dialog._direct_formulation_fallback_check.setChecked(False)
+        dialog._control_mode_combo.setCurrentIndex(
+            dialog._control_mode_combo.findData("discrete")
+        )
+        dialog._control_sample_time_spin.setValue(3.0e-6)
         dialog._gmin_initial_spin.setValue(5e-3)
         dialog._gmin_final_spin.setValue(1e-10)
         dialog._rel_tol_spin.setValue(1e-6)
@@ -160,6 +181,11 @@ class TestUIValueChanges:
         dialog._thermal_network_combo.setCurrentIndex(
             dialog._thermal_network_combo.findData("cauer")
         )
+        dialog._thermal_policy_combo.setCurrentIndex(
+            dialog._thermal_policy_combo.findData("loss_only")
+        )
+        dialog._thermal_default_rth_spin.setValue(3.3)
+        dialog._thermal_default_cth_spin.setValue(0.44)
         dialog._thermal_include_conduction_check.setChecked(True)
         dialog._thermal_include_switching_check.setChecked(False)
 
@@ -180,6 +206,8 @@ class TestUIValueChanges:
         assert settings.transient_auto_regularize is False
         assert settings.formulation_mode == "direct"
         assert settings.direct_formulation_fallback is False
+        assert settings.control_mode == "discrete"
+        assert settings.control_sample_time == pytest.approx(3.0e-6)
         assert settings.gmin_initial == 5e-3
         assert settings.gmin_final == 1e-10
         assert settings.rel_tol == 1e-6
@@ -190,6 +218,9 @@ class TestUIValueChanges:
         assert settings.enable_losses is False
         assert settings.thermal_ambient == 42.0
         assert settings.thermal_network == "cauer"
+        assert settings.thermal_policy == "loss_only"
+        assert settings.thermal_default_rth == pytest.approx(3.3)
+        assert settings.thermal_default_cth == pytest.approx(0.44)
         assert settings.thermal_include_conduction_losses is True
         assert settings.thermal_include_switching_losses is False
 

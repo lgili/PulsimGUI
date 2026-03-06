@@ -1,6 +1,7 @@
 """Main application window."""
 
 import math
+import re
 from pathlib import Path
 from uuid import UUID
 
@@ -32,6 +33,7 @@ from pulsimgui.commands.component_commands import (
 from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     ComponentType,
     THERMAL_PORT_PARAMETER,
     can_connect_measurement_pins,
@@ -51,9 +53,11 @@ from pulsimgui.services.simulation_service import (
     SimulationService,
     SimulationState,
     ParameterSweepResult,
+    normalize_control_mode,
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
+    normalize_thermal_policy,
 )
 from pulsimgui.services.thermal_service import ThermalAnalysisService
 from pulsimgui.services.theme_service import ThemeService, Theme
@@ -75,7 +79,6 @@ from pulsimgui.views.dialogs import (
     ComponentPropertiesDialog,
 )
 from pulsimgui.services.template_service import TemplateService
-from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
             backend=self._simulation_service.backend,
+            allow_synthetic_fallback=False,
             parent=self,
         )
         self._scope_windows: dict[str, ScopeWindow] = {}
@@ -268,6 +272,10 @@ class MainWindow(QMainWindow):
         self.action_select_all = QAction("Select &All", self)
         self.action_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
 
+        self.action_rename_signal = QAction("&Rename Signal...", self)
+        self.action_rename_signal.setShortcut(QKeySequence("F2"))
+        self.action_rename_signal.triggered.connect(self._on_rename_signal)
+
         self.action_create_subcircuit = QAction("Create &Subcircuit...", self)
         self.action_create_subcircuit.setEnabled(False)
         self.action_create_subcircuit.triggered.connect(self._on_create_subcircuit)
@@ -425,6 +433,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_delete)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_select_all)
+        edit_menu.addAction(self.action_rename_signal)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
@@ -1233,6 +1242,36 @@ class MainWindow(QMainWindow):
         runtime_settings.thermal_network = str(
             getattr(project_settings, "thermal_network", runtime_settings.thermal_network) or "foster"
         )
+        runtime_settings.thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(
+                    project_settings,
+                    "thermal_policy",
+                    runtime_settings.thermal_policy,
+                )
+                or "loss_with_temperature_scaling"
+            )
+        )
+        runtime_settings.thermal_default_rth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_rth",
+                    runtime_settings.thermal_default_rth,
+                )
+            ),
+        )
+        runtime_settings.thermal_default_cth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_cth",
+                    runtime_settings.thermal_default_cth,
+                )
+            ),
+        )
         runtime_settings.formulation_mode = normalize_formulation_mode(
             getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
         )
@@ -1242,6 +1281,19 @@ class MainWindow(QMainWindow):
                 "direct_formulation_fallback",
                 runtime_settings.direct_formulation_fallback,
             )
+        )
+        runtime_settings.control_mode = normalize_control_mode(
+            getattr(project_settings, "control_mode", runtime_settings.control_mode)
+        )
+        runtime_settings.control_sample_time = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "control_sample_time",
+                    runtime_settings.control_sample_time,
+                )
+            ),
         )
         self._sync_thermal_service_context()
 
@@ -1278,11 +1330,27 @@ class MainWindow(QMainWindow):
             runtime_settings.thermal_include_conduction_losses
         )
         project_settings.thermal_network = str(runtime_settings.thermal_network)
+        project_settings.thermal_policy = normalize_thermal_policy(
+            str(runtime_settings.thermal_policy)
+        )
+        project_settings.thermal_default_rth = max(
+            0.0,
+            float(runtime_settings.thermal_default_rth),
+        )
+        project_settings.thermal_default_cth = max(
+            0.0,
+            float(runtime_settings.thermal_default_cth),
+        )
         project_settings.formulation_mode = normalize_formulation_mode(
             runtime_settings.formulation_mode
         )
         project_settings.direct_formulation_fallback = bool(
             runtime_settings.direct_formulation_fallback
+        )
+        project_settings.control_mode = normalize_control_mode(runtime_settings.control_mode)
+        project_settings.control_sample_time = max(
+            0.0,
+            float(runtime_settings.control_sample_time),
         )
 
     # Slots
@@ -1886,7 +1954,11 @@ class MainWindow(QMainWindow):
             ):
                 return False
             # Never allow mixing circuit/signal/thermal domains on a direct wire connection.
-            return pin_connection_domain(left_component, left_pin) == pin_connection_domain(right_component, right_pin)
+            left_domain = pin_connection_domain(left_component, left_pin)
+            right_domain = pin_connection_domain(right_component, right_pin)
+            if left_domain == right_domain:
+                return True
+            return CONNECTION_DOMAIN_ANY in {left_domain, right_domain}
 
         for ref in (start_ref, end_ref):
             if ref is None:
@@ -1901,6 +1973,12 @@ class MainWindow(QMainWindow):
         self._project.mark_dirty()
         self._update_modified_indicator()
         self._refresh_scope_window_bindings()
+
+    def _on_rename_signal(self) -> None:
+        """Rename selected wire alias."""
+        if self._schematic_view.rename_selected_wire():
+            return
+        self.statusBar().showMessage("Select a wire to rename.", 3000)
 
     def _on_scope_open_requested(self, component) -> None:
         """Open (or focus) a dedicated window for the requested scope."""
@@ -2016,6 +2094,15 @@ class MainWindow(QMainWindow):
         # Find and update the corresponding component item in the scene
         for item in self._schematic_scene.items():
             if isinstance(item, ComponentItem) and item.component is edited_component:
+                pin_layout_changed = name in {
+                    THERMAL_PORT_PARAMETER,
+                    "channel_count",
+                    "input_count",
+                    "output_count",
+                    "signs",
+                }
+                if pin_layout_changed:
+                    item.prepareGeometryChange()
                 # Update position if changed
                 if name == "position_x":
                     item.setPos(edited_component.x, edited_component.y)
@@ -2026,7 +2113,7 @@ class MainWindow(QMainWindow):
                     item.update_transform()
                 elif name == "mirror_h" or name == "mirror_v":
                     item.update_transform()
-                elif name == THERMAL_PORT_PARAMETER:
+                elif pin_layout_changed:
                     self._schematic_scene.update_connected_wires(item)
                 # Update name label
                 item._name_label.setText(edited_component.name)
@@ -2115,28 +2202,259 @@ class MainWindow(QMainWindow):
             return self._ensure_thermal_waveform()
         return self._latest_electrical_result
 
+    @staticmethod
+    def _canonical_scope_token(value: str | None) -> str:
+        token = str(value or "").strip().lower()
+        if not token:
+            return ""
+        return "".join(ch for ch in token if ch.isalnum())
+
+    @staticmethod
+    def _safe_float(value, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(fallback)
+
+    @staticmethod
+    def _is_thermal_signal_key(signal_key: str) -> bool:
+        upper = str(signal_key or "").strip().upper()
+        if not upper:
+            return False
+        if upper.startswith(("T(", "TEMP(", "TJ(", "THERMAL(")):
+            return True
+        if upper.startswith(("T_", "TJ_", "TEMP_")):
+            return True
+        return "TEMP" in upper
+
+    @staticmethod
+    def _extract_thermal_signal_label(signal_key: str) -> str | None:
+        raw = str(signal_key or "").strip()
+        if not raw:
+            return None
+
+        # Canonical backend forms: T(M1), TJ(M1), TEMP(M1), THERMAL(M1)
+        match = re.match(r"^(?:T|TEMP|TJ|THERMAL)\(([^)]+)\)$", raw, re.IGNORECASE)
+        if match:
+            label = match.group(1).strip()
+            return label or None
+
+        # Legacy/native variants seen across backend versions: T_M1, TJ_M1, TEMP.M1, T:M1
+        match = re.match(r"^(?:T|TEMP|TJ)(?:[_:./-]+)(.+)$", raw, re.IGNORECASE)
+        if match:
+            label = match.group(1).strip()
+            return label or None
+
+        return None
+
+    @staticmethod
+    def _extract_wrapped_signal_label(signal_key: str) -> str | None:
+        match = re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*\(([^)]+)\)$", str(signal_key or "").strip())
+        if not match:
+            return None
+        label = match.group(1).strip()
+        return label or None
+
+    def _build_scope_component_lookup(
+        self,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+        by_id: dict[str, str] = {}
+        by_name: dict[str, str] = {}
+        by_backend_default_name: dict[str, str] = {}
+        by_canonical: dict[str, str] = {}
+
+        circuit = self._current_circuit()
+        if circuit is None:
+            return by_id, by_name, by_backend_default_name, by_canonical
+
+        for component in circuit.components.values():
+            label = component.name or component.type.name.replace("_", " ").title()
+            comp_id = str(component.id)
+            by_id[comp_id.lower()] = label
+            if component.name:
+                by_name[component.name.strip().lower()] = label
+            backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
+            by_backend_default_name[backend_default] = label
+
+            for token in (label, component.name, comp_id, backend_default):
+                canonical = self._canonical_scope_token(token)
+                if canonical and canonical not in by_canonical:
+                    by_canonical[canonical] = label
+
+        return by_id, by_name, by_backend_default_name, by_canonical
+
+    def _resolve_scope_component_name(
+        self,
+        raw_name: str | None,
+        raw_id: str | None = None,
+    ) -> str:
+        by_id, by_name, by_backend_default_name, by_canonical = self._build_scope_component_lookup()
+        candidates = [str(raw_name or "").strip(), str(raw_id or "").strip()]
+        for token in list(candidates):
+            if not token:
+                continue
+            for separator in ("::", ":", "/", "."):
+                if separator in token:
+                    candidates.extend(part for part in token.split(separator) if part)
+
+        for candidate in candidates:
+            lowered = candidate.strip().lower()
+            if not lowered:
+                continue
+            if lowered in by_id:
+                return by_id[lowered]
+            if lowered in by_name:
+                return by_name[lowered]
+            if lowered in by_backend_default_name:
+                return by_backend_default_name[lowered]
+            canonical = self._canonical_scope_token(lowered)
+            if canonical and canonical in by_canonical:
+                return by_canonical[canonical]
+
+        return str(raw_name or raw_id or "").strip() or "Unknown"
+
+    def _thermal_waveform_from_electrothermal_telemetry(self) -> SimulationResult | None:
+        electrical = self._latest_electrical_result
+        if electrical is None or not electrical.time:
+            return None
+
+        circuit = self._current_circuit()
+        target_len = len(electrical.time)
+        stats = electrical.statistics if isinstance(electrical.statistics, dict) else {}
+        virtual_metadata = (
+            stats.get("virtual_channel_metadata")
+            if isinstance(stats.get("virtual_channel_metadata"), dict)
+            else {}
+        )
+        subset = SimulationResult(
+            time=list(electrical.time),
+            signals={},
+            statistics=dict(electrical.statistics),
+        )
+        thermal_scope_by_name: dict[str, object] = {}
+        thermal_scope_by_id: dict[str, object] = {}
+        if circuit is not None:
+            for component in circuit.components.values():
+                if component.type != ComponentType.THERMAL_SCOPE:
+                    continue
+                thermal_scope_by_id[str(component.id).strip().lower()] = component
+                scoped_name = str(component.name or "").strip().lower()
+                if scoped_name:
+                    thermal_scope_by_name[scoped_name] = component
+        thermal_scope_series: dict[str, list[float]] = {}
+
+        for key, values in electrical.signals.items():
+            text = str(key or "").strip()
+            if not text:
+                continue
+            trace = list(values)[:target_len]
+            if not trace:
+                continue
+            if len(trace) < target_len:
+                trace.extend([trace[-1]] * (target_len - len(trace)))
+
+            entry = virtual_metadata.get(text) if isinstance(virtual_metadata, dict) else None
+            meta_domain = (
+                str(entry.get("domain", "")).strip().lower()
+                if isinstance(entry, dict)
+                else ""
+            )
+            meta_component_type = (
+                str(entry.get("component_type", "")).strip().lower()
+                if isinstance(entry, dict)
+                else ""
+            )
+            meta_source_component = (
+                str(entry.get("source_component", "")).strip()
+                if isinstance(entry, dict)
+                else ""
+            )
+            is_metadata_thermal = (
+                meta_domain == "thermal"
+                or meta_component_type == "thermal_trace"
+            )
+
+            # Prefer fully sampled thermal traces when backend already exported them.
+            if is_metadata_thermal or self._is_thermal_signal_key(text):
+                subset.signals[text] = trace
+                extracted = meta_source_component or self._extract_thermal_signal_label(text)
+                if extracted:
+                    resolved = self._resolve_scope_component_name(extracted)
+                    subset.signals.setdefault(format_signal_key("T", extracted), trace)
+                    subset.signals.setdefault(format_signal_key("T", resolved), trace)
+                continue
+
+            lowered = text.lower()
+            scope_component = thermal_scope_by_name.get(lowered) or thermal_scope_by_id.get(lowered)
+            if scope_component is None:
+                wrapped_name = self._extract_wrapped_signal_label(text)
+                if wrapped_name:
+                    wrapped_lower = wrapped_name.lower()
+                    scope_component = (
+                        thermal_scope_by_name.get(wrapped_lower)
+                        or thermal_scope_by_id.get(wrapped_lower)
+                    )
+            if scope_component is None:
+                continue
+            subset.signals[text] = trace
+            thermal_scope_series[str(scope_component.id)] = trace
+
+        # Backend thermal_scope channels may come keyed by the scope name/id.
+        # Mirror those traces to the connected component T(...) keys expected by GUI bindings.
+        if circuit is not None and thermal_scope_series:
+            for scope_id, trace in thermal_scope_series.items():
+                scope_component = thermal_scope_by_id.get(scope_id.lower())
+                if scope_component is None:
+                    continue
+                for binding in build_scope_channel_bindings(scope_component, circuit):
+                    for signal in binding.signals:
+                        key = str(signal.signal_key or "").strip()
+                        if not key:
+                            continue
+                        subset.signals.setdefault(key, list(trace))
+
+        if subset.signals:
+            return subset
+        return None
+
     def _ensure_thermal_waveform(self) -> SimulationResult | None:
         if self._latest_thermal_waveform is not None:
             return self._latest_thermal_waveform
         if not self._latest_electrical_result:
-            return None
-        circuit = self._current_circuit()
-        if circuit is None or not circuit.components:
-            return None
-        try:
-            circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-            thermal_result = self._thermal_service.build_result(
-                circuit,
-                self._latest_electrical_result,
-                circuit_data=circuit_data,
+            self.statusBar().showMessage(
+                "No electrical waveform available for thermal scope. "
+                "Run a successful transient simulation first.",
+                6000,
             )
-        except Exception as exc:  # pragma: no cover - UI feedback only
-            self.statusBar().showMessage(f"Unable to update thermal scopes: {exc}", 5000)
+            return None
+        telemetry_waveform = self._thermal_waveform_from_electrothermal_telemetry()
+        if telemetry_waveform is not None:
+            self._latest_thermal_waveform = telemetry_waveform
+            return self._latest_thermal_waveform
+        stats = (
+            self._latest_electrical_result.statistics
+            if isinstance(self._latest_electrical_result.statistics, dict)
+            else {}
+        )
+        has_summary_only = bool(
+            isinstance(stats.get("thermal_summary"), dict)
+            or isinstance(stats.get("component_electrothermal"), list)
+        )
+        if has_summary_only:
+            self.statusBar().showMessage(
+                "Backend returned only thermal summary (final/avg/peak) without sampled T(...) traces. "
+                "Thermal scope requires sampled channels from backend.",
+                7000,
+            )
             self._latest_thermal_waveform = None
             return None
-
-        self._latest_thermal_waveform = self._thermal_result_to_waveform(thermal_result)
-        return self._latest_thermal_waveform
+        self.statusBar().showMessage(
+            "No thermal telemetry available in transient result. "
+            "Enable losses/thermal and run simulation again.",
+            6000,
+        )
+        self._latest_thermal_waveform = None
+        return None
 
     def _update_scope_results(self) -> None:
         """Refresh scope windows after simulation state changes."""
@@ -2146,6 +2464,32 @@ class MainWindow(QMainWindow):
     def _thermal_result_to_waveform(self, thermal_result) -> SimulationResult | None:
         if not thermal_result or not thermal_result.time:
             return None
+        circuit = self._current_circuit()
+        component_by_id: dict[str, str] = {}
+        component_by_name: dict[str, str] = {}
+        component_by_backend_default_name: dict[str, str] = {}
+        component_by_canonical: dict[str, str] = {}
+
+        def _canonical_token(value: str | None) -> str:
+            token = str(value or "").strip().lower()
+            if not token:
+                return ""
+            return "".join(ch for ch in token if ch.isalnum())
+
+        if circuit is not None:
+            for component in circuit.components.values():
+                label = component.name or component.type.name.replace("_", " ").title()
+                comp_id = str(component.id)
+                component_by_id[comp_id] = label
+                if component.name:
+                    component_by_name[component.name.strip().lower()] = label
+                backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
+                component_by_backend_default_name[backend_default] = label
+                for token in (label, component.name, comp_id, backend_default):
+                    canonical = _canonical_token(token)
+                    if canonical and canonical not in component_by_canonical:
+                        component_by_canonical[canonical] = label
+
         subset = SimulationResult()
         subset.time = list(thermal_result.time)
         subset.signals = {}
@@ -2156,10 +2500,29 @@ class MainWindow(QMainWindow):
         for device in thermal_result.devices:
             if not device.temperature_trace:
                 continue
-            key = format_signal_key("T", device.component_name)
+            resolved_name = component_by_id.get(str(device.component_id))
+            if not resolved_name:
+                resolved_name = component_by_name.get(str(device.component_name or "").strip().lower())
+            if not resolved_name:
+                resolved_name = component_by_backend_default_name.get(
+                    str(device.component_name or "").strip().lower()
+                )
+            if not resolved_name:
+                resolved_name = component_by_canonical.get(
+                    _canonical_token(device.component_name),
+                    device.component_name,
+                )
+
+            key = format_signal_key("T", resolved_name)
             trace = list(device.temperature_trace)
             subset.signals[key] = trace
-            legacy_key = f"T({device.component_name})"
+            raw_backend_key = format_signal_key("T", device.component_name)
+            if raw_backend_key != key and raw_backend_key not in subset.signals:
+                subset.signals[raw_backend_key] = trace
+            raw_id_key = format_signal_key("T", str(device.component_id))
+            if raw_id_key != key and raw_id_key not in subset.signals:
+                subset.signals[raw_id_key] = trace
+            legacy_key = f"T({resolved_name})"
             if legacy_key != key and legacy_key not in subset.signals:
                 subset.signals[legacy_key] = trace
         return subset if subset.signals else None
@@ -2215,9 +2578,16 @@ class MainWindow(QMainWindow):
     # Simulation handlers
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
+        if not self._sim_progress_active:
+            self._sim_progress_last_value = 0
+            self._sim_progress.setRange(0, 100)
+            self._sim_progress.setValue(0)
+            self._sim_progress.setVisible(True)
+        self._sim_status_widget.setStatus("Preparing simulation...", is_running=True)
+        QApplication.processEvents()
+
         self._apply_project_simulation_settings_to_service()
-        circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-        self._simulation_service.run_transient(circuit_data)
+        self._simulation_service.run_transient_project(self._project)
 
     def _on_stop_simulation(self) -> None:
         """Stop current simulation."""
@@ -2300,7 +2670,7 @@ class MainWindow(QMainWindow):
             self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
 
     def _on_show_thermal_viewer(self) -> None:
-        """Generate synthetic thermal data and open the viewer dialog."""
+        """Run backend thermal analysis and open the viewer dialog."""
         circuit = self._current_circuit()
         if not circuit or not circuit.components:
             QMessageBox.information(
@@ -2322,6 +2692,14 @@ class MainWindow(QMainWindow):
                 self,
                 "Thermal Viewer",
                 f"Unable to generate thermal data:\n{exc}",
+            )
+            return
+
+        if result.error_message:
+            QMessageBox.warning(
+                self,
+                "Thermal Viewer",
+                f"Thermal analysis failed:\n{result.error_message}",
             )
             return
 
@@ -2379,14 +2757,20 @@ class MainWindow(QMainWindow):
         if self._sim_progress.minimum() != 0 or self._sim_progress.maximum() != 100:
             self._sim_progress.setRange(0, 100)
 
+        lowered_message = str(message or "").strip().lower()
+        retrying_convergence = "retrying convergence with profile" in lowered_message
+        if retrying_convergence:
+            # Each retry starts a new attempt; reset local monotonic baseline so
+            # progress can move again from low values instead of appearing stuck.
+            self._sim_progress_last_value = 0
+
         if value < 0:
-            # Keep determinate, monotonic progress even when backend enters
-            # compatibility fallback paths that report indeterminate states.
-            clamped = min(99, self._sim_progress_last_value + 1)
+            # Keep the last known determinate value for indeterminate callbacks.
+            clamped = self._sim_progress_last_value
         else:
             clamped = max(0, min(100, int(value)))
 
-        if clamped < self._sim_progress_last_value:
+        if clamped < self._sim_progress_last_value and not retrying_convergence:
             clamped = self._sim_progress_last_value
 
         if clamped != self._sim_progress.value():
@@ -2434,79 +2818,80 @@ class MainWindow(QMainWindow):
             error_message=result.error_message,
         )
 
-        node_map = build_node_map(circuit)
-        alias_map = build_node_alias_map(circuit, node_map)
-
         for component in circuit.components.values():
             if component.type == ComponentType.VOLTAGE_PROBE:
-                plus = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
-                minus = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
-                if plus is None and minus is None:
-                    continue
-                if plus is None and minus is not None:
-                    plus = [0.0] * len(minus)
-                if minus is None:
-                    minus = [0.0] * len(plus)
-                if plus is None:
-                    continue
-                samples = min(len(plus), len(minus), len(enriched.time))
                 probe_name = component.name or "VoltageProbe"
-                enriched.signals[format_signal_key("VP", probe_name)] = [
-                    plus[idx] - minus[idx] for idx in range(samples)
-                ]
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is not None:
+                    scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                    samples = min(len(backend_series), len(enriched.time))
+                    enriched.signals[format_signal_key("VP", probe_name)] = [
+                        backend_series[idx] * scale for idx in range(samples)
+                    ]
+                continue
+
+            if component.type == ComponentType.VOLTAGE_PROBE_GND:
+                probe_name = component.name or "VoltageProbeGND"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is not None:
+                    scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                    samples = min(len(backend_series), len(enriched.time))
+                    enriched.signals[format_signal_key("VP", probe_name)] = [
+                        backend_series[idx] * scale for idx in range(samples)
+                    ]
+                continue
 
             if component.type == ComponentType.CURRENT_PROBE:
-                node_in = self._probe_node_series(enriched, node_map.get((str(component.id), 0)), alias_map)
-                node_out = self._probe_node_series(enriched, node_map.get((str(component.id), 1)), alias_map)
-                if node_in is None and node_out is None:
-                    continue
-                if node_in is None and node_out is not None:
-                    node_in = [0.0] * len(node_out)
-                if node_out is None and node_in is not None:
-                    node_out = [0.0] * len(node_in)
-                if node_in is None or node_out is None:
-                    continue
-
-                scale = float(component.parameters.get("scale", 1.0) or 1.0)
-                samples = min(len(node_in), len(node_out), len(enriched.time))
                 probe_name = component.name or "CurrentProbe"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is None:
+                    continue
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(backend_series), len(enriched.time))
                 enriched.signals[format_signal_key("IP", probe_name)] = [
-                    (node_in[idx] - node_out[idx]) * scale for idx in range(samples)
+                    backend_series[idx] * scale for idx in range(samples)
+                ]
+                continue
+
+            if component.type == ComponentType.POWER_PROBE:
+                probe_name = component.name or "PowerProbe"
+                backend_series = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                )
+                if backend_series is None:
+                    continue
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(backend_series), len(enriched.time))
+                enriched.signals[format_signal_key("PP", probe_name)] = [
+                    backend_series[idx] * scale for idx in range(samples)
                 ]
 
         return enriched
 
-    def _probe_node_series(
-        self,
+    @staticmethod
+    def _probe_backend_series(
         result: SimulationResult,
-        node_id: str | None,
-        alias_map: dict[str, str],
+        component_name: str,
+        component_id: str,
     ) -> list[float] | None:
-        """Resolve a node id to a voltage trace from simulation results."""
-        if node_id is None:
-            return None
-
-        candidates: list[str] = []
-        if node_id == "0":
-            candidates.extend(["V(0)", "V(gnd)", "V(GND)"])
-        else:
-            alias = alias_map.get(node_id)
-            if alias:
-                candidates.append(format_signal_key("V", alias))
-                candidates.append(f"V({alias})")
-            candidates.append(format_signal_key("V", f"N{node_id}"))
-            candidates.append(f"V(N{node_id})")
-            candidates.append(f"V({node_id})")
-
-        for key in candidates:
+        """Resolve backend-native probe channel names to a signal series."""
+        for key in (component_name, component_id):
             series = result.signals.get(key)
             if series is not None:
-                return list(series)
-
-        # Compatibility fallback: some backends vary signal key case.
-        lowered_candidates = {key.lower() for key in candidates}
-        for key, series in result.signals.items():
-            if key.lower() in lowered_candidates and series is not None:
                 return list(series)
         return None
 
