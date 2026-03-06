@@ -2,8 +2,8 @@
 """Update Pulsim backend target/minimum version across PulsimGui files.
 
 Usage:
-    python scripts/update_backend_version.py 0.5.3
-    python scripts/update_backend_version.py v0.5.3 --dry-run
+    python scripts/update_backend_version.py 0.6.4
+    python scripts/update_backend_version.py v0.6.4 --dry-run
 """
 
 from __future__ import annotations

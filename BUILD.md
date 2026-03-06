@@ -28,12 +28,12 @@ Use these scripts before tagging a release to keep GUI/backend versions synchron
 
 ```bash
 # Preview changes only
-python scripts/update_gui_version.py 0.5.3 --dry-run
-python scripts/update_backend_version.py 0.5.2 --dry-run
+python scripts/update_gui_version.py 0.6.1 --dry-run
+python scripts/update_backend_version.py 0.6.4 --dry-run
 
 # Apply updates
-python scripts/update_gui_version.py 0.5.3
-python scripts/update_backend_version.py 0.5.2
+python scripts/update_gui_version.py 0.6.1
+python scripts/update_backend_version.py 0.6.4
 ```
 
 ## Build Output
@@ -56,12 +56,12 @@ brew install python@3.12
 pip install -e ".[build]"
 python scripts/build.py
 
-# Output: dist/PulsimGui.app, dist/PulsimGui-0.6.1-macos.dmg
+# Output: dist/PulsimGui.app, dist/PulsimGui-0.6.2-macos.dmg
 ```
 
 The macOS build creates:
 1. `PulsimGui.app` - Standard macOS application bundle
-2. `PulsimGui-0.6.1-macos.dmg` - Distributable disk image
+2. `PulsimGui-0.6.2-macos.dmg` - Distributable disk image
 
 ### Windows
 
@@ -89,12 +89,12 @@ sudo apt install python3 python3-pip python3-venv fuse libfuse2
 pip install -e ".[build]"
 python scripts/build.py
 
-# Output: dist/PulsimGui-0.6.1-x86_64.AppImage, dist/pulsimgui
+# Output: dist/PulsimGui-0.6.2-x86_64.AppImage, dist/pulsimgui
 ```
 
 The Linux build creates:
 1. `pulsimgui` - Standalone executable
-2. `PulsimGui-0.6.1-x86_64.AppImage` - Portable AppImage (recommended for distribution)
+2. `PulsimGui-0.6.2-x86_64.AppImage` - Portable AppImage (recommended for distribution)
 
 ## Build Options
 
@@ -112,15 +112,15 @@ python scripts/build.py --platform windows
 ## GitHub Actions
 
 Automated releases are configured in `.github/workflows/release.yml`. They trigger on:
-- Git tags starting with `v` (e.g., `v0.6.1`)
+- Git tags starting with `v` (e.g., `v0.6.2`)
 - Manual workflow dispatch
 
 ### Creating a Release
 
 1. Tag the commit:
    ```bash
-   git tag v0.6.1
-   git push origin v0.6.1
+   git tag v0.6.2
+   git push origin v0.6.2
    ```
 
 2. GitHub Actions will automatically:
@@ -171,7 +171,7 @@ If PyInstaller can't find certain modules:
 
 Ensure pulsim is installed before building:
 ```bash
-pip install pulsim>=0.6.3
+pip install pulsim>=0.6.5
 ```
 
 The spec file automatically locates and bundles the native `.so`/`.pyd` extension.

@@ -94,6 +94,6 @@ All telemetry keys are optional and depend on backend version/capabilities.
 
 ## Operational Best Practices
 
-- Pin backend to `v0.6.3` for reproducibility.
+- Pin backend to `v0.6.5` for reproducibility.
 - Keep `Auto-sync` enabled in validation environments.
 - For convergence failures, tune `step size`, `max step`, `max iterations`, and transient robustness first.
