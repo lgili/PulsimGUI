@@ -99,6 +99,7 @@ class CircuitConverter:
             pi_node_overrides,
             pwm_node_overrides,
             pwm_param_overrides,
+            controlled_target_node_overrides,
             synthetic_setpoint_sources,
             suppressed_control_component_ids,
         ) = self._infer_native_buck_control_overrides(components, node_map, alias_map)
@@ -117,7 +118,9 @@ class CircuitConverter:
             if self._should_skip_component(comp_type) and comp_id not in control_override_ids:
                 continue
             nodes = self._resolve_nodes(component, comp_type, node_map, alias_map)
-            if comp_id in pi_node_overrides:
+            if comp_id in controlled_target_node_overrides:
+                nodes = list(controlled_target_node_overrides[comp_id])
+            elif comp_id in pi_node_overrides:
                 nodes = list(pi_node_overrides[comp_id])
             elif comp_id in pwm_node_overrides:
                 nodes = list(pwm_node_overrides[comp_id])
@@ -785,6 +788,7 @@ class CircuitConverter:
         dict[str, list[str]],
         dict[str, list[str]],
         dict[str, dict[str, Any]],
+        dict[str, list[str]],
         list[dict[str, Any]],
         set[str],
     ]:
@@ -800,7 +804,7 @@ class CircuitConverter:
         except Exception:
             supports_virtual = False
         if not supports_virtual:
-            return {}, {}, {}, [], set()
+            return {}, {}, {}, {}, [], set()
 
         by_id: dict[str, dict[str, Any]] = {}
         by_type: dict[ComponentType, list[dict[str, Any]]] = {}
@@ -856,6 +860,7 @@ class CircuitConverter:
         pi_node_overrides: dict[str, list[str]] = {}
         pwm_node_overrides: dict[str, list[str]] = {}
         pwm_param_overrides: dict[str, dict[str, Any]] = {}
+        controlled_target_node_overrides: dict[str, list[str]] = {}
         synthetic_sources: list[dict[str, Any]] = []
         suppressed_component_ids: set[str] = set()
 
@@ -914,6 +919,26 @@ class CircuitConverter:
             if not target_name:
                 continue
 
+            target_component_id = ""
+            target_component_type: ComponentType | None = None
+            target_component_nodes: list[str] = []
+            for candidate in components:
+                try:
+                    candidate_type = self._component_type(candidate.get("type"))
+                except CircuitConversionError:
+                    continue
+                if candidate_type not in self._PWM_SWITCH_TARGET_PIN:
+                    continue
+                if self._component_name(candidate, candidate_type) != target_name:
+                    continue
+                candidate_id = str(candidate.get("id") or "").strip()
+                if not candidate_id:
+                    continue
+                target_component_id = candidate_id
+                target_component_type = candidate_type
+                target_component_nodes = _raw_nodes(candidate)
+                break
+
             setpoint_raw_node = self._find_reference_voltage_node(components, node_map, setpoint_constant)
             if setpoint_raw_node:
                 setpoint_node = self._node_label(setpoint_raw_node, alias_map)
@@ -941,6 +966,15 @@ class CircuitConverter:
                     ).get("duty_cycle", 0.5)
                 ),
             }
+            if target_component_type is not None and target_component_id:
+                control_pin = self._PWM_SWITCH_TARGET_PIN.get(target_component_type)
+                if control_pin is not None and len(target_component_nodes) > control_pin:
+                    grounded_target_nodes = list(target_component_nodes)
+                    grounded_target_nodes[control_pin] = "0"
+                    controlled_target_node_overrides[target_component_id] = [
+                        self._node_label(node, alias_map) if node else node
+                        for node in grounded_target_nodes
+                    ]
             subtractor_id = str(subtractor_component.get("id") or "").strip()
             if subtractor_id:
                 suppressed_component_ids.add(subtractor_id)
@@ -951,6 +985,7 @@ class CircuitConverter:
             pi_node_overrides,
             pwm_node_overrides,
             pwm_param_overrides,
+            controlled_target_node_overrides,
             synthetic_sources,
             suppressed_component_ids,
         )

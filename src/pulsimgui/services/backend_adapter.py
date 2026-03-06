@@ -1087,6 +1087,175 @@ class PulsimBackend(SimulationBackend):
                 config.source_config.max_steps = source_steps
         return config
 
+    def _build_simulation_options_from_yaml_parser(
+        self,
+        settings: "SimulationSettings",
+    ) -> Any | None:
+        """Build SimulationOptions via backend YamlParser defaults.
+
+        This avoids drift from backend-internal defaults that are not exposed
+        as writable Python attributes on SimulationOptions.
+        """
+        parser_cls = getattr(self._module, "YamlParser", None)
+        if parser_cls is None:
+            return None
+
+        parser_options_cls = getattr(self._module, "YamlParserOptions", None)
+        try:
+            parser = (
+                parser_cls(parser_options_cls())
+                if parser_options_cls is not None
+                else parser_cls()
+            )
+        except Exception as exc:
+            log.debug("Could not instantiate backend YamlParser: %s", exc)
+            return None
+
+        method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
+        step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
+        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        thermal_policy = self._normalize_thermal_policy(
+            getattr(settings, "thermal_policy", "loss_with_temperature_scaling")
+        )
+
+        dt = max(float(getattr(settings, "t_step", 1e-6)), 1e-15)
+        dt_max = float(getattr(settings, "max_step", dt))
+        if dt_max <= 0.0:
+            dt_max = dt
+
+        integrator_tokens = {
+            "trapezoidal": "trapezoidal",
+            "bdf1": "bdf1",
+            "bdf2": "bdf2",
+            "bdf3": "bdf3",
+            "bdf4": "bdf4",
+            "bdf5": "bdf5",
+            "gear": "gear",
+            "trbdf2": "trbdf2",
+            "rosenbrockw": "rosenbrockw",
+            "sdirk2": "sdirk2",
+        }
+
+        simulation_section: dict[str, Any] = {
+            "tstart": float(settings.t_start),
+            "tstop": float(settings.t_stop),
+            "dt": float(dt),
+            "step_mode": step_mode,
+            "enable_events": bool(getattr(settings, "enable_events", True)),
+            "enable_losses": bool(getattr(settings, "enable_losses", True)),
+            "max_step_retries": max(0, int(getattr(settings, "max_step_retries", 8))),
+            "formulation": self._normalize_formulation_mode(
+                getattr(settings, "formulation_mode", "projected_wrapper")
+            ),
+            "direct_formulation_fallback": bool(
+                getattr(settings, "direct_formulation_fallback", True)
+            ),
+            "newton": {
+                "max_iterations": max(1, int(getattr(settings, "max_newton_iterations", 100))),
+                "enable_limiting": bool(getattr(settings, "enable_voltage_limiting", False)),
+                "max_voltage_step": max(0.0, float(getattr(settings, "max_voltage_step", 5.0))),
+            },
+            "control": {
+                "mode": control_mode,
+            },
+            "thermal": {
+                "enabled": bool(getattr(settings, "enable_losses", True)),
+                "ambient": float(getattr(settings, "thermal_ambient", 25.0)),
+                "policy": thermal_policy,
+                "default_rth": max(0.0, float(getattr(settings, "thermal_default_rth", 1.0))),
+                "default_cth": max(0.0, float(getattr(settings, "thermal_default_cth", 0.1))),
+            },
+        }
+        if step_mode == "variable":
+            simulation_section["dt_max"] = float(dt_max)
+
+        if method != "auto":
+            token = integrator_tokens.get(method)
+            if token:
+                simulation_section["integrator"] = token
+
+        control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+        if control_mode == "discrete" and control_sample_time <= 0.0:
+            control_sample_time = max(dt, 1e-12)
+        if control_mode == "discrete" or control_sample_time > 0.0:
+            simulation_section["control"]["sample_time"] = float(max(control_sample_time, 1e-12))
+
+        def _fmt_real(value: Any) -> str:
+            return f"{float(value):.16g}"
+
+        def _fmt_bool(value: Any) -> str:
+            return "true" if bool(value) else "false"
+
+        lines: list[str] = [
+            "schema: pulsim-v1",
+            "version: 1",
+            "simulation:",
+            f"  tstart: {_fmt_real(simulation_section['tstart'])}",
+            f"  tstop: {_fmt_real(simulation_section['tstop'])}",
+            f"  dt: {_fmt_real(simulation_section['dt'])}",
+            f"  step_mode: {simulation_section['step_mode']}",
+        ]
+        if "dt_max" in simulation_section:
+            lines.append(f"  dt_max: {_fmt_real(simulation_section['dt_max'])}")
+        if "integrator" in simulation_section:
+            lines.append(f"  integrator: {simulation_section['integrator']}")
+        lines.extend(
+            [
+                f"  enable_events: {_fmt_bool(simulation_section['enable_events'])}",
+                f"  enable_losses: {_fmt_bool(simulation_section['enable_losses'])}",
+                f"  max_step_retries: {int(simulation_section['max_step_retries'])}",
+                f"  formulation: {simulation_section['formulation']}",
+                "  direct_formulation_fallback: "
+                f"{_fmt_bool(simulation_section['direct_formulation_fallback'])}",
+                "  newton:",
+                f"    max_iterations: {int(simulation_section['newton']['max_iterations'])}",
+                "    enable_limiting: "
+                f"{_fmt_bool(simulation_section['newton']['enable_limiting'])}",
+                "    max_voltage_step: "
+                f"{_fmt_real(simulation_section['newton']['max_voltage_step'])}",
+                "  control:",
+                f"    mode: {simulation_section['control']['mode']}",
+            ]
+        )
+        if "sample_time" in simulation_section["control"]:
+            lines.append(
+                "    sample_time: "
+                f"{_fmt_real(simulation_section['control']['sample_time'])}"
+            )
+        lines.extend(
+            [
+                "  thermal:",
+                f"    enabled: {_fmt_bool(simulation_section['thermal']['enabled'])}",
+                f"    ambient: {_fmt_real(simulation_section['thermal']['ambient'])}",
+                f"    policy: {simulation_section['thermal']['policy']}",
+                f"    default_rth: {_fmt_real(simulation_section['thermal']['default_rth'])}",
+                f"    default_cth: {_fmt_real(simulation_section['thermal']['default_cth'])}",
+                "components:",
+                "  - type: resistor",
+                "    name: __opts_stub__",
+                "    nodes: [__opts_n1, 0]",
+                "    value: 1.0",
+            ]
+        )
+        payload_text = "\n".join(lines) + "\n"
+
+        try:
+            _, options = parser.load_string(payload_text)
+        except Exception as exc:
+            log.debug("YamlParser options synthesis failed: %s", exc)
+            return None
+
+        parser_errors = getattr(parser, "errors", [])
+        try:
+            parser_errors = parser_errors() if callable(parser_errors) else parser_errors
+        except Exception:
+            parser_errors = []
+        if parser_errors:
+            log.debug("YamlParser reported options synthesis errors: %s", parser_errors)
+            return None
+
+        return options
+
     def _build_simulation_options(
         self,
         settings: "SimulationSettings",
@@ -1095,7 +1264,11 @@ class PulsimBackend(SimulationBackend):
         linear_solver: Any | None,
         circuit_data: dict[str, Any] | None = None,
     ) -> Any:
-        opts = self._module.SimulationOptions()
+        opts = self._build_simulation_options_from_yaml_parser(settings)
+        using_parser_defaults = opts is not None
+        if opts is None:
+            opts = self._module.SimulationOptions()
+
         method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
         step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
         dt_max = float(getattr(settings, "max_step", dt))
@@ -1121,35 +1294,36 @@ class PulsimBackend(SimulationBackend):
                 except Exception:
                     pass
 
-        if hasattr(opts, "newton_options"):
-            opts.newton_options = newton_opts
-        elif hasattr(opts, "newton_opts"):
-            opts.newton_opts = newton_opts
+        if not using_parser_defaults:
+            if hasattr(opts, "newton_options"):
+                opts.newton_options = newton_opts
+            elif hasattr(opts, "newton_opts"):
+                opts.newton_opts = newton_opts
 
-        if linear_solver is not None:
-            if hasattr(opts, "linear_solver"):
-                opts.linear_solver = linear_solver
-            elif hasattr(opts, "linear_solver_config"):
-                opts.linear_solver_config = linear_solver
+            if linear_solver is not None:
+                if hasattr(opts, "linear_solver"):
+                    opts.linear_solver = linear_solver
+                elif hasattr(opts, "linear_solver_config"):
+                    opts.linear_solver_config = linear_solver
 
-        dc_config = self._build_dc_convergence_config(settings)
-        if dc_config is not None:
-            if hasattr(opts, "dc_config"):
-                opts.dc_config = dc_config
-            elif hasattr(opts, "dc_options"):
-                opts.dc_options = dc_config
+            dc_config = self._build_dc_convergence_config(settings)
+            if dc_config is not None:
+                if hasattr(opts, "dc_config"):
+                    opts.dc_config = dc_config
+                elif hasattr(opts, "dc_options"):
+                    opts.dc_options = dc_config
 
-        if hasattr(opts, "adaptive_timestep"):
-            opts.adaptive_timestep = step_mode == "variable"
-        if hasattr(opts, "step_mode") and hasattr(self._module, "StepMode"):
-            enum_name = "Variable" if step_mode == "variable" else "Fixed"
-            if hasattr(self._module.StepMode, enum_name):
-                opts.step_mode = getattr(self._module.StepMode, enum_name)
+            if hasattr(opts, "adaptive_timestep"):
+                opts.adaptive_timestep = step_mode == "variable"
+            if hasattr(opts, "step_mode") and hasattr(self._module, "StepMode"):
+                enum_name = "Variable" if step_mode == "variable" else "Fixed"
+                if hasattr(self._module.StepMode, enum_name):
+                    opts.step_mode = getattr(self._module.StepMode, enum_name)
 
-        if hasattr(opts, "integrator") and hasattr(self._module, "Integrator"):
-            enum_name = self._integrator_enum_name(method)
-            if hasattr(self._module.Integrator, enum_name):
-                opts.integrator = getattr(self._module.Integrator, enum_name)
+            if hasattr(opts, "integrator") and hasattr(self._module, "Integrator"):
+                enum_name = self._integrator_enum_name(method)
+                if hasattr(self._module.Integrator, enum_name):
+                    opts.integrator = getattr(self._module.Integrator, enum_name)
 
         formulation_mode = self._normalize_formulation_mode(
             getattr(settings, "formulation_mode", "projected_wrapper")
@@ -1215,22 +1389,22 @@ class PulsimBackend(SimulationBackend):
         if hasattr(opts, "thermal_devices") and circuit_data is not None:
             opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
 
-        # Fallback policy: enable transient gmin stepping for switching circuit convergence.
-        # These settings match the validated PulsimCore buck converter benchmark.
-        if hasattr(opts, "fallback_policy"):
-            fp = opts.fallback_policy
-            if hasattr(fp, "enable_transient_gmin"):
-                fp.enable_transient_gmin = True
-            if hasattr(fp, "gmin_retry_threshold"):
-                fp.gmin_retry_threshold = 1
-            if hasattr(fp, "gmin_initial"):
-                fp.gmin_initial = 1e-8
-            if hasattr(fp, "gmin_max"):
-                fp.gmin_max = 1e-4
-            if hasattr(fp, "gmin_growth"):
-                fp.gmin_growth = 10
-            if hasattr(fp, "trace_retries"):
-                fp.trace_retries = True
+        if not using_parser_defaults:
+            # Fallback policy: enable transient gmin stepping for switching circuit convergence.
+            if hasattr(opts, "fallback_policy"):
+                fp = opts.fallback_policy
+                if hasattr(fp, "enable_transient_gmin"):
+                    fp.enable_transient_gmin = True
+                if hasattr(fp, "gmin_retry_threshold"):
+                    fp.gmin_retry_threshold = 1
+                if hasattr(fp, "gmin_initial"):
+                    fp.gmin_initial = 1e-8
+                if hasattr(fp, "gmin_max"):
+                    fp.gmin_max = 1e-4
+                if hasattr(fp, "gmin_growth"):
+                    fp.gmin_growth = 10
+                if hasattr(fp, "trace_retries"):
+                    fp.trace_retries = True
 
         return opts
 
