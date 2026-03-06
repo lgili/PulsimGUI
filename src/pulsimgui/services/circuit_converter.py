@@ -25,26 +25,9 @@ class CircuitConverter:
         # Measurement / visualization – GUI-only, no backend counterpart
         ComponentType.ELECTRICAL_SCOPE,
         ComponentType.THERMAL_SCOPE,
-        ComponentType.SIGNAL_MUX,
-        ComponentType.SIGNAL_DEMUX,
+        # Label routers are GUI-only wiring helpers and are resolved before conversion.
         ComponentType.GOTO_LABEL,
         ComponentType.FROM_LABEL,
-        # Signal-domain control blocks are evaluated by the backend-provided
-        # signal evaluator (pulsim.signal_evaluator) and therefore do not map
-        # to direct C++ circuit elements in this converter.
-        ComponentType.CONSTANT,
-        ComponentType.GAIN,
-        ComponentType.SUM,
-        ComponentType.SUBTRACTOR,
-        ComponentType.LIMITER,
-        ComponentType.RATE_LIMITER,
-        ComponentType.PI_CONTROLLER,
-        ComponentType.PID_CONTROLLER,
-        ComponentType.INTEGRATOR,
-        ComponentType.DIFFERENTIATOR,
-        ComponentType.HYSTERESIS,
-        ComponentType.SAMPLE_HOLD,
-        ComponentType.MATH_BLOCK,
     }
 
     _PROBE_TARGET_CANDIDATES = frozenset(
@@ -66,6 +49,13 @@ class CircuitConverter:
             ComponentType.PWM_GENERATOR,
         }
     )
+
+    _PWM_SWITCH_TARGET_PIN: dict[ComponentType, int] = {
+        ComponentType.MOSFET_N: 1,
+        ComponentType.MOSFET_P: 1,
+        ComponentType.IGBT: 1,
+        ComponentType.SWITCH: 2,
+    }
 
     # Map GUI ComponentType enum names to the lowercase backend type strings.
     # Most types follow the simple .name.lower() convention; exceptions are listed here.
@@ -105,6 +95,15 @@ class CircuitConverter:
         if not components:
             return self._sl.Circuit()
 
+        (
+            pi_node_overrides,
+            pwm_node_overrides,
+            pwm_param_overrides,
+            synthetic_setpoint_sources,
+            suppressed_control_component_ids,
+        ) = self._infer_native_buck_control_overrides(components, node_map, alias_map)
+        control_override_ids = set(pi_node_overrides) | set(pwm_param_overrides)
+
         circuit = self._sl.Circuit()
         node_cache: dict[str, int] = {}
         positions_to_apply = []
@@ -112,11 +111,42 @@ class CircuitConverter:
 
         for component in components:
             comp_type = self._component_type(component.get("type"))
-            if self._should_skip_component(comp_type):
+            comp_id = str(component.get("id") or "")
+            if comp_id in suppressed_control_component_ids:
+                continue
+            if self._should_skip_component(comp_type) and comp_id not in control_override_ids:
                 continue
             nodes = self._resolve_nodes(component, comp_type, node_map, alias_map)
+            if comp_id in pi_node_overrides:
+                nodes = list(pi_node_overrides[comp_id])
+            elif comp_id in pwm_node_overrides:
+                nodes = list(pwm_node_overrides[comp_id])
             name = self._component_name(component, comp_type)
             resolved_components.append((component, comp_type, name, nodes))
+
+        for source in synthetic_setpoint_sources:
+            source_name = str(source["name"])
+            source_node = str(source["node"])
+            source_value = float(source["value"])
+            pseudo_component = {
+                "id": f"__synth_ref_{source_name}",
+                "type": "VOLTAGE_SOURCE",
+                "name": source_name,
+                "parameters": {
+                    "waveform": {
+                        "type": "dc",
+                        "value": source_value,
+                    }
+                },
+            }
+            resolved_components.append(
+                (
+                    pseudo_component,
+                    ComponentType.VOLTAGE_SOURCE,
+                    source_name,
+                    [source_node, "0"],
+                )
+            )
 
         # Some Pulsim versions expect all non-ground nodes to exist before devices are added.
         self._predeclare_nodes(circuit, resolved_components, node_cache)
@@ -132,6 +162,10 @@ class CircuitConverter:
             if inferred_target:
                 params_override = dict(component.get("parameters", {}) or {})
                 params_override.setdefault("target_component", inferred_target)
+            pwm_override = pwm_param_overrides.get(comp_id)
+            if pwm_override:
+                params_override = dict(params_override or component.get("parameters", {}) or {})
+                params_override.update(pwm_override)
 
             self._add_component(
                 circuit,
@@ -475,6 +509,21 @@ class CircuitConverter:
             return
 
         if comp_type == ComponentType.PWM_GENERATOR:
+            use_virtual_pwm = bool(hasattr(circuit, "add_virtual_component")) and (
+                bool(str(params.get("duty_from_channel") or "").strip())
+                or bool(str(params.get("target_component") or "").strip())
+            )
+            if use_virtual_pwm:
+                self._add_virtual_component(
+                    circuit,
+                    comp_type,
+                    name,
+                    nodes,
+                    params,
+                    node_cache,
+                )
+                return
+
             # Convert the PWM block into a real PWM voltage source.
             # The single OUT pin drives the connected node (e.g. a gate) relative to GND.
             if nodes:
@@ -727,6 +776,259 @@ class CircuitConverter:
             return ["0", "0"]
         return nodes
 
+    def _infer_native_buck_control_overrides(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+    ) -> tuple[
+        dict[str, list[str]],
+        dict[str, list[str]],
+        dict[str, dict[str, Any]],
+        list[dict[str, Any]],
+        set[str],
+    ]:
+        """Infer canonical PI/PWM control overrides for buck-style closed loops.
+
+        This keeps GUI templates compatible with backend-native control:
+        - PI nodes => [vref, vout, 0]
+        - PWM nodes => [0]
+        - PWM metadata => duty_from_channel + target_component
+        """
+        try:
+            supports_virtual = hasattr(self._sl.Circuit(), "add_virtual_component")
+        except Exception:
+            supports_virtual = False
+        if not supports_virtual:
+            return {}, {}, {}, [], set()
+
+        by_id: dict[str, dict[str, Any]] = {}
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            comp_id = str(component.get("id") or "").strip()
+            if not comp_id:
+                continue
+            by_id[comp_id] = component
+            comp_type = self._component_type(component.get("type"))
+            by_type.setdefault(comp_type, []).append(component)
+
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            fallback = node_map.get(comp_id, [])
+            return [str(node or "").strip() for node in fallback]
+
+        constant_outputs: dict[str, tuple[float, str]] = {}
+        for component in by_type.get(ComponentType.CONSTANT, []):
+            constant_id = str(component.get("id") or "").strip()
+            if not constant_id:
+                continue
+            nodes = _raw_nodes(component)
+            if not nodes:
+                continue
+            out_node = nodes[0]
+            if not out_node:
+                continue
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            try:
+                constant_outputs[out_node] = (float(params.get("value", 0.0)), constant_id)
+            except (TypeError, ValueError):
+                continue
+
+        probe_outputs: dict[str, tuple[str, str]] = {}
+        for component in by_type.get(ComponentType.VOLTAGE_PROBE, []):
+            nodes = _raw_nodes(component)
+            if len(nodes) < 3:
+                continue
+            out_node = nodes[2]
+            if out_node:
+                probe_outputs[out_node] = (nodes[0], nodes[1] or "0")
+        for component in by_type.get(ComponentType.VOLTAGE_PROBE_GND, []):
+            nodes = _raw_nodes(component)
+            if len(nodes) < 2:
+                continue
+            out_node = nodes[1]
+            if out_node:
+                probe_outputs[out_node] = (nodes[0], "0")
+
+        pi_node_overrides: dict[str, list[str]] = {}
+        pwm_node_overrides: dict[str, list[str]] = {}
+        pwm_param_overrides: dict[str, dict[str, Any]] = {}
+        synthetic_sources: list[dict[str, Any]] = []
+        suppressed_component_ids: set[str] = set()
+
+        for pi_component in by_type.get(ComponentType.PI_CONTROLLER, []):
+            pi_id = str(pi_component.get("id") or "").strip()
+            pi_name = self._component_name(pi_component, ComponentType.PI_CONTROLLER)
+            pi_nodes = _raw_nodes(pi_component)
+            if len(pi_nodes) < 2:
+                continue
+            pi_input_node = pi_nodes[0]
+            pi_output_node = pi_nodes[1]
+
+            pwm_component: dict[str, Any] | None = None
+            for candidate in by_type.get(ComponentType.PWM_GENERATOR, []):
+                candidate_nodes = _raw_nodes(candidate)
+                if len(candidate_nodes) >= 2 and candidate_nodes[1] == pi_output_node:
+                    pwm_component = candidate
+                    break
+            if pwm_component is None:
+                continue
+
+            subtractor_component: dict[str, Any] | None = None
+            for candidate in by_type.get(ComponentType.SUBTRACTOR, []):
+                candidate_nodes = _raw_nodes(candidate)
+                if len(candidate_nodes) >= 3 and candidate_nodes[2] == pi_input_node:
+                    subtractor_component = candidate
+                    break
+            if subtractor_component is None:
+                continue
+
+            sub_nodes = _raw_nodes(subtractor_component)
+            if len(sub_nodes) < 2:
+                continue
+
+            feedback_pair: tuple[str, str] | None = None
+            setpoint_constant: float | None = None
+            setpoint_constant_id: str | None = None
+            for node in sub_nodes[:2]:
+                if node in probe_outputs and feedback_pair is None:
+                    feedback_pair = probe_outputs[node]
+                    continue
+                if node in constant_outputs and setpoint_constant is None:
+                    setpoint_constant, setpoint_constant_id = constant_outputs[node]
+
+            if feedback_pair is None or setpoint_constant is None:
+                continue
+
+            pwm_id = str(pwm_component.get("id") or "").strip()
+            pwm_nodes = _raw_nodes(pwm_component)
+            pwm_out_node = pwm_nodes[0] if pwm_nodes else ""
+            target_name = self._infer_pwm_target_component_name(
+                components,
+                node_map,
+                pwm_out_node,
+            )
+            if not target_name:
+                continue
+
+            setpoint_raw_node = self._find_reference_voltage_node(components, node_map, setpoint_constant)
+            if setpoint_raw_node:
+                setpoint_node = self._node_label(setpoint_raw_node, alias_map)
+            else:
+                setpoint_node = f"{pi_name}_REF".replace(" ", "_")
+                synthetic_sources.append(
+                    {
+                        "name": setpoint_node,
+                        "node": setpoint_node,
+                        "value": float(setpoint_constant),
+                    }
+                )
+            feedback_plus = self._node_label(feedback_pair[0], alias_map)
+            feedback_minus = self._node_label(feedback_pair[1], alias_map)
+            pi_node_overrides[pi_id] = [setpoint_node, feedback_plus, feedback_minus]
+            pwm_node_overrides[pwm_id] = ["0"]
+            pwm_param_overrides[pwm_id] = {
+                "duty_from_channel": pi_name,
+                "target_component": target_name,
+                "duty": float(
+                    (
+                        pwm_component.get("parameters", {})
+                        if isinstance(pwm_component.get("parameters"), dict)
+                        else {}
+                    ).get("duty_cycle", 0.5)
+                ),
+            }
+            subtractor_id = str(subtractor_component.get("id") or "").strip()
+            if subtractor_id:
+                suppressed_component_ids.add(subtractor_id)
+            if setpoint_constant_id:
+                suppressed_component_ids.add(setpoint_constant_id)
+
+        return (
+            pi_node_overrides,
+            pwm_node_overrides,
+            pwm_param_overrides,
+            synthetic_sources,
+            suppressed_component_ids,
+        )
+
+    def _find_reference_voltage_node(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        target_value: float,
+    ) -> str | None:
+        """Find a voltage-source positive node suitable as PI reference."""
+        preferred: str | None = None
+        fallback: str | None = None
+
+        for component in components:
+            if str(component.get("type", "")).strip().upper() != "VOLTAGE_SOURCE":
+                continue
+            comp_id = str(component.get("id") or "").strip()
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            waveform = params.get("waveform") if isinstance(params.get("waveform"), dict) else {}
+            if str(waveform.get("type", "dc")).strip().lower() != "dc":
+                continue
+            try:
+                value = float(waveform.get("value", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            nodes = component.get("pin_nodes")
+            if not isinstance(nodes, list) or len(nodes) < 1:
+                nodes = node_map.get(comp_id, [])
+            if not nodes:
+                continue
+            pos_node = str(nodes[0] or "").strip()
+            if not pos_node:
+                continue
+
+            if abs(value - target_value) <= max(1e-6, abs(target_value) * 1e-6):
+                name = str(component.get("name") or "").strip().lower()
+                if name == "vref":
+                    preferred = pos_node
+                    break
+                if fallback is None:
+                    fallback = pos_node
+
+        return preferred or fallback
+
+    def _infer_pwm_target_component_name(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        pwm_out_node: str,
+    ) -> str | None:
+        """Infer switchable target component connected to PWM output net."""
+        out_node = str(pwm_out_node or "").strip()
+        if not out_node:
+            return None
+
+        for component in components:
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            control_pin = self._PWM_SWITCH_TARGET_PIN.get(comp_type)
+            if control_pin is None:
+                continue
+            comp_id = str(component.get("id") or "").strip()
+            nodes = component.get("pin_nodes")
+            if not isinstance(nodes, list) or len(nodes) <= control_pin:
+                nodes = node_map.get(comp_id, [])
+            if len(nodes) <= control_pin:
+                continue
+            ctrl_node = str(nodes[control_pin] or "").strip()
+            if ctrl_node != out_node:
+                continue
+            return self._component_name(component, comp_type)
+
+        return None
+
     def _infer_probe_target_overrides(
         self,
         components: list[tuple[dict, ComponentType, str, list[str]]],
@@ -883,6 +1185,13 @@ class CircuitConverter:
             normalized.setdefault("threshold", float(normalized.get("vos", 0.0) or 0.0))
             normalized.setdefault("high", 1.0)
             normalized.setdefault("low", 0.0)
+
+        if comp_type == ComponentType.PWM_GENERATOR:
+            if "duty_cycle" in normalized and "duty" not in normalized:
+                normalized["duty"] = normalized["duty_cycle"]
+            if "amplitude" in normalized and "v_high" not in normalized:
+                normalized["v_high"] = normalized["amplitude"]
+            normalized.setdefault("v_low", 0.0)
 
         return normalized
 

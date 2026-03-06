@@ -34,11 +34,6 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
-from pulsimgui.services.signal_evaluator import (
-    BACKEND_SIGNAL_EVALUATOR_AVAILABLE,
-    BACKEND_SIGNAL_EVALUATOR_ERROR,
-    SIGNAL_TYPES,
-)
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -75,27 +70,6 @@ _SUPPORTED_INTEGRATION_METHODS = {
     "rosenbrockw",
     "sdirk2",
 }
-
-_SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
-    {
-        "CONSTANT",
-        "GAIN",
-        "SUM",
-        "SUBTRACTOR",
-        "LIMITER",
-        "RATE_LIMITER",
-        "PI_CONTROLLER",
-        "PID_CONTROLLER",
-        "PWM_GENERATOR",
-        "INTEGRATOR",
-        "DIFFERENTIATOR",
-        "HYSTERESIS",
-        "SAMPLE_HOLD",
-        "MATH_BLOCK",
-        "SIGNAL_MUX",
-        "SIGNAL_DEMUX",
-    }
-)
 
 _SWITCHABLE_TARGET_TYPES = frozenset({
     "MOSFET_N",
@@ -1065,29 +1039,6 @@ class SimulationService(QObject):
         status = info.status or "unavailable"
         return f"Backend '{info.name}' is not available (status: {status})."
 
-    def signal_evaluator_issue(self, circuit_data: dict | None = None) -> str | None:
-        """Return compatibility guidance for signal-domain control blocks."""
-        if not self.is_backend_ready:
-            return None
-
-        info = self._backend.info
-        if (info.identifier or "").strip().lower() != "pulsim":
-            return None
-
-        if BACKEND_SIGNAL_EVALUATOR_AVAILABLE:
-            return None
-
-        if circuit_data is not None and not self._circuit_uses_signal_blocks(circuit_data):
-            return None
-
-        detail = BACKEND_SIGNAL_EVALUATOR_ERROR or (
-            "SignalEvaluator requires backend support from pulsim.signal_evaluator."
-        )
-        return (
-            "Signal-domain control blocks are unavailable in the active backend runtime. "
-            f"{detail}"
-        )
-
     def set_backend_preference(self, identifier: str) -> BackendInfo:
         """Switch to the requested backend if possible."""
         if self.is_running:
@@ -1198,17 +1149,6 @@ class SimulationService(QObject):
             return True
         issue = self.backend_issue_message or "Simulation backend unavailable."
         self.error.emit(f"Simulation backend unavailable: {issue}")
-        return False
-
-    @staticmethod
-    def _circuit_uses_signal_blocks(circuit_data: dict[str, Any]) -> bool:
-        """Return True when the serialized circuit includes control blocks."""
-        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
-        signal_types = SIGNAL_TYPES if SIGNAL_TYPES else _SIGNAL_BLOCK_TYPES_FALLBACK
-        for component in components:
-            comp_type = str(component.get("type", "")).upper()
-            if comp_type in signal_types:
-                return True
         return False
 
     @staticmethod
@@ -1415,10 +1355,6 @@ class SimulationService(QObject):
         """Run a transient simulation."""
         if not self._ensure_backend_ready():
             return
-        signal_issue = self.signal_evaluator_issue(circuit_data)
-        if signal_issue:
-            self.error.emit(signal_issue)
-            return
         contract_issue = self._prevalidate_runtime_contract(circuit_data)
         if contract_issue:
             self.error.emit(contract_issue)
@@ -1585,10 +1521,6 @@ class SimulationService(QObject):
     ) -> None:
         """Run a parameter sweep across multiple simulations."""
         if not self._ensure_backend_ready():
-            return
-        signal_issue = self.signal_evaluator_issue(circuit_data)
-        if signal_issue:
-            self.error.emit(signal_issue)
             return
         contract_issue = self._prevalidate_runtime_contract(circuit_data)
         if contract_issue:

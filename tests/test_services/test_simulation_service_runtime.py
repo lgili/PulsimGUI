@@ -239,102 +239,6 @@ def test_install_backend_runtime_success_reloads_backends(monkeypatch) -> None:
     assert reloaded["called"] is True
 
 
-def test_signal_evaluator_issue_blocks_control_circuit_transient(monkeypatch) -> None:
-    class _ReadyBackend:
-        def __init__(self) -> None:
-            self.info = BackendInfo(
-                identifier="pulsim",
-                name="Pulsim",
-                version="0.6.0",
-                status="available",
-            )
-            self.run_transient_calls = 0
-
-        def has_capability(self, _name: str) -> bool:
-            return True
-
-        def run_transient(self, *_args, **_kwargs):
-            self.run_transient_calls += 1
-            raise AssertionError("run_transient should not be called for blocked control circuit")
-
-    backend = _ReadyBackend()
-
-    class _ReadyLoader:
-        def __init__(self, preferred_backend_id: str | None = None) -> None:
-            _ = preferred_backend_id
-            self.backend = backend
-            self.available_backends = [backend.info]
-            self.active_backend_id = backend.info.identifier
-
-        def activate(self, identifier: str):
-            if identifier != backend.info.identifier:
-                raise ValueError(identifier)
-            return self.backend.info
-
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_AVAILABLE", False)
-    monkeypatch.setattr(
-        "pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_ERROR",
-        "missing pulsim.signal_evaluator",
-    )
-
-    service = SimulationService()
-    errors: list[str] = []
-    service.error.connect(errors.append)
-
-    issue = service.signal_evaluator_issue(
-        {"components": [{"type": "PI_CONTROLLER"}]}
-    )
-    assert issue is not None
-    assert "signal-domain control blocks" in issue.lower()
-
-    service.run_transient({"components": [{"type": "PI_CONTROLLER"}]})
-
-    assert errors
-    assert "signal-domain control blocks" in errors[-1].lower()
-    assert service.state == SimulationState.IDLE
-    assert backend.run_transient_calls == 0
-
-
-def test_signal_evaluator_issue_ignored_for_non_control_circuit(monkeypatch) -> None:
-    class _ReadyBackend:
-        def __init__(self) -> None:
-            self.info = BackendInfo(
-                identifier="pulsim",
-                name="Pulsim",
-                version="0.6.0",
-                status="available",
-            )
-
-        def has_capability(self, _name: str) -> bool:
-            return True
-
-    backend = _ReadyBackend()
-
-    class _ReadyLoader:
-        def __init__(self, preferred_backend_id: str | None = None) -> None:
-            _ = preferred_backend_id
-            self.backend = backend
-            self.available_backends = [backend.info]
-            self.active_backend_id = backend.info.identifier
-
-        def activate(self, identifier: str):
-            if identifier != backend.info.identifier:
-                raise ValueError(identifier)
-            return self.backend.info
-
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_AVAILABLE", False)
-    monkeypatch.setattr(
-        "pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_ERROR",
-        "missing pulsim.signal_evaluator",
-    )
-
-    service = SimulationService()
-    issue = service.signal_evaluator_issue({"components": [{"type": "RESISTOR"}]})
-    assert issue is None
-
-
 def test_prevalidate_blocks_discrete_control_without_sample_time(monkeypatch) -> None:
     class _ReadyBackend:
         def __init__(self) -> None:
@@ -414,8 +318,6 @@ def test_prevalidate_blocks_invalid_pwm_target_component(monkeypatch) -> None:
             return self.backend.info
 
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_AVAILABLE", True)
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BACKEND_SIGNAL_EVALUATOR_ERROR", "")
     service = SimulationService()
 
     errors: list[str] = []

@@ -1,6 +1,7 @@
 """Main application window."""
 
 import math
+import re
 from pathlib import Path
 from uuid import UUID
 
@@ -2201,28 +2202,259 @@ class MainWindow(QMainWindow):
             return self._ensure_thermal_waveform()
         return self._latest_electrical_result
 
+    @staticmethod
+    def _canonical_scope_token(value: str | None) -> str:
+        token = str(value or "").strip().lower()
+        if not token:
+            return ""
+        return "".join(ch for ch in token if ch.isalnum())
+
+    @staticmethod
+    def _safe_float(value, fallback: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(fallback)
+
+    @staticmethod
+    def _is_thermal_signal_key(signal_key: str) -> bool:
+        upper = str(signal_key or "").strip().upper()
+        if not upper:
+            return False
+        if upper.startswith(("T(", "TEMP(", "TJ(", "THERMAL(")):
+            return True
+        if upper.startswith(("T_", "TJ_", "TEMP_")):
+            return True
+        return "TEMP" in upper
+
+    @staticmethod
+    def _extract_thermal_signal_label(signal_key: str) -> str | None:
+        raw = str(signal_key or "").strip()
+        if not raw:
+            return None
+
+        # Canonical backend forms: T(M1), TJ(M1), TEMP(M1), THERMAL(M1)
+        match = re.match(r"^(?:T|TEMP|TJ|THERMAL)\(([^)]+)\)$", raw, re.IGNORECASE)
+        if match:
+            label = match.group(1).strip()
+            return label or None
+
+        # Legacy/native variants seen across backend versions: T_M1, TJ_M1, TEMP.M1, T:M1
+        match = re.match(r"^(?:T|TEMP|TJ)(?:[_:./-]+)(.+)$", raw, re.IGNORECASE)
+        if match:
+            label = match.group(1).strip()
+            return label or None
+
+        return None
+
+    @staticmethod
+    def _extract_wrapped_signal_label(signal_key: str) -> str | None:
+        match = re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*\(([^)]+)\)$", str(signal_key or "").strip())
+        if not match:
+            return None
+        label = match.group(1).strip()
+        return label or None
+
+    def _build_scope_component_lookup(
+        self,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+        by_id: dict[str, str] = {}
+        by_name: dict[str, str] = {}
+        by_backend_default_name: dict[str, str] = {}
+        by_canonical: dict[str, str] = {}
+
+        circuit = self._current_circuit()
+        if circuit is None:
+            return by_id, by_name, by_backend_default_name, by_canonical
+
+        for component in circuit.components.values():
+            label = component.name or component.type.name.replace("_", " ").title()
+            comp_id = str(component.id)
+            by_id[comp_id.lower()] = label
+            if component.name:
+                by_name[component.name.strip().lower()] = label
+            backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
+            by_backend_default_name[backend_default] = label
+
+            for token in (label, component.name, comp_id, backend_default):
+                canonical = self._canonical_scope_token(token)
+                if canonical and canonical not in by_canonical:
+                    by_canonical[canonical] = label
+
+        return by_id, by_name, by_backend_default_name, by_canonical
+
+    def _resolve_scope_component_name(
+        self,
+        raw_name: str | None,
+        raw_id: str | None = None,
+    ) -> str:
+        by_id, by_name, by_backend_default_name, by_canonical = self._build_scope_component_lookup()
+        candidates = [str(raw_name or "").strip(), str(raw_id or "").strip()]
+        for token in list(candidates):
+            if not token:
+                continue
+            for separator in ("::", ":", "/", "."):
+                if separator in token:
+                    candidates.extend(part for part in token.split(separator) if part)
+
+        for candidate in candidates:
+            lowered = candidate.strip().lower()
+            if not lowered:
+                continue
+            if lowered in by_id:
+                return by_id[lowered]
+            if lowered in by_name:
+                return by_name[lowered]
+            if lowered in by_backend_default_name:
+                return by_backend_default_name[lowered]
+            canonical = self._canonical_scope_token(lowered)
+            if canonical and canonical in by_canonical:
+                return by_canonical[canonical]
+
+        return str(raw_name or raw_id or "").strip() or "Unknown"
+
+    def _thermal_waveform_from_electrothermal_telemetry(self) -> SimulationResult | None:
+        electrical = self._latest_electrical_result
+        if electrical is None or not electrical.time:
+            return None
+
+        circuit = self._current_circuit()
+        target_len = len(electrical.time)
+        stats = electrical.statistics if isinstance(electrical.statistics, dict) else {}
+        virtual_metadata = (
+            stats.get("virtual_channel_metadata")
+            if isinstance(stats.get("virtual_channel_metadata"), dict)
+            else {}
+        )
+        subset = SimulationResult(
+            time=list(electrical.time),
+            signals={},
+            statistics=dict(electrical.statistics),
+        )
+        thermal_scope_by_name: dict[str, object] = {}
+        thermal_scope_by_id: dict[str, object] = {}
+        if circuit is not None:
+            for component in circuit.components.values():
+                if component.type != ComponentType.THERMAL_SCOPE:
+                    continue
+                thermal_scope_by_id[str(component.id).strip().lower()] = component
+                scoped_name = str(component.name or "").strip().lower()
+                if scoped_name:
+                    thermal_scope_by_name[scoped_name] = component
+        thermal_scope_series: dict[str, list[float]] = {}
+
+        for key, values in electrical.signals.items():
+            text = str(key or "").strip()
+            if not text:
+                continue
+            trace = list(values)[:target_len]
+            if not trace:
+                continue
+            if len(trace) < target_len:
+                trace.extend([trace[-1]] * (target_len - len(trace)))
+
+            entry = virtual_metadata.get(text) if isinstance(virtual_metadata, dict) else None
+            meta_domain = (
+                str(entry.get("domain", "")).strip().lower()
+                if isinstance(entry, dict)
+                else ""
+            )
+            meta_component_type = (
+                str(entry.get("component_type", "")).strip().lower()
+                if isinstance(entry, dict)
+                else ""
+            )
+            meta_source_component = (
+                str(entry.get("source_component", "")).strip()
+                if isinstance(entry, dict)
+                else ""
+            )
+            is_metadata_thermal = (
+                meta_domain == "thermal"
+                or meta_component_type == "thermal_trace"
+            )
+
+            # Prefer fully sampled thermal traces when backend already exported them.
+            if is_metadata_thermal or self._is_thermal_signal_key(text):
+                subset.signals[text] = trace
+                extracted = meta_source_component or self._extract_thermal_signal_label(text)
+                if extracted:
+                    resolved = self._resolve_scope_component_name(extracted)
+                    subset.signals.setdefault(format_signal_key("T", extracted), trace)
+                    subset.signals.setdefault(format_signal_key("T", resolved), trace)
+                continue
+
+            lowered = text.lower()
+            scope_component = thermal_scope_by_name.get(lowered) or thermal_scope_by_id.get(lowered)
+            if scope_component is None:
+                wrapped_name = self._extract_wrapped_signal_label(text)
+                if wrapped_name:
+                    wrapped_lower = wrapped_name.lower()
+                    scope_component = (
+                        thermal_scope_by_name.get(wrapped_lower)
+                        or thermal_scope_by_id.get(wrapped_lower)
+                    )
+            if scope_component is None:
+                continue
+            subset.signals[text] = trace
+            thermal_scope_series[str(scope_component.id)] = trace
+
+        # Backend thermal_scope channels may come keyed by the scope name/id.
+        # Mirror those traces to the connected component T(...) keys expected by GUI bindings.
+        if circuit is not None and thermal_scope_series:
+            for scope_id, trace in thermal_scope_series.items():
+                scope_component = thermal_scope_by_id.get(scope_id.lower())
+                if scope_component is None:
+                    continue
+                for binding in build_scope_channel_bindings(scope_component, circuit):
+                    for signal in binding.signals:
+                        key = str(signal.signal_key or "").strip()
+                        if not key:
+                            continue
+                        subset.signals.setdefault(key, list(trace))
+
+        if subset.signals:
+            return subset
+        return None
+
     def _ensure_thermal_waveform(self) -> SimulationResult | None:
         if self._latest_thermal_waveform is not None:
             return self._latest_thermal_waveform
         if not self._latest_electrical_result:
-            return None
-        circuit = self._current_circuit()
-        if circuit is None or not circuit.components:
-            return None
-        try:
-            circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-            thermal_result = self._thermal_service.build_result(
-                circuit,
-                self._latest_electrical_result,
-                circuit_data=circuit_data,
+            self.statusBar().showMessage(
+                "No electrical waveform available for thermal scope. "
+                "Run a successful transient simulation first.",
+                6000,
             )
-        except Exception as exc:  # pragma: no cover - UI feedback only
-            self.statusBar().showMessage(f"Unable to update thermal scopes: {exc}", 5000)
+            return None
+        telemetry_waveform = self._thermal_waveform_from_electrothermal_telemetry()
+        if telemetry_waveform is not None:
+            self._latest_thermal_waveform = telemetry_waveform
+            return self._latest_thermal_waveform
+        stats = (
+            self._latest_electrical_result.statistics
+            if isinstance(self._latest_electrical_result.statistics, dict)
+            else {}
+        )
+        has_summary_only = bool(
+            isinstance(stats.get("thermal_summary"), dict)
+            or isinstance(stats.get("component_electrothermal"), list)
+        )
+        if has_summary_only:
+            self.statusBar().showMessage(
+                "Backend returned only thermal summary (final/avg/peak) without sampled T(...) traces. "
+                "Thermal scope requires sampled channels from backend.",
+                7000,
+            )
             self._latest_thermal_waveform = None
             return None
-
-        self._latest_thermal_waveform = self._thermal_result_to_waveform(thermal_result)
-        return self._latest_thermal_waveform
+        self.statusBar().showMessage(
+            "No thermal telemetry available in transient result. "
+            "Enable losses/thermal and run simulation again.",
+            6000,
+        )
+        self._latest_thermal_waveform = None
+        return None
 
     def _update_scope_results(self) -> None:
         """Refresh scope windows after simulation state changes."""
@@ -2232,6 +2464,32 @@ class MainWindow(QMainWindow):
     def _thermal_result_to_waveform(self, thermal_result) -> SimulationResult | None:
         if not thermal_result or not thermal_result.time:
             return None
+        circuit = self._current_circuit()
+        component_by_id: dict[str, str] = {}
+        component_by_name: dict[str, str] = {}
+        component_by_backend_default_name: dict[str, str] = {}
+        component_by_canonical: dict[str, str] = {}
+
+        def _canonical_token(value: str | None) -> str:
+            token = str(value or "").strip().lower()
+            if not token:
+                return ""
+            return "".join(ch for ch in token if ch.isalnum())
+
+        if circuit is not None:
+            for component in circuit.components.values():
+                label = component.name or component.type.name.replace("_", " ").title()
+                comp_id = str(component.id)
+                component_by_id[comp_id] = label
+                if component.name:
+                    component_by_name[component.name.strip().lower()] = label
+                backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
+                component_by_backend_default_name[backend_default] = label
+                for token in (label, component.name, comp_id, backend_default):
+                    canonical = _canonical_token(token)
+                    if canonical and canonical not in component_by_canonical:
+                        component_by_canonical[canonical] = label
+
         subset = SimulationResult()
         subset.time = list(thermal_result.time)
         subset.signals = {}
@@ -2242,10 +2500,29 @@ class MainWindow(QMainWindow):
         for device in thermal_result.devices:
             if not device.temperature_trace:
                 continue
-            key = format_signal_key("T", device.component_name)
+            resolved_name = component_by_id.get(str(device.component_id))
+            if not resolved_name:
+                resolved_name = component_by_name.get(str(device.component_name or "").strip().lower())
+            if not resolved_name:
+                resolved_name = component_by_backend_default_name.get(
+                    str(device.component_name or "").strip().lower()
+                )
+            if not resolved_name:
+                resolved_name = component_by_canonical.get(
+                    _canonical_token(device.component_name),
+                    device.component_name,
+                )
+
+            key = format_signal_key("T", resolved_name)
             trace = list(device.temperature_trace)
             subset.signals[key] = trace
-            legacy_key = f"T({device.component_name})"
+            raw_backend_key = format_signal_key("T", device.component_name)
+            if raw_backend_key != key and raw_backend_key not in subset.signals:
+                subset.signals[raw_backend_key] = trace
+            raw_id_key = format_signal_key("T", str(device.component_id))
+            if raw_id_key != key and raw_id_key not in subset.signals:
+                subset.signals[raw_id_key] = trace
+            legacy_key = f"T({resolved_name})"
             if legacy_key != key and legacy_key not in subset.signals:
                 subset.signals[legacy_key] = trace
         return subset if subset.signals else None
@@ -2408,6 +2685,14 @@ class MainWindow(QMainWindow):
                 self,
                 "Thermal Viewer",
                 f"Unable to generate thermal data:\n{exc}",
+            )
+            return
+
+        if result.error_message:
+            QMessageBox.warning(
+                self,
+                "Thermal Viewer",
+                f"Thermal analysis failed:\n{result.error_message}",
             )
             return
 

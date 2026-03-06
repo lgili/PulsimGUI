@@ -20,7 +20,6 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
-from pulsimgui.services.signal_evaluator import AlgebraicLoopError, SIGNAL_TYPES, SignalEvaluator
 from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
@@ -41,26 +40,6 @@ from pulsimgui.services.backend_types import (
 )
 
 _SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
-_SIGNAL_BLOCK_TYPES_FALLBACK = frozenset(
-    {
-        "CONSTANT",
-        "GAIN",
-        "SUM",
-        "SUBTRACTOR",
-        "LIMITER",
-        "RATE_LIMITER",
-        "PI_CONTROLLER",
-        "PID_CONTROLLER",
-        "PWM_GENERATOR",
-        "INTEGRATOR",
-        "DIFFERENTIATOR",
-        "HYSTERESIS",
-        "SAMPLE_HOLD",
-        "MATH_BLOCK",
-        "SIGNAL_MUX",
-        "SIGNAL_DEMUX",
-    }
-)
 _PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
 
 
@@ -521,26 +500,6 @@ class PulsimBackend(SimulationBackend):
                 return result
 
             attempt_settings = self._apply_transient_retry_profile(settings, profile)
-
-            # --- Signal-flow evaluator for closed-loop control blocks ---
-            try:
-                sig_evaluator = SignalEvaluator(circuit_data)
-                sig_evaluator.build()
-                if sig_evaluator.has_signal_blocks():
-                    self._attach_signal_evaluator(circuit, sig_evaluator, circuit_data, attempt_settings)
-            except AlgebraicLoopError as exc:
-                result.error_message = str(exc)
-                return result
-            except Exception as exc:
-                if self._circuit_uses_signal_blocks(circuit_data):
-                    result.error_message = (
-                        "Signal-domain control blocks require backend support from "
-                        "pulsim.signal_evaluator. "
-                        f"Details: {exc}"
-                    )
-                    return result
-                log.debug("Signal evaluator setup skipped: %s", exc)
-
             dt = base_dt * profile.dt_scale
 
             if hasattr(circuit, "set_timestep"):
@@ -589,129 +548,6 @@ class PulsimBackend(SimulationBackend):
             result.error_message = retry_errors[-1]
         return result
 
-    # ------------------------------------------------------------------
-    # Signal evaluator helpers
-    # ------------------------------------------------------------------
-
-    def _attach_signal_evaluator(
-        self,
-        circuit: Any,
-        evaluator: "SignalEvaluator",
-        circuit_data: dict,
-        settings: "SimulationSettings",
-    ) -> None:
-        """Wire closed-loop PWM duty callbacks from the signal evaluator.
-
-        For each PWM_GENERATOR that has a DUTY_IN signal wire connected,
-        registers a ``set_pwm_duty_callback`` on the C++ circuit so the
-        computed duty is applied every simulation step.
-        """
-        if not hasattr(circuit, "set_pwm_duty_callback"):
-            # Backend version does not support dynamic duty – fall back to
-            # a one-shot static duty computed from the initial signal chain.
-            for comp_id, pwm_name in evaluator.pwm_components().items():
-                if hasattr(circuit, "set_pwm_duty"):
-                    duty = evaluator.step(0.0).get(comp_id, 0.5)
-                    circuit.set_pwm_duty(
-                        pwm_name, max(0.0, min(1.0, duty))
-                    )
-            return
-
-        # Build a name look-up from component id → backend name
-        # (same logic as CircuitConverter._component_name)
-        def _comp_backend_name(comp: dict) -> str:
-            name = (comp.get("name") or "").strip()
-            if name:
-                return name
-            comp_id = comp.get("id", "")
-            suffix = comp_id[:6] if comp_id else comp.get("type", "")
-            return f"{comp.get('type', 'COMP')}_{suffix}"
-
-        id_to_name: dict[str, str] = {
-            str(c["id"]): _comp_backend_name(c)
-            for c in circuit_data.get("components", [])
-        }
-
-        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
-        sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
-        if sample_time <= 0.0 and control_mode in {"auto", "discrete"}:
-            inferred = self._infer_pwm_sample_time(circuit_data)
-            if inferred > 0.0:
-                sample_time = inferred
-
-        # Shared cache so multiple PWM callbacks at the same simulation time
-        # evaluate the signal graph only once.
-        state_cache: dict[str, Any] = {
-            "last_eval_t": None,
-            "next_eval_t": None,
-            "outputs": {},
-        }
-
-        def _step_cached(t: float) -> dict[str, float]:
-            if sample_time <= 0.0:
-                if state_cache["last_eval_t"] != t:
-                    state_cache["outputs"] = evaluator.step(t)
-                    state_cache["last_eval_t"] = t
-                return state_cache["outputs"]
-
-            next_eval_t = state_cache["next_eval_t"]
-            if next_eval_t is None or t >= next_eval_t:
-                state_cache["outputs"] = evaluator.step(t)
-                state_cache["last_eval_t"] = t
-                state_cache["next_eval_t"] = t + sample_time
-            return state_cache["outputs"]
-
-        for comp_id in evaluator.pwm_components():
-            pwm_name = id_to_name.get(comp_id, comp_id)
-            try:
-                circuit.set_pwm_duty_callback(
-                    pwm_name,
-                    lambda t, pid=comp_id: max(
-                        0.0, min(1.0, _step_cached(t).get(pid, 0.5))
-                    ),
-                )
-                log.debug(
-                    "Attached duty callback to PWM '%s' (comp_id=%s)",
-                    pwm_name,
-                    comp_id,
-                )
-            except Exception as exc:
-                log.warning(
-                    "Failed to attach duty callback to PWM '%s': %s",
-                    pwm_name,
-                    exc,
-                )
-
-    def _infer_pwm_sample_time(self, circuit_data: dict[str, Any]) -> float:
-        """Infer a control sample time from PWM generator frequencies."""
-        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
-        periods: list[float] = []
-        for component in components:
-            if str(component.get("type", "")).upper() != "PWM_GENERATOR":
-                continue
-            params = component.get("parameters")
-            if not isinstance(params, dict):
-                continue
-            try:
-                freq = float(params.get("frequency", 0.0))
-            except (TypeError, ValueError):
-                freq = 0.0
-            if freq > 0.0:
-                periods.append(1.0 / freq)
-        if not periods:
-            return 0.0
-        return max(1e-12, min(periods))
-
-    def _circuit_uses_signal_blocks(self, circuit_data: dict[str, Any]) -> bool:
-        """Return True when circuit includes signal-domain control components."""
-        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
-        signal_types = SIGNAL_TYPES if SIGNAL_TYPES else _SIGNAL_BLOCK_TYPES_FALLBACK
-        for component in components:
-            comp_type = str(component.get("type", "")).upper()
-            if comp_type in signal_types:
-                return True
-        return False
-
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
         """Resolve labels for transient state-vector signals."""
         candidates: list[str] = []
@@ -753,10 +589,52 @@ class PulsimBackend(SimulationBackend):
         return raw_metadata if isinstance(raw_metadata, dict) else {}
 
     @staticmethod
-    def _virtual_component_type(metadata_entry: Any) -> str:
+    def _virtual_metadata_field(metadata_entry: Any, field: str) -> Any:
         if isinstance(metadata_entry, dict):
-            return str(metadata_entry.get("component_type") or "").strip().lower()
-        return str(getattr(metadata_entry, "component_type", "") or "").strip().lower()
+            return metadata_entry.get(field)
+        return getattr(metadata_entry, field, None)
+
+    @staticmethod
+    def _virtual_component_type(metadata_entry: Any) -> str:
+        return str(
+            PulsimBackend._virtual_metadata_field(metadata_entry, "component_type") or ""
+        ).strip().lower()
+
+    @classmethod
+    def _serialize_virtual_channel_metadata(
+        cls,
+        *sources: Any,
+    ) -> dict[str, dict[str, str]]:
+        serialized: dict[str, dict[str, str]] = {}
+        for source in sources:
+            raw_map = cls._extract_virtual_channel_metadata(source)
+            if not raw_map:
+                continue
+            for raw_name, entry in raw_map.items():
+                channel_name = str(raw_name or "").strip()
+                if not channel_name:
+                    continue
+                component_type = str(
+                    cls._virtual_metadata_field(entry, "component_type") or ""
+                ).strip()
+                source_component = str(
+                    cls._virtual_metadata_field(entry, "source_component") or ""
+                ).strip()
+                domain = str(
+                    cls._virtual_metadata_field(entry, "domain") or ""
+                ).strip().lower()
+                unit = str(
+                    cls._virtual_metadata_field(entry, "unit") or ""
+                ).strip()
+
+                payload = {
+                    "component_type": component_type,
+                    "source_component": source_component,
+                    "domain": domain,
+                    "unit": unit,
+                }
+                serialized[channel_name] = payload
+        return serialized
 
     def _probe_virtual_channels(self, *sources: Any) -> dict[str, str]:
         channels: dict[str, str] = {}
@@ -781,6 +659,7 @@ class PulsimBackend(SimulationBackend):
             return
 
         probe_channels = self._probe_virtual_channels(native_result, circuit)
+        channel_metadata = self._serialize_virtual_channel_metadata(native_result, circuit)
 
         virtual_channels_attr = getattr(native_result, "virtual_channels", None)
         if virtual_channels_attr is None:
@@ -815,10 +694,27 @@ class PulsimBackend(SimulationBackend):
 
         if merged_channels:
             result.statistics["virtual_channel_names"] = sorted(set(merged_channels))
+            if channel_metadata:
+                result.statistics["virtual_channel_metadata"] = channel_metadata
             if probe_channels:
                 result.statistics["virtual_probe_channels"] = sorted(
                     {name for name in merged_channels if name in probe_channels}
                 )
+            if channel_metadata:
+                thermal_channels = [
+                    name
+                    for name in merged_channels
+                    if (
+                        str(channel_metadata.get(name, {}).get("domain", "")).strip().lower()
+                        == "thermal"
+                        or str(
+                            channel_metadata.get(name, {}).get("component_type", "")
+                        ).strip().lower()
+                        == "thermal_trace"
+                    )
+                ]
+                if thermal_channels:
+                    result.statistics["virtual_thermal_channels"] = sorted(set(thermal_channels))
 
     def _ensure_virtual_probe_channels(
         self,
@@ -1147,12 +1043,6 @@ class PulsimBackend(SimulationBackend):
         # run as a fully blocking path with poor runtime for closed-loop
         # electrothermal cases.
         if not (hasattr(self._module, "SimulationOptions") and hasattr(self._module, "Simulator")):
-            return False
-
-        # Require modern control/progress API markers before enabling this path.
-        # Without these markers, prefer compatibility transient execution.
-        required_markers = ("SimulationController", "ProgressCallbackConfig", "SimulationProgress")
-        if not all(hasattr(self._module, marker) for marker in required_markers):
             return False
 
         parsed_version = self.info.parsed_version
@@ -1702,6 +1592,7 @@ class PulsimBackend(SimulationBackend):
             "diverg",
             "converg",
             "singular",
+            "max iterations",
             "transient failed",
             "time step too small",
             "timestep too small",
@@ -1721,16 +1612,12 @@ class PulsimBackend(SimulationBackend):
         linear_solver: Any | None,
     ) -> BackendRunResult:
         """Run transient simulation using streaming API with real-time callbacks."""
-        # Track last sent index for incremental updates
-        last_sent_index = 0
-
         def data_callback(t: float, state_dict: dict) -> None:
             """Called by C++ backend for progress - we ignore the data here.
 
             The actual data comes from the final returned arrays which have
             full resolution. We just use this callback to trigger UI updates.
             """
-            nonlocal last_sent_index
             # Just trigger a progress update - actual data comes at the end
             # Send a dummy point to trigger waveform update
             callbacks.data_point(t, state_dict)
