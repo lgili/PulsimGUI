@@ -586,6 +586,200 @@ def test_prevalidate_blocks_component_thermal_when_global_thermal_disabled(monke
     assert "simulation.thermal.enabled=true" in issue
 
 
+def test_prevalidate_accepts_staged_component_thermal_network(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "network": "foster",
+                        "rth_stages": [0.4, 0.6],
+                        "cth_stages": [0.01, 0.02],
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                    },
+                    "parameters": {},
+                }
+            ],
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_invalid_loss_model(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "lookup2d",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_LOSS_MODEL_INVALID" in issue
+
+
+def test_prevalidate_accepts_valid_datasheet_loss_tables(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "datasheet",
+                        "switching_loss_axes_current": "0,10",
+                        "switching_loss_axes_voltage": "0,20",
+                        "switching_loss_axes_temperature": "25,125",
+                        "switching_loss_eon_table": "1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6",
+                        "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_invalid_datasheet_loss_dimensions(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "datasheet",
+                        "switching_loss_axes_current": "0,10",
+                        "switching_loss_axes_voltage": "0,20",
+                        "switching_loss_axes_temperature": "25,125",
+                        "switching_loss_eon_table": "1e-6,1e-6,1e-6",
+                        "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_LOSS_DIMENSION_INVALID" in issue
+
+
+def test_prevalidate_blocks_shared_sink_fields_without_sink_id(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.0,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_rth": 0.25,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                }
+            ],
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_THERMAL_RANGE_INVALID" in issue
+    assert "shared_sink_id" in issue
+
+
+def test_prevalidate_blocks_inconsistent_shared_sink_parameters(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.0,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_id": "HS1",
+                        "shared_sink_rth": 0.25,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                },
+                {
+                    "type": "diode",
+                    "name": "D1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.2,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_id": "HS1",
+                        "shared_sink_rth": 0.30,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                },
+            ],
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_THERMAL_RANGE_INVALID" in issue
+    assert "HS1" in issue
+
+
 def test_worker_maps_invalid_thermal_configuration_diagnostic_to_error() -> None:
     worker = SimulationWorker(
         backend=_DummyBackend(),

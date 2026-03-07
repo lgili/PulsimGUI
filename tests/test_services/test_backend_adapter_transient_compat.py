@@ -720,11 +720,17 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             self.control_sample_time = 0.0
             self.thermal = self._Thermal()
             self.switching_energy: dict[str, Any] = {}
+            self.switching_energy_surfaces: dict[str, Any] = {}
             self.thermal_devices: dict[str, Any] = {}
 
     class _ThermalCouplingPolicy:
         LossOnly = object()
         LossWithTemperatureScaling = object()
+
+    class _ThermalNetworkKind:
+        SingleRC = object()
+        Foster = object()
+        Cauer = object()
 
     class _SwitchingEnergy:
         def __init__(self) -> None:
@@ -735,11 +741,26 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     class _ThermalDeviceConfig:
         def __init__(self) -> None:
             self.enabled = True
+            self.network_kind = None
             self.rth = 1.0
             self.cth = 0.1
+            self.stage_rth: list[float] = []
+            self.stage_cth: list[float] = []
             self.temp_init = 25.0
             self.temp_ref = 25.0
             self.alpha = 0.004
+            self.shared_sink_id = ""
+            self.shared_sink_rth = 0.0
+            self.shared_sink_cth = 0.0
+
+    class _SwitchingEnergySurface3D:
+        def __init__(self) -> None:
+            self.current_axis: list[float] = []
+            self.voltage_axis: list[float] = []
+            self.temperature_axis: list[float] = []
+            self.eon_table: list[float] = []
+            self.eoff_table: list[float] = []
+            self.err_table: list[float] = []
 
     class _SimulationController:
         pass
@@ -811,7 +832,9 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         FormulationMode=_FormulationMode,
         ControlUpdateMode=_ControlUpdateMode,
         ThermalCouplingPolicy=_ThermalCouplingPolicy,
+        ThermalNetworkKind=_ThermalNetworkKind,
         SwitchingEnergy=_SwitchingEnergy,
+        SwitchingEnergySurface3D=_SwitchingEnergySurface3D,
         ThermalDeviceConfig=_ThermalDeviceConfig,
         SimulationController=_SimulationController,
         ProgressCallbackConfig=_ProgressCallbackConfig,
@@ -854,13 +877,38 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
             "switching_eoff_j": 2.4e-6,
             "switching_err_j": 3.6e-6,
             "thermal_enabled": False,
+            "thermal_network": "cauer",
             "thermal_rth": 4.4,
             "thermal_cth": 0.55,
+            "thermal_rth_stages": "0.2, 0.3",
+            "thermal_cth_stages": [0.01, 0.02],
             "thermal_temp_init": 45.0,
             "thermal_temp_ref": 35.0,
             "thermal_alpha": 0.007,
+            "thermal_shared_sink_id": "HS1",
+            "thermal_shared_sink_rth": 0.25,
+            "thermal_shared_sink_cth": 0.04,
         }
     )
+    circuit_data["components"].append(
+        {
+            "id": "r2",
+            "type": "RESISTOR",
+            "name": "R2",
+            "parameters": {
+                "resistance": 220.0,
+                "switching_loss_model": "datasheet",
+                "switching_loss_axes_current": "0, 10",
+                "switching_loss_axes_voltage": "0, 20",
+                "switching_loss_axes_temperature": "25, 125",
+                "switching_loss_eon_table": "1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6",
+                "switching_loss_eoff_table": "2e-6, 2e-6, 2e-6, 2e-6, 2e-6, 2e-6, 2e-6, 2e-6",
+                "switching_loss_err_table": "0,0,0,0,0,0,0,0",
+            },
+            "pin_nodes": ["1", "0"],
+        }
+    )
+    circuit_data["node_map"]["r2"] = ["1", "0"]
 
     result = backend.run_transient(
         circuit_data,
@@ -897,13 +945,24 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     assert seen["options"].switching_energy["R1"].eon == 1.2e-6
     assert seen["options"].switching_energy["R1"].eoff == 2.4e-6
     assert seen["options"].switching_energy["R1"].err == 3.6e-6
+    assert "R2" in seen["options"].switching_energy_surfaces
+    assert seen["options"].switching_energy_surfaces["R2"].current_axis == [0.0, 10.0]
+    assert seen["options"].switching_energy_surfaces["R2"].voltage_axis == [0.0, 20.0]
+    assert seen["options"].switching_energy_surfaces["R2"].temperature_axis == [25.0, 125.0]
+    assert len(seen["options"].switching_energy_surfaces["R2"].eon_table) == 8
     assert "R1" in seen["options"].thermal_devices
     assert seen["options"].thermal_devices["R1"].enabled is False
+    assert seen["options"].thermal_devices["R1"].network_kind is _ThermalNetworkKind.Cauer
     assert seen["options"].thermal_devices["R1"].rth == 4.4
     assert seen["options"].thermal_devices["R1"].cth == 0.55
+    assert seen["options"].thermal_devices["R1"].stage_rth == [0.2, 0.3]
+    assert seen["options"].thermal_devices["R1"].stage_cth == [0.01, 0.02]
     assert seen["options"].thermal_devices["R1"].temp_init == 45.0
     assert seen["options"].thermal_devices["R1"].temp_ref == 35.0
     assert seen["options"].thermal_devices["R1"].alpha == 0.007
+    assert seen["options"].thermal_devices["R1"].shared_sink_id == "HS1"
+    assert seen["options"].thermal_devices["R1"].shared_sink_rth == 0.25
+    assert seen["options"].thermal_devices["R1"].shared_sink_cth == 0.04
     assert result.statistics["total_steps"] == 2.0
     assert result.statistics["status"] == "Success"
     assert result.statistics["diagnostic"] == "None"

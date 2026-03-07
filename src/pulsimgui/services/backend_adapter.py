@@ -856,6 +856,18 @@ class PulsimBackend(SimulationBackend):
         return normalized
 
     @staticmethod
+    def _normalize_thermal_network_kind(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "single": "single_rc",
+            "single-rc": "single_rc",
+            "singlerc": "single_rc",
+            "rc": "single_rc",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"single_rc", "foster", "cauer"} else "single_rc"
+
+    @staticmethod
     def _component_name(component: dict[str, Any]) -> str:
         return str(component.get("name") or component.get("id") or "").strip()
 
@@ -869,6 +881,106 @@ class PulsimBackend(SimulationBackend):
             except (TypeError, ValueError):
                 continue
         return float(default)
+
+    @staticmethod
+    def _first_text(params: dict[str, Any], keys: tuple[str, ...], default: str = "") -> str:
+        for key in keys:
+            if key not in params:
+                continue
+            value = params.get(key)
+            if value is None:
+                continue
+            return str(value).strip()
+        return default
+
+    @staticmethod
+    def _parse_numeric_sequence(raw_value: Any) -> list[float]:
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return []
+            parts = [item.strip() for item in text.replace(";", ",").split(",")]
+            out: list[float] = []
+            for part in parts:
+                if not part:
+                    continue
+                try:
+                    out.append(float(part))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        if isinstance(raw_value, (list, tuple)):
+            out: list[float] = []
+            for item in raw_value:
+                try:
+                    out.append(float(item))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        return []
+
+    @classmethod
+    def _first_numeric_sequence(cls, params: dict[str, Any], keys: tuple[str, ...]) -> list[float]:
+        for key in keys:
+            if key not in params:
+                continue
+            values = cls._parse_numeric_sequence(params.get(key))
+            if values:
+                return values
+        return []
+
+    @staticmethod
+    def _coerce_surface_table(raw_value: Any) -> list[float]:
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            return PulsimBackend._parse_numeric_sequence(raw_value)
+        if isinstance(raw_value, (list, tuple)):
+            out: list[float] = []
+            for item in raw_value:
+                try:
+                    out.append(float(item))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        return []
+
+    def _make_switching_energy_surface_config(
+        self,
+        *,
+        current_axis: list[float],
+        voltage_axis: list[float],
+        temperature_axis: list[float],
+        eon_table: list[float],
+        eoff_table: list[float],
+        err_table: list[float],
+    ) -> Any:
+        config_cls = getattr(self._module, "SwitchingEnergySurface3D", None)
+        if config_cls is None:
+            return {
+                "current_axis": list(current_axis),
+                "voltage_axis": list(voltage_axis),
+                "temperature_axis": list(temperature_axis),
+                "eon_table": list(eon_table),
+                "eoff_table": list(eoff_table),
+                "err_table": list(err_table),
+            }
+        config = config_cls()
+        if hasattr(config, "current_axis"):
+            config.current_axis = list(current_axis)
+        if hasattr(config, "voltage_axis"):
+            config.voltage_axis = list(voltage_axis)
+        if hasattr(config, "temperature_axis"):
+            config.temperature_axis = list(temperature_axis)
+        if hasattr(config, "eon_table"):
+            config.eon_table = list(eon_table)
+        if hasattr(config, "eoff_table"):
+            config.eoff_table = list(eoff_table)
+        if hasattr(config, "err_table"):
+            config.err_table = list(err_table)
+        return config
 
     def _make_switching_energy_config(self, eon: float, eoff: float, err: float) -> Any:
         config_cls = getattr(self._module, "SwitchingEnergy", None)
@@ -891,35 +1003,66 @@ class PulsimBackend(SimulationBackend):
         self,
         *,
         enabled: bool,
+        network_kind: str,
         rth: float,
         cth: float,
+        stage_rth: list[float],
+        stage_cth: list[float],
         temp_init: float,
         temp_ref: float,
         alpha: float,
+        shared_sink_id: str,
+        shared_sink_rth: float,
+        shared_sink_cth: float,
     ) -> Any:
         config_cls = getattr(self._module, "ThermalDeviceConfig", None)
         if config_cls is None:
             return {
                 "enabled": bool(enabled),
+                "network_kind": str(network_kind),
                 "rth": float(rth),
                 "cth": float(cth),
+                "stage_rth": list(stage_rth),
+                "stage_cth": list(stage_cth),
                 "temp_init": float(temp_init),
                 "temp_ref": float(temp_ref),
                 "alpha": float(alpha),
+                "shared_sink_id": str(shared_sink_id),
+                "shared_sink_rth": float(shared_sink_rth),
+                "shared_sink_cth": float(shared_sink_cth),
             }
         config = config_cls()
         if hasattr(config, "enabled"):
             config.enabled = bool(enabled)
+        if hasattr(config, "network_kind") and hasattr(self._module, "ThermalNetworkKind"):
+            enum_map = {
+                "single_rc": "SingleRC",
+                "foster": "Foster",
+                "cauer": "Cauer",
+            }
+            enum_name = enum_map.get(network_kind, "SingleRC")
+            if hasattr(self._module.ThermalNetworkKind, enum_name):
+                config.network_kind = getattr(self._module.ThermalNetworkKind, enum_name)
         if hasattr(config, "rth"):
             config.rth = float(rth)
         if hasattr(config, "cth"):
             config.cth = float(cth)
+        if hasattr(config, "stage_rth"):
+            config.stage_rth = list(stage_rth)
+        if hasattr(config, "stage_cth"):
+            config.stage_cth = list(stage_cth)
         if hasattr(config, "temp_init"):
             config.temp_init = float(temp_init)
         if hasattr(config, "temp_ref"):
             config.temp_ref = float(temp_ref)
         if hasattr(config, "alpha"):
             config.alpha = float(alpha)
+        if hasattr(config, "shared_sink_id"):
+            config.shared_sink_id = str(shared_sink_id)
+        if hasattr(config, "shared_sink_rth"):
+            config.shared_sink_rth = float(shared_sink_rth)
+        if hasattr(config, "shared_sink_cth"):
+            config.shared_sink_cth = float(shared_sink_cth)
         return config
 
     def _build_switching_energy_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
@@ -932,19 +1075,39 @@ class PulsimBackend(SimulationBackend):
             params = component.get("parameters")
             if not isinstance(params, dict):
                 continue
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+            loss_model = str(
+                loss_payload.get("model")
+                or params.get("switching_loss_model")
+                or ""
+            ).strip().lower()
+            if loss_model == "datasheet":
+                # Datasheet surfaces are mapped via switching_energy_surfaces.
+                continue
+            energy_payload: dict[str, Any] = {}
+            energy_payload.update(loss_payload)
+            energy_payload.update(params)
 
             eon = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_eon_j", "switching_eon", "e_on", "eon"),
                 0.0,
             )
             eoff = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_eoff_j", "switching_eoff", "e_off", "eoff"),
                 0.0,
             )
             err = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_err_j", "switching_err", "err", "e_rr"),
                 0.0,
             )
@@ -952,6 +1115,92 @@ class PulsimBackend(SimulationBackend):
                 continue
             energy_map[name] = self._make_switching_energy_config(eon, eoff, err)
         return energy_map
+
+    def _build_switching_energy_surface_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        surfaces: dict[str, Any] = {}
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+
+            loss_model = str(
+                loss_payload.get("model")
+                or params.get("switching_loss_model")
+                or ""
+            ).strip().lower()
+            if loss_model != "datasheet":
+                continue
+
+            axes = loss_payload.get("axes")
+            current_axis: list[float] = []
+            voltage_axis: list[float] = []
+            temperature_axis: list[float] = []
+            if isinstance(axes, dict):
+                current_axis = self._parse_numeric_sequence(axes.get("current"))
+                voltage_axis = self._parse_numeric_sequence(axes.get("voltage"))
+                temperature_axis = self._parse_numeric_sequence(axes.get("temperature"))
+            if not current_axis:
+                current_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_current", "switching_loss_axis_current"),
+                )
+            if not voltage_axis:
+                voltage_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_voltage", "switching_loss_axis_voltage"),
+                )
+            if not temperature_axis:
+                temperature_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_temperature", "switching_loss_axis_temperature"),
+                )
+            if not current_axis or not voltage_axis or not temperature_axis:
+                continue
+
+            eon_table = self._coerce_surface_table(loss_payload.get("eon"))
+            eoff_table = self._coerce_surface_table(loss_payload.get("eoff"))
+            err_table = self._coerce_surface_table(loss_payload.get("err"))
+            if not eon_table:
+                eon_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_eon_table",),
+                )
+            if not eoff_table:
+                eoff_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_eoff_table",),
+                )
+            if not err_table:
+                err_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_err_table",),
+                )
+            if not eon_table or not eoff_table:
+                continue
+
+            surfaces[name] = self._make_switching_energy_surface_config(
+                current_axis=current_axis,
+                voltage_axis=voltage_axis,
+                temperature_axis=temperature_axis,
+                eon_table=eon_table,
+                eoff_table=eoff_table,
+                err_table=err_table,
+            )
+        return surfaces
 
     def _build_thermal_device_map(
         self,
@@ -967,6 +1216,12 @@ class PulsimBackend(SimulationBackend):
             "thermal_temp_init",
             "thermal_temp_ref",
             "thermal_alpha",
+            "thermal_network",
+            "thermal_rth_stages",
+            "thermal_cth_stages",
+            "thermal_shared_sink_id",
+            "thermal_shared_sink_rth",
+            "thermal_shared_sink_cth",
         }
         default_rth = max(0.0, float(getattr(settings, "thermal_default_rth", 1.0)))
         default_cth = max(0.0, float(getattr(settings, "thermal_default_cth", 0.1)))
@@ -1019,13 +1274,47 @@ class PulsimBackend(SimulationBackend):
                 0.0,
                 self._first_numeric(thermal_payload, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
             )
+            stage_rth = self._first_numeric_sequence(
+                thermal_payload,
+                ("thermal_rth_stages", "rth_stages", "stage_rth"),
+            )
+            stage_cth = self._first_numeric_sequence(
+                thermal_payload,
+                ("thermal_cth_stages", "cth_stages", "stage_cth"),
+            )
+            network_kind = self._normalize_thermal_network_kind(
+                self._first_text(thermal_payload, ("thermal_network", "network"), "single_rc")
+            )
+            if (stage_rth or stage_cth) and "thermal_network" not in thermal_payload and "network" not in thermal_payload:
+                network_kind = "foster"
+            shared_sink_id = self._first_text(
+                thermal_payload,
+                ("thermal_shared_sink_id", "shared_sink_id"),
+                "",
+            )
+            shared_sink_rth = self._first_numeric(
+                thermal_payload,
+                ("thermal_shared_sink_rth", "shared_sink_rth"),
+                0.0,
+            )
+            shared_sink_cth = self._first_numeric(
+                thermal_payload,
+                ("thermal_shared_sink_cth", "shared_sink_cth"),
+                0.0,
+            )
             thermal_map[name] = self._make_thermal_device_config(
                 enabled=enabled,
+                network_kind=network_kind,
                 rth=rth,
                 cth=cth,
+                stage_rth=stage_rth,
+                stage_cth=stage_cth,
                 temp_init=temp_init,
                 temp_ref=temp_ref,
                 alpha=alpha,
+                shared_sink_id=shared_sink_id,
+                shared_sink_rth=shared_sink_rth,
+                shared_sink_cth=shared_sink_cth,
             )
         return thermal_map
 
@@ -1395,6 +1684,8 @@ class PulsimBackend(SimulationBackend):
 
         if hasattr(opts, "switching_energy") and circuit_data is not None:
             opts.switching_energy = self._build_switching_energy_map(circuit_data)
+        if hasattr(opts, "switching_energy_surfaces") and circuit_data is not None:
+            opts.switching_energy_surfaces = self._build_switching_energy_surface_map(circuit_data)
 
         if hasattr(opts, "thermal_devices") and circuit_data is not None:
             opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)

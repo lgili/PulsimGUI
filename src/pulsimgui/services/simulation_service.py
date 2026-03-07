@@ -1227,13 +1227,90 @@ class SimulationService(QObject):
         return parsed
 
     @staticmethod
+    def _to_finite_float_sequence(value: Any) -> list[float]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            tokens = [part.strip() for part in text.replace(";", ",").split(",")]
+            out: list[float] = []
+            for token in tokens:
+                if not token:
+                    continue
+                parsed = SimulationService._to_finite_float(token)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        if isinstance(value, (list, tuple)):
+            out: list[float] = []
+            for item in value:
+                parsed = SimulationService._to_finite_float(item)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        return []
+
+    @staticmethod
+    def _normalize_component_thermal_network(
+        raw_value: Any,
+        *,
+        stage_mode_requested: bool = False,
+    ) -> str | None:
+        raw = str(raw_value or "").strip().lower()
+        aliases = {
+            "single": "single_rc",
+            "single-rc": "single_rc",
+            "singlerc": "single_rc",
+            "rc": "single_rc",
+        }
+        normalized = aliases.get(raw, raw)
+        if not normalized:
+            return "foster" if stage_mode_requested else "single_rc"
+        if normalized in {"single_rc", "foster", "cauer"}:
+            return normalized
+        return None
+
+    @staticmethod
+    def _strictly_increasing(values: list[float]) -> bool:
+        return all(values[index] > values[index - 1] for index in range(1, len(values)))
+
+    @staticmethod
+    def _first_value_from_maps(
+        primary: dict[str, Any],
+        secondary: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> tuple[bool, Any]:
+        for key in keys:
+            if key in primary:
+                return True, primary.get(key)
+            if key in secondary:
+                return True, secondary.get(key)
+        return False, None
+
+    @staticmethod
     def _component_thermal_payload(component: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         component_thermal = component.get("thermal")
         if isinstance(component_thermal, dict):
             if "enabled" in component_thermal:
                 payload["thermal_enabled"] = component_thermal.get("enabled")
-            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
                 if key in component_thermal:
                     payload[f"thermal_{key}"] = component_thermal.get(key)
 
@@ -1241,7 +1318,19 @@ class SimulationService(QObject):
         if isinstance(nested_thermal, dict):
             if "enabled" in nested_thermal and "thermal_enabled" not in payload:
                 payload["thermal_enabled"] = nested_thermal.get("enabled")
-            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
                 thermal_key = f"thermal_{key}"
                 if key in nested_thermal and thermal_key not in payload:
                     payload[thermal_key] = nested_thermal.get(key)
@@ -1249,16 +1338,28 @@ class SimulationService(QObject):
         for key in (
             "thermal_enabled",
             "enable_thermal_port",
+            "thermal_network",
             "thermal_rth",
             "thermal_cth",
+            "thermal_rth_stages",
+            "thermal_cth_stages",
             "thermal_temp_init",
             "thermal_temp_ref",
             "thermal_alpha",
+            "thermal_shared_sink_id",
+            "thermal_shared_sink_rth",
+            "thermal_shared_sink_cth",
+            "network",
             "rth",
             "cth",
+            "rth_stages",
+            "cth_stages",
             "temp_init",
             "temp_ref",
             "alpha",
+            "shared_sink_id",
+            "shared_sink_rth",
+            "shared_sink_cth",
         ):
             if key in parameters:
                 payload[key] = parameters.get(key)
@@ -1284,6 +1385,7 @@ class SimulationService(QObject):
         components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
         by_name: dict[str, str] = {}
         thermal_enabled_components = 0
+        shared_sink_defs: dict[str, tuple[float, float]] = {}
         simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
         thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
 
@@ -1319,6 +1421,131 @@ class SimulationService(QObject):
             comp_type = self._normalize_component_type(component.get("type", ""))
             comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+            loss_model_raw_found, loss_model_raw = self._first_value_from_maps(
+                loss_payload,
+                params,
+                ("model", "switching_loss_model"),
+            )
+            loss_model = str(loss_model_raw or "").strip().lower()
+            if not loss_model:
+                loss_model = "scalar"
+            if loss_model not in {"scalar", "datasheet"}:
+                return (
+                    "PULSIM_YAML_E_LOSS_MODEL_INVALID: "
+                    f"component '{comp_name}' has unsupported loss.model '{loss_model}'."
+                )
+
+            if loss_model == "datasheet":
+                axes = loss_payload.get("axes")
+                axes = axes if isinstance(axes, dict) else {}
+                current_raw = axes.get("current")
+                voltage_raw = axes.get("voltage")
+                temperature_raw = axes.get("temperature")
+                if current_raw is None:
+                    current_raw = params.get("switching_loss_axes_current", params.get("switching_loss_axis_current"))
+                if voltage_raw is None:
+                    voltage_raw = params.get("switching_loss_axes_voltage", params.get("switching_loss_axis_voltage"))
+                if temperature_raw is None:
+                    temperature_raw = params.get(
+                        "switching_loss_axes_temperature",
+                        params.get("switching_loss_axis_temperature"),
+                    )
+
+                current_axis = self._to_finite_float_sequence(current_raw)
+                voltage_axis = self._to_finite_float_sequence(voltage_raw)
+                temperature_axis = self._to_finite_float_sequence(temperature_raw)
+                if (
+                    not current_axis
+                    or not voltage_axis
+                    or not temperature_axis
+                    or not self._strictly_increasing(current_axis)
+                    or not self._strictly_increasing(voltage_axis)
+                    or not self._strictly_increasing(temperature_axis)
+                ):
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires finite strictly increasing axes."
+                    )
+
+                expected_size = len(current_axis) * len(voltage_axis) * len(temperature_axis)
+                eon_raw_found, eon_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eon", "switching_loss_eon_table"),
+                )
+                eoff_raw_found, eoff_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eoff", "switching_loss_eoff_table"),
+                )
+                _, err_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("err", "switching_loss_err_table"),
+                )
+                eon_table = self._to_finite_float_sequence(eon_raw)
+                eoff_table = self._to_finite_float_sequence(eoff_raw)
+                err_table = self._to_finite_float_sequence(err_raw)
+                if not eon_raw_found or not eoff_raw_found:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires eon and eoff tables."
+                    )
+                if len(eon_table) != expected_size or len(eoff_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss tables must match axes size."
+                    )
+                if err_table and len(err_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet err table must match axes size."
+                    )
+                if any(value < 0.0 for value in eon_table + eoff_table + err_table):
+                    return (
+                        "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                        f"component '{comp_name}' datasheet loss entries must be >= 0."
+                    )
+            elif loss_model_raw_found or any(
+                key in params
+                for key in (
+                    "switching_eon_j",
+                    "switching_eoff_j",
+                    "switching_err_j",
+                    "switching_eon",
+                    "switching_eoff",
+                    "switching_err",
+                )
+            ):
+                for key_aliases, field_name in (
+                    (("switching_eon_j", "switching_eon", "e_on", "eon"), "eon"),
+                    (("switching_eoff_j", "switching_eoff", "e_off", "eoff"), "eoff"),
+                    (("switching_err_j", "switching_err", "e_rr", "err"), "err"),
+                ):
+                    found, raw_value = self._first_value_from_maps(
+                        loss_payload,
+                        params,
+                        key_aliases,
+                    )
+                    if not found:
+                        continue
+                    parsed = self._to_finite_float(raw_value)
+                    if parsed is None or parsed < 0.0:
+                        return (
+                            "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                            f"component '{comp_name}' loss.{field_name} must be finite and >= 0."
+                        )
+
             thermal_payload = self._component_thermal_payload(component, params)
             if not self._component_thermal_enabled(thermal_payload):
                 continue
@@ -1329,21 +1556,25 @@ class SimulationService(QObject):
                     "PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT: "
                     f"component '{comp_name}' ({comp_type}) does not support thermal enablement."
                 )
-
-            has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
-            has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
-            if not has_rth or not has_cth:
+            rth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_rth_stages", thermal_payload.get("rth_stages"))
+            )
+            cth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_cth_stages", thermal_payload.get("cth_stages"))
+            )
+            stage_mode_requested = bool(rth_stages or cth_stages)
+            network = self._normalize_component_thermal_network(
+                thermal_payload.get("thermal_network", thermal_payload.get("network")),
+                stage_mode_requested=stage_mode_requested,
+            )
+            if network is None:
                 return (
-                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
-                    f"component '{comp_name}' thermal requires rth and cth."
+                    "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                    f"component '{comp_name}' has unsupported thermal.network."
                 )
 
-            rth = self._to_finite_float(
-                thermal_payload.get("thermal_rth", thermal_payload.get("rth"))
-            )
-            cth = self._to_finite_float(
-                thermal_payload.get("thermal_cth", thermal_payload.get("cth"))
-            )
+            rth = self._to_finite_float(thermal_payload.get("thermal_rth", thermal_payload.get("rth")))
+            cth = self._to_finite_float(thermal_payload.get("thermal_cth", thermal_payload.get("cth")))
             temp_init = self._to_finite_float(
                 thermal_payload.get(
                     "thermal_temp_init",
@@ -1360,18 +1591,114 @@ class SimulationService(QObject):
                 thermal_payload.get("thermal_alpha", thermal_payload.get("alpha", 0.004))
             )
 
-            if (
-                rth is None
-                or cth is None
-                or temp_init is None
-                or temp_ref is None
-                or alpha is None
-                or rth <= 0.0
-                or cth < 0.0
-            ):
+            if temp_init is None or temp_ref is None or alpha is None:
                 return (
                     "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
-                    f"component '{comp_name}' requires rth>0, cth>=0 and finite temp_init/temp_ref/alpha."
+                    f"component '{comp_name}' requires finite temp_init/temp_ref/alpha."
+                )
+
+            if network == "single_rc":
+                has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
+                has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
+                if not has_rth or not has_cth:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' thermal requires rth and cth."
+                    )
+                if rth is None or cth is None or rth <= 0.0 or cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires rth>0 and cth>=0 for single_rc."
+                    )
+                if rth_stages or cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                        f"component '{comp_name}' single_rc cannot use rth_stages/cth_stages."
+                    )
+            else:
+                if not rth_stages or not cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' staged thermal requires rth_stages and cth_stages."
+                    )
+                if len(rth_stages) != len(cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_DIMENSION_INVALID: "
+                        f"component '{comp_name}' staged thermal requires matching rth_stages/cth_stages."
+                    )
+                if any(value <= 0.0 for value in rth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every rth_stages[i] > 0."
+                    )
+                if any(value < 0.0 for value in cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every cth_stages[i] >= 0."
+                    )
+                if rth is not None and rth <= 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional rth must be > 0."
+                    )
+                if cth is not None and cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional cth must be >= 0."
+                    )
+
+            shared_sink_id = str(
+                thermal_payload.get(
+                    "thermal_shared_sink_id",
+                    thermal_payload.get("shared_sink_id", ""),
+                )
+                or ""
+            ).strip()
+            has_shared_sink_rth = (
+                "thermal_shared_sink_rth" in thermal_payload or "shared_sink_rth" in thermal_payload
+            )
+            has_shared_sink_cth = (
+                "thermal_shared_sink_cth" in thermal_payload or "shared_sink_cth" in thermal_payload
+            )
+            shared_sink_rth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_rth",
+                    thermal_payload.get("shared_sink_rth"),
+                )
+            )
+            shared_sink_cth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_cth",
+                    thermal_payload.get("shared_sink_cth"),
+                )
+            )
+
+            if shared_sink_id:
+                if (
+                    shared_sink_rth is None
+                    or shared_sink_rth <= 0.0
+                    or shared_sink_cth is None
+                    or shared_sink_cth < 0.0
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink requires shared_sink_rth>0 and shared_sink_cth>=0."
+                    )
+                previous = shared_sink_defs.get(shared_sink_id)
+                if previous is None:
+                    shared_sink_defs[shared_sink_id] = (shared_sink_rth, shared_sink_cth)
+                elif (
+                    abs(previous[0] - shared_sink_rth) > 1e-12
+                    or abs(previous[1] - shared_sink_cth) > 1e-12
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink '{shared_sink_id}' must reuse identical shared_sink_rth/shared_sink_cth."
+                    )
+            elif has_shared_sink_rth or has_shared_sink_cth:
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    f"component '{comp_name}' shared_sink_rth/shared_sink_cth require shared_sink_id."
                 )
 
         if thermal_enabled_components > 0:

@@ -1144,6 +1144,8 @@ class PropertiesPanel(QWidget):
             "switching_err_j": "J",
             "thermal_rth": "K/W",
             "thermal_cth": "J/K",
+            "thermal_shared_sink_rth": "K/W",
+            "thermal_shared_sink_cth": "J/K",
             "thermal_temp_init": "°C",
             "thermal_temp_ref": "°C",
         }

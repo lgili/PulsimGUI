@@ -633,17 +633,30 @@ _normalize_default_pin_map()
 
 DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
     "thermal_enabled": True,
+    "thermal_network": "single_rc",
     "thermal_rth": 1.0,
     "thermal_cth": 0.1,
+    "thermal_rth_stages": "",
+    "thermal_cth_stages": "",
     "thermal_temp_init": 25.0,
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,
+    "thermal_shared_sink_id": "",
+    "thermal_shared_sink_rth": 0.0,
+    "thermal_shared_sink_cth": 0.0,
 }
 
 DEFAULT_SWITCHING_ENERGY_PARAMS: dict[str, Any] = {
+    "switching_loss_model": "scalar",
     "switching_eon_j": 0.0,
     "switching_eoff_j": 0.0,
     "switching_err_j": 0.0,
+    "switching_loss_axes_current": "",
+    "switching_loss_axes_voltage": "",
+    "switching_loss_axes_temperature": "",
+    "switching_loss_eon_table": "",
+    "switching_loss_eoff_table": "",
+    "switching_loss_err_table": "",
 }
 
 
