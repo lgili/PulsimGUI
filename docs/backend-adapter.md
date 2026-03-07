@@ -94,7 +94,7 @@ All telemetry keys are optional and depend on backend version/capabilities.
 
 ## Operational Best Practices
 
-- Pin backend to `v0.7.0` for reproducibility.
+- Pin backend to `v0.7.1` for reproducibility.
 - For advanced electrothermal parity, ensure backend exposes:
   - `SimulationOptions.switching_energy_surfaces`
   - `ThermalDeviceConfig.network_kind`, `stage_rth/stage_cth`

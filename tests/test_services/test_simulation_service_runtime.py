@@ -811,6 +811,39 @@ def test_prevalidate_blocks_shared_sink_fields_without_sink_id(monkeypatch) -> N
     assert "shared_sink_id" in issue
 
 
+def test_prevalidate_accepts_default_shared_sink_values_without_sink_id(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "thermal_enabled": True,
+                        "thermal_rth": 1.0,
+                        "thermal_cth": 0.1,
+                        "thermal_temp_init": 25.0,
+                        "thermal_temp_ref": 25.0,
+                        "thermal_alpha": 0.004,
+                        "thermal_shared_sink_id": "",
+                        "thermal_shared_sink_rth": 0.0,
+                        "thermal_shared_sink_cth": 0.0,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert issue is None
+
+
 def test_prevalidate_blocks_inconsistent_shared_sink_parameters(monkeypatch) -> None:
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()

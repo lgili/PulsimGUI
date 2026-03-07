@@ -78,7 +78,7 @@ python3 -m pulsimgui
 
 ## Recommended Backend
 
-For reproducible behavior, use **`pulsim v0.7.0`**.
+For reproducible behavior, use **`pulsim v0.7.1`**.
 
 This is required for full advanced electrothermal support in GUI runtime:
 
