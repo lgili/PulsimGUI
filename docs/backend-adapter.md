@@ -94,6 +94,10 @@ All telemetry keys are optional and depend on backend version/capabilities.
 
 ## Operational Best Practices
 
-- Pin backend to `v0.6.5` for reproducibility.
+- Pin backend to `v0.7.0+` for reproducibility.
+- For advanced electrothermal parity, ensure backend exposes:
+  - `SimulationOptions.switching_energy_surfaces`
+  - `ThermalDeviceConfig.network_kind`, `stage_rth/stage_cth`
+  - `ThermalDeviceConfig.shared_sink_id/shared_sink_rth/shared_sink_cth`
 - Keep `Auto-sync` enabled in validation environments.
 - For convergence failures, tune `step size`, `max step`, `max iterations`, and transient robustness first.
