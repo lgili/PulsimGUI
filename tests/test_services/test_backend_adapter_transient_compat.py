@@ -547,6 +547,63 @@ def test_transient_uses_simulation_options_without_modern_markers() -> None:
     assert seen["simulator_calls"] == 1
 
 
+def test_transient_keeps_simulation_options_failure_diagnostics_after_fallback() -> None:
+    """Fallback results should preserve why SimulationOptions failed."""
+    seen: dict[str, int] = {"run_transient_calls": 0, "simulator_calls": 0}
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            raise RuntimeError("simulator boom")
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **_kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args)
+        seen["run_transient_calls"] += 1
+        return [t_start, t_stop], [[0.0], [1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="0.6.5",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="0.6.5",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert seen["simulator_calls"] == 1
+    assert seen["run_transient_calls"] == 1
+    assert "simulator boom" in str(result.statistics.get("simulator_options_exception", ""))
+
+
 def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
     """Adapter should use SimulationOptions path when advanced controls are requested."""
     seen: dict[str, Any] = {"run_transient_calls": 0}

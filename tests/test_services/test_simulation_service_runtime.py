@@ -838,6 +838,29 @@ def test_worker_maps_invalid_thermal_configuration_diagnostic_to_error() -> None
     assert result.statistics["runtime_contract_ok"] is False
 
 
+def test_worker_flags_compatibility_fallback_after_simulation_options_failure() -> None:
+    worker = SimulationWorker(
+        backend=_DummyBackend(),
+        circuit_data={"components": []},
+        settings=SimulationSettings(t_stop=1e-6, t_step=1e-6, enable_losses=False),
+    )
+
+    result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={},
+        statistics={
+            "execution_path": "chunked",
+            "simulator_options_error": "simulator boom",
+        },
+    )
+    worker._append_runtime_contract_checks(result)
+
+    assert result.statistics["runtime_used_compatibility_fallback"] is True
+    warnings = result.statistics.get("runtime_contract_warnings", [])
+    assert any("compatibility transient fallback" in warning for warning in warnings)
+    assert result.statistics["runtime_contract_ok"] is False
+
+
 def test_worker_builds_circuit_data_before_running_backend() -> None:
     seen: dict[str, object] = {}
 

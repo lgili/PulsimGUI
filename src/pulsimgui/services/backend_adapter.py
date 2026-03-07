@@ -1893,8 +1893,17 @@ class PulsimBackend(SimulationBackend):
         result.time = []
         for name in signal_names:
             result.signals[name] = []
+        attempt_diagnostics: dict[str, Any] = {}
 
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
+            if attempt_diagnostics:
+                run_result.statistics.update(
+                    {
+                        key: value
+                        for key, value in attempt_diagnostics.items()
+                        if key not in run_result.statistics
+                    }
+                )
             if run_result.error_message:
                 return run_result
             self._ensure_virtual_probe_channels(circuit, run_result, signal_names)
@@ -1915,15 +1924,15 @@ class PulsimBackend(SimulationBackend):
                 )
                 if not simulator_result.error_message:
                     return _finalize_attempt(simulator_result)
-                result.statistics["simulator_options_error"] = simulator_result.error_message
+                attempt_diagnostics["simulator_options_error"] = simulator_result.error_message
                 if "cancel" in simulator_result.error_message.lower():
-                    return simulator_result
+                    return _finalize_attempt(simulator_result)
                 callbacks.progress(
                     5.0,
                     "SimulationOptions path failed; retrying compatibility transient...",
                 )
             except Exception as exc:
-                result.statistics["simulator_options_exception"] = str(exc)
+                attempt_diagnostics["simulator_options_exception"] = str(exc)
                 callbacks.progress(
                     5.0,
                     "SimulationOptions unavailable; retrying compatibility transient...",

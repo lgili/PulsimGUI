@@ -565,6 +565,18 @@ class SimulationWorker(QThread):
                     "invalid_thermal_configuration: check simulation thermal defaults "
                     "and per-component thermal parameters."
                 )
+        execution_path = str(stats.get("execution_path", "") or "").strip().lower()
+        simulator_options_failure = str(
+            stats.get("simulator_options_error") or stats.get("simulator_options_exception") or ""
+        ).strip()
+        if simulator_options_failure and execution_path != "simulator_options":
+            stats["runtime_used_compatibility_fallback"] = True
+            warnings.append(
+                "SimulationOptions path failed and compatibility transient fallback was used; "
+                "advanced control/thermal telemetry may be degraded."
+            )
+        else:
+            stats["runtime_used_compatibility_fallback"] = False
 
         if not result.time:
             stats["runtime_contract_ok"] = False
