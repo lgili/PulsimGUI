@@ -516,6 +516,46 @@ def test_convert_gui_circuit_returns_detached_cached_payload(monkeypatch) -> Non
     assert comp_second["parameters"]["resistance"] == 10.0
 
 
+def test_convert_gui_circuit_emits_component_thermal_and_loss_blocks(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="ElectrothermalBlocks")
+    circuit = project.get_active_circuit()
+    m1 = Component(type=ComponentType.MOSFET_N, name="M1")
+    m1.parameters.update(
+        {
+            "thermal_enabled": True,
+            "thermal_network": "cauer",
+            "thermal_rth_stages": "0.2,0.3",
+            "thermal_cth_stages": "0.01,0.02",
+            "thermal_shared_sink_id": "HS1",
+            "thermal_shared_sink_rth": 0.25,
+            "thermal_shared_sink_cth": 0.04,
+            "switching_loss_model": "datasheet",
+            "switching_loss_axes_current": "0,10",
+            "switching_loss_axes_voltage": "0,20",
+            "switching_loss_axes_temperature": "25,125",
+            "switching_loss_eon_table": "1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6",
+            "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6",
+        }
+    )
+    circuit.add_component(m1)
+
+    payload = service.convert_gui_circuit(project)
+    comp = next(item for item in payload["components"] if item.get("name") == "M1")
+
+    assert comp["thermal"]["enabled"] is True
+    assert comp["thermal"]["network"] == "cauer"
+    assert comp["thermal"]["rth_stages"] == [0.2, 0.3]
+    assert comp["thermal"]["cth_stages"] == [0.01, 0.02]
+    assert comp["thermal"]["shared_sink_id"] == "HS1"
+    assert comp["loss"]["model"] == "datasheet"
+    assert comp["loss"]["axes"]["current"] == [0.0, 10.0]
+    assert len(comp["loss"]["eon"]) == 8
+    assert len(comp["loss"]["eoff"]) == 8
+
+
 def test_worker_conversion_reuses_cache_until_project_changes(monkeypatch) -> None:
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()
