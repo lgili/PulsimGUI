@@ -594,6 +594,49 @@ def test_worker_conversion_cache_invalidated_when_settings_change(monkeypatch) -
     assert second["simulation"]["tstop"] == 2e-3
 
 
+def test_run_transient_project_syncs_project_settings_before_worker(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(
+        t_stop=1e-3,
+        t_step=1e-6,
+        abs_tol=1e-12,
+        max_newton_iterations=50,
+    )
+
+    project = Project(name="ProjectRunSync")
+    project.simulation_settings.tstop = 0.02
+    project.simulation_settings.dt = 5e-6
+    project.simulation_settings.abstol = 1e-15
+    project.simulation_settings.max_iterations = 88
+    project.simulation_settings.control_mode = "discrete"
+    project.simulation_settings.control_sample_time = 2e-6
+
+    captured: dict[str, float | int | str] = {}
+
+    monkeypatch.setattr(service, "_ensure_backend_ready", lambda: True)
+
+    def _capture_worker(worker: SimulationWorker) -> None:
+        captured["t_stop"] = worker._settings.t_stop
+        captured["t_step"] = worker._settings.t_step
+        captured["abs_tol"] = worker._settings.abs_tol
+        captured["max_newton_iterations"] = worker._settings.max_newton_iterations
+        captured["control_mode"] = worker._settings.control_mode
+        captured["control_sample_time"] = worker._settings.control_sample_time
+
+    monkeypatch.setattr(service, "_attach_and_schedule_worker", _capture_worker)
+
+    service.run_transient_project(project)
+
+    assert service.state == SimulationState.RUNNING
+    assert captured["t_stop"] == 0.02
+    assert captured["t_step"] == 5e-6
+    assert captured["abs_tol"] == 1e-10
+    assert captured["max_newton_iterations"] == 88
+    assert captured["control_mode"] == "discrete"
+    assert captured["control_sample_time"] == 2e-6
+
+
 def test_prevalidate_blocks_component_thermal_when_global_thermal_disabled(monkeypatch) -> None:
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()

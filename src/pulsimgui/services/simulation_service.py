@@ -1071,6 +1071,145 @@ class SimulationService(QObject):
         """
         return self._backend.has_capability(name)
 
+    def apply_project_simulation_settings(self, project: Any, *, persist: bool = False) -> None:
+        """Mirror ``project.simulation_settings`` into runtime settings."""
+        project_settings = getattr(project, "simulation_settings", None)
+        if project_settings is None:
+            return
+
+        runtime_settings = self._settings
+        runtime_settings.t_start = float(getattr(project_settings, "tstart", runtime_settings.t_start))
+        runtime_settings.t_stop = float(getattr(project_settings, "tstop", runtime_settings.t_stop))
+        runtime_settings.t_step = float(getattr(project_settings, "dt", runtime_settings.t_step))
+        runtime_settings.max_step = float(
+            getattr(project_settings, "max_step", runtime_settings.max_step)
+        )
+        runtime_settings.abs_tol = max(
+            float(getattr(project_settings, "abstol", runtime_settings.abs_tol)),
+            1e-10,
+        )
+        runtime_settings.rel_tol = float(getattr(project_settings, "reltol", runtime_settings.rel_tol))
+        runtime_settings.solver = normalize_integration_method(
+            getattr(project_settings, "solver", runtime_settings.solver)
+        )
+        runtime_settings.step_mode = normalize_step_mode(
+            getattr(project_settings, "step_mode", runtime_settings.step_mode)
+        )
+        runtime_settings.output_points = int(
+            getattr(project_settings, "output_points", runtime_settings.output_points)
+        )
+        runtime_settings.enable_events = bool(
+            getattr(project_settings, "enable_events", runtime_settings.enable_events)
+        )
+        runtime_settings.max_step_retries = int(
+            getattr(project_settings, "max_step_retries", runtime_settings.max_step_retries)
+        )
+        runtime_settings.max_newton_iterations = int(
+            getattr(project_settings, "max_iterations", runtime_settings.max_newton_iterations)
+        )
+        runtime_settings.enable_voltage_limiting = bool(
+            getattr(project_settings, "enable_voltage_limiting", runtime_settings.enable_voltage_limiting)
+        )
+        runtime_settings.max_voltage_step = float(
+            getattr(project_settings, "max_voltage_step", runtime_settings.max_voltage_step)
+        )
+        runtime_settings.dc_strategy = str(
+            getattr(project_settings, "dc_strategy", runtime_settings.dc_strategy)
+        )
+        runtime_settings.gmin_initial = float(
+            getattr(project_settings, "gmin_initial", runtime_settings.gmin_initial)
+        )
+        runtime_settings.gmin_final = float(
+            getattr(project_settings, "gmin_final", runtime_settings.gmin_final)
+        )
+        runtime_settings.dc_source_steps = int(
+            getattr(project_settings, "dc_source_steps", runtime_settings.dc_source_steps)
+        )
+        runtime_settings.transient_robust_mode = bool(
+            getattr(project_settings, "transient_robust_mode", runtime_settings.transient_robust_mode)
+        )
+        runtime_settings.transient_auto_regularize = bool(
+            getattr(project_settings, "transient_auto_regularize", runtime_settings.transient_auto_regularize)
+        )
+        runtime_settings.enable_losses = bool(
+            getattr(project_settings, "enable_losses", runtime_settings.enable_losses)
+        )
+        runtime_settings.thermal_ambient = float(
+            getattr(project_settings, "thermal_ambient", runtime_settings.thermal_ambient)
+        )
+        runtime_settings.thermal_include_switching_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_switching_losses",
+                runtime_settings.thermal_include_switching_losses,
+            )
+        )
+        runtime_settings.thermal_include_conduction_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_conduction_losses",
+                runtime_settings.thermal_include_conduction_losses,
+            )
+        )
+        runtime_settings.thermal_network = normalize_thermal_network(
+            str(
+                getattr(project_settings, "thermal_network", runtime_settings.thermal_network)
+                or runtime_settings.thermal_network
+            )
+        )
+        runtime_settings.thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(project_settings, "thermal_policy", runtime_settings.thermal_policy)
+                or runtime_settings.thermal_policy
+            )
+        )
+        runtime_settings.thermal_default_rth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_rth",
+                    runtime_settings.thermal_default_rth,
+                )
+            ),
+        )
+        runtime_settings.thermal_default_cth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_cth",
+                    runtime_settings.thermal_default_cth,
+                )
+            ),
+        )
+        runtime_settings.formulation_mode = normalize_formulation_mode(
+            getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
+        )
+        runtime_settings.direct_formulation_fallback = bool(
+            getattr(
+                project_settings,
+                "direct_formulation_fallback",
+                runtime_settings.direct_formulation_fallback,
+            )
+        )
+        runtime_settings.control_mode = normalize_control_mode(
+            getattr(project_settings, "control_mode", runtime_settings.control_mode)
+        )
+        runtime_settings.control_sample_time = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "control_sample_time",
+                    runtime_settings.control_sample_time,
+                )
+            ),
+        )
+        self._circuit_data_builder.clear()
+        if persist:
+            self._persist_simulation_settings()
+
     @property
     def available_backends(self) -> list[BackendInfo]:
         """Available backend options discovered at runtime."""
@@ -1772,6 +1911,7 @@ class SimulationService(QObject):
         if self.is_running:
             self.error.emit("Simulation already running")
             return
+        self.apply_project_simulation_settings(project)
 
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(-1, "Preparing simulation...")

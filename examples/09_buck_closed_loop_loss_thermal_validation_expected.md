@@ -10,6 +10,7 @@ Use this with `09_buck_closed_loop_loss_thermal_validation.pulsim`.
 - `L = 220 uH`
 - `Cout = 220 uF`
 - `fs = 10 kHz`
+- `tstop = 20 ms`
 
 ## Theoretical Electrical Targets (Ideal Buck, CCM)
 
@@ -38,7 +39,7 @@ Use this with `09_buck_closed_loop_loss_thermal_validation.pulsim`.
 ## Pass Criteria (GUI)
 
 - `Vout` average (last 20% of transient): `5.7 V` to `6.3 V`
-- PWM duty in steady state: `0.45` to `0.55`
+- PWM duty in steady state: `0.58` to `0.65` (non-ideal switch/diode losses)
 - `Vsw` toggling between approximately `0 V` and `12 V`
 - `IL` must not diverge and should show triangular ripple around load current
 

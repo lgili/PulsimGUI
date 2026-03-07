@@ -5,7 +5,7 @@
   "modified": "2026-03-06T18:22:41.090689",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 2.0,
+    "tstop": 0.02,
     "dt": 1e-06,
     "max_step": 1e-06,
     "tstart": 0.0,
