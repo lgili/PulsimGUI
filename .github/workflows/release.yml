@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version override (e.g. 0.6.2)"
+        description: "Optional version override (e.g. 0.6.3)"
         required: false
         default: ""
 
@@ -91,6 +91,12 @@ jobs:
         shell: pwsh
         run: |
           python -c "import pulsim, pulsim._pulsim; print('pulsim backend available:', pulsim.__version__)"
+
+      - name: Smoke test built-in templates
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python scripts/smoke_templates.py
 
       - name: Build package
         shell: pwsh
@@ -329,6 +335,11 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Smoke test built-in templates
+        shell: bash
+        run: |
+          PYTHONPATH=src python scripts/smoke_templates.py
+
       - name: Build package
         shell: bash
         run: python scripts/build.py --platform macos
@@ -430,6 +441,11 @@ jobs:
           import pulsim._pulsim
           print("pulsim backend available:", pulsim.__version__)
           PY
+
+      - name: Smoke test built-in templates
+        shell: bash
+        run: |
+          PYTHONPATH=src python scripts/smoke_templates.py
 
       - name: Build package
         shell: bash
