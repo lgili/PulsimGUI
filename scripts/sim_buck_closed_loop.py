@@ -21,18 +21,18 @@ import json
 import sys
 from pathlib import Path
 
+import pulsim as ps
+
+from pulsimgui.models.component import ComponentType
+from pulsimgui.models.project import Project
+from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
+from pulsimgui.services.simulation_service import SimulationSettings
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "src"))
-
-import pulsim as ps
-from pulsimgui.models.component import ComponentType
-from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
-from pulsimgui.models.project import Project
-from pulsimgui.services.simulation_service import SimulationSettings
-from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 SIGNAL_COMPONENT_TYPES = {
     ComponentType.CONSTANT.name,
@@ -188,7 +188,7 @@ def run(t_stop: float = 5e-3, dt: float = 0.2e-6) -> None:
         print(f"  Vout @ t=0     : {v_start:.4f} V")
         print(f"  Vout @ t=end   : {v_end:.4f} V")
         print(f"  Vout range     : [{v_min:.4f}, {v_max:.4f}] V")
-        print(f"  Target (Vref)  : 6.0000 V")
+        print("  Target (Vref)  : 6.0000 V")
         error_pct = abs(v_end - 6.0) / 6.0 * 100
         print(f"  Steady-state ε : {error_pct:.2f}%")
         converged = error_pct < 5.0

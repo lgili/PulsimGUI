@@ -7,14 +7,14 @@ GUI can keep the active backend aligned with a configured target version.
 from __future__ import annotations
 
 import importlib
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
-import re
 
-DEFAULT_BACKEND_TARGET_VERSION = "v0.6.5"
+DEFAULT_BACKEND_TARGET_VERSION = "v0.7.1"
 
 
 def normalize_backend_version(version: str | None) -> str:
@@ -61,10 +61,12 @@ class BackendRuntimeConfig:
 
     @property
     def normalized_target_version(self) -> str:
+        """Return target backend version normalized without a leading v prefix."""
         return normalize_backend_version(self.target_version)
 
     @property
     def normalized_source(self) -> str:
+        """Return normalized backend source identifier for runtime install logic."""
         source = (self.source or "").strip().lower()
         return source if source in {"pypi", "local"} else "pypi"
 

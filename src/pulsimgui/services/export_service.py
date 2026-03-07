@@ -47,7 +47,7 @@ class ExportService:
             filepath: Path to save the netlist
         """
         lines = [
-            f"* SPICE Netlist exported from PulsimGui",
+            "* SPICE Netlist exported from PulsimGui",
             f"* Circuit: {circuit.name}",
             "",
         ]
@@ -60,7 +60,6 @@ class ExportService:
             if comp.type == ComponentType.GROUND:
                 continue  # Ground is implicit in SPICE (node 0)
 
-            spice_prefix = SPICE_COMPONENT_MAP.get(comp.type, "X")
             spice_line = ExportService._component_to_spice(comp, node_map)
             if spice_line:
                 lines.append(spice_line)

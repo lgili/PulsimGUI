@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pulsimgui.services.backend_adapter import BackendInfo
-from pulsimgui.services.backend_types import BackendVersion, MIN_BACKEND_API
+from pulsimgui.services.backend_types import MIN_BACKEND_API, BackendVersion
 
 
 class TestBackendVersion:

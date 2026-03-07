@@ -6,12 +6,13 @@ import copy
 import math
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, QTimer, Signal
+from PySide6.QtCore import QMutex, QObject, QThread, QTimer, QWaitCondition, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
@@ -34,6 +35,7 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
+from pulsimgui.services.circuit_data_builder import CircuitDataBuilder
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -461,9 +463,16 @@ class SimulationWorker(QThread):
                 callbacks,
             )
 
-            result.time = list(backend_result.time)
-            result.signals = {name: list(values) for name, values in backend_result.signals.items()}
-            result.statistics = dict(backend_result.statistics)
+            result.time = self._as_list_fast(backend_result.time)
+            result.signals = {
+                name: self._as_list_fast(values)
+                for name, values in backend_result.signals.items()
+            }
+            result.statistics = (
+                backend_result.statistics
+                if isinstance(backend_result.statistics, dict)
+                else dict(backend_result.statistics)
+            )
             result.error_message = backend_result.error_message
 
             self._append_runtime_contract_checks(result)
@@ -481,6 +490,17 @@ class SimulationWorker(QThread):
             self.finished_signal.emit(result)
         finally:
             self._thread_ident = None
+
+    @staticmethod
+    def _as_list_fast(values: Any) -> list[Any]:
+        """Return list-like data with minimal overhead.
+
+        Backend adapters already emit Python lists in the common path.
+        Reusing list instances avoids expensive large copies at simulation end.
+        """
+        if isinstance(values, list):
+            return values
+        return list(values)
 
     def _wait_if_paused(self) -> None:
         self._mutex.lock()
@@ -545,6 +565,18 @@ class SimulationWorker(QThread):
                     "invalid_thermal_configuration: check simulation thermal defaults "
                     "and per-component thermal parameters."
                 )
+        execution_path = str(stats.get("execution_path", "") or "").strip().lower()
+        simulator_options_failure = str(
+            stats.get("simulator_options_error") or stats.get("simulator_options_exception") or ""
+        ).strip()
+        if simulator_options_failure and execution_path != "simulator_options":
+            stats["runtime_used_compatibility_fallback"] = True
+            warnings.append(
+                "SimulationOptions path failed and compatibility transient fallback was used; "
+                "advanced control/thermal telemetry may be degraded."
+            )
+        else:
+            stats["runtime_used_compatibility_fallback"] = False
 
         if not result.time:
             stats["runtime_contract_ok"] = False
@@ -834,6 +866,7 @@ class SimulationService(QObject):
         self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
         self._runtime_service = BackendRuntimeService()
+        self._circuit_data_builder = CircuitDataBuilder()
         self._runtime_config = BackendRuntimeConfig()
         self._runtime_issue: str | None = None
         preferred_backend = None
@@ -994,6 +1027,7 @@ class SimulationService(QObject):
         )
         self._settings.control_mode = normalize_control_mode(self._settings.control_mode)
         self._settings.control_sample_time = max(0.0, float(self._settings.control_sample_time))
+        self._circuit_data_builder.clear()
         self._persist_simulation_settings()
 
     @property
@@ -1036,6 +1070,145 @@ class SimulationService(QObject):
             True if the capability is supported.
         """
         return self._backend.has_capability(name)
+
+    def apply_project_simulation_settings(self, project: Any, *, persist: bool = False) -> None:
+        """Mirror ``project.simulation_settings`` into runtime settings."""
+        project_settings = getattr(project, "simulation_settings", None)
+        if project_settings is None:
+            return
+
+        runtime_settings = self._settings
+        runtime_settings.t_start = float(getattr(project_settings, "tstart", runtime_settings.t_start))
+        runtime_settings.t_stop = float(getattr(project_settings, "tstop", runtime_settings.t_stop))
+        runtime_settings.t_step = float(getattr(project_settings, "dt", runtime_settings.t_step))
+        runtime_settings.max_step = float(
+            getattr(project_settings, "max_step", runtime_settings.max_step)
+        )
+        runtime_settings.abs_tol = max(
+            float(getattr(project_settings, "abstol", runtime_settings.abs_tol)),
+            1e-10,
+        )
+        runtime_settings.rel_tol = float(getattr(project_settings, "reltol", runtime_settings.rel_tol))
+        runtime_settings.solver = normalize_integration_method(
+            getattr(project_settings, "solver", runtime_settings.solver)
+        )
+        runtime_settings.step_mode = normalize_step_mode(
+            getattr(project_settings, "step_mode", runtime_settings.step_mode)
+        )
+        runtime_settings.output_points = int(
+            getattr(project_settings, "output_points", runtime_settings.output_points)
+        )
+        runtime_settings.enable_events = bool(
+            getattr(project_settings, "enable_events", runtime_settings.enable_events)
+        )
+        runtime_settings.max_step_retries = int(
+            getattr(project_settings, "max_step_retries", runtime_settings.max_step_retries)
+        )
+        runtime_settings.max_newton_iterations = int(
+            getattr(project_settings, "max_iterations", runtime_settings.max_newton_iterations)
+        )
+        runtime_settings.enable_voltage_limiting = bool(
+            getattr(project_settings, "enable_voltage_limiting", runtime_settings.enable_voltage_limiting)
+        )
+        runtime_settings.max_voltage_step = float(
+            getattr(project_settings, "max_voltage_step", runtime_settings.max_voltage_step)
+        )
+        runtime_settings.dc_strategy = str(
+            getattr(project_settings, "dc_strategy", runtime_settings.dc_strategy)
+        )
+        runtime_settings.gmin_initial = float(
+            getattr(project_settings, "gmin_initial", runtime_settings.gmin_initial)
+        )
+        runtime_settings.gmin_final = float(
+            getattr(project_settings, "gmin_final", runtime_settings.gmin_final)
+        )
+        runtime_settings.dc_source_steps = int(
+            getattr(project_settings, "dc_source_steps", runtime_settings.dc_source_steps)
+        )
+        runtime_settings.transient_robust_mode = bool(
+            getattr(project_settings, "transient_robust_mode", runtime_settings.transient_robust_mode)
+        )
+        runtime_settings.transient_auto_regularize = bool(
+            getattr(project_settings, "transient_auto_regularize", runtime_settings.transient_auto_regularize)
+        )
+        runtime_settings.enable_losses = bool(
+            getattr(project_settings, "enable_losses", runtime_settings.enable_losses)
+        )
+        runtime_settings.thermal_ambient = float(
+            getattr(project_settings, "thermal_ambient", runtime_settings.thermal_ambient)
+        )
+        runtime_settings.thermal_include_switching_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_switching_losses",
+                runtime_settings.thermal_include_switching_losses,
+            )
+        )
+        runtime_settings.thermal_include_conduction_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_conduction_losses",
+                runtime_settings.thermal_include_conduction_losses,
+            )
+        )
+        runtime_settings.thermal_network = normalize_thermal_network(
+            str(
+                getattr(project_settings, "thermal_network", runtime_settings.thermal_network)
+                or runtime_settings.thermal_network
+            )
+        )
+        runtime_settings.thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(project_settings, "thermal_policy", runtime_settings.thermal_policy)
+                or runtime_settings.thermal_policy
+            )
+        )
+        runtime_settings.thermal_default_rth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_rth",
+                    runtime_settings.thermal_default_rth,
+                )
+            ),
+        )
+        runtime_settings.thermal_default_cth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_cth",
+                    runtime_settings.thermal_default_cth,
+                )
+            ),
+        )
+        runtime_settings.formulation_mode = normalize_formulation_mode(
+            getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
+        )
+        runtime_settings.direct_formulation_fallback = bool(
+            getattr(
+                project_settings,
+                "direct_formulation_fallback",
+                runtime_settings.direct_formulation_fallback,
+            )
+        )
+        runtime_settings.control_mode = normalize_control_mode(
+            getattr(project_settings, "control_mode", runtime_settings.control_mode)
+        )
+        runtime_settings.control_sample_time = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "control_sample_time",
+                    runtime_settings.control_sample_time,
+                )
+            ),
+        )
+        self._circuit_data_builder.clear()
+        if persist:
+            self._persist_simulation_settings()
 
     @property
     def available_backends(self) -> list[BackendInfo]:
@@ -1205,13 +1378,90 @@ class SimulationService(QObject):
         return parsed
 
     @staticmethod
+    def _to_finite_float_sequence(value: Any) -> list[float]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            tokens = [part.strip() for part in text.replace(";", ",").split(",")]
+            out: list[float] = []
+            for token in tokens:
+                if not token:
+                    continue
+                parsed = SimulationService._to_finite_float(token)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        if isinstance(value, (list, tuple)):
+            out: list[float] = []
+            for item in value:
+                parsed = SimulationService._to_finite_float(item)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        return []
+
+    @staticmethod
+    def _normalize_component_thermal_network(
+        raw_value: Any,
+        *,
+        stage_mode_requested: bool = False,
+    ) -> str | None:
+        raw = str(raw_value or "").strip().lower()
+        aliases = {
+            "single": "single_rc",
+            "single-rc": "single_rc",
+            "singlerc": "single_rc",
+            "rc": "single_rc",
+        }
+        normalized = aliases.get(raw, raw)
+        if not normalized:
+            return "foster" if stage_mode_requested else "single_rc"
+        if normalized in {"single_rc", "foster", "cauer"}:
+            return normalized
+        return None
+
+    @staticmethod
+    def _strictly_increasing(values: list[float]) -> bool:
+        return all(values[index] > values[index - 1] for index in range(1, len(values)))
+
+    @staticmethod
+    def _first_value_from_maps(
+        primary: dict[str, Any],
+        secondary: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> tuple[bool, Any]:
+        for key in keys:
+            if key in primary:
+                return True, primary.get(key)
+            if key in secondary:
+                return True, secondary.get(key)
+        return False, None
+
+    @staticmethod
     def _component_thermal_payload(component: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         component_thermal = component.get("thermal")
         if isinstance(component_thermal, dict):
             if "enabled" in component_thermal:
                 payload["thermal_enabled"] = component_thermal.get("enabled")
-            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
                 if key in component_thermal:
                     payload[f"thermal_{key}"] = component_thermal.get(key)
 
@@ -1219,7 +1469,19 @@ class SimulationService(QObject):
         if isinstance(nested_thermal, dict):
             if "enabled" in nested_thermal and "thermal_enabled" not in payload:
                 payload["thermal_enabled"] = nested_thermal.get("enabled")
-            for key in ("rth", "cth", "temp_init", "temp_ref", "alpha"):
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
                 thermal_key = f"thermal_{key}"
                 if key in nested_thermal and thermal_key not in payload:
                     payload[thermal_key] = nested_thermal.get(key)
@@ -1227,16 +1489,28 @@ class SimulationService(QObject):
         for key in (
             "thermal_enabled",
             "enable_thermal_port",
+            "thermal_network",
             "thermal_rth",
             "thermal_cth",
+            "thermal_rth_stages",
+            "thermal_cth_stages",
             "thermal_temp_init",
             "thermal_temp_ref",
             "thermal_alpha",
+            "thermal_shared_sink_id",
+            "thermal_shared_sink_rth",
+            "thermal_shared_sink_cth",
+            "network",
             "rth",
             "cth",
+            "rth_stages",
+            "cth_stages",
             "temp_init",
             "temp_ref",
             "alpha",
+            "shared_sink_id",
+            "shared_sink_rth",
+            "shared_sink_cth",
         ):
             if key in parameters:
                 payload[key] = parameters.get(key)
@@ -1262,6 +1536,7 @@ class SimulationService(QObject):
         components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
         by_name: dict[str, str] = {}
         thermal_enabled_components = 0
+        shared_sink_defs: dict[str, tuple[float, float]] = {}
         simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
         thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
 
@@ -1297,6 +1572,131 @@ class SimulationService(QObject):
             comp_type = self._normalize_component_type(component.get("type", ""))
             comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+            loss_model_raw_found, loss_model_raw = self._first_value_from_maps(
+                loss_payload,
+                params,
+                ("model", "switching_loss_model"),
+            )
+            loss_model = str(loss_model_raw or "").strip().lower()
+            if not loss_model:
+                loss_model = "scalar"
+            if loss_model not in {"scalar", "datasheet"}:
+                return (
+                    "PULSIM_YAML_E_LOSS_MODEL_INVALID: "
+                    f"component '{comp_name}' has unsupported loss.model '{loss_model}'."
+                )
+
+            if loss_model == "datasheet":
+                axes = loss_payload.get("axes")
+                axes = axes if isinstance(axes, dict) else {}
+                current_raw = axes.get("current")
+                voltage_raw = axes.get("voltage")
+                temperature_raw = axes.get("temperature")
+                if current_raw is None:
+                    current_raw = params.get("switching_loss_axes_current", params.get("switching_loss_axis_current"))
+                if voltage_raw is None:
+                    voltage_raw = params.get("switching_loss_axes_voltage", params.get("switching_loss_axis_voltage"))
+                if temperature_raw is None:
+                    temperature_raw = params.get(
+                        "switching_loss_axes_temperature",
+                        params.get("switching_loss_axis_temperature"),
+                    )
+
+                current_axis = self._to_finite_float_sequence(current_raw)
+                voltage_axis = self._to_finite_float_sequence(voltage_raw)
+                temperature_axis = self._to_finite_float_sequence(temperature_raw)
+                if (
+                    not current_axis
+                    or not voltage_axis
+                    or not temperature_axis
+                    or not self._strictly_increasing(current_axis)
+                    or not self._strictly_increasing(voltage_axis)
+                    or not self._strictly_increasing(temperature_axis)
+                ):
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires finite strictly increasing axes."
+                    )
+
+                expected_size = len(current_axis) * len(voltage_axis) * len(temperature_axis)
+                eon_raw_found, eon_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eon", "switching_loss_eon_table"),
+                )
+                eoff_raw_found, eoff_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eoff", "switching_loss_eoff_table"),
+                )
+                _, err_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("err", "switching_loss_err_table"),
+                )
+                eon_table = self._to_finite_float_sequence(eon_raw)
+                eoff_table = self._to_finite_float_sequence(eoff_raw)
+                err_table = self._to_finite_float_sequence(err_raw)
+                if not eon_raw_found or not eoff_raw_found:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires eon and eoff tables."
+                    )
+                if len(eon_table) != expected_size or len(eoff_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss tables must match axes size."
+                    )
+                if err_table and len(err_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet err table must match axes size."
+                    )
+                if any(value < 0.0 for value in eon_table + eoff_table + err_table):
+                    return (
+                        "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                        f"component '{comp_name}' datasheet loss entries must be >= 0."
+                    )
+            elif loss_model_raw_found or any(
+                key in params
+                for key in (
+                    "switching_eon_j",
+                    "switching_eoff_j",
+                    "switching_err_j",
+                    "switching_eon",
+                    "switching_eoff",
+                    "switching_err",
+                )
+            ):
+                for key_aliases, field_name in (
+                    (("switching_eon_j", "switching_eon", "e_on", "eon"), "eon"),
+                    (("switching_eoff_j", "switching_eoff", "e_off", "eoff"), "eoff"),
+                    (("switching_err_j", "switching_err", "e_rr", "err"), "err"),
+                ):
+                    found, raw_value = self._first_value_from_maps(
+                        loss_payload,
+                        params,
+                        key_aliases,
+                    )
+                    if not found:
+                        continue
+                    parsed = self._to_finite_float(raw_value)
+                    if parsed is None or parsed < 0.0:
+                        return (
+                            "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                            f"component '{comp_name}' loss.{field_name} must be finite and >= 0."
+                        )
+
             thermal_payload = self._component_thermal_payload(component, params)
             if not self._component_thermal_enabled(thermal_payload):
                 continue
@@ -1307,21 +1707,25 @@ class SimulationService(QObject):
                     "PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT: "
                     f"component '{comp_name}' ({comp_type}) does not support thermal enablement."
                 )
-
-            has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
-            has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
-            if not has_rth or not has_cth:
+            rth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_rth_stages", thermal_payload.get("rth_stages"))
+            )
+            cth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_cth_stages", thermal_payload.get("cth_stages"))
+            )
+            stage_mode_requested = bool(rth_stages or cth_stages)
+            network = self._normalize_component_thermal_network(
+                thermal_payload.get("thermal_network", thermal_payload.get("network")),
+                stage_mode_requested=stage_mode_requested,
+            )
+            if network is None:
                 return (
-                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
-                    f"component '{comp_name}' thermal requires rth and cth."
+                    "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                    f"component '{comp_name}' has unsupported thermal.network."
                 )
 
-            rth = self._to_finite_float(
-                thermal_payload.get("thermal_rth", thermal_payload.get("rth"))
-            )
-            cth = self._to_finite_float(
-                thermal_payload.get("thermal_cth", thermal_payload.get("cth"))
-            )
+            rth = self._to_finite_float(thermal_payload.get("thermal_rth", thermal_payload.get("rth")))
+            cth = self._to_finite_float(thermal_payload.get("thermal_cth", thermal_payload.get("cth")))
             temp_init = self._to_finite_float(
                 thermal_payload.get(
                     "thermal_temp_init",
@@ -1338,18 +1742,117 @@ class SimulationService(QObject):
                 thermal_payload.get("thermal_alpha", thermal_payload.get("alpha", 0.004))
             )
 
-            if (
-                rth is None
-                or cth is None
-                or temp_init is None
-                or temp_ref is None
-                or alpha is None
-                or rth <= 0.0
-                or cth < 0.0
-            ):
+            if temp_init is None or temp_ref is None or alpha is None:
                 return (
                     "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
-                    f"component '{comp_name}' requires rth>0, cth>=0 and finite temp_init/temp_ref/alpha."
+                    f"component '{comp_name}' requires finite temp_init/temp_ref/alpha."
+                )
+
+            if network == "single_rc":
+                has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
+                has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
+                if not has_rth or not has_cth:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' thermal requires rth and cth."
+                    )
+                if rth is None or cth is None or rth <= 0.0 or cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires rth>0 and cth>=0 for single_rc."
+                    )
+                if rth_stages or cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                        f"component '{comp_name}' single_rc cannot use rth_stages/cth_stages."
+                    )
+            else:
+                if not rth_stages or not cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' staged thermal requires rth_stages and cth_stages."
+                    )
+                if len(rth_stages) != len(cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_DIMENSION_INVALID: "
+                        f"component '{comp_name}' staged thermal requires matching rth_stages/cth_stages."
+                    )
+                if any(value <= 0.0 for value in rth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every rth_stages[i] > 0."
+                    )
+                if any(value < 0.0 for value in cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every cth_stages[i] >= 0."
+                    )
+                if rth is not None and rth <= 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional rth must be > 0."
+                    )
+                if cth is not None and cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional cth must be >= 0."
+                    )
+
+            shared_sink_id = str(
+                thermal_payload.get(
+                    "thermal_shared_sink_id",
+                    thermal_payload.get("shared_sink_id", ""),
+                )
+                or ""
+            ).strip()
+            shared_sink_rth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_rth",
+                    thermal_payload.get("shared_sink_rth"),
+                )
+            )
+            shared_sink_cth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_cth",
+                    thermal_payload.get("shared_sink_cth"),
+                )
+            )
+            # Thermal-capable components carry shared-sink defaults (0.0) in GUI
+            # parameters. Treat only non-zero values as explicit shared-sink usage
+            # when no shared_sink_id is provided.
+            has_shared_sink_rth = (
+                shared_sink_rth is not None and abs(shared_sink_rth) > 1e-15
+            )
+            has_shared_sink_cth = (
+                shared_sink_cth is not None and abs(shared_sink_cth) > 1e-15
+            )
+
+            if shared_sink_id:
+                if (
+                    shared_sink_rth is None
+                    or shared_sink_rth <= 0.0
+                    or shared_sink_cth is None
+                    or shared_sink_cth < 0.0
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink requires shared_sink_rth>0 and shared_sink_cth>=0."
+                    )
+                previous = shared_sink_defs.get(shared_sink_id)
+                if previous is None:
+                    shared_sink_defs[shared_sink_id] = (shared_sink_rth, shared_sink_cth)
+                elif (
+                    abs(previous[0] - shared_sink_rth) > 1e-12
+                    or abs(previous[1] - shared_sink_cth) > 1e-12
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink '{shared_sink_id}' must reuse identical shared_sink_rth/shared_sink_cth."
+                    )
+            elif has_shared_sink_rth or has_shared_sink_cth:
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    f"component '{comp_name}' shared_sink_rth/shared_sink_cth require shared_sink_id."
                 )
 
         if thermal_enabled_components > 0:
@@ -1411,6 +1914,7 @@ class SimulationService(QObject):
         if self.is_running:
             self.error.emit("Simulation already running")
             return
+        self.apply_project_simulation_settings(project)
 
         self._set_state(SimulationState.RUNNING)
         self.progress.emit(-1, "Preparing simulation...")
@@ -1420,7 +1924,7 @@ class SimulationService(QObject):
             None,
             self._settings,
             circuit_source=project,
-            circuit_builder=self.convert_gui_circuit,
+            circuit_builder=self.convert_gui_circuit_cached,
             contract_validator=self._prevalidate_runtime_contract,
         )
         self._attach_and_schedule_worker(worker)
@@ -1483,8 +1987,9 @@ class SimulationService(QObject):
         try:
             # Check if backend supports DC analysis
             if self._backend.has_capability("dc"):
-                # Use real backend for DC analysis
-                backend_result: BackendDCResult = self._backend.run_dc(circuit_data, dc_settings)
+                # Use backend with strategy fallback to improve robustness for
+                # switching circuits where a single DC method may fail.
+                backend_result = self._run_dc_with_fallback(circuit_data, dc_settings)
 
                 # Convert backend result to local DCResult
                 result.node_voltages = backend_result.node_voltages.copy()
@@ -1515,6 +2020,116 @@ class SimulationService(QObject):
             self._set_state(SimulationState.ERROR)
             self.error.emit(str(e))
             self.dc_finished.emit(result)
+
+    def _run_dc_with_fallback(self, circuit_data: dict, dc_settings: DCSettings) -> BackendDCResult:
+        """Run DC analysis using configured strategy and deterministic fallbacks."""
+        attempts = self._build_dc_fallback_attempts(dc_settings)
+        errors: list[str] = []
+        first_result: BackendDCResult | None = None
+        last_result: BackendDCResult | None = None
+
+        for index, attempt in enumerate(attempts):
+            if index > 0:
+                self.progress.emit(
+                    0,
+                    f"Retrying DC with '{attempt.strategy}' strategy...",
+                )
+            backend_result = self._backend.run_dc(circuit_data, attempt)
+            if first_result is None:
+                first_result = backend_result
+            last_result = backend_result
+            if not backend_result.error_message:
+                return backend_result
+            errors.append(f"{attempt.strategy}: {backend_result.error_message}")
+
+        if last_result is None:
+            return BackendDCResult(
+                error_message="DC analysis backend returned no result.",
+            )
+
+        if errors:
+            summarized = " | ".join(errors)
+            last_result.error_message = f"DC analysis failed after fallback attempts: {summarized}"
+        return last_result
+
+    @staticmethod
+    def _build_dc_fallback_attempts(base: DCSettings) -> list[DCSettings]:
+        """Build ordered DC strategy attempts for robust operating-point solves."""
+        normalized = replace(
+            base,
+            strategy=str(base.strategy or "auto").strip().lower() or "auto",
+            source_steps=max(1, int(base.source_steps)),
+            max_iterations=max(1, int(base.max_iterations)),
+            max_voltage_step=max(0.05, float(base.max_voltage_step)),
+            gmin_initial=max(1e-12, float(base.gmin_initial)),
+            gmin_final=max(1e-15, float(base.gmin_final)),
+        )
+        if normalized.gmin_final >= normalized.gmin_initial:
+            normalized = replace(normalized, gmin_final=max(1e-15, normalized.gmin_initial * 1e-3))
+
+        tuned_gmin_initial = min(normalized.gmin_initial, 1e-3)
+        tuned_gmin_final = min(normalized.gmin_final, tuned_gmin_initial * 1e-3)
+        tuned_gmin_final = max(1e-15, tuned_gmin_final)
+        if tuned_gmin_final >= tuned_gmin_initial:
+            tuned_gmin_final = max(1e-15, tuned_gmin_initial * 1e-3)
+
+        preferred_order = {
+            "gmin": ("gmin", "direct", "auto", "source", "pseudo"),
+            "direct": ("direct", "auto", "gmin", "source", "pseudo"),
+            "source": ("source", "auto", "gmin", "direct", "pseudo"),
+            "pseudo": ("pseudo", "auto", "gmin", "direct", "source"),
+            "auto": ("auto", "direct", "gmin", "source", "pseudo"),
+        }.get(normalized.strategy, ("auto", "direct", "gmin", "source", "pseudo"))
+
+        attempts: list[DCSettings] = []
+        seen: set[tuple[str, float, float, int, int, bool, float]] = set()
+
+        def add_attempt(candidate: DCSettings) -> None:
+            key = (
+                str(candidate.strategy),
+                float(candidate.gmin_initial),
+                float(candidate.gmin_final),
+                int(candidate.source_steps),
+                int(candidate.max_iterations),
+                bool(candidate.enable_limiting),
+                float(candidate.max_voltage_step),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            attempts.append(candidate)
+
+        add_attempt(normalized)
+        for strategy in preferred_order:
+            if strategy == "gmin":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="gmin",
+                        gmin_initial=tuned_gmin_initial,
+                        gmin_final=tuned_gmin_final,
+                        enable_limiting=True,
+                        max_voltage_step=min(normalized.max_voltage_step, 2.0),
+                    )
+                )
+            elif strategy == "source":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="source",
+                        source_steps=max(normalized.source_steps, 20),
+                        enable_limiting=True,
+                    )
+                )
+            else:
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy=strategy,
+                        enable_limiting=True,
+                    )
+                )
+        return attempts
 
     def run_ac_analysis(
         self,
@@ -1685,77 +2300,38 @@ class SimulationService(QObject):
 
     def convert_gui_circuit(self, project) -> dict:
         """Convert GUI project/circuit to simulation data format."""
-        control_mode = normalize_control_mode(self._settings.control_mode)
-        control_sample_time = max(0.0, float(self._settings.control_sample_time))
-        control_cfg: dict[str, Any] = {"mode": control_mode}
-        if control_sample_time > 0.0 or control_mode == "discrete":
-            control_cfg["sample_time"] = max(control_sample_time, 1e-12)
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=True,
+            cooperative_yield=True,
+        )
 
-        circuit_data = {
-            "schema": "pulsim-v1",
-            "version": 1,
-            "simulation": {
-                "tstart": float(self._settings.t_start),
-                "tstop": float(self._settings.t_stop),
-                "dt": float(self._settings.t_step),
-                "step_mode": normalize_step_mode(self._settings.step_mode),
-                "formulation": normalize_formulation_mode(self._settings.formulation_mode),
-                "direct_formulation_fallback": bool(self._settings.direct_formulation_fallback),
-                "enable_events": bool(self._settings.enable_events),
-                "enable_losses": bool(self._settings.enable_losses),
-                "control": control_cfg,
-                "thermal": {
-                    "enabled": bool(self._settings.enable_losses),
-                    "ambient": float(self._settings.thermal_ambient),
-                    "policy": normalize_thermal_policy(self._settings.thermal_policy),
-                    "default_rth": max(0.0, float(self._settings.thermal_default_rth)),
-                    "default_cth": max(0.0, float(self._settings.thermal_default_cth)),
-                },
-            },
-            "components": [],
-            "wires": [],
-            "nodes": {},
-            "node_map": {},
-            "node_aliases": {},
-            "metadata": {},
-        }
+    def convert_gui_circuit_cached(self, project) -> dict:
+        """Convert GUI circuit using cache-optimized worker semantics.
 
-        if not project:
-            return circuit_data
+        Returns payload references directly from conversion cache. Callers must
+        treat the returned dict as read-only.
+        """
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=False,
+            cooperative_yield=False,
+        )
 
-        circuit = project.get_active_circuit()
-        if circuit is None:
-            return circuit_data
-
-        node_map_raw = build_node_map(circuit)
-        alias_map = build_node_alias_map(circuit, node_map_raw)
-        circuit_data["node_aliases"] = alias_map
-        circuit_data["metadata"] = {"name": circuit.name}
-
-        component_node_map: dict[str, list[str]] = {}
-
-        for comp_index, comp in enumerate(circuit.components.values()):
-            if comp_index and comp_index % 128 == 0:
-                # Cooperative yield keeps UI responsive during very large netlist conversion.
-                time.sleep(0)
-            comp_dict = comp.to_dict()
-            comp_dict["parameters"] = copy.deepcopy(comp.parameters)
-            comp_id = str(comp.id)
-            pin_nodes: list[str] = []
-            for pin_index in range(len(comp.pins)):
-                node_name = node_map_raw.get((comp_id, pin_index))
-                if node_name is None:
-                    node_name = ""
-                pin_nodes.append(node_name)
-            comp_dict["pin_nodes"] = pin_nodes
-            circuit_data["components"].append(comp_dict)
-            component_node_map[comp_id] = pin_nodes
-
-        circuit_data["node_map"] = component_node_map
-
-        for wire_index, wire in enumerate(circuit.wires.values()):
-            if wire_index and wire_index % 128 == 0:
-                time.sleep(0)
-            circuit_data["wires"].append(wire.to_dict())
-
-        return circuit_data
+    def _convert_gui_circuit_for_worker(self, project) -> dict:
+        """Backward-compatible alias for worker conversion path."""
+        return self.convert_gui_circuit_cached(project)

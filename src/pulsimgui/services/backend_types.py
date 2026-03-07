@@ -10,7 +10,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # =============================================================================
 # Version Management
 # =============================================================================
@@ -33,7 +32,7 @@ class BackendVersion:
     api_version: int = 1
 
     @classmethod
-    def from_string(cls, version: str) -> "BackendVersion":
+    def from_string(cls, version: str) -> BackendVersion:
         """Parse a version string into a BackendVersion.
 
         Supports formats:
@@ -74,7 +73,7 @@ class BackendVersion:
 
         return cls(major=major, minor=minor, patch=patch, api_version=api_version)
 
-    def is_compatible_with(self, required: "BackendVersion") -> bool:
+    def is_compatible_with(self, required: BackendVersion) -> bool:
         """Check if this version satisfies the required version.
 
         Compatibility is determined by:

@@ -3,41 +3,42 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
-from importlib import import_module, metadata
 import logging
-from pathlib import Path
 import math
 import threading
 import time
-from typing import Any, Callable, Protocol, TYPE_CHECKING
-
-log = logging.getLogger(__name__)
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from importlib import import_module, metadata
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
-from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 from pulsimgui.services.backend_types import (
+    MIN_BACKEND_API,
     ACResult,
     ACSettings,
     BackendVersion,
     ConvergenceInfo,
     DCResult,
     DCSettings,
+    FosterStage,
     IterationRecord,
-    MIN_BACKEND_API,
+    LossBreakdown,
     ProblematicVariable,
     ThermalDeviceResult,
     ThermalResult,
     ThermalSettings,
     TransientResult,
     TransientSettings,
-    FosterStage,
-    LossBreakdown,
 )
+from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
+
+log = logging.getLogger(__name__)
 
 _SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
 _PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
@@ -142,9 +143,10 @@ class SimulationBackend(Protocol):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         ...
 
     def run_dc(
@@ -173,12 +175,15 @@ class SimulationBackend(Protocol):
         ...
 
     def request_pause(self, run_id: int | None = None) -> None:
+        """Request backend pause for the active simulation execution."""
         ...
 
     def request_resume(self, run_id: int | None = None) -> None:
+        """Request backend resume for the active simulation execution."""
         ...
 
     def request_stop(self, run_id: int | None = None) -> None:
+        """Request backend stop for the active simulation execution."""
         ...
 
 
@@ -207,9 +212,10 @@ class PlaceholderBackend(SimulationBackend):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         result = BackendRunResult()
 
         callbacks.progress(0, "Initializing simulation...")
@@ -284,8 +290,8 @@ class PlaceholderBackend(SimulationBackend):
             "I(M1)": 0.5,
         }
         power_dissipation = {
-            "R1": 0.025,
-            "M1": 3.5,
+            "P(R1)": 0.025,
+            "P(M1)": 3.5,
         }
         convergence_info = ConvergenceInfo(
             converged=True,
@@ -359,7 +365,7 @@ class PlaceholderBackend(SimulationBackend):
 
         # MOSFET M1
         m1_temps = []
-        for i, t in enumerate(time):
+        for _i, t in enumerate(time):
             # Exponential rise to steady state
             tau = 0.1e-3  # Thermal time constant
             steady_state = settings.ambient_temperature + 50.0
@@ -389,7 +395,7 @@ class PlaceholderBackend(SimulationBackend):
 
         # Diode D1
         d1_temps = []
-        for i, t in enumerate(time):
+        for _i, t in enumerate(time):
             tau = 0.05e-3
             steady_state = settings.ambient_temperature + 30.0
             temp = settings.ambient_temperature + (steady_state - settings.ambient_temperature) * (
@@ -473,9 +479,10 @@ class PulsimBackend(SimulationBackend):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         result = BackendRunResult()
 
         callbacks.progress(0.0, "Starting Pulsim simulation...")
@@ -849,6 +856,18 @@ class PulsimBackend(SimulationBackend):
         return normalized
 
     @staticmethod
+    def _normalize_thermal_network_kind(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "single": "single_rc",
+            "single-rc": "single_rc",
+            "singlerc": "single_rc",
+            "rc": "single_rc",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in {"single_rc", "foster", "cauer"} else "single_rc"
+
+    @staticmethod
     def _component_name(component: dict[str, Any]) -> str:
         return str(component.get("name") or component.get("id") or "").strip()
 
@@ -862,6 +881,106 @@ class PulsimBackend(SimulationBackend):
             except (TypeError, ValueError):
                 continue
         return float(default)
+
+    @staticmethod
+    def _first_text(params: dict[str, Any], keys: tuple[str, ...], default: str = "") -> str:
+        for key in keys:
+            if key not in params:
+                continue
+            value = params.get(key)
+            if value is None:
+                continue
+            return str(value).strip()
+        return default
+
+    @staticmethod
+    def _parse_numeric_sequence(raw_value: Any) -> list[float]:
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return []
+            parts = [item.strip() for item in text.replace(";", ",").split(",")]
+            out: list[float] = []
+            for part in parts:
+                if not part:
+                    continue
+                try:
+                    out.append(float(part))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        if isinstance(raw_value, (list, tuple)):
+            out: list[float] = []
+            for item in raw_value:
+                try:
+                    out.append(float(item))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        return []
+
+    @classmethod
+    def _first_numeric_sequence(cls, params: dict[str, Any], keys: tuple[str, ...]) -> list[float]:
+        for key in keys:
+            if key not in params:
+                continue
+            values = cls._parse_numeric_sequence(params.get(key))
+            if values:
+                return values
+        return []
+
+    @staticmethod
+    def _coerce_surface_table(raw_value: Any) -> list[float]:
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            return PulsimBackend._parse_numeric_sequence(raw_value)
+        if isinstance(raw_value, (list, tuple)):
+            out: list[float] = []
+            for item in raw_value:
+                try:
+                    out.append(float(item))
+                except (TypeError, ValueError):
+                    return []
+            return out
+        return []
+
+    def _make_switching_energy_surface_config(
+        self,
+        *,
+        current_axis: list[float],
+        voltage_axis: list[float],
+        temperature_axis: list[float],
+        eon_table: list[float],
+        eoff_table: list[float],
+        err_table: list[float],
+    ) -> Any:
+        config_cls = getattr(self._module, "SwitchingEnergySurface3D", None)
+        if config_cls is None:
+            return {
+                "current_axis": list(current_axis),
+                "voltage_axis": list(voltage_axis),
+                "temperature_axis": list(temperature_axis),
+                "eon_table": list(eon_table),
+                "eoff_table": list(eoff_table),
+                "err_table": list(err_table),
+            }
+        config = config_cls()
+        if hasattr(config, "current_axis"):
+            config.current_axis = list(current_axis)
+        if hasattr(config, "voltage_axis"):
+            config.voltage_axis = list(voltage_axis)
+        if hasattr(config, "temperature_axis"):
+            config.temperature_axis = list(temperature_axis)
+        if hasattr(config, "eon_table"):
+            config.eon_table = list(eon_table)
+        if hasattr(config, "eoff_table"):
+            config.eoff_table = list(eoff_table)
+        if hasattr(config, "err_table"):
+            config.err_table = list(err_table)
+        return config
 
     def _make_switching_energy_config(self, eon: float, eoff: float, err: float) -> Any:
         config_cls = getattr(self._module, "SwitchingEnergy", None)
@@ -884,35 +1003,66 @@ class PulsimBackend(SimulationBackend):
         self,
         *,
         enabled: bool,
+        network_kind: str,
         rth: float,
         cth: float,
+        stage_rth: list[float],
+        stage_cth: list[float],
         temp_init: float,
         temp_ref: float,
         alpha: float,
+        shared_sink_id: str,
+        shared_sink_rth: float,
+        shared_sink_cth: float,
     ) -> Any:
         config_cls = getattr(self._module, "ThermalDeviceConfig", None)
         if config_cls is None:
             return {
                 "enabled": bool(enabled),
+                "network_kind": str(network_kind),
                 "rth": float(rth),
                 "cth": float(cth),
+                "stage_rth": list(stage_rth),
+                "stage_cth": list(stage_cth),
                 "temp_init": float(temp_init),
                 "temp_ref": float(temp_ref),
                 "alpha": float(alpha),
+                "shared_sink_id": str(shared_sink_id),
+                "shared_sink_rth": float(shared_sink_rth),
+                "shared_sink_cth": float(shared_sink_cth),
             }
         config = config_cls()
         if hasattr(config, "enabled"):
             config.enabled = bool(enabled)
+        if hasattr(config, "network_kind") and hasattr(self._module, "ThermalNetworkKind"):
+            enum_map = {
+                "single_rc": "SingleRC",
+                "foster": "Foster",
+                "cauer": "Cauer",
+            }
+            enum_name = enum_map.get(network_kind, "SingleRC")
+            if hasattr(self._module.ThermalNetworkKind, enum_name):
+                config.network_kind = getattr(self._module.ThermalNetworkKind, enum_name)
         if hasattr(config, "rth"):
             config.rth = float(rth)
         if hasattr(config, "cth"):
             config.cth = float(cth)
+        if hasattr(config, "stage_rth"):
+            config.stage_rth = list(stage_rth)
+        if hasattr(config, "stage_cth"):
+            config.stage_cth = list(stage_cth)
         if hasattr(config, "temp_init"):
             config.temp_init = float(temp_init)
         if hasattr(config, "temp_ref"):
             config.temp_ref = float(temp_ref)
         if hasattr(config, "alpha"):
             config.alpha = float(alpha)
+        if hasattr(config, "shared_sink_id"):
+            config.shared_sink_id = str(shared_sink_id)
+        if hasattr(config, "shared_sink_rth"):
+            config.shared_sink_rth = float(shared_sink_rth)
+        if hasattr(config, "shared_sink_cth"):
+            config.shared_sink_cth = float(shared_sink_cth)
         return config
 
     def _build_switching_energy_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
@@ -925,19 +1075,39 @@ class PulsimBackend(SimulationBackend):
             params = component.get("parameters")
             if not isinstance(params, dict):
                 continue
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+            loss_model = str(
+                loss_payload.get("model")
+                or params.get("switching_loss_model")
+                or ""
+            ).strip().lower()
+            if loss_model == "datasheet":
+                # Datasheet surfaces are mapped via switching_energy_surfaces.
+                continue
+            energy_payload: dict[str, Any] = {}
+            energy_payload.update(loss_payload)
+            energy_payload.update(params)
 
             eon = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_eon_j", "switching_eon", "e_on", "eon"),
                 0.0,
             )
             eoff = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_eoff_j", "switching_eoff", "e_off", "eoff"),
                 0.0,
             )
             err = self._first_numeric(
-                params,
+                energy_payload,
                 ("switching_err_j", "switching_err", "err", "e_rr"),
                 0.0,
             )
@@ -946,10 +1116,96 @@ class PulsimBackend(SimulationBackend):
             energy_map[name] = self._make_switching_energy_config(eon, eoff, err)
         return energy_map
 
+    def _build_switching_energy_surface_map(self, circuit_data: dict[str, Any]) -> dict[str, Any]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        surfaces: dict[str, Any] = {}
+        for component in components:
+            name = self._component_name(component)
+            if not name:
+                continue
+            params = component.get("parameters")
+            if not isinstance(params, dict):
+                continue
+
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+
+            loss_model = str(
+                loss_payload.get("model")
+                or params.get("switching_loss_model")
+                or ""
+            ).strip().lower()
+            if loss_model != "datasheet":
+                continue
+
+            axes = loss_payload.get("axes")
+            current_axis: list[float] = []
+            voltage_axis: list[float] = []
+            temperature_axis: list[float] = []
+            if isinstance(axes, dict):
+                current_axis = self._parse_numeric_sequence(axes.get("current"))
+                voltage_axis = self._parse_numeric_sequence(axes.get("voltage"))
+                temperature_axis = self._parse_numeric_sequence(axes.get("temperature"))
+            if not current_axis:
+                current_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_current", "switching_loss_axis_current"),
+                )
+            if not voltage_axis:
+                voltage_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_voltage", "switching_loss_axis_voltage"),
+                )
+            if not temperature_axis:
+                temperature_axis = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_axes_temperature", "switching_loss_axis_temperature"),
+                )
+            if not current_axis or not voltage_axis or not temperature_axis:
+                continue
+
+            eon_table = self._coerce_surface_table(loss_payload.get("eon"))
+            eoff_table = self._coerce_surface_table(loss_payload.get("eoff"))
+            err_table = self._coerce_surface_table(loss_payload.get("err"))
+            if not eon_table:
+                eon_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_eon_table",),
+                )
+            if not eoff_table:
+                eoff_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_eoff_table",),
+                )
+            if not err_table:
+                err_table = self._first_numeric_sequence(
+                    params,
+                    ("switching_loss_err_table",),
+                )
+            if not eon_table or not eoff_table:
+                continue
+
+            surfaces[name] = self._make_switching_energy_surface_config(
+                current_axis=current_axis,
+                voltage_axis=voltage_axis,
+                temperature_axis=temperature_axis,
+                eon_table=eon_table,
+                eoff_table=eoff_table,
+                err_table=err_table,
+            )
+        return surfaces
+
     def _build_thermal_device_map(
         self,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> dict[str, Any]:
         components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
         thermal_map: dict[str, Any] = {}
@@ -960,6 +1216,12 @@ class PulsimBackend(SimulationBackend):
             "thermal_temp_init",
             "thermal_temp_ref",
             "thermal_alpha",
+            "thermal_network",
+            "thermal_rth_stages",
+            "thermal_cth_stages",
+            "thermal_shared_sink_id",
+            "thermal_shared_sink_rth",
+            "thermal_shared_sink_cth",
         }
         default_rth = max(0.0, float(getattr(settings, "thermal_default_rth", 1.0)))
         default_cth = max(0.0, float(getattr(settings, "thermal_default_cth", 0.1)))
@@ -1012,13 +1274,47 @@ class PulsimBackend(SimulationBackend):
                 0.0,
                 self._first_numeric(thermal_payload, ("thermal_alpha", "alpha_temp", "alpha"), 0.004),
             )
+            stage_rth = self._first_numeric_sequence(
+                thermal_payload,
+                ("thermal_rth_stages", "rth_stages", "stage_rth"),
+            )
+            stage_cth = self._first_numeric_sequence(
+                thermal_payload,
+                ("thermal_cth_stages", "cth_stages", "stage_cth"),
+            )
+            network_kind = self._normalize_thermal_network_kind(
+                self._first_text(thermal_payload, ("thermal_network", "network"), "single_rc")
+            )
+            if (stage_rth or stage_cth) and "thermal_network" not in thermal_payload and "network" not in thermal_payload:
+                network_kind = "foster"
+            shared_sink_id = self._first_text(
+                thermal_payload,
+                ("thermal_shared_sink_id", "shared_sink_id"),
+                "",
+            )
+            shared_sink_rth = self._first_numeric(
+                thermal_payload,
+                ("thermal_shared_sink_rth", "shared_sink_rth"),
+                0.0,
+            )
+            shared_sink_cth = self._first_numeric(
+                thermal_payload,
+                ("thermal_shared_sink_cth", "shared_sink_cth"),
+                0.0,
+            )
             thermal_map[name] = self._make_thermal_device_config(
                 enabled=enabled,
+                network_kind=network_kind,
                 rth=rth,
                 cth=cth,
+                stage_rth=stage_rth,
+                stage_cth=stage_cth,
                 temp_init=temp_init,
                 temp_ref=temp_ref,
                 alpha=alpha,
+                shared_sink_id=shared_sink_id,
+                shared_sink_rth=shared_sink_rth,
+                shared_sink_cth=shared_sink_cth,
             )
         return thermal_map
 
@@ -1040,7 +1336,7 @@ class PulsimBackend(SimulationBackend):
         }
         return mapping.get(method, "BDF1")
 
-    def _should_use_simulation_options(self, settings: "SimulationSettings") -> bool:
+    def _should_use_simulation_options(self, settings: SimulationSettings) -> bool:
         # Use SimulationOptions only when the backend API is new enough.
         # Legacy/early backends can expose SimulationOptions/Simulator but still
         # run as a fully blocking path with poor runtime for closed-loop
@@ -1062,7 +1358,7 @@ class PulsimBackend(SimulationBackend):
 
         return parsed_version.is_compatible_with(_SIMULATION_OPTIONS_MIN_BACKEND)
 
-    def _build_dc_convergence_config(self, settings: "SimulationSettings") -> Any | None:
+    def _build_dc_convergence_config(self, settings: SimulationSettings) -> Any | None:
         config_cls = getattr(self._module, "DCConvergenceConfig", None)
         if config_cls is None:
             return None
@@ -1092,7 +1388,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_simulation_options_from_yaml_parser(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> Any | None:
         """Build SimulationOptions via backend YamlParser defaults.
 
@@ -1261,7 +1557,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_simulation_options(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
         newton_opts: Any,
         linear_solver: Any | None,
@@ -1388,6 +1684,8 @@ class PulsimBackend(SimulationBackend):
 
         if hasattr(opts, "switching_energy") and circuit_data is not None:
             opts.switching_energy = self._build_switching_energy_map(circuit_data)
+        if hasattr(opts, "switching_energy_surfaces") and circuit_data is not None:
+            opts.switching_energy_surfaces = self._build_switching_energy_surface_map(circuit_data)
 
         if hasattr(opts, "thermal_devices") and circuit_data is not None:
             opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
@@ -1415,7 +1713,7 @@ class PulsimBackend(SimulationBackend):
         self,
         circuit: Any,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         signal_names: list[str],
         dt: float,
@@ -1519,7 +1817,7 @@ class PulsimBackend(SimulationBackend):
                 for name in signal_names:
                     result.signals.setdefault(name, [])
 
-        for t, state in zip(times, states):
+        for t, state in zip(times, states, strict=False):
             result.time.append(float(t))
             for idx, name in enumerate(signal_names):
                 if idx < len(state):
@@ -1582,7 +1880,7 @@ class PulsimBackend(SimulationBackend):
         self,
         circuit: Any,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         dt: float,
         x0: Any,
@@ -1595,8 +1893,17 @@ class PulsimBackend(SimulationBackend):
         result.time = []
         for name in signal_names:
             result.signals[name] = []
+        attempt_diagnostics: dict[str, Any] = {}
 
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
+            if attempt_diagnostics:
+                run_result.statistics.update(
+                    {
+                        key: value
+                        for key, value in attempt_diagnostics.items()
+                        if key not in run_result.statistics
+                    }
+                )
             if run_result.error_message:
                 return run_result
             self._ensure_virtual_probe_channels(circuit, run_result, signal_names)
@@ -1617,15 +1924,15 @@ class PulsimBackend(SimulationBackend):
                 )
                 if not simulator_result.error_message:
                     return _finalize_attempt(simulator_result)
-                result.statistics["simulator_options_error"] = simulator_result.error_message
+                attempt_diagnostics["simulator_options_error"] = simulator_result.error_message
                 if "cancel" in simulator_result.error_message.lower():
-                    return simulator_result
+                    return _finalize_attempt(simulator_result)
                 callbacks.progress(
                     5.0,
                     "SimulationOptions path failed; retrying compatibility transient...",
                 )
             except Exception as exc:
-                result.statistics["simulator_options_exception"] = str(exc)
+                attempt_diagnostics["simulator_options_exception"] = str(exc)
                 callbacks.progress(
                     5.0,
                     "SimulationOptions unavailable; retrying compatibility transient...",
@@ -1739,7 +2046,7 @@ class PulsimBackend(SimulationBackend):
 
     def _should_prefer_nonblocking_transient(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
     ) -> bool:
         """Prefer shared/streaming APIs for long runs to keep UI responsive."""
@@ -1751,7 +2058,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_transient_retry_profiles(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> list[_TransientRetryProfile]:
         """Build progressive retry profiles for Newton convergence failures."""
         base_iterations = max(1, int(getattr(settings, "max_newton_iterations", 50)))
@@ -1785,9 +2092,9 @@ class PulsimBackend(SimulationBackend):
 
     def _apply_transient_retry_profile(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         profile: _TransientRetryProfile,
-    ) -> "SimulationSettings":
+    ) -> SimulationSettings:
         """Clone runtime settings and apply retry profile overrides."""
         try:
             attempt_settings = copy.deepcopy(settings)
@@ -1829,7 +2136,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_streaming(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -1891,15 +2198,15 @@ class PulsimBackend(SimulationBackend):
             retry_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
             try:
                 times, states, success, message = self._module.run_transient_streaming(*retry_args)
-            except TypeError:
-                raise exc
+            except TypeError as err:
+                raise exc from err
 
         if not success:
             result.error_message = message
             return result
 
         # Build final result from complete simulation data
-        for t, state in zip(times, states):
+        for t, state in zip(times, states, strict=False):
             result.time.append(float(t))
             for i, name in enumerate(signal_names):
                 result.signals[name].append(float(state[i]))
@@ -1917,7 +2224,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_shared(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -2050,7 +2357,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_chunked(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -2134,11 +2441,11 @@ class PulsimBackend(SimulationBackend):
         try:
             # Try top-level dc_operating_point first (preferred)
             if hasattr(self._module, "dc_operating_point"):
-                return self._run_dc_top_level(circuit, settings)
+                return self._run_dc_top_level(circuit, settings, circuit_data)
 
             # Try simulator-based API
             if hasattr(self._module, "Simulator"):
-                simulator_result = self._run_dc_via_simulator(circuit, settings)
+                simulator_result = self._run_dc_via_simulator(circuit, settings, circuit_data)
                 if simulator_result is not None:
                     return simulator_result
 
@@ -2146,18 +2453,18 @@ class PulsimBackend(SimulationBackend):
             if hasattr(self._module, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = self._module.solve_dc(circuit, newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
 
             # Try v1 namespace (DCConvergenceSolver)
             if hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
                 newton_opts = self._build_dc_options(settings)
-                return self._run_dc_v1(circuit, settings, newton_opts)
+                return self._run_dc_v1(circuit, settings, newton_opts, circuit_data)
 
             # Try v2 namespace
             if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = self._module.v2.solve_dc(circuit, newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
 
             return DCResult(
                 error_message="No DC solver available in backend",
@@ -2170,7 +2477,12 @@ class PulsimBackend(SimulationBackend):
                 convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
             )
 
-    def _run_dc_via_simulator(self, circuit: Any, settings: DCSettings) -> DCResult | None:
+    def _run_dc_via_simulator(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult | None:
         """Try DC operating point through Simulator APIs.
 
         Returns:
@@ -2188,34 +2500,42 @@ class PulsimBackend(SimulationBackend):
         try:
             if hasattr(simulator, "dc_operating_point"):
                 native_result = simulator.dc_operating_point()
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
             if hasattr(simulator, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = simulator.solve_dc(newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
         except Exception:
             return None
 
         return None
 
-    def _run_dc_top_level(self, circuit: Any, settings: DCSettings) -> DCResult:
+    def _run_dc_top_level(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Run DC analysis using top-level dc_operating_point function."""
         # Build DCConvergenceConfig
         config = self._module.DCConvergenceConfig()
 
-        # Map strategy
-        if settings.strategy == "gmin":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.GminStepping
-        elif settings.strategy == "source":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.SourceStepping
-                if hasattr(config, "source_config"):
-                    config.source_config.max_steps = settings.source_steps
-        elif settings.strategy == "pseudo":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.PseudoTransient
-        if settings.strategy == "gmin" and hasattr(config, "gmin_config"):
+        strategy_name = str(settings.strategy or "auto").strip().lower()
+        if hasattr(self._module, "DCStrategy"):
+            strategy_enum = {
+                "auto": getattr(self._module.DCStrategy, "Auto", None),
+                "direct": getattr(self._module.DCStrategy, "Direct", None),
+                "gmin": getattr(self._module.DCStrategy, "GminStepping", None),
+                "source": getattr(self._module.DCStrategy, "SourceStepping", None),
+                "pseudo": getattr(self._module.DCStrategy, "PseudoTransient", None),
+            }.get(strategy_name)
+            if strategy_enum is not None:
+                config.strategy = strategy_enum
+
+        if strategy_name == "source" and hasattr(config, "source_config"):
+            config.source_config.max_steps = settings.source_steps
+
+        if strategy_name == "gmin" and hasattr(config, "gmin_config"):
             config.gmin_config.initial_gmin = settings.gmin_initial
             config.gmin_config.final_gmin = settings.gmin_final
 
@@ -2223,14 +2543,17 @@ class PulsimBackend(SimulationBackend):
         dc_result = self._module.dc_operating_point(circuit, config)
 
         # Convert to DCResult
-        return self._convert_dc_analysis_result(dc_result, circuit)
+        return self._convert_dc_analysis_result(dc_result, circuit, circuit_data)
 
-    def _run_dc_v1(self, circuit: Any, settings: DCSettings, newton_opts: Any) -> DCResult:
+    def _run_dc_v1(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        newton_opts: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Run DC analysis using v1 DCConvergenceSolver."""
         v1 = self._module.v1
-
-        # Map strategy string to enum if available
-        strategy = self._map_dc_strategy(settings.strategy)
 
         # Create DC convergence solver
         solver = v1.DCConvergenceSolver(circuit, newton_opts)
@@ -2246,7 +2569,7 @@ class PulsimBackend(SimulationBackend):
             # Auto or direct strategy
             native_result = solver.solve()
 
-        return self._convert_dc_result(native_result, circuit)
+        return self._convert_dc_result(native_result, circuit, circuit_data)
 
     def _build_dc_options(self, settings: DCSettings) -> Any:
         """Build PulsimCore Newton options from DCSettings."""
@@ -2272,7 +2595,12 @@ class PulsimBackend(SimulationBackend):
 
         return opts
 
-    def _convert_dc_analysis_result(self, dc_result: Any, circuit: Any) -> DCResult:
+    def _convert_dc_analysis_result(
+        self,
+        dc_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore DCAnalysisResult to GUI DCResult."""
         node_voltages: dict[str, float] = {}
         branch_currents: dict[str, float] = {}
@@ -2283,10 +2611,21 @@ class PulsimBackend(SimulationBackend):
         solution = getattr(newton_result, "solution", None) if newton_result else None
 
         if solution is not None:
-            node_names = list(circuit.node_names()) if hasattr(circuit, "node_names") else []
-            for i, name in enumerate(node_names):
-                if i < len(solution):
-                    node_voltages[f"V({name})"] = float(solution[i])
+            node_voltages, branch_currents = self._extract_dc_solution_maps(circuit, solution)
+            node_names = [key[2:-1] for key in node_voltages if key.startswith("V(") and key.endswith(")")]
+        else:
+            node_names = []
+        power_dissipation.update(
+            self._extract_dc_power_result(dc_result)
+        )
+        if circuit_data is not None:
+            power_dissipation.update(
+                self._estimate_dc_power_dissipation(
+                    circuit_data,
+                    node_voltages,
+                    branch_currents,
+                )
+            )
 
         # Build convergence info from DCAnalysisResult
         converged = getattr(dc_result, "success", False)
@@ -2358,9 +2697,14 @@ class PulsimBackend(SimulationBackend):
             error_message=error_message,
         )
 
-    def _convert_newton_result(self, native_result: Any, circuit: Any) -> DCResult:
+    def _convert_newton_result(
+        self,
+        native_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore NewtonResult to GUI DCResult."""
-        return self._convert_dc_result(native_result, circuit)
+        return self._convert_dc_result(native_result, circuit, circuit_data)
 
     def _map_dc_strategy(self, strategy: str) -> Any:
         """Map strategy string to PulsimCore enum."""
@@ -2375,7 +2719,12 @@ class PulsimBackend(SimulationBackend):
             return strategy_map.get(strategy.lower(), self._module.v1.DCStrategy.Auto)
         return strategy
 
-    def _convert_dc_result(self, native_result: Any, circuit: Any) -> DCResult:
+    def _convert_dc_result(
+        self,
+        native_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore DC result to GUI DCResult."""
         node_voltages: dict[str, float] = {}
         branch_currents: dict[str, float] = {}
@@ -2384,21 +2733,21 @@ class PulsimBackend(SimulationBackend):
         # Extract solution vector
         solution = getattr(native_result, "solution", None)
         if solution is not None:
-            # Map node indices to names
-            node_names = []
-            if hasattr(circuit, "node_names"):
-                node_names = list(circuit.node_names())
-            elif hasattr(circuit, "get_node_names"):
-                node_names = list(circuit.get_node_names())
-
-            for i, name in enumerate(node_names):
-                if i < len(solution):
-                    node_voltages[f"V({name})"] = float(solution[i])
+            node_voltages, branch_currents = self._extract_dc_solution_maps(circuit, solution)
 
         # Extract branch currents if available
         if hasattr(native_result, "branch_currents"):
             for name, current in native_result.branch_currents.items():
                 branch_currents[f"I({name})"] = float(current)
+        power_dissipation.update(self._extract_dc_power_result(native_result))
+        if circuit_data is not None:
+            power_dissipation.update(
+                self._estimate_dc_power_dissipation(
+                    circuit_data,
+                    node_voltages,
+                    branch_currents,
+                )
+            )
 
         # Build convergence info with circuit for node name mapping
         convergence_info = self._build_convergence_info(native_result, circuit)
@@ -2419,6 +2768,250 @@ class PulsimBackend(SimulationBackend):
             convergence_info=convergence_info,
             error_message=error_message,
         )
+
+    @staticmethod
+    def _resolve_index_count(circuit: Any, attr_name: str) -> int:
+        """Resolve numeric node/branch counts from runtime circuit APIs."""
+        attr = getattr(circuit, attr_name, None)
+        if callable(attr):
+            try:
+                return max(0, int(attr()))
+            except Exception:
+                return 0
+        if attr is None:
+            return 0
+        try:
+            return max(0, int(attr))
+        except Exception:
+            return 0
+
+    @classmethod
+    def _extract_dc_solution_maps(
+        cls,
+        circuit: Any,
+        solution: Any,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Convert a DC solution vector into node voltages and branch currents."""
+        values = [float(value) for value in solution]
+        if not values:
+            return {}, {}
+
+        node_voltages: dict[str, float] = {}
+        branch_currents: dict[str, float] = {}
+
+        signal_names_attr = getattr(circuit, "signal_names", None)
+        if signal_names_attr is not None:
+            try:
+                raw_signal_names = signal_names_attr() if callable(signal_names_attr) else signal_names_attr
+            except Exception:
+                raw_signal_names = []
+            if raw_signal_names:
+                limit = min(len(values), len(raw_signal_names))
+                for index in range(limit):
+                    name = cls._normalize_signal_name(raw_signal_names[index])
+                    if name.upper().startswith("I("):
+                        branch_currents[name] = values[index]
+                    else:
+                        node_voltages[name] = values[index]
+                if node_voltages or branch_currents:
+                    return node_voltages, branch_currents
+
+        node_count = cls._resolve_index_count(circuit, "num_nodes")
+        branch_count = cls._resolve_index_count(circuit, "num_branches")
+        if node_count <= 0 and branch_count > 0:
+            node_count = max(0, len(values) - branch_count)
+
+        node_names = cls._resolve_node_names(circuit, node_count or len(values))
+        node_count = min(len(values), node_count or len(node_names))
+        for index in range(node_count):
+            node_name = node_names[index] if index < len(node_names) else f"node_{index}"
+            node_voltages[f"V({node_name})"] = values[index]
+
+        remaining = max(0, len(values) - node_count)
+        branch_count = min(remaining, branch_count or remaining)
+        for index in range(branch_count):
+            branch_currents[f"I(branch{index})"] = values[node_count + index]
+
+        return node_voltages, branch_currents
+
+    @staticmethod
+    def _parse_channel_name(key: str, prefix: str) -> str:
+        text = str(key or "").strip()
+        if text.upper().startswith(f"{prefix}(") and text.endswith(")"):
+            return text[2:-1].strip()
+        return text
+
+    @classmethod
+    def _canonical_channel_lookup(cls, values: dict[str, float], prefix: str) -> dict[str, float]:
+        lookup: dict[str, float] = {}
+        for raw_key, raw_value in values.items():
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            key = cls._parse_channel_name(raw_key, prefix)
+            if not key:
+                continue
+            normalized = key.strip()
+            lookup.setdefault(normalized, value)
+            lookup.setdefault(normalized.lower(), value)
+        return lookup
+
+    @classmethod
+    def _extract_dc_power_result(cls, source: Any) -> dict[str, float]:
+        """Extract native DC power maps when backend exposes them."""
+        result: dict[str, float] = {}
+        for attr_name in ("power_dissipation", "component_power", "device_power", "power"):
+            raw_map = getattr(source, attr_name, None)
+            if raw_map is None:
+                continue
+            if callable(raw_map):
+                try:
+                    raw_map = raw_map()
+                except Exception:
+                    continue
+            if not isinstance(raw_map, dict):
+                continue
+            for raw_key, raw_value in raw_map.items():
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                key = str(raw_key or "").strip()
+                if not key:
+                    continue
+                label = key if key.upper().startswith("P(") else f"P({key})"
+                result[label] = value
+        return result
+
+    @classmethod
+    def _estimate_dc_power_dissipation(
+        cls,
+        circuit_data: dict | None,
+        node_voltages: dict[str, float],
+        branch_currents: dict[str, float],
+    ) -> dict[str, float]:
+        """Estimate component power from DC operating point when backend has no native map."""
+        if not isinstance(circuit_data, dict):
+            return {}
+
+        components = circuit_data.get("components", []) or []
+        if not components:
+            return {}
+
+        voltage_lookup = cls._canonical_channel_lookup(node_voltages, "V")
+        current_lookup = cls._canonical_channel_lookup(branch_currents, "I")
+        power_map: dict[str, float] = {}
+
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            comp_id = str(component.get("id") or "").strip()
+            comp_name = str(component.get("name") or comp_id).strip()
+            if not comp_name:
+                continue
+
+            pin_nodes = component.get("pin_nodes") or []
+            if not isinstance(pin_nodes, list):
+                pin_nodes = []
+            v_drop: float | None = None
+            if len(pin_nodes) >= 2:
+                n_pos = str(pin_nodes[0] or "").strip()
+                n_neg = str(pin_nodes[1] or "").strip()
+                v_pos = cls._lookup_canonical_value(voltage_lookup, n_pos)
+                v_neg = cls._lookup_canonical_value(voltage_lookup, n_neg)
+                if v_pos is not None and v_neg is not None:
+                    v_drop = float(v_pos) - float(v_neg)
+
+            current_value: float | None = None
+            for token in (
+                comp_name,
+                comp_name.lower(),
+                comp_id,
+                comp_id.lower(),
+            ):
+                if not token:
+                    continue
+                if token in current_lookup:
+                    current_value = current_lookup[token]
+                    break
+            if current_value is None:
+                for raw_key, value in current_lookup.items():
+                    if raw_key.endswith(f"({comp_name.lower()})") or raw_key.startswith(f"{comp_name.lower()}_"):
+                        current_value = value
+                        break
+
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            component_type = str(component.get("type") or "").strip().lower()
+
+            power_value: float | None = None
+            if v_drop is not None and current_value is not None:
+                power_value = float(v_drop) * float(current_value)
+            elif component_type == "resistor":
+                resistance = params.get("resistance")
+                try:
+                    resistance_value = float(resistance)
+                except (TypeError, ValueError):
+                    resistance_value = 0.0
+                if resistance_value > 0.0 and v_drop is not None:
+                    power_value = (float(v_drop) ** 2) / resistance_value
+            elif component_type == "current_source" and v_drop is not None:
+                waveform = params.get("waveform")
+                if isinstance(waveform, dict) and str(waveform.get("type", "")).strip().lower() == "dc":
+                    try:
+                        source_current = float(waveform.get("value", 0.0))
+                    except (TypeError, ValueError):
+                        source_current = 0.0
+                    power_value = float(v_drop) * source_current
+
+            if power_value is None or not math.isfinite(power_value):
+                continue
+
+            power_map[f"P({comp_name})"] = float(power_value)
+
+        return power_map
+
+    @staticmethod
+    def _lookup_canonical_value(lookup: dict[str, float], key: str) -> float | None:
+        """Resolve a canonicalized lookup key while preserving zero values."""
+        if key in lookup:
+            return lookup[key]
+        lowered = key.lower()
+        if lowered in lookup:
+            return lookup[lowered]
+        return None
+
+    @staticmethod
+    def _resolve_node_names(circuit: Any, solution_size: int = 0) -> list[str]:
+        """Resolve stable node labels from runtime circuit APIs."""
+        for accessor in ("node_names", "get_node_names"):
+            node_names_attr = getattr(circuit, accessor, None)
+            if node_names_attr is None:
+                continue
+            try:
+                raw_node_names = node_names_attr() if callable(node_names_attr) else node_names_attr
+            except Exception:
+                continue
+            if raw_node_names:
+                return [str(name) for name in raw_node_names]
+
+        node_count = 0
+        num_nodes_attr = getattr(circuit, "num_nodes", None)
+        if callable(num_nodes_attr):
+            try:
+                node_count = int(num_nodes_attr())
+            except Exception:
+                node_count = 0
+        elif num_nodes_attr is not None:
+            try:
+                node_count = int(num_nodes_attr)
+            except Exception:
+                node_count = 0
+
+        if node_count <= 0 and solution_size > 0:
+            node_count = int(solution_size)
+
+        return [f"node_{idx}" for idx in range(max(0, node_count))]
 
     def _build_convergence_info(self, native_result: Any, circuit: Any = None) -> ConvergenceInfo:
         """Build ConvergenceInfo from native result.
@@ -2783,16 +3376,19 @@ class PulsimBackend(SimulationBackend):
         )
 
     def request_pause(self, run_id: int | None = None) -> None:
+        """Request backend pause for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_pause()
 
     def request_resume(self, run_id: int | None = None) -> None:
+        """Request backend resume for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_resume()
 
     def request_stop(self, run_id: int | None = None) -> None:
+        """Request backend stop for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_stop()
@@ -2874,11 +3470,11 @@ class PulsimBackend(SimulationBackend):
         if payload is None:
             return {}
         out: dict[str, Any] = {}
-        for field in fields:
-            value = PulsimBackend._extract_telemetry_field(payload, field)
+        for field_name in fields:
+            value = PulsimBackend._extract_telemetry_field(payload, field_name)
             coerced = PulsimBackend._coerce_telemetry_scalar(value)
             if coerced is not None:
-                out[field] = coerced
+                out[field_name] = coerced
         return out
 
     @staticmethod
@@ -3164,7 +3760,7 @@ class PulsimBackend(SimulationBackend):
                 backend_result.statistics["status"] = status_value
         self._append_electrothermal_statistics(backend_result.statistics, sim_result, payload)
 
-    def _compute_time_step(self, settings: "SimulationSettings") -> float:
+    def _compute_time_step(self, settings: SimulationSettings) -> float:
         duration = settings.t_stop - settings.t_start
         if duration <= 0:
             raise ValueError("Simulation stop time must be greater than start time.")
@@ -3186,7 +3782,7 @@ class PulsimBackend(SimulationBackend):
         self,
         *,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
         x0: Any,
         newton_opts: Any,
@@ -3201,7 +3797,7 @@ class PulsimBackend(SimulationBackend):
             args.append(linear_solver)
         return args
 
-    def _invoke_run_transient(self, args: list[Any], settings: "SimulationSettings") -> tuple[Any, Any, bool, str]:
+    def _invoke_run_transient(self, args: list[Any], settings: SimulationSettings) -> tuple[Any, Any, bool, str]:
         """Invoke run_transient with optional robust kwargs when supported."""
         robust = bool(getattr(settings, "transient_robust_mode", True))
         auto_regularize = bool(getattr(settings, "transient_auto_regularize", True))
@@ -3217,7 +3813,7 @@ class PulsimBackend(SimulationBackend):
                 raise
         return self._module.run_transient(*args)
 
-    def _build_newton_options(self, settings: "SimulationSettings", circuit: Any) -> Any:
+    def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
         if hasattr(self._module, "NewtonOptions"):
             opts = self._module.NewtonOptions()
@@ -3278,7 +3874,7 @@ class PulsimBackend(SimulationBackend):
             config.auto_select = True
         return config
 
-    def _build_initial_state(self, circuit: Any, settings: "SimulationSettings") -> Any:
+    def _build_initial_state(self, circuit: Any, settings: SimulationSettings) -> Any:
         """Compute initial state, preferring DC operating point when available."""
         if hasattr(self._module, "dc_operating_point"):
             try:
@@ -3446,6 +4042,7 @@ class BackendLoader:
 
     @property
     def active_backend_id(self) -> str | None:
+        """Return the identifier of the currently active backend."""
         return self._active_id
 
     def activate(self, identifier: str) -> BackendInfo:
@@ -3474,7 +4071,7 @@ class BackendLoader:
                 return identifier
         return next(iter(self._candidates))
 
-    def _discover_candidates(self) -> dict[str, "BackendLoader._BackendCandidate"]:
+    def _discover_candidates(self) -> dict[str, BackendLoader._BackendCandidate]:
         candidates: dict[str, BackendLoader._BackendCandidate] = {}
 
         pulsim_candidate, pulsim_error = self._create_pulsim_candidate()
@@ -3503,7 +4100,7 @@ class BackendLoader:
         *,
         message: str,
         status: str = "placeholder",
-    ) -> "BackendLoader._BackendCandidate":
+    ) -> BackendLoader._BackendCandidate:
         info = BackendInfo(
             identifier="placeholder",
             name="Demo backend",
@@ -3514,7 +4111,7 @@ class BackendLoader:
         )
         return BackendLoader._BackendCandidate(info=info, factory=lambda: PlaceholderBackend(info))
 
-    def _create_pulsim_candidate(self) -> tuple["BackendLoader._BackendCandidate" | None, str | None]:
+    def _create_pulsim_candidate(self) -> tuple[BackendLoader._BackendCandidate | None, str | None]:
         try:
             module = import_module("pulsim")
         except Exception as exc:  # pragma: no cover - pulsim missing
@@ -3568,7 +4165,7 @@ class BackendLoader:
         )
         return candidate, None
 
-    def _load_entry_point_candidates(self) -> list["BackendLoader._BackendCandidate"]:
+    def _load_entry_point_candidates(self) -> list[BackendLoader._BackendCandidate]:
         try:
             entry_points = metadata.entry_points()
         except Exception:  # pragma: no cover - entry point lookup failed
@@ -3583,7 +4180,6 @@ class BackendLoader:
 
         candidates: list[BackendLoader._BackendCandidate] = []
         for entry in entries:
-            identifier = entry.name
             try:
                 loaded = entry.load()
             except Exception:

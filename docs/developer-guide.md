@@ -47,6 +47,12 @@ For headless environments:
 QT_QPA_PLATFORM=offscreen pytest
 ```
 
+## Frontend Performance Benchmark
+
+```bash
+PYTHONPATH=src python3 scripts/benchmark_frontend_conversion.py
+```
+
 ## Local Documentation
 
 ```bash
@@ -61,6 +67,7 @@ mkdocs build --strict
 - Always include regression tests for bug fixes.
 - Avoid coupling simulation logic directly into view classes.
 - When changing simulation flow, validate examples in `examples/`.
+- For frontend internals and performance path, see `frontend-architecture.md`.
 
 ## Docs Pipeline (GitHub Pages)
 

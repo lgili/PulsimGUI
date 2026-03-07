@@ -4,21 +4,20 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QPushButton,
     QDialogButtonBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QHeaderView,
-    QGroupBox,
-    QWidget,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
 )
 
-from pulsimgui.services.shortcut_service import ShortcutService, ShortcutInfo
+from pulsimgui.services.shortcut_service import ShortcutService
 
 
 class ShortcutEditor(QLineEdit):

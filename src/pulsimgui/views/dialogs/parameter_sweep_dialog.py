@@ -1,7 +1,6 @@
 """Dialog for configuring parameter sweeps."""
 
 from dataclasses import dataclass
-from typing import List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -14,7 +13,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QSpinBox,
     QVBoxLayout,
-    QWidget,
 )
 
 from pulsimgui.models.circuit import Circuit
@@ -36,7 +34,7 @@ class ParameterSweepDialog(QDialog):
     def __init__(self, circuit: Circuit, parent=None):
         super().__init__(parent)
         self._circuit = circuit
-        self._targets: List[_SweepTarget] = self._build_targets(circuit)
+        self._targets: list[_SweepTarget] = self._build_targets(circuit)
 
         self.setWindowTitle("Parameter Sweep")
         self.setMinimumWidth(420)
@@ -115,8 +113,8 @@ class ParameterSweepDialog(QDialog):
     def _toggle_parallel_spin(self) -> None:
         self._parallel_spin.setEnabled(self._parallel_check.isChecked())
 
-    def _build_targets(self, circuit: Circuit) -> List[_SweepTarget]:
-        targets: List[_SweepTarget] = []
+    def _build_targets(self, circuit: Circuit) -> list[_SweepTarget]:
+        targets: list[_SweepTarget] = []
         for component in circuit.components.values():
             numeric_params = {
                 name: value
@@ -177,6 +175,7 @@ class ParameterSweepDialog(QDialog):
         self.accept()
 
     def get_settings(self) -> ParameterSweepSettings | None:
+        """Build and return validated settings from the current dialog fields."""
         target = self._current_target()
         if not target:
             return None

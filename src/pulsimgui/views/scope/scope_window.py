@@ -4,28 +4,27 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QCloseEvent, QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
     QSplitter,
-    QInputDialog,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,15 +34,16 @@ from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.waveform.waveform_viewer import (
+    TRACE_COLORS,
     MeasurementsPanel,
     SignalListPanel,
-    TRACE_COLORS,
 )
 
 from .bindings import ScopeChannelBinding, ScopeSignal
 
 
 class MathSignalDialog(QDialog):
+    """Dialog that encapsulates math signal interactions."""
     def __init__(
         self,
         parent: QWidget,
@@ -290,6 +290,7 @@ class MathSignalDialog(QDialog):
         self._preview_label.setText(f"Preview: {expr}")
 
     def selected_config(self) -> dict[str, object]:
+        """Return the currently selected math-signal configuration."""
         op_code = self._current_operation()
         source_a = self._source_a_combo.currentText().strip()
         source_b = self._source_b_combo.currentText().strip()
@@ -308,6 +309,7 @@ class MathSignalDialog(QDialog):
 
 
 class TimeRangeSlider(QWidget):
+    """Custom slider widget used by time range workflows."""
     rangeChanged = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -337,6 +339,7 @@ class TimeRangeSlider(QWidget):
         handle_fill: QColor,
         handle_border: QColor,
     ) -> None:
+        """Update theme_colors for this widget."""
         self._track_bg = track_bg
         self._track_border = track_border
         self._selected_fill = selected_fill
@@ -345,11 +348,13 @@ class TimeRangeSlider(QWidget):
         self.update()
 
     def setRange(self, minimum: int, maximum: int) -> None:
+        """Update the slider numeric range."""
         self._minimum = int(minimum)
         self._maximum = max(int(maximum), self._minimum + 1)
         self.setValues(self._low, self._high)
 
     def setValues(self, low: int, high: int) -> None:
+        """Update the low/high slider values."""
         low_clamped = max(self._minimum, min(int(low), self._maximum - 1))
         high_clamped = max(low_clamped + 1, min(int(high), self._maximum))
         changed = (low_clamped != self._low) or (high_clamped != self._high)
@@ -360,15 +365,19 @@ class TimeRangeSlider(QWidget):
         self.update()
 
     def lowValue(self) -> int:
+        """Return the current low value value."""
         return self._low
 
     def highValue(self) -> int:
+        """Return the current high value value."""
         return self._high
 
     def minimum(self) -> int:
+        """Return the current minimum value."""
         return self._minimum
 
     def maximum(self) -> int:
+        """Return the current maximum value."""
         return self._maximum
 
     def _track_geometry(self) -> tuple[int, int, int, int]:
@@ -392,6 +401,7 @@ class TimeRangeSlider(QWidget):
         return int(round(value))
 
     def paintEvent(self, _event) -> None:
+        """Render the widget contents for the current frame."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
@@ -413,6 +423,7 @@ class TimeRangeSlider(QWidget):
             painter.drawEllipse(x - self._handle_radius, (self.height() // 2) - self._handle_radius, self._handle_radius * 2, self._handle_radius * 2)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Handle the Qt mousePressEvent callback."""
         if not self.isEnabled() or event.button() != Qt.MouseButton.LeftButton:
             return
         low_x = self._value_to_x(self._low)
@@ -426,11 +437,13 @@ class TimeRangeSlider(QWidget):
         self._update_from_mouse(click_x)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Handle the Qt mouseMoveEvent callback."""
         if not self.isEnabled() or self._drag_target is None:
             return
         self._update_from_mouse(int(event.position().x()))
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
+        """Handle the Qt mouseReleaseEvent callback."""
         self._drag_target = None
 
     def _update_from_mouse(self, x: int) -> None:
@@ -760,13 +773,16 @@ class ScopeWindow(QWidget):
     # ------------------------------------------------------------------
     @property
     def component_id(self) -> str:
+        """Return the current component_id value."""
         return self._component_id
 
     def set_component_name(self, name: str) -> None:
+        """Update component_name for this widget."""
         self._component_name = name
         self._refresh_title()
 
     def set_bindings(self, bindings: list[ScopeChannelBinding]) -> None:
+        """Update bindings for this widget."""
         self._bindings = bindings
         if not bindings:
             self._mapping_label.setText("Channels: none")
@@ -817,11 +833,67 @@ class ScopeWindow(QWidget):
                 else:
                     missing_channels.append(label)
 
+        # Thermal scopes can still render backend-native thermal traces even when
+        # users have not wired dedicated TH pins yet.
+        if self._scope_type == ComponentType.THERMAL_SCOPE and not subset.signals:
+            subset.signals = self._collect_backend_thermal_fallback_signals(result)
+            if subset.signals:
+                found_channels = list(subset.signals.keys())
+                missing_channels = []
+
         self._current_result = subset if subset.signals else SimulationResult(time=subset.time, signals={})
         self._refresh_stacked_sidebar(self._current_result)
         self._rebuild_stacked_plots(self._current_result)
 
         self._message_label.setText(self._format_status(found_channels, missing_channels))
+
+    @staticmethod
+    def _virtual_metadata_field(metadata_entry: object | None, field: str) -> str:
+        if isinstance(metadata_entry, dict):
+            raw = metadata_entry.get(field)
+        else:
+            raw = getattr(metadata_entry, field, None) if metadata_entry is not None else None
+        return str(raw or "").strip()
+
+    @classmethod
+    def _is_thermal_signal_name(cls, signal_name: str, metadata_entry: object | None) -> bool:
+        domain = cls._virtual_metadata_field(metadata_entry, "domain").lower()
+        component_type = cls._virtual_metadata_field(metadata_entry, "component_type").lower()
+        if domain == "thermal" or component_type == "thermal_trace":
+            return True
+
+        upper = str(signal_name or "").strip().upper()
+        if not upper:
+            return False
+        if upper.startswith(("T(", "TJ(", "TEMP(", "THERMAL(")):
+            return True
+        if upper.startswith(("T_", "TJ_", "TEMP_")):
+            return True
+        return "TEMP" in upper
+
+    def _collect_backend_thermal_fallback_signals(
+        self,
+        result: SimulationResult,
+    ) -> dict[str, list[float]]:
+        metadata = (
+            result.statistics.get("virtual_channel_metadata")
+            if isinstance(result.statistics, dict)
+            else None
+        )
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        fallback: dict[str, list[float]] = {}
+        for raw_name, series in result.signals.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if not series:
+                continue
+            if not self._is_thermal_signal_name(name, metadata.get(name)):
+                continue
+            fallback[name] = list(series)
+        return fallback
 
     @staticmethod
     def _infer_signal_categories(signal_names: list[str]) -> dict[str, str]:
@@ -840,6 +912,7 @@ class ScopeWindow(QWidget):
         return categories
 
     def apply_geometry_state(self, geometry: list[int] | None) -> None:
+        """Apply previously captured geometry metadata to this window."""
         if geometry and len(geometry) == 4:
             x, y, w, h = geometry
             self.setGeometry(
@@ -852,6 +925,7 @@ class ScopeWindow(QWidget):
             self.resize(max(1040, self.minimumWidth()), max(700, self.minimumHeight()))
 
     def capture_geometry_state(self) -> tuple[int, int, int, int]:
+        """Capture geometry metadata for window state persistence."""
         rect = self.geometry()
         return rect.x(), rect.y(), rect.width(), rect.height()
 
@@ -859,6 +933,7 @@ class ScopeWindow(QWidget):
     # QWidget overrides
     # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: D401 - Qt override
+        """Handle the Qt closeEvent callback."""
         self.closed.emit(self._component_id, self.capture_geometry_state())
         super().closeEvent(event)
 

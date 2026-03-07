@@ -17,7 +17,7 @@ class _FakeTolerances:
         self.current_reltol = 0.0
 
     @staticmethod
-    def defaults() -> "_FakeTolerances":
+    def defaults() -> _FakeTolerances:
         return _FakeTolerances()
 
 

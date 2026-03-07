@@ -3,12 +3,12 @@
 from pulsimgui.models.component import (
     CONNECTION_DOMAIN_ANY,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
-    Component,
-    ComponentType,
-    Pin,
     THERMAL_PORT_PARAMETER,
     THERMAL_PORT_PIN_NAME,
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
+    Component,
+    ComponentType,
+    Pin,
     can_connect_measurement_pins,
     pin_connection_domain,
     set_scope_channel_count,
@@ -179,11 +179,17 @@ class TestComponent:
         )
 
         assert legacy.parameters["thermal_enabled"] is True
+        assert legacy.parameters["thermal_network"] == "single_rc"
         assert legacy.parameters["thermal_rth"] > 0.0
         assert legacy.parameters["thermal_cth"] >= 0.0
+        assert "thermal_rth_stages" in legacy.parameters
+        assert "thermal_cth_stages" in legacy.parameters
         assert "thermal_temp_init" in legacy.parameters
         assert "thermal_temp_ref" in legacy.parameters
         assert "thermal_alpha" in legacy.parameters
+        assert "thermal_shared_sink_id" in legacy.parameters
+        assert "thermal_shared_sink_rth" in legacy.parameters
+        assert "thermal_shared_sink_cth" in legacy.parameters
 
     def test_legacy_mosfet_with_thermal_port_enabled_backfills_required_params(self):
         legacy = Component.from_dict(

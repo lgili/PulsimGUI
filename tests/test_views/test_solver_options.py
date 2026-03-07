@@ -1,12 +1,12 @@
 """Tests for solver options in SimulationSettingsDialog."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from pulsimgui.services.backend_adapter import BackendInfo
-from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.services.backend_types import DCSettings
+from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.views.dialogs.simulation_settings_dialog import SimulationSettingsDialog
 
 
@@ -463,7 +463,6 @@ class TestBackendReceivesOptions:
 
     def test_backend_build_dc_options_integration(self) -> None:
         """Test that PulsimBackend._build_dc_options uses DCSettings correctly."""
-        from unittest.mock import MagicMock
 
         # Create mock module with NewtonOptions
         mock_module = MagicMock()
@@ -483,7 +482,7 @@ class TestBackendReceivesOptions:
         )
 
         # Import and create backend
-        from pulsimgui.services.backend_adapter import PulsimBackend, BackendInfo
+        from pulsimgui.services.backend_adapter import BackendInfo, PulsimBackend
 
         backend_info = BackendInfo(
             identifier="test",

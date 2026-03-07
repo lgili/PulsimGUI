@@ -1,7 +1,6 @@
 """Service for managing hierarchical schematic navigation."""
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 from uuid import UUID
 
 from PySide6.QtCore import QObject, Signal
@@ -17,7 +16,7 @@ class HierarchyLevel:
 
     circuit_id: str  # ID of the circuit being viewed
     circuit_name: str  # Display name
-    subcircuit_instance_id: Optional[UUID] = None  # If viewing inside a subcircuit instance
+    subcircuit_instance_id: UUID | None = None  # If viewing inside a subcircuit instance
 
 
 class HierarchyService(QObject):
@@ -116,7 +115,7 @@ class HierarchyService(QObject):
         for definition in getattr(self._project, "subcircuits", {}).values():
             self._subcircuit_definitions[definition.id] = definition
 
-    def get_subcircuit_definition(self, definition_id: UUID) -> Optional[SubcircuitDefinition]:
+    def get_subcircuit_definition(self, definition_id: UUID) -> SubcircuitDefinition | None:
         """Get a registered subcircuit definition."""
         return self._subcircuit_definitions.get(definition_id)
 
@@ -181,7 +180,7 @@ class HierarchyService(QObject):
         """Navigate directly to the root level."""
         self.navigate_to_level(0)
 
-    def get_parent_circuit(self) -> Optional[Circuit]:
+    def get_parent_circuit(self) -> Circuit | None:
         """Get the parent circuit (one level up).
 
         Returns:

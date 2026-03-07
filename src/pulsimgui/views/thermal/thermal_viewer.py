@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QHeaderView,
     QLabel,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
-from pulsimgui.services.theme_service import ThemeService, Theme
-from pulsimgui.services.thermal_service import ThermalResult, ThermalDeviceResult
+from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.services.thermal_service import ThermalResult
 
 
 class ThermalViewerWidget(QWidget):
@@ -30,10 +28,10 @@ class ThermalViewerWidget(QWidget):
     def __init__(
         self,
         theme_service: ThemeService | None = None,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self._result: Optional[ThermalResult] = None
+        self._result: ThermalResult | None = None
         self._theme_service = theme_service
         self._series_palette = [
             "#4CAF50",
@@ -189,7 +187,7 @@ class ThermalViewerWidget(QWidget):
             plot_item.legend.setBrush(pg.mkBrush(c.plot_legend_background))
             plot_item.legend.setPen(pg.mkPen(c.plot_legend_border))
 
-    def set_result(self, result: Optional[ThermalResult]) -> None:
+    def set_result(self, result: ThermalResult | None) -> None:
         """Populate the widget with a new data set."""
         self._result = result
         if not result or not result.devices:
@@ -243,7 +241,7 @@ class ThermalViewerWidget(QWidget):
         self._temperature_plot.clear()
         plot_item = self._temperature_plot.getPlotItem()
         if plot_item.legend is None:
-            legend = self._temperature_plot.addLegend()
+            self._temperature_plot.addLegend()
         else:
             plot_item.legend.clear()
         palette = self._color_palette()

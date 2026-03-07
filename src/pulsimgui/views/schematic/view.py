@@ -1,11 +1,24 @@
 """Schematic view with pan and zoom."""
 
-from enum import Enum, auto
 from collections.abc import Callable
+from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
-from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsView, QLineEdit, QMenu
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
@@ -18,8 +31,8 @@ from pulsimgui.models.component import (
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
+from pulsimgui.views.schematic.items.wire_item import WireInProgressItem, WireItem, WirePreviewItem
 from pulsimgui.views.schematic.scene import SchematicScene
-from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
 
 class PinHighlightItem(QGraphicsItem):
@@ -34,10 +47,12 @@ class PinHighlightItem(QGraphicsItem):
         self._visible = False
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         r = self.PIN_GLOW_RADIUS + 2
         return QRectF(-r, -r, r * 2, r * 2)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._visible:
             return
 
@@ -64,6 +79,7 @@ class PinHighlightItem(QGraphicsItem):
             self.update()
 
     def is_highlight_visible(self) -> bool:
+        """Implement is_highlight_visible for pin highlight item."""
         return self._visible
 
 
@@ -81,9 +97,11 @@ class AlignmentGuidesItem(QGraphicsItem):
         self._scene_rect = QRectF(-5000, -5000, 10000, 10000)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._scene_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._h_lines and not self._v_lines:
             return
 
@@ -137,13 +155,16 @@ class ComponentDropPreviewItem(QGraphicsItem):
         self.setZValue(1000)  # Always on top
 
     def set_dark_mode(self, dark: bool) -> None:
+        """Update dark_mode for this widget."""
         self._preview_item.set_dark_mode(dark)
         self.update()
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._bounds.adjusted(-6, -6, 6, 6)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw a light glow around the component bounds for placement feedback.
@@ -485,6 +506,7 @@ class SchematicView(QGraphicsView):
         return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
+        """Handle the Qt resizeEvent callback."""
         super().resizeEvent(event)
         self._position_alias_editor()
 
@@ -835,6 +857,7 @@ class SchematicView(QGraphicsView):
             self.component_delete_requested.emit(component_id)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Handle the Qt contextMenuEvent callback."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         item = self.itemAt(event.pos())
@@ -1030,6 +1053,7 @@ class SchematicView(QGraphicsView):
         """Paste a component from clipboard at the given position."""
         from copy import deepcopy
         from uuid import uuid4
+
         from pulsimgui.models.component import Component
         from pulsimgui.views.schematic.items import create_component_item
 
@@ -1140,6 +1164,7 @@ class SchematicView(QGraphicsView):
                 break  # Only cut first selected component for now
 
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
+        """Intercept and optionally handle events before default dispatch."""
         if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Escape:
                 self._finish_wire_alias_edit(save=False)

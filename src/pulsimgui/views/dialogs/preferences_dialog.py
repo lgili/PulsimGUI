@@ -34,7 +34,6 @@ from pulsimgui.services.simulation_service import (
     normalize_integration_method,
 )
 
-
 _INTEGRATION_METHOD_OPTIONS = [
     ("Auto (TRBDF2)", "auto"),
     ("Trapezoidal", "trapezoidal"),

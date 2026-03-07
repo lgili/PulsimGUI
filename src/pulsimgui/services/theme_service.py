@@ -1,8 +1,8 @@
 """Theme management service with customizable color schemes."""
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor

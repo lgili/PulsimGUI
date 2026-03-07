@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
-from pulsimgui.services.backend_adapter import PlaceholderBackend, PulsimBackend, BackendInfo
+from pulsimgui.services.backend_adapter import BackendInfo, PlaceholderBackend, PulsimBackend
 from pulsimgui.services.backend_types import (
     ConvergenceInfo,
-    DCResult as BackendDCResult,
     DCSettings,
     IterationRecord,
     ProblematicVariable,
+)
+from pulsimgui.services.backend_types import (
+    DCResult as BackendDCResult,
 )
 from pulsimgui.services.simulation_service import DCResult, SimulationService
 
@@ -260,6 +262,388 @@ class TestSimulationServiceDC:
         info = service.last_convergence_info
         # May be None for placeholder or contain ConvergenceInfo
         assert info is None or hasattr(info, "converged")
+
+
+class TestSimulationServiceDCFallback:
+    """Tests for DC fallback strategy behavior in SimulationService."""
+
+    def test_run_dc_operating_point_retries_after_gmin_failure(self, monkeypatch) -> None:
+        service = SimulationService()
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.info = BackendInfo(
+            identifier="mock",
+            name="Mock Backend",
+            version="1.0.0",
+            status="available",
+        )
+
+        calls: list[DCSettings] = []
+
+        def _run_dc(_circuit_data, settings):
+            calls.append(settings)
+            if len(calls) == 1:
+                return BackendDCResult(
+                    error_message="Gmin stepping failed at step 0.",
+                    convergence_info=ConvergenceInfo(
+                        converged=False,
+                        failure_reason="gmin step 0",
+                    ),
+                )
+            return BackendDCResult(
+                node_voltages={"V(out)": 6.0},
+                convergence_info=ConvergenceInfo(converged=True, strategy_used=settings.strategy),
+            )
+
+        mock_backend.run_dc.side_effect = _run_dc
+
+        service._backend = mock_backend
+        monkeypatch.setattr(service, "_ensure_backend_ready", lambda: True)
+        service.settings.dc_strategy = "gmin"
+        service.settings.gmin_initial = 1e-2
+        service.settings.gmin_final = 1e-12
+
+        results: list[DCResult] = []
+        errors: list[str] = []
+        service.dc_finished.connect(results.append)
+        service.error.connect(errors.append)
+
+        service.run_dc_operating_point({"components": [], "nets": []})
+
+        assert len(results) == 1
+        assert results[0].error_message == ""
+        assert results[0].node_voltages.get("V(out)") == 6.0
+        assert not errors
+        assert len(calls) >= 2
+        assert calls[0].strategy == "gmin"
+        assert calls[1].gmin_initial <= 1e-3
+
+    def test_build_dc_fallback_attempts_tunes_aggressive_gmin(self) -> None:
+        attempts = SimulationService._build_dc_fallback_attempts(
+            DCSettings(
+                strategy="gmin",
+                gmin_initial=1e-2,
+                gmin_final=1e-12,
+                source_steps=5,
+            )
+        )
+
+        assert attempts
+        assert attempts[0].strategy == "gmin"
+        tuned = [
+            attempt
+            for attempt in attempts
+            if attempt.strategy == "gmin" and attempt.gmin_initial <= 1e-3
+        ]
+        assert tuned
+        assert any(attempt.strategy == "direct" for attempt in attempts)
+        assert any(attempt.strategy == "auto" for attempt in attempts)
+
+
+class TestPulsimBackendTopLevelDCStrategy:
+    """Tests for top-level dc_operating_point strategy mapping."""
+
+    @pytest.mark.parametrize(
+        ("strategy", "expected_attr"),
+        [
+            ("auto", "Auto"),
+            ("direct", "Direct"),
+            ("gmin", "GminStepping"),
+            ("source", "SourceStepping"),
+            ("pseudo", "PseudoTransient"),
+        ],
+    )
+    def test_top_level_dc_strategy_mapping(self, monkeypatch, strategy: str, expected_attr: str) -> None:
+        class _FakeDCStrategy:
+            Auto = object()
+            Direct = object()
+            GminStepping = object()
+            SourceStepping = object()
+            PseudoTransient = object()
+
+        class _FakeDCConvergenceConfig:
+            def __init__(self) -> None:
+                self.strategy = None
+                self.source_config = types.SimpleNamespace(max_steps=0)
+                self.gmin_config = types.SimpleNamespace(initial_gmin=0.0, final_gmin=0.0)
+
+        captured: dict[str, object] = {}
+
+        def _dc_operating_point(_circuit, config):
+            captured["strategy"] = config.strategy
+            captured["source_steps"] = config.source_config.max_steps
+            captured["gmin_initial"] = config.gmin_config.initial_gmin
+            captured["gmin_final"] = config.gmin_config.final_gmin
+            return types.SimpleNamespace(
+                success=True,
+                message="",
+                newton_result=types.SimpleNamespace(
+                    solution=[0.0, 6.0],
+                    iterations=2,
+                    final_residual=1e-12,
+                    history=[],
+                ),
+            )
+
+        module = types.SimpleNamespace(
+            DCConvergenceConfig=_FakeDCConvergenceConfig,
+            DCStrategy=_FakeDCStrategy,
+            dc_operating_point=_dc_operating_point,
+        )
+
+        backend = PulsimBackend(
+            module=module,
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+        monkeypatch.setattr(
+            backend._converter,
+            "build",
+            lambda _data: types.SimpleNamespace(node_names=lambda: ["0", "out"]),
+        )
+
+        result = backend.run_dc(
+            {"components": [], "nets": []},
+            DCSettings(
+                strategy=strategy,
+                source_steps=33,
+                gmin_initial=1e-3,
+                gmin_final=1e-9,
+            ),
+        )
+
+        assert result.error_message == ""
+        assert result.convergence_info.converged
+        assert captured["strategy"] is getattr(_FakeDCStrategy, expected_attr)
+        if strategy == "source":
+            assert captured["source_steps"] == 33
+        if strategy == "gmin":
+            assert captured["gmin_initial"] == 1e-3
+            assert captured["gmin_final"] == 1e-9
+
+
+class TestPulsimBackendNodeVoltageMapping:
+    """Tests for DC node voltage mapping across backend API variants."""
+
+    def test_convert_dc_analysis_result_uses_generic_node_labels_when_names_unavailable(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(num_nodes=lambda: 2)
+        dc_analysis_result = types.SimpleNamespace(
+            success=True,
+            message="",
+            newton_result=types.SimpleNamespace(
+                solution=[5.0, 6.0, 0.01],
+                iterations=2,
+                final_residual=1e-12,
+                history=[],
+            ),
+        )
+
+        converted = backend._convert_dc_analysis_result(dc_analysis_result, circuit)
+        assert converted.error_message == ""
+        assert converted.node_voltages == {"V(node_0)": 5.0, "V(node_1)": 6.0}
+
+    def test_convert_dc_result_uses_get_node_names_when_available(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(get_node_names=lambda: ["in", "out"])
+        native_result = types.SimpleNamespace(
+            solution=[12.0, 6.0],
+            converged=True,
+            iterations=3,
+            final_residual=1e-12,
+            history=[],
+        )
+
+        converted = backend._convert_dc_result(native_result, circuit)
+        assert converted.error_message == ""
+        assert converted.node_voltages == {"V(in)": 12.0, "V(out)": 6.0}
+
+    def test_convert_dc_analysis_result_maps_branch_currents_from_signal_names(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(
+            signal_names=lambda: ["V(in)", "V(out)", "I(V1)"],
+            num_nodes=lambda: 2,
+            num_branches=lambda: 1,
+        )
+        dc_analysis_result = types.SimpleNamespace(
+            success=True,
+            message="",
+            newton_result=types.SimpleNamespace(
+                solution=[12.0, 6.0, -0.012],
+                iterations=3,
+                final_residual=1e-12,
+                history=[],
+            ),
+        )
+
+        converted = backend._convert_dc_analysis_result(dc_analysis_result, circuit)
+        assert converted.error_message == ""
+        assert converted.node_voltages == {"V(in)": 12.0, "V(out)": 6.0}
+        assert converted.branch_currents == {"I(V1)": -0.012}
+
+    def test_convert_dc_analysis_result_fallback_generates_branch_currents(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(
+            node_names=lambda: ["out"],
+            num_nodes=lambda: 1,
+            num_branches=lambda: 2,
+        )
+        dc_analysis_result = types.SimpleNamespace(
+            success=True,
+            message="",
+            newton_result=types.SimpleNamespace(
+                solution=[6.0, 0.1, -0.2],
+                iterations=2,
+                final_residual=1e-12,
+                history=[],
+            ),
+        )
+
+        converted = backend._convert_dc_analysis_result(dc_analysis_result, circuit)
+        assert converted.error_message == ""
+        assert converted.node_voltages == {"V(out)": 6.0}
+        assert converted.branch_currents == {"I(branch0)": 0.1, "I(branch1)": -0.2}
+
+    def test_convert_dc_analysis_result_estimates_resistor_power(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(signal_names=lambda: ["V(in)", "V(out)"])
+        dc_analysis_result = types.SimpleNamespace(
+            success=True,
+            message="",
+            newton_result=types.SimpleNamespace(
+                solution=[12.0, 6.0],
+                iterations=2,
+                final_residual=1e-12,
+                history=[],
+            ),
+        )
+        circuit_data = {
+            "components": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "type": "RESISTOR",
+                    "pin_nodes": ["in", "out"],
+                    "parameters": {"resistance": 1200.0},
+                }
+            ]
+        }
+
+        converted = backend._convert_dc_analysis_result(dc_analysis_result, circuit, circuit_data)
+        assert converted.error_message == ""
+        assert converted.power_dissipation["P(R1)"] == pytest.approx(0.03, rel=1e-9)
+
+    def test_convert_dc_analysis_result_estimates_power_with_ground_node(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(signal_names=lambda: ["V(out)", "V(0)"])
+        dc_analysis_result = types.SimpleNamespace(
+            success=True,
+            message="",
+            newton_result=types.SimpleNamespace(
+                solution=[5.0, 0.0],
+                iterations=2,
+                final_residual=1e-12,
+                history=[],
+            ),
+        )
+        circuit_data = {
+            "components": [
+                {
+                    "id": "Rload",
+                    "name": "Rload",
+                    "type": "RESISTOR",
+                    "pin_nodes": ["out", "0"],
+                    "parameters": {"resistance": 10.0},
+                }
+            ]
+        }
+
+        converted = backend._convert_dc_analysis_result(dc_analysis_result, circuit, circuit_data)
+        assert converted.error_message == ""
+        assert converted.power_dissipation["P(Rload)"] == pytest.approx(2.5, rel=1e-9)
+
+    def test_convert_dc_result_uses_native_power_map_when_available(self) -> None:
+        backend = PulsimBackend(
+            module=types.SimpleNamespace(),
+            info=BackendInfo(
+                identifier="fake",
+                name="Fake",
+                version="0.0.0",
+                status="available",
+            ),
+        )
+
+        circuit = types.SimpleNamespace(signal_names=lambda: ["V(in)", "V(out)"])
+        native_result = types.SimpleNamespace(
+            solution=[12.0, 6.0],
+            converged=True,
+            iterations=3,
+            final_residual=1e-12,
+            history=[],
+            power_dissipation={"R1": 0.123},
+        )
+
+        converted = backend._convert_dc_result(native_result, circuit)
+        assert converted.error_message == ""
+        assert converted.power_dissipation == {"P(R1)": 0.123}
 
 
 class TestDCCircuitTypes:

@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import runtime_checkable
 
 import pytest
 
 from pulsimgui.services.backend_adapter import (
-    BackendCallbacks,
     BackendInfo,
     PlaceholderBackend,
     PulsimBackend,
-    SimulationBackend,
 )
 from pulsimgui.services.backend_protocol import BackendCapabilities
 from pulsimgui.services.backend_types import (
@@ -20,7 +17,6 @@ from pulsimgui.services.backend_types import (
     DCSettings,
     ThermalSettings,
     TransientResult,
-    TransientSettings,
 )
 
 

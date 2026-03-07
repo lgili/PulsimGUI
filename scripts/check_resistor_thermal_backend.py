@@ -8,9 +8,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import re
-import sys
+from pathlib import Path
 
 from pulsimgui.models.project import Project
 from pulsimgui.services.backend_adapter import BackendCallbacks

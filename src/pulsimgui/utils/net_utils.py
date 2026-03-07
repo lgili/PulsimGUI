@@ -30,18 +30,21 @@ class _UnionFind:
         self._rank: dict[str, int] = {}
 
     def add(self, item: str) -> None:
+        """Add a new singleton set for the provided identifier."""
         if item in self._parent:
             return
         self._parent[item] = item
         self._rank[item] = 0
 
     def find(self, item: str) -> str:
+        """Return the canonical set representative for an identifier."""
         parent = self._parent[item]
         if parent != item:
             self._parent[item] = self.find(parent)
         return self._parent[item]
 
     def union(self, left: str, right: str) -> None:
+        """Union two sets using rank-based balancing."""
         root_left = self.find(left)
         root_right = self.find(right)
         if root_left == root_right:

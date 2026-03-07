@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pulsimgui.models.component import ComponentType
 
-
 COMPONENT_LIBRARY = {
     "Circuit": [
         {"type": ComponentType.RESISTOR, "name": "Resistor", "shortcut": "R"},

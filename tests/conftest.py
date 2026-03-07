@@ -1,14 +1,19 @@
 """Pytest configuration and fixtures."""
 
 import time
+
 import pytest
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QCoreApplication
+
+from pulsimgui.qt_env import setup_qt_plugin_path
+
+setup_qt_plugin_path()
 
 
 @pytest.fixture(scope="session")
 def qapp():
     """Create a QApplication instance for the entire test session."""
+    from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
@@ -18,11 +23,13 @@ def qapp():
 class SimpleQtBot:
     """Simple Qt bot for signal waiting without full pytest-qt dependency."""
 
-    def __init__(self, app: QApplication):
+    def __init__(self, app):
         self._app = app
 
     def waitUntil(self, callback, timeout: int = 5000) -> None:
         """Wait until callback returns True or timeout is reached."""
+        from PySide6.QtCore import QCoreApplication
+
         deadline = time.time() + timeout / 1000.0
         while time.time() < deadline:
             QCoreApplication.processEvents()

@@ -4,52 +4,50 @@ from functools import partial
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QColor, QPalette
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QLineEdit,
-    QComboBox,
     QCheckBox,
-    QLabel,
-    QGroupBox,
-    QScrollArea,
-    QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
-    QFrame,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
-    QStackedWidget,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSpinBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.models.component import (
+    HIDDEN_PARAMS,
+    MUX_CHANNEL_LIMITS,
+    SCOPE_CHANNEL_LIMITS,
+    THERMAL_PORT_PARAMETER,
     Component,
     ComponentType,
-    HIDDEN_PARAMS,
-    SCOPE_CHANNEL_LIMITS,
-    MUX_CHANNEL_LIMITS,
-    THERMAL_PORT_PARAMETER,
-    set_sum_input_count,
-    set_scope_channel_count,
-    set_mux_input_count,
     set_demux_output_count,
+    set_mux_input_count,
+    set_scope_channel_count,
+    set_sum_input_count,
     set_thermal_port_enabled,
     supports_electrothermal_parameters,
 )
-from pulsimgui.utils.si_prefix import parse_si_value, format_si_value
 from pulsimgui.resources.icons import IconService
-from pulsimgui.views.library.library_panel import create_component_icon
 from pulsimgui.services.theme_service import (
-    ThemeService,
-    Theme,
-    LIGHT_THEME,
     DARK_THEME,
+    LIGHT_THEME,
+    Theme,
+    ThemeService,
 )
+from pulsimgui.utils.si_prefix import parse_si_value
+from pulsimgui.views.library.library_panel import create_component_icon
 
 
 class SectionHeader(QWidget):
@@ -97,6 +95,7 @@ class AutoSelectLineEdit(QLineEdit):
     """LineEdit that auto-selects all text when focused."""
 
     def focusInEvent(self, event):
+        """Handle the Qt focusInEvent callback."""
         super().focusInEvent(event)
         # Use timer to select after focus is fully set
         from PySide6.QtCore import QTimer
@@ -135,10 +134,12 @@ class SIValueWidget(QWidget):
 
     @property
     def value(self) -> float:
+        """Return the current numeric value represented by this editor."""
         return self._value
 
     @value.setter
     def value(self, val: float) -> None:
+        """Set the numeric value represented by this editor."""
         self._value = val
         self._edit.setText(self._format_value(val))
 
@@ -1143,6 +1144,8 @@ class PropertiesPanel(QWidget):
             "switching_err_j": "J",
             "thermal_rth": "K/W",
             "thermal_cth": "J/K",
+            "thermal_shared_sink_rth": "K/W",
+            "thermal_shared_sink_cth": "J/K",
             "thermal_temp_init": "°C",
             "thermal_temp_ref": "°C",
         }

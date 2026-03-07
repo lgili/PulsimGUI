@@ -1,21 +1,16 @@
 """Animated dock widget with smooth collapse/expand."""
 
 from PySide6.QtCore import (
-    Qt,
     QPropertyAnimation,
-    QEasingCurve,
-    Property,
+    Qt,
     Signal,
 )
 from PySide6.QtWidgets import (
     QDockWidget,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
     QFrame,
-    QSizePolicy,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
 )
 
 from pulsimgui.resources.icons import IconService

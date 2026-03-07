@@ -3,17 +3,17 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QTextEdit,
-    QDialogButtonBox,
-    QGroupBox,
-    QFormLayout,
     QListWidget,
     QListWidgetItem,
     QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 

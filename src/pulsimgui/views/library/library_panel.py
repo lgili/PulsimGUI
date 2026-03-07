@@ -1,30 +1,34 @@
 """Component library panel with grid card layout and drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize, QEvent
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QDrag, QPixmap, QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QFont, QPainterPath, QCursor,
+    QColor,
+    QCursor,
+    QDrag,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGridLayout,
-    QLineEdit,
-    QLabel,
-    QScrollArea,
-    QFrame,
     QApplication,
-    QSizePolicy,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
     QStyleOptionGraphicsItem,
     QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
 from pulsimgui.resources.icons import IconService
-from pulsimgui.services.theme_service import ThemeService, Theme
-
+from pulsimgui.services.theme_service import Theme, ThemeService
 
 # Component metadata for library display.
 # Keep this list aligned with backend-supported + GUI-functional blocks only.
@@ -800,6 +804,7 @@ class ComponentCard(QFrame):
             """)
 
     def set_icon_color(self, color: str):
+        """Update icon_color for this widget."""
         self._icon_color = color
         self._update_icon()
 
@@ -840,21 +845,25 @@ class ComponentCard(QFrame):
         self._update_style()
 
     def enterEvent(self, event):
+        """Handle the Qt enterEvent callback."""
         self._hovered = True
         self._update_style()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        """Handle the Qt leaveEvent callback."""
         self._hovered = False
         self._update_style()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
+        """Handle the Qt mousePressEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """Handle the Qt mouseMoveEvent callback."""
         if event.buttons() & Qt.MouseButton.LeftButton:
             if hasattr(self, '_drag_start_pos'):
                 distance = (event.pos() - self._drag_start_pos).manhattanLength()
@@ -863,6 +872,7 @@ class ComponentCard(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """Handle the Qt mouseReleaseEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             if hasattr(self, '_drag_start_pos'):
                 distance = (event.pos() - self._drag_start_pos).manhattanLength()
@@ -871,6 +881,7 @@ class ComponentCard(QFrame):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        """Handle the Qt mouseDoubleClickEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.double_clicked.emit(self._comp_type)
         super().mouseDoubleClickEvent(event)
@@ -979,6 +990,7 @@ class CategorySection(QWidget):
         self._refresh_header_style()
 
     def add_component(self, comp_type: ComponentType, name: str, shortcut: str):
+        """Append a component card to the category section layout."""
         card = ComponentCard(comp_type, name, shortcut)
         card.set_icon_color(self._icon_color)
         card.set_icon_theme_mode(self._icon_dark_mode)
@@ -1001,6 +1013,7 @@ class CategorySection(QWidget):
             self._toggle_btn.setText("▾" if self._expanded else "▸")
 
     def eventFilter(self, watched, event):
+        """Intercept and optionally handle events before default dispatch."""
         if event.type() == QEvent.Type.MouseButtonRelease and (
             watched is self._header
             or watched is self._title_label
@@ -1013,11 +1026,13 @@ class CategorySection(QWidget):
         return super().eventFilter(watched, event)
 
     def set_icon_color(self, color: str):
+        """Update icon_color for this widget."""
         self._icon_color = color
         for card in self._cards:
             card.set_icon_color(color)
 
     def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        """Update icon_theme_mode for this widget."""
         self._icon_dark_mode = dark_mode
         for card in self._cards:
             card.set_icon_theme_mode(dark_mode)
@@ -1206,6 +1221,7 @@ class LibraryPanel(QWidget):
         self.component_double_clicked.emit(comp_type)
 
     def add_to_recent(self, comp_type: ComponentType):
+        """Add the component type to the recent list and refresh the panel."""
         if comp_type in self._recent:
             self._recent.remove(comp_type)
         self._recent.insert(0, comp_type)

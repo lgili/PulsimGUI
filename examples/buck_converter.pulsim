@@ -20,7 +20,7 @@
     "enable_voltage_limiting": false,
     "max_voltage_step": 2.0,
     "dc_strategy": "auto",
-    "gmin_initial": 0.01,
+    "gmin_initial": 0.001,
     "gmin_final": 1e-12,
     "dc_source_steps": 20,
     "transient_robust_mode": true,

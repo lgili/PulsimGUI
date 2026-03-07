@@ -1,7 +1,7 @@
 """Circuit model containing components and wires."""
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 from uuid import UUID
 
 from pulsimgui.models.component import Component

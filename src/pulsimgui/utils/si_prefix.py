@@ -1,7 +1,6 @@
 """SI prefix parsing and formatting utilities."""
 
 import re
-from typing import Tuple
 
 SI_PREFIXES: dict[str, float] = {
     "f": 1e-15,
@@ -56,8 +55,8 @@ def parse_si_value(value_str: str) -> float:
         # Try parsing as plain float
         try:
             return float(value_str)
-        except ValueError:
-            raise ValueError(f"Cannot parse '{value_str}' as SI value")
+        except ValueError as exc:
+            raise ValueError(f"Cannot parse '{value_str}' as SI value") from exc
 
     number = float(match.group(1))
     prefix = match.group(2) or ""
@@ -129,7 +128,7 @@ def format_si_value(value: float, unit: str = "", precision: int = 3) -> str:
     return result
 
 
-def split_si_value(value_str: str) -> Tuple[float, str]:
+def split_si_value(value_str: str) -> tuple[float, str]:
     """
     Split a string into numeric value and prefix.
 

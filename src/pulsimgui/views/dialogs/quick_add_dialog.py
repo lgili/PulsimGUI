@@ -1,21 +1,20 @@
 """Quick-add palette dialog for fast component insertion."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QLabel,
-    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.models.component import ComponentType
 from pulsimgui.models.component_catalog import QUICK_ADD_COMPONENTS
 from pulsimgui.resources.icons import IconService
-
 
 # Component search data: (type, display_name, keywords)
 COMPONENT_DATA = QUICK_ADD_COMPONENTS
@@ -174,7 +173,6 @@ class QuickAddDialog(QDialog):
     def eventFilter(self, obj, event) -> bool:
         """Handle keyboard navigation."""
         from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeyEvent
 
         if obj is self._search_input and event.type() == QEvent.Type.KeyPress:
             key = event.key()
@@ -203,12 +201,3 @@ class QuickAddDialog(QDialog):
         super().showEvent(event)
         self._search_input.setFocus()
         self._search_input.selectAll()
-
-
-class QWidget:
-    """Placeholder to avoid import issues."""
-    pass
-
-
-# Re-import correctly
-from PySide6.QtWidgets import QWidget

@@ -2,13 +2,13 @@
 
 from pulsimgui.views.properties.properties_panel import PropertiesPanel, SIValueWidget
 from pulsimgui.views.properties.waveform_editors import (
-    WaveformEditorDialog,
-    WaveformPreview,
     DCEditor,
     PulseEditor,
-    SineEditor,
     PWLEditor,
     PWMEditor,
+    SineEditor,
+    WaveformEditorDialog,
+    WaveformPreview,
 )
 
 # Alias for backward compatibility

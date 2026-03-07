@@ -1,10 +1,9 @@
 """Tests for Circuit model."""
 
-import pytest
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.wire import Wire, WireSegment
+from pulsimgui.models.wire import Wire
 
 
 class TestCircuit:

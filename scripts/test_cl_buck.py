@@ -1,4 +1,7 @@
 """Test closed-loop buck converter with duty_from_channel feature."""
+
+import sys
+
 import pulsim as ps
 
 VIN   = 12.0
@@ -68,13 +71,13 @@ t, states, success, message = ps.run_transient(c, 0.0, 0.020, 2e-6)
 print(f"\nSimulation success: {success}")
 if not success:
     print(f"  Error: {message}")
-    import sys; sys.exit(1)
+    sys.exit(1)
 
 # Vout over time
 v_out = [float(states[i][n_out]) for i in range(len(t))]
 
 # Check final Vout (average over last 2 ms)
-last_ms = [v for ti, v in zip(t, v_out) if ti >= 0.018]
+last_ms = [v for ti, v in zip(t, v_out, strict=False) if ti >= 0.018]
 if last_ms:
     vout_avg = sum(last_ms) / len(last_ms)
     print(f"  Vout (avg last 2 ms): {vout_avg:.3f} V   (target {VREF} V)")

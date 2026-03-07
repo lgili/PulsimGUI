@@ -68,13 +68,42 @@ Core transient analysis parameters:
 
 - `Enable electrical loss tracking`
 - `Ambient temperature`
-- `Thermal network`:
+- `Thermal network` (global solver helper):
   - `Foster`
   - `Cauer`
 - `Include conduction losses`
 - `Include switching losses`
 
 These options feed backend runtime (`SimulationOptions`) and post-processing telemetry (`loss_summary`, `thermal_summary`, `component_electrothermal`).
+
+### Component Thermal/Loss Parameters (Properties Panel)
+
+For supported components (`resistor`, `diode`, `mosfet`, `igbt`, `bjt_npn`, `bjt_pnp`), Properties Panel exposes:
+
+- thermal single RC:
+  - `thermal_enabled`
+  - `thermal_network=single_rc`
+  - `thermal_rth`, `thermal_cth`
+- thermal staged network:
+  - `thermal_network=foster|cauer`
+  - `thermal_rth_stages`, `thermal_cth_stages` (comma-separated)
+- shared sink coupling:
+  - `thermal_shared_sink_id`
+  - `thermal_shared_sink_rth`, `thermal_shared_sink_cth`
+- common thermal fields:
+  - `thermal_temp_init`, `thermal_temp_ref`, `thermal_alpha`
+
+Loss model options:
+
+- scalar switching energies:
+  - `switching_loss_model=scalar`
+  - `switching_eon_j`, `switching_eoff_j`, `switching_err_j`
+- datasheet surfaces:
+  - `switching_loss_model=datasheet`
+  - `switching_loss_axes_current|voltage|temperature` (comma-separated)
+  - `switching_loss_eon_table|eoff_table|err_table` (row-major flatten)
+
+The GUI pre-validates these contracts before backend execution and reports deterministic diagnostics (`PULSIM_YAML_E_*`) for invalid combinations.
 
 ## Backend Runtime (Preferences)
 
@@ -98,4 +127,4 @@ Path: `Preferences → Simulation`
 - `Absolute tolerance`: `1e-6`
 - `Output points`: `10000`
 - Transient robustness: enabled
-- Backend target: `v0.6.5`
+- Backend target: `v0.7.1`

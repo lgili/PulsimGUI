@@ -2,22 +2,23 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.services.thermal_service import (
-    ThermalAnalysisService,
-    ThermalResult,
-    ThermalDeviceResult,
-    ThermalStage,
+from pulsimgui.services.backend_types import (
+    FosterStage,
+    LossBreakdown,
+)
+from pulsimgui.services.backend_types import (
+    ThermalDeviceResult as BackendThermalDeviceResult,
 )
 from pulsimgui.services.backend_types import (
     ThermalResult as BackendThermalResult,
-    ThermalDeviceResult as BackendThermalDeviceResult,
-    FosterStage,
-    LossBreakdown,
+)
+from pulsimgui.services.simulation_service import SimulationResult
+from pulsimgui.services.thermal_service import (
+    ThermalAnalysisService,
+    ThermalDeviceResult,
+    ThermalResult,
 )
 
 
@@ -335,6 +336,124 @@ class TestBackendIntegration:
         assert "no compatible native thermal api" in thermal.error_message.lower()
         assert thermal.is_synthetic is False
         assert len(thermal.devices) == 0
+
+    def test_transient_telemetry_bypasses_native_thermal_api_requirement(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "M1"
+        component.parameters["thermal_limit"] = 120.0
+        comp_id = str(component.id)
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            error_message="No compatible native thermal API available for this backend version.",
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        electrical = SimulationResult(
+            time=[0.0, 1.0, 2.0],
+            signals={"T(M1)": [25.0, 40.0, 55.0]},
+            statistics={
+                "component_electrothermal": [
+                    {
+                        "component_name": "M1",
+                        "thermal_enabled": True,
+                        "conduction": 2.0,
+                        "turn_on": 0.5,
+                        "turn_off": 0.25,
+                        "reverse_recovery": 0.1,
+                        "final_temperature": 55.0,
+                        "peak_temperature": 55.0,
+                    }
+                ],
+                "thermal_summary": {"ambient": 25.0},
+            },
+        )
+
+        thermal = service.build_result(
+            circuit,
+            electrical,
+            circuit_data={
+                "components": [
+                    {"id": comp_id, "name": "M1", "type": component.type.name, "parameters": {}}
+                ]
+            },
+        )
+
+        mock_backend.run_thermal.assert_not_called()
+        assert thermal.error_message == ""
+        assert thermal.is_synthetic is False
+        assert len(thermal.devices) == 1
+        device = thermal.devices[0]
+        assert device.component_id == comp_id
+        assert device.component_name == "M1"
+        assert device.temperature_trace == [25.0, 40.0, 55.0]
+        assert device.conduction_loss == 2.0
+        assert device.switching_loss_on == 0.5
+        assert device.switching_loss_off == 0.25
+        assert device.reverse_recovery_loss == 0.1
+        assert device.switching_loss == 0.85
+        assert device.total_loss == 2.85
+        assert device.thermal_limit == 120.0
+        assert len(device.stages) == 1
+        assert device.stages[0].resistance == 1.0
+        assert device.stages[0].capacitance == 0.1
+
+    def test_transient_telemetry_uses_staged_component_thermal_network_parameters(self) -> None:
+        circuit = _make_circuit(1)
+        component = next(iter(circuit.components.values()))
+        component.name = "M1"
+        component.parameters.update(
+            {
+                "thermal_enabled": True,
+                "thermal_network": "foster",
+                "thermal_rth_stages": "0.2,0.3",
+                "thermal_cth_stages": "0.01,0.02",
+                "thermal_rth": 9.9,
+                "thermal_cth": 9.9,
+            }
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.has_capability.return_value = True
+        mock_backend.run_thermal.return_value = BackendThermalResult(
+            error_message="No compatible native thermal API available for this backend version.",
+            is_synthetic=False,
+        )
+
+        service = ThermalAnalysisService(backend=mock_backend)
+        electrical = SimulationResult(
+            time=[0.0, 1.0, 2.0],
+            signals={"T(M1)": [25.0, 35.0, 45.0]},
+            statistics={
+                "component_electrothermal": [
+                    {
+                        "component_name": "M1",
+                        "thermal_enabled": True,
+                        "conduction": 1.0,
+                        "turn_on": 0.2,
+                        "turn_off": 0.1,
+                        "reverse_recovery": 0.0,
+                        "final_temperature": 45.0,
+                        "peak_temperature": 45.0,
+                    }
+                ]
+            },
+        )
+
+        thermal = service.build_result(circuit, electrical, circuit_data=None)
+
+        mock_backend.run_thermal.assert_not_called()
+        assert thermal.error_message == ""
+        assert len(thermal.devices) == 1
+        stages = thermal.devices[0].stages
+        assert len(stages) == 2
+        assert stages[0].resistance == 0.2
+        assert stages[0].capacitance == 0.01
+        assert stages[1].resistance == 0.3
+        assert stages[1].capacitance == 0.02
 
     def test_backend_error_does_not_use_transient_summary_as_thermal_trace(self) -> None:
         circuit = _make_circuit(1)

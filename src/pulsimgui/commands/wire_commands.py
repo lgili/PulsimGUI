@@ -24,6 +24,7 @@ class AddWireCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         return "Add wire"
 
 
@@ -46,4 +47,5 @@ class DeleteWireCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         return "Delete wire"

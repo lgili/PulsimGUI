@@ -78,7 +78,13 @@ python3 -m pulsimgui
 
 ## Recommended Backend
 
-For reproducible behavior, use **`pulsim v0.6.5`**.
+For reproducible behavior, use **`pulsim v0.7.1`**.
+
+This is required for full advanced electrothermal support in GUI runtime:
+
+- staged thermal networks (`single_rc`, `foster`, `cauer`)
+- shared-sink coupling (`shared_sink_id`, `shared_sink_rth`, `shared_sink_cth`)
+- datasheet switching-loss surfaces (`loss.model=datasheet`)
 
 Quick check:
 
