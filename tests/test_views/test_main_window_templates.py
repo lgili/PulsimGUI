@@ -9,7 +9,8 @@ from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType, set_thermal_port_enabled
 from pulsimgui.models.project import Project
 from pulsimgui.models.wire import Wire, WireSegment
-from pulsimgui.services.simulation_service import SimulationResult, SimulationState
+from pulsimgui.services.backend_types import ConvergenceInfo
+from pulsimgui.services.simulation_service import DCResult, SimulationResult, SimulationState
 from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.main_window import MainWindow
 
@@ -209,6 +210,38 @@ def test_simulation_progress_keeps_value_for_indeterminate_updates(qapp) -> None
 
         window._on_simulation_progress(-1.0, "Simulating circuit...")
         assert window._sim_progress.value() == 40
+    finally:
+        window.close()
+
+
+def test_dc_finished_opens_results_dialog_with_parent_and_convergence_info(monkeypatch, qapp) -> None:
+    """DC results dialog should receive convergence info and the window as parent."""
+    captured: dict[str, object] = {}
+
+    class _DialogStub:
+        def __init__(self, result, convergence_info=None, parent=None) -> None:
+            captured["result"] = result
+            captured["convergence_info"] = convergence_info
+            captured["parent"] = parent
+
+        def exec(self) -> int:
+            captured["exec_called"] = True
+            return 0
+
+    monkeypatch.setattr(main_window_module, "DCResultsDialog", _DialogStub)
+
+    window = MainWindow()
+    try:
+        result = DCResult(node_voltages={"V(out)": 6.0})
+        convergence_info = ConvergenceInfo(converged=True, iterations=4, final_residual=1e-12)
+        window._simulation_service._last_convergence_info = convergence_info
+
+        window._on_dc_finished(result)
+
+        assert captured["result"] is result
+        assert captured["convergence_info"] is convergence_info
+        assert captured["parent"] is window
+        assert captured["exec_called"] is True
     finally:
         window.close()
 

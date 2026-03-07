@@ -290,8 +290,8 @@ class PlaceholderBackend(SimulationBackend):
             "I(M1)": 0.5,
         }
         power_dissipation = {
-            "R1": 0.025,
-            "M1": 3.5,
+            "P(R1)": 0.025,
+            "P(M1)": 3.5,
         }
         convergence_info = ConvergenceInfo(
             converged=True,
@@ -2441,11 +2441,11 @@ class PulsimBackend(SimulationBackend):
         try:
             # Try top-level dc_operating_point first (preferred)
             if hasattr(self._module, "dc_operating_point"):
-                return self._run_dc_top_level(circuit, settings)
+                return self._run_dc_top_level(circuit, settings, circuit_data)
 
             # Try simulator-based API
             if hasattr(self._module, "Simulator"):
-                simulator_result = self._run_dc_via_simulator(circuit, settings)
+                simulator_result = self._run_dc_via_simulator(circuit, settings, circuit_data)
                 if simulator_result is not None:
                     return simulator_result
 
@@ -2453,18 +2453,18 @@ class PulsimBackend(SimulationBackend):
             if hasattr(self._module, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = self._module.solve_dc(circuit, newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
 
             # Try v1 namespace (DCConvergenceSolver)
             if hasattr(self._module, "v1") and hasattr(self._module.v1, "DCConvergenceSolver"):
                 newton_opts = self._build_dc_options(settings)
-                return self._run_dc_v1(circuit, settings, newton_opts)
+                return self._run_dc_v1(circuit, settings, newton_opts, circuit_data)
 
             # Try v2 namespace
             if hasattr(self._module, "v2") and hasattr(self._module.v2, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = self._module.v2.solve_dc(circuit, newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
 
             return DCResult(
                 error_message="No DC solver available in backend",
@@ -2477,7 +2477,12 @@ class PulsimBackend(SimulationBackend):
                 convergence_info=ConvergenceInfo(converged=False, failure_reason=str(exc)),
             )
 
-    def _run_dc_via_simulator(self, circuit: Any, settings: DCSettings) -> DCResult | None:
+    def _run_dc_via_simulator(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult | None:
         """Try DC operating point through Simulator APIs.
 
         Returns:
@@ -2495,34 +2500,42 @@ class PulsimBackend(SimulationBackend):
         try:
             if hasattr(simulator, "dc_operating_point"):
                 native_result = simulator.dc_operating_point()
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
             if hasattr(simulator, "solve_dc"):
                 newton_opts = self._build_dc_options(settings)
                 native_result = simulator.solve_dc(newton_opts)
-                return self._convert_newton_result(native_result, circuit)
+                return self._convert_newton_result(native_result, circuit, circuit_data)
         except Exception:
             return None
 
         return None
 
-    def _run_dc_top_level(self, circuit: Any, settings: DCSettings) -> DCResult:
+    def _run_dc_top_level(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Run DC analysis using top-level dc_operating_point function."""
         # Build DCConvergenceConfig
         config = self._module.DCConvergenceConfig()
 
-        # Map strategy
-        if settings.strategy == "gmin":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.GminStepping
-        elif settings.strategy == "source":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.SourceStepping
-                if hasattr(config, "source_config"):
-                    config.source_config.max_steps = settings.source_steps
-        elif settings.strategy == "pseudo":
-            if hasattr(self._module, "DCStrategy"):
-                config.strategy = self._module.DCStrategy.PseudoTransient
-        if settings.strategy == "gmin" and hasattr(config, "gmin_config"):
+        strategy_name = str(settings.strategy or "auto").strip().lower()
+        if hasattr(self._module, "DCStrategy"):
+            strategy_enum = {
+                "auto": getattr(self._module.DCStrategy, "Auto", None),
+                "direct": getattr(self._module.DCStrategy, "Direct", None),
+                "gmin": getattr(self._module.DCStrategy, "GminStepping", None),
+                "source": getattr(self._module.DCStrategy, "SourceStepping", None),
+                "pseudo": getattr(self._module.DCStrategy, "PseudoTransient", None),
+            }.get(strategy_name)
+            if strategy_enum is not None:
+                config.strategy = strategy_enum
+
+        if strategy_name == "source" and hasattr(config, "source_config"):
+            config.source_config.max_steps = settings.source_steps
+
+        if strategy_name == "gmin" and hasattr(config, "gmin_config"):
             config.gmin_config.initial_gmin = settings.gmin_initial
             config.gmin_config.final_gmin = settings.gmin_final
 
@@ -2530,9 +2543,15 @@ class PulsimBackend(SimulationBackend):
         dc_result = self._module.dc_operating_point(circuit, config)
 
         # Convert to DCResult
-        return self._convert_dc_analysis_result(dc_result, circuit)
+        return self._convert_dc_analysis_result(dc_result, circuit, circuit_data)
 
-    def _run_dc_v1(self, circuit: Any, settings: DCSettings, newton_opts: Any) -> DCResult:
+    def _run_dc_v1(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        newton_opts: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Run DC analysis using v1 DCConvergenceSolver."""
         v1 = self._module.v1
 
@@ -2550,7 +2569,7 @@ class PulsimBackend(SimulationBackend):
             # Auto or direct strategy
             native_result = solver.solve()
 
-        return self._convert_dc_result(native_result, circuit)
+        return self._convert_dc_result(native_result, circuit, circuit_data)
 
     def _build_dc_options(self, settings: DCSettings) -> Any:
         """Build PulsimCore Newton options from DCSettings."""
@@ -2576,7 +2595,12 @@ class PulsimBackend(SimulationBackend):
 
         return opts
 
-    def _convert_dc_analysis_result(self, dc_result: Any, circuit: Any) -> DCResult:
+    def _convert_dc_analysis_result(
+        self,
+        dc_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore DCAnalysisResult to GUI DCResult."""
         node_voltages: dict[str, float] = {}
         branch_currents: dict[str, float] = {}
@@ -2587,10 +2611,21 @@ class PulsimBackend(SimulationBackend):
         solution = getattr(newton_result, "solution", None) if newton_result else None
 
         if solution is not None:
-            node_names = list(circuit.node_names()) if hasattr(circuit, "node_names") else []
-            for i, name in enumerate(node_names):
-                if i < len(solution):
-                    node_voltages[f"V({name})"] = float(solution[i])
+            node_voltages, branch_currents = self._extract_dc_solution_maps(circuit, solution)
+            node_names = [key[2:-1] for key in node_voltages if key.startswith("V(") and key.endswith(")")]
+        else:
+            node_names = []
+        power_dissipation.update(
+            self._extract_dc_power_result(dc_result)
+        )
+        if circuit_data is not None:
+            power_dissipation.update(
+                self._estimate_dc_power_dissipation(
+                    circuit_data,
+                    node_voltages,
+                    branch_currents,
+                )
+            )
 
         # Build convergence info from DCAnalysisResult
         converged = getattr(dc_result, "success", False)
@@ -2662,9 +2697,14 @@ class PulsimBackend(SimulationBackend):
             error_message=error_message,
         )
 
-    def _convert_newton_result(self, native_result: Any, circuit: Any) -> DCResult:
+    def _convert_newton_result(
+        self,
+        native_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore NewtonResult to GUI DCResult."""
-        return self._convert_dc_result(native_result, circuit)
+        return self._convert_dc_result(native_result, circuit, circuit_data)
 
     def _map_dc_strategy(self, strategy: str) -> Any:
         """Map strategy string to PulsimCore enum."""
@@ -2679,7 +2719,12 @@ class PulsimBackend(SimulationBackend):
             return strategy_map.get(strategy.lower(), self._module.v1.DCStrategy.Auto)
         return strategy
 
-    def _convert_dc_result(self, native_result: Any, circuit: Any) -> DCResult:
+    def _convert_dc_result(
+        self,
+        native_result: Any,
+        circuit: Any,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
         """Convert PulsimCore DC result to GUI DCResult."""
         node_voltages: dict[str, float] = {}
         branch_currents: dict[str, float] = {}
@@ -2688,21 +2733,21 @@ class PulsimBackend(SimulationBackend):
         # Extract solution vector
         solution = getattr(native_result, "solution", None)
         if solution is not None:
-            # Map node indices to names
-            node_names = []
-            if hasattr(circuit, "node_names"):
-                node_names = list(circuit.node_names())
-            elif hasattr(circuit, "get_node_names"):
-                node_names = list(circuit.get_node_names())
-
-            for i, name in enumerate(node_names):
-                if i < len(solution):
-                    node_voltages[f"V({name})"] = float(solution[i])
+            node_voltages, branch_currents = self._extract_dc_solution_maps(circuit, solution)
 
         # Extract branch currents if available
         if hasattr(native_result, "branch_currents"):
             for name, current in native_result.branch_currents.items():
                 branch_currents[f"I({name})"] = float(current)
+        power_dissipation.update(self._extract_dc_power_result(native_result))
+        if circuit_data is not None:
+            power_dissipation.update(
+                self._estimate_dc_power_dissipation(
+                    circuit_data,
+                    node_voltages,
+                    branch_currents,
+                )
+            )
 
         # Build convergence info with circuit for node name mapping
         convergence_info = self._build_convergence_info(native_result, circuit)
@@ -2723,6 +2768,250 @@ class PulsimBackend(SimulationBackend):
             convergence_info=convergence_info,
             error_message=error_message,
         )
+
+    @staticmethod
+    def _resolve_index_count(circuit: Any, attr_name: str) -> int:
+        """Resolve numeric node/branch counts from runtime circuit APIs."""
+        attr = getattr(circuit, attr_name, None)
+        if callable(attr):
+            try:
+                return max(0, int(attr()))
+            except Exception:
+                return 0
+        if attr is None:
+            return 0
+        try:
+            return max(0, int(attr))
+        except Exception:
+            return 0
+
+    @classmethod
+    def _extract_dc_solution_maps(
+        cls,
+        circuit: Any,
+        solution: Any,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Convert a DC solution vector into node voltages and branch currents."""
+        values = [float(value) for value in solution]
+        if not values:
+            return {}, {}
+
+        node_voltages: dict[str, float] = {}
+        branch_currents: dict[str, float] = {}
+
+        signal_names_attr = getattr(circuit, "signal_names", None)
+        if signal_names_attr is not None:
+            try:
+                raw_signal_names = signal_names_attr() if callable(signal_names_attr) else signal_names_attr
+            except Exception:
+                raw_signal_names = []
+            if raw_signal_names:
+                limit = min(len(values), len(raw_signal_names))
+                for index in range(limit):
+                    name = cls._normalize_signal_name(raw_signal_names[index])
+                    if name.upper().startswith("I("):
+                        branch_currents[name] = values[index]
+                    else:
+                        node_voltages[name] = values[index]
+                if node_voltages or branch_currents:
+                    return node_voltages, branch_currents
+
+        node_count = cls._resolve_index_count(circuit, "num_nodes")
+        branch_count = cls._resolve_index_count(circuit, "num_branches")
+        if node_count <= 0 and branch_count > 0:
+            node_count = max(0, len(values) - branch_count)
+
+        node_names = cls._resolve_node_names(circuit, node_count or len(values))
+        node_count = min(len(values), node_count or len(node_names))
+        for index in range(node_count):
+            node_name = node_names[index] if index < len(node_names) else f"node_{index}"
+            node_voltages[f"V({node_name})"] = values[index]
+
+        remaining = max(0, len(values) - node_count)
+        branch_count = min(remaining, branch_count or remaining)
+        for index in range(branch_count):
+            branch_currents[f"I(branch{index})"] = values[node_count + index]
+
+        return node_voltages, branch_currents
+
+    @staticmethod
+    def _parse_channel_name(key: str, prefix: str) -> str:
+        text = str(key or "").strip()
+        if text.upper().startswith(f"{prefix}(") and text.endswith(")"):
+            return text[2:-1].strip()
+        return text
+
+    @classmethod
+    def _canonical_channel_lookup(cls, values: dict[str, float], prefix: str) -> dict[str, float]:
+        lookup: dict[str, float] = {}
+        for raw_key, raw_value in values.items():
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            key = cls._parse_channel_name(raw_key, prefix)
+            if not key:
+                continue
+            normalized = key.strip()
+            lookup.setdefault(normalized, value)
+            lookup.setdefault(normalized.lower(), value)
+        return lookup
+
+    @classmethod
+    def _extract_dc_power_result(cls, source: Any) -> dict[str, float]:
+        """Extract native DC power maps when backend exposes them."""
+        result: dict[str, float] = {}
+        for attr_name in ("power_dissipation", "component_power", "device_power", "power"):
+            raw_map = getattr(source, attr_name, None)
+            if raw_map is None:
+                continue
+            if callable(raw_map):
+                try:
+                    raw_map = raw_map()
+                except Exception:
+                    continue
+            if not isinstance(raw_map, dict):
+                continue
+            for raw_key, raw_value in raw_map.items():
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                key = str(raw_key or "").strip()
+                if not key:
+                    continue
+                label = key if key.upper().startswith("P(") else f"P({key})"
+                result[label] = value
+        return result
+
+    @classmethod
+    def _estimate_dc_power_dissipation(
+        cls,
+        circuit_data: dict | None,
+        node_voltages: dict[str, float],
+        branch_currents: dict[str, float],
+    ) -> dict[str, float]:
+        """Estimate component power from DC operating point when backend has no native map."""
+        if not isinstance(circuit_data, dict):
+            return {}
+
+        components = circuit_data.get("components", []) or []
+        if not components:
+            return {}
+
+        voltage_lookup = cls._canonical_channel_lookup(node_voltages, "V")
+        current_lookup = cls._canonical_channel_lookup(branch_currents, "I")
+        power_map: dict[str, float] = {}
+
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            comp_id = str(component.get("id") or "").strip()
+            comp_name = str(component.get("name") or comp_id).strip()
+            if not comp_name:
+                continue
+
+            pin_nodes = component.get("pin_nodes") or []
+            if not isinstance(pin_nodes, list):
+                pin_nodes = []
+            v_drop: float | None = None
+            if len(pin_nodes) >= 2:
+                n_pos = str(pin_nodes[0] or "").strip()
+                n_neg = str(pin_nodes[1] or "").strip()
+                v_pos = cls._lookup_canonical_value(voltage_lookup, n_pos)
+                v_neg = cls._lookup_canonical_value(voltage_lookup, n_neg)
+                if v_pos is not None and v_neg is not None:
+                    v_drop = float(v_pos) - float(v_neg)
+
+            current_value: float | None = None
+            for token in (
+                comp_name,
+                comp_name.lower(),
+                comp_id,
+                comp_id.lower(),
+            ):
+                if not token:
+                    continue
+                if token in current_lookup:
+                    current_value = current_lookup[token]
+                    break
+            if current_value is None:
+                for raw_key, value in current_lookup.items():
+                    if raw_key.endswith(f"({comp_name.lower()})") or raw_key.startswith(f"{comp_name.lower()}_"):
+                        current_value = value
+                        break
+
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            component_type = str(component.get("type") or "").strip().lower()
+
+            power_value: float | None = None
+            if v_drop is not None and current_value is not None:
+                power_value = float(v_drop) * float(current_value)
+            elif component_type == "resistor":
+                resistance = params.get("resistance")
+                try:
+                    resistance_value = float(resistance)
+                except (TypeError, ValueError):
+                    resistance_value = 0.0
+                if resistance_value > 0.0 and v_drop is not None:
+                    power_value = (float(v_drop) ** 2) / resistance_value
+            elif component_type == "current_source" and v_drop is not None:
+                waveform = params.get("waveform")
+                if isinstance(waveform, dict) and str(waveform.get("type", "")).strip().lower() == "dc":
+                    try:
+                        source_current = float(waveform.get("value", 0.0))
+                    except (TypeError, ValueError):
+                        source_current = 0.0
+                    power_value = float(v_drop) * source_current
+
+            if power_value is None or not math.isfinite(power_value):
+                continue
+
+            power_map[f"P({comp_name})"] = float(power_value)
+
+        return power_map
+
+    @staticmethod
+    def _lookup_canonical_value(lookup: dict[str, float], key: str) -> float | None:
+        """Resolve a canonicalized lookup key while preserving zero values."""
+        if key in lookup:
+            return lookup[key]
+        lowered = key.lower()
+        if lowered in lookup:
+            return lookup[lowered]
+        return None
+
+    @staticmethod
+    def _resolve_node_names(circuit: Any, solution_size: int = 0) -> list[str]:
+        """Resolve stable node labels from runtime circuit APIs."""
+        for accessor in ("node_names", "get_node_names"):
+            node_names_attr = getattr(circuit, accessor, None)
+            if node_names_attr is None:
+                continue
+            try:
+                raw_node_names = node_names_attr() if callable(node_names_attr) else node_names_attr
+            except Exception:
+                continue
+            if raw_node_names:
+                return [str(name) for name in raw_node_names]
+
+        node_count = 0
+        num_nodes_attr = getattr(circuit, "num_nodes", None)
+        if callable(num_nodes_attr):
+            try:
+                node_count = int(num_nodes_attr())
+            except Exception:
+                node_count = 0
+        elif num_nodes_attr is not None:
+            try:
+                node_count = int(num_nodes_attr)
+            except Exception:
+                node_count = 0
+
+        if node_count <= 0 and solution_size > 0:
+            node_count = int(solution_size)
+
+        return [f"node_{idx}" for idx in range(max(0, node_count))]
 
     def _build_convergence_info(self, native_result: Any, circuit: Any = None) -> ConvergenceInfo:
         """Build ConvergenceInfo from native result.

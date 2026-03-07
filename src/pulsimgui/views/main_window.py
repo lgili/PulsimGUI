@@ -2902,7 +2902,11 @@ class MainWindow(QMainWindow):
             self.action_toggle_dc_overlay.setChecked(True)
 
             # Show results dialog
-            dialog = DCResultsDialog(result, self)
+            dialog = DCResultsDialog(
+                result,
+                convergence_info=self._simulation_service.last_convergence_info,
+                parent=self,
+            )
             dialog.exec()
         else:
             QMessageBox.warning(

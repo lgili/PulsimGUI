@@ -1805,12 +1805,6 @@ class SimulationService(QObject):
                 )
                 or ""
             ).strip()
-            has_shared_sink_rth = (
-                "thermal_shared_sink_rth" in thermal_payload or "shared_sink_rth" in thermal_payload
-            )
-            has_shared_sink_cth = (
-                "thermal_shared_sink_cth" in thermal_payload or "shared_sink_cth" in thermal_payload
-            )
             shared_sink_rth = self._to_finite_float(
                 thermal_payload.get(
                     "thermal_shared_sink_rth",
@@ -1822,6 +1816,15 @@ class SimulationService(QObject):
                     "thermal_shared_sink_cth",
                     thermal_payload.get("shared_sink_cth"),
                 )
+            )
+            # Thermal-capable components carry shared-sink defaults (0.0) in GUI
+            # parameters. Treat only non-zero values as explicit shared-sink usage
+            # when no shared_sink_id is provided.
+            has_shared_sink_rth = (
+                shared_sink_rth is not None and abs(shared_sink_rth) > 1e-15
+            )
+            has_shared_sink_cth = (
+                shared_sink_cth is not None and abs(shared_sink_cth) > 1e-15
             )
 
             if shared_sink_id:
@@ -1984,8 +1987,9 @@ class SimulationService(QObject):
         try:
             # Check if backend supports DC analysis
             if self._backend.has_capability("dc"):
-                # Use real backend for DC analysis
-                backend_result: BackendDCResult = self._backend.run_dc(circuit_data, dc_settings)
+                # Use backend with strategy fallback to improve robustness for
+                # switching circuits where a single DC method may fail.
+                backend_result = self._run_dc_with_fallback(circuit_data, dc_settings)
 
                 # Convert backend result to local DCResult
                 result.node_voltages = backend_result.node_voltages.copy()
@@ -2016,6 +2020,116 @@ class SimulationService(QObject):
             self._set_state(SimulationState.ERROR)
             self.error.emit(str(e))
             self.dc_finished.emit(result)
+
+    def _run_dc_with_fallback(self, circuit_data: dict, dc_settings: DCSettings) -> BackendDCResult:
+        """Run DC analysis using configured strategy and deterministic fallbacks."""
+        attempts = self._build_dc_fallback_attempts(dc_settings)
+        errors: list[str] = []
+        first_result: BackendDCResult | None = None
+        last_result: BackendDCResult | None = None
+
+        for index, attempt in enumerate(attempts):
+            if index > 0:
+                self.progress.emit(
+                    0,
+                    f"Retrying DC with '{attempt.strategy}' strategy...",
+                )
+            backend_result = self._backend.run_dc(circuit_data, attempt)
+            if first_result is None:
+                first_result = backend_result
+            last_result = backend_result
+            if not backend_result.error_message:
+                return backend_result
+            errors.append(f"{attempt.strategy}: {backend_result.error_message}")
+
+        if last_result is None:
+            return BackendDCResult(
+                error_message="DC analysis backend returned no result.",
+            )
+
+        if errors:
+            summarized = " | ".join(errors)
+            last_result.error_message = f"DC analysis failed after fallback attempts: {summarized}"
+        return last_result
+
+    @staticmethod
+    def _build_dc_fallback_attempts(base: DCSettings) -> list[DCSettings]:
+        """Build ordered DC strategy attempts for robust operating-point solves."""
+        normalized = replace(
+            base,
+            strategy=str(base.strategy or "auto").strip().lower() or "auto",
+            source_steps=max(1, int(base.source_steps)),
+            max_iterations=max(1, int(base.max_iterations)),
+            max_voltage_step=max(0.05, float(base.max_voltage_step)),
+            gmin_initial=max(1e-12, float(base.gmin_initial)),
+            gmin_final=max(1e-15, float(base.gmin_final)),
+        )
+        if normalized.gmin_final >= normalized.gmin_initial:
+            normalized = replace(normalized, gmin_final=max(1e-15, normalized.gmin_initial * 1e-3))
+
+        tuned_gmin_initial = min(normalized.gmin_initial, 1e-3)
+        tuned_gmin_final = min(normalized.gmin_final, tuned_gmin_initial * 1e-3)
+        tuned_gmin_final = max(1e-15, tuned_gmin_final)
+        if tuned_gmin_final >= tuned_gmin_initial:
+            tuned_gmin_final = max(1e-15, tuned_gmin_initial * 1e-3)
+
+        preferred_order = {
+            "gmin": ("gmin", "direct", "auto", "source", "pseudo"),
+            "direct": ("direct", "auto", "gmin", "source", "pseudo"),
+            "source": ("source", "auto", "gmin", "direct", "pseudo"),
+            "pseudo": ("pseudo", "auto", "gmin", "direct", "source"),
+            "auto": ("auto", "direct", "gmin", "source", "pseudo"),
+        }.get(normalized.strategy, ("auto", "direct", "gmin", "source", "pseudo"))
+
+        attempts: list[DCSettings] = []
+        seen: set[tuple[str, float, float, int, int, bool, float]] = set()
+
+        def add_attempt(candidate: DCSettings) -> None:
+            key = (
+                str(candidate.strategy),
+                float(candidate.gmin_initial),
+                float(candidate.gmin_final),
+                int(candidate.source_steps),
+                int(candidate.max_iterations),
+                bool(candidate.enable_limiting),
+                float(candidate.max_voltage_step),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            attempts.append(candidate)
+
+        add_attempt(normalized)
+        for strategy in preferred_order:
+            if strategy == "gmin":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="gmin",
+                        gmin_initial=tuned_gmin_initial,
+                        gmin_final=tuned_gmin_final,
+                        enable_limiting=True,
+                        max_voltage_step=min(normalized.max_voltage_step, 2.0),
+                    )
+                )
+            elif strategy == "source":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="source",
+                        source_steps=max(normalized.source_steps, 20),
+                        enable_limiting=True,
+                    )
+                )
+            else:
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy=strategy,
+                        enable_limiting=True,
+                    )
+                )
+        return attempts
 
     def run_ac_analysis(
         self,
