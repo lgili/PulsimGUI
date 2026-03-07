@@ -146,6 +146,7 @@ class SimulationBackend(Protocol):
         settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         ...
 
     def run_dc(
@@ -174,12 +175,15 @@ class SimulationBackend(Protocol):
         ...
 
     def request_pause(self, run_id: int | None = None) -> None:
+        """Request backend pause for the active simulation execution."""
         ...
 
     def request_resume(self, run_id: int | None = None) -> None:
+        """Request backend resume for the active simulation execution."""
         ...
 
     def request_stop(self, run_id: int | None = None) -> None:
+        """Request backend stop for the active simulation execution."""
         ...
 
 
@@ -211,6 +215,7 @@ class PlaceholderBackend(SimulationBackend):
         settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         result = BackendRunResult()
 
         callbacks.progress(0, "Initializing simulation...")
@@ -477,6 +482,7 @@ class PulsimBackend(SimulationBackend):
         settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
+        """Run transient simulation and return the backend result payload."""
         result = BackendRunResult()
 
         callbacks.progress(0.0, "Starting Pulsim simulation...")
@@ -2781,16 +2787,19 @@ class PulsimBackend(SimulationBackend):
         )
 
     def request_pause(self, run_id: int | None = None) -> None:
+        """Request backend pause for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_pause()
 
     def request_resume(self, run_id: int | None = None) -> None:
+        """Request backend resume for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_resume()
 
     def request_stop(self, run_id: int | None = None) -> None:
+        """Request backend stop for the active simulation execution."""
         controller = self._controller_for(run_id)
         if controller:
             controller.request_stop()
@@ -3444,6 +3453,7 @@ class BackendLoader:
 
     @property
     def active_backend_id(self) -> str | None:
+        """Return the identifier of the currently active backend."""
         return self._active_id
 
     def activate(self, identifier: str) -> BackendInfo:

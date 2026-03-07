@@ -131,6 +131,7 @@ class ThermalAnalysisService(QObject):
 
     @ambient_temperature.setter
     def ambient_temperature(self, value: float) -> None:
+        """Return the configured ambient_temperature setting."""
         self._ambient_temperature = value
 
     @property
@@ -150,6 +151,7 @@ class ThermalAnalysisService(QObject):
 
     @include_switching_losses.setter
     def include_switching_losses(self, value: bool) -> None:
+        """Return the configured include_switching_losses setting."""
         self._include_switching_losses = bool(value)
 
     @property
@@ -159,6 +161,7 @@ class ThermalAnalysisService(QObject):
 
     @include_conduction_losses.setter
     def include_conduction_losses(self, value: bool) -> None:
+        """Return the configured include_conduction_losses setting."""
         self._include_conduction_losses = bool(value)
 
     @property
@@ -168,6 +171,7 @@ class ThermalAnalysisService(QObject):
 
     @thermal_network.setter
     def thermal_network(self, value: str) -> None:
+        """Return the configured thermal_network setting."""
         network = str(value or "foster").strip().lower()
         self._thermal_network = network if network in {"foster", "cauer"} else "foster"
 

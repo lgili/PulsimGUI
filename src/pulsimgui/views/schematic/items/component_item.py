@@ -75,6 +75,7 @@ class LabelWithBackground(QGraphicsItem):
         self.update()
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         if not self._text:
             return QRectF()
         width = self._metrics.horizontalAdvance(self._text) + self._padding * 2
@@ -87,6 +88,7 @@ class LabelWithBackground(QGraphicsItem):
         option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._text:
             return
 
@@ -571,6 +573,7 @@ class ResistorItem(ComponentItem):
     """Graphics item for resistor in monoline style."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-34, -16, 68, 32))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -606,6 +609,7 @@ class CapacitorItem(ComponentItem):
     """Graphics item for capacitor with clean symmetric geometry."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-24, -18, 48, 36)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -627,6 +631,7 @@ class InductorItem(ComponentItem):
     """Graphics item for inductor with copper coil emphasis."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-34, -14, 68, 28))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -654,6 +659,7 @@ class VoltageSourceItem(ComponentItem):
     """Graphics item for voltage source in modern neutral style."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-20, -28, 40, 56))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -679,6 +685,7 @@ class CurrentSourceItem(ComponentItem):
     """Graphics item for current source with directional arrow."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-20, -28, 40, 56))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -705,6 +712,7 @@ class GroundItem(ComponentItem):
     """Graphics item for ground symbol."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-14, -12, 28, 28))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -727,6 +735,7 @@ class DiodeItem(ComponentItem):
     """Graphics item for diode with PLECS-like silhouette."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-22, -15, 44, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -747,6 +756,7 @@ class MOSFETItem(ComponentItem):
     """Graphics item for MOSFET (N or P channel)."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-24, -24, 48, 48)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -777,6 +787,7 @@ class SwitchItem(ComponentItem):
     """Graphics item for ideal switch."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         if len(self._component.pins) >= 3:
             return QRectF(-24, -30, 48, 50)
         return QRectF(-24, -15, 48, 30)
@@ -801,6 +812,7 @@ class IGBTItem(ComponentItem):
     """Graphics item for IGBT."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-24, -24, 48, 48)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -824,6 +836,7 @@ class TransformerItem(ComponentItem):
     """Graphics item for transformer with compact modern silhouette."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-34, -26, 68, 52))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -882,6 +895,7 @@ class SubcircuitItem(ComponentItem):
         self._value_label.setVisible(False)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         half_w = self._symbol_width / 2
         half_h = self._symbol_height / 2
         return QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
@@ -903,6 +917,7 @@ class BlockComponentItem(ComponentItem):
     ACCENT_COLOR = QColor(60, 132, 225)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-28, -24, 56, 48))
 
     def _draw_block_pin_leads(self, painter: QPainter, rect: QRectF) -> None:
@@ -944,6 +959,7 @@ class BlockComponentItem(ComponentItem):
         self._draw_block_pin_leads(painter, rect)
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return self._component.type.name
 
 
@@ -953,6 +969,7 @@ class PIControllerItem(BlockComponentItem):
     ACCENT_COLOR = QColor(60, 160, 80)  # Green for PI
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return "PI"
 
     def _get_value_text(self) -> str:
@@ -967,6 +984,7 @@ class PIDControllerItem(BlockComponentItem):
     ACCENT_COLOR = QColor(50, 150, 180)  # Cyan for PID
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return "PID"
 
     def _get_value_text(self) -> str:
@@ -982,6 +1000,7 @@ class MathBlockItem(BlockComponentItem):
     ACCENT_COLOR = QColor(130, 90, 180)  # Purple for math
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         operation = self._component.parameters.get("operation", "Σ")
         return operation.upper() if len(operation) <= 3 else operation[:3].upper()
 
@@ -997,6 +1016,7 @@ class PWMGeneratorItem(BlockComponentItem):
     ACCENT_COLOR = QColor(220, 120, 40)  # Orange for PWM
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return "PWM"
 
     def _get_value_text(self) -> str:
@@ -1014,6 +1034,7 @@ class GainItem(BlockComponentItem):
     ACCENT_COLOR = QColor(54, 152, 226)
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return "K"
 
     def _get_value_text(self) -> str:
@@ -1025,6 +1046,7 @@ class SumBaseItem(BlockComponentItem):
     """Base item for SUM/SUBTRACTOR blocks with per-input signs."""
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return "Σ"
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1063,6 +1085,7 @@ class ConstantItem(BlockComponentItem):
     ACCENT_COLOR = QColor(103, 58, 183)  # Deep purple
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         value = self._component.parameters.get("value", 0.0)
         try:
             fval = float(value)
@@ -1085,6 +1108,7 @@ class ScopeItemBase(ComponentItem):
     SCOPE_BEZEL_COLOR = QColor(24, 31, 40)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-50, -35, 100, 70))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1142,6 +1166,7 @@ class ScopeItemBase(ComponentItem):
         )
 
     def scope_label(self) -> str:
+        """Return the label text displayed in the scope body."""
         return "SCOPE"
 
     def _get_value_text(self) -> str:
@@ -1150,17 +1175,21 @@ class ScopeItemBase(ComponentItem):
 
 
 class ElectricalScopeItem(ScopeItemBase):
+    """Graphics item that renders electrical scope visuals."""
     SCOPE_SIGNAL_COLOR = QColor(50, 205, 100)  # Green for electrical
 
     def scope_label(self) -> str:
+        """Return the label text displayed in the scope body."""
         return "SCOPE"
 
 
 class ThermalScopeItem(ScopeItemBase):
+    """Graphics item that renders thermal scope visuals."""
     SCOPE_SIGNAL_COLOR = QColor(255, 120, 50)  # Orange for thermal
     SCOPE_GRID_COLOR = QColor(60, 45, 40)  # Warm grid
 
     def scope_label(self) -> str:
+        """Return the label text displayed in the scope body."""
         return "THERM"
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1173,6 +1202,7 @@ class SignalMuxItem(ComponentItem):
     PIN_SPACING = 20.0
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         y_values = [pin.y for pin in self._component.pins if pin.name.startswith("IN")]
         if not y_values:
             return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
@@ -1211,6 +1241,7 @@ class SignalDemuxItem(ComponentItem):
     PIN_SPACING = 20.0
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         y_values = [pin.y for pin in self._component.pins if pin.name.startswith("OUT")]
         if not y_values:
             return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
@@ -1249,6 +1280,7 @@ class ZenerDiodeItem(ComponentItem):
     """Graphics item for Zener diode - bent cathode style."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-22, -15, 44, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1275,6 +1307,7 @@ class LEDItem(ComponentItem):
     """Graphics item for LED - diode with light arrows."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-22, -18, 44, 36)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1312,6 +1345,7 @@ class BJTItem(ComponentItem):
     """Graphics item for BJT transistors (NPN and PNP)."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-25, -28, 50, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1342,6 +1376,7 @@ class ThyristorItem(ComponentItem):
     """Graphics item for thyristor (SCR)."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-25, -25, 50, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1364,6 +1399,7 @@ class TriacItem(ComponentItem):
     """Graphics item for TRIAC."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-25, -25, 50, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1385,6 +1421,7 @@ class OpAmpItem(ComponentItem):
     """Graphics item for operational amplifier."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-40, -30, 80, 60)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1428,6 +1465,7 @@ class RelayItem(ComponentItem):
     """Graphics item for relay."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-40, -25, 80, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1468,6 +1506,7 @@ class FuseItem(ComponentItem):
     """Graphics item for fuse."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-25, -12, 50, 24)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1496,6 +1535,7 @@ class CircuitBreakerItem(ComponentItem):
     """Graphics item for circuit breaker."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-28, -15, 56, 30)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1538,46 +1578,57 @@ class SimpleBlockItem(BlockComponentItem):
         return labels.get(self._component.type, "?")
 
     def block_label(self) -> str:
+        """Return the short label shown in the block body."""
         return self._label
 
 
 class IntegratorItem(SimpleBlockItem):
+    """Graphics item that renders integrator visuals."""
     ACCENT_COLOR = QColor(100, 150, 200)
 
 
 class DifferentiatorItem(SimpleBlockItem):
+    """Graphics item that renders differentiator visuals."""
     ACCENT_COLOR = QColor(200, 150, 100)
 
 
 class LimiterItem(SimpleBlockItem):
+    """Graphics item that renders limiter visuals."""
     ACCENT_COLOR = QColor(200, 100, 100)
 
 
 class RateLimiterItem(SimpleBlockItem):
+    """Graphics item that renders rate limiter visuals."""
     ACCENT_COLOR = QColor(180, 120, 100)
 
 
 class HysteresisItem(SimpleBlockItem):
+    """Graphics item that renders hysteresis visuals."""
     ACCENT_COLOR = QColor(150, 100, 180)
 
 
 class LookupTableItem(SimpleBlockItem):
+    """Graphics item that renders lookup table visuals."""
     ACCENT_COLOR = QColor(100, 180, 150)
 
 
 class TransferFunctionItem(SimpleBlockItem):
+    """Graphics item that renders transfer function visuals."""
     ACCENT_COLOR = QColor(180, 150, 200)
 
 
 class DelayBlockItem(SimpleBlockItem):
+    """Graphics item that renders delay block visuals."""
     ACCENT_COLOR = QColor(150, 180, 100)
 
 
 class SampleHoldItem(SimpleBlockItem):
+    """Graphics item that renders sample hold visuals."""
     ACCENT_COLOR = QColor(200, 180, 100)
 
 
 class StateMachineItem(SimpleBlockItem):
+    """Graphics item that renders state machine visuals."""
     ACCENT_COLOR = QColor(180, 100, 150)
 
 
@@ -1585,6 +1636,7 @@ class VoltageProbeItem(ComponentItem):
     """Graphics item for voltage probe."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-20, -25, 50, 50))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1617,6 +1669,7 @@ class VoltageProbeGndItem(ComponentItem):
     """Graphics item for single-ended voltage probe (node referenced to GND)."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-24, -20, 48, 40))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1672,6 +1725,7 @@ class _NetLabelItem(ComponentItem):
         return self._component.name or "NET"
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         text = self._label_text()
         width = max(44.0, min(160.0, 24.0 + float(len(text)) * 7.2))
         x = -4.0 if self._ARROW_RIGHT else -width + 4.0
@@ -1741,6 +1795,7 @@ class CurrentProbeItem(ComponentItem):
     """Graphics item for current probe (clamp meter style)."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-22, -25, 44, 45))
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1772,6 +1827,7 @@ class PowerProbeItem(ComponentItem):
     """Graphics item for power probe."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-30, -22, 60, 44)
 
     def _draw_symbol(self, painter: QPainter) -> None:
@@ -1816,6 +1872,7 @@ class SnubberRCItem(ComponentItem):
     """Graphics item for RC snubber network."""
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return QRectF(-28, -18, 56, 36)
 
     def _draw_symbol(self, painter: QPainter) -> None:

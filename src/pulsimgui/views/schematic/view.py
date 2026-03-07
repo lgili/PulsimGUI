@@ -47,10 +47,12 @@ class PinHighlightItem(QGraphicsItem):
         self._visible = False
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         r = self.PIN_GLOW_RADIUS + 2
         return QRectF(-r, -r, r * 2, r * 2)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._visible:
             return
 
@@ -77,6 +79,7 @@ class PinHighlightItem(QGraphicsItem):
             self.update()
 
     def is_highlight_visible(self) -> bool:
+        """Implement is_highlight_visible for pin highlight item."""
         return self._visible
 
 
@@ -94,9 +97,11 @@ class AlignmentGuidesItem(QGraphicsItem):
         self._scene_rect = QRectF(-5000, -5000, 10000, 10000)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._scene_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._h_lines and not self._v_lines:
             return
 
@@ -150,13 +155,16 @@ class ComponentDropPreviewItem(QGraphicsItem):
         self.setZValue(1000)  # Always on top
 
     def set_dark_mode(self, dark: bool) -> None:
+        """Update dark_mode for this widget."""
         self._preview_item.set_dark_mode(dark)
         self.update()
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._bounds.adjusted(-6, -6, 6, 6)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw a light glow around the component bounds for placement feedback.
@@ -498,6 +506,7 @@ class SchematicView(QGraphicsView):
         return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
+        """Handle the Qt resizeEvent callback."""
         super().resizeEvent(event)
         self._position_alias_editor()
 
@@ -848,6 +857,7 @@ class SchematicView(QGraphicsView):
             self.component_delete_requested.emit(component_id)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Handle the Qt contextMenuEvent callback."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         item = self.itemAt(event.pos())
@@ -1154,6 +1164,7 @@ class SchematicView(QGraphicsView):
                 break  # Only cut first selected component for now
 
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
+        """Intercept and optionally handle events before default dispatch."""
         if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Escape:
                 self._finish_wire_alias_edit(save=False)

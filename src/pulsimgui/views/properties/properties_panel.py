@@ -95,6 +95,7 @@ class AutoSelectLineEdit(QLineEdit):
     """LineEdit that auto-selects all text when focused."""
 
     def focusInEvent(self, event):
+        """Handle the Qt focusInEvent callback."""
         super().focusInEvent(event)
         # Use timer to select after focus is fully set
         from PySide6.QtCore import QTimer
@@ -133,10 +134,12 @@ class SIValueWidget(QWidget):
 
     @property
     def value(self) -> float:
+        """Return the current numeric value represented by this editor."""
         return self._value
 
     @value.setter
     def value(self, val: float) -> None:
+        """Set the numeric value represented by this editor."""
         self._value = val
         self._edit.setText(self._format_value(val))
 

@@ -26,6 +26,7 @@ class AddComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         return f"Add {self._component.name}"
 
 
@@ -65,6 +66,7 @@ class DeleteComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         name = self._component.name if self._component else str(self._component_id)[:8]
         return f"Delete {name}"
 
@@ -115,6 +117,7 @@ class MoveComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Move {name}"
@@ -154,6 +157,7 @@ class RotateComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Rotate {name}"
@@ -182,6 +186,7 @@ class FlipComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         axis = "H" if self._horizontal else "V"
@@ -255,6 +260,7 @@ class UpdateComponentStateCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         if component is not None:
             return f"Edit {component.name}"
@@ -310,6 +316,7 @@ class ChangeParameterCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Change {name}.{self._param_name}"

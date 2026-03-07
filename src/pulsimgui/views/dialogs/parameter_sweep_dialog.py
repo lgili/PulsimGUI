@@ -175,6 +175,7 @@ class ParameterSweepDialog(QDialog):
         self.accept()
 
     def get_settings(self) -> ParameterSweepSettings | None:
+        """Build and return validated settings from the current dialog fields."""
         target = self._current_target()
         if not target:
             return None

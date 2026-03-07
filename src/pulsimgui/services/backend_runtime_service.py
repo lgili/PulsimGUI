@@ -61,10 +61,12 @@ class BackendRuntimeConfig:
 
     @property
     def normalized_target_version(self) -> str:
+        """Return target backend version normalized without a leading v prefix."""
         return normalize_backend_version(self.target_version)
 
     @property
     def normalized_source(self) -> str:
+        """Return normalized backend source identifier for runtime install logic."""
         source = (self.source or "").strip().lower()
         return source if source in {"pypi", "local"} else "pypi"
 
