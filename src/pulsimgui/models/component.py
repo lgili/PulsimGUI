@@ -1,9 +1,9 @@
 """Component model for circuit elements."""
 
+import math
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
-import math
 from typing import Any
 from uuid import UUID, uuid4
 

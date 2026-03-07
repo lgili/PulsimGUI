@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Signal
@@ -16,7 +16,8 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from pulsimgui.services.backend_adapter import SimulationBackend
     from pulsimgui.services.backend_types import (
         ThermalResult as BackendThermalResult,
-        ThermalSettings,
+    )
+    from pulsimgui.services.backend_types import (
         TransientResult,
     )
 
@@ -109,7 +110,7 @@ class ThermalAnalysisService(QObject):
         include_conduction_losses: bool = True,
         thermal_network: str = "foster",
         allow_synthetic_fallback: bool = True,
-        backend: "SimulationBackend | None" = None,
+        backend: SimulationBackend | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -133,12 +134,12 @@ class ThermalAnalysisService(QObject):
         self._ambient_temperature = value
 
     @property
-    def backend(self) -> "SimulationBackend | None":
+    def backend(self) -> SimulationBackend | None:
         """Return the current backend."""
         return self._backend
 
     @backend.setter
-    def backend(self, value: "SimulationBackend | None") -> None:
+    def backend(self, value: SimulationBackend | None) -> None:
         """Set the backend for thermal analysis."""
         self._backend = value
 
@@ -172,7 +173,7 @@ class ThermalAnalysisService(QObject):
 
     def build_result(
         self,
-        circuit: "Circuit | None",
+        circuit: Circuit | None,
         electrical_result: SimulationResult | None = None,
         max_devices: int = 6,
         circuit_data: dict | None = None,
@@ -217,7 +218,7 @@ class ThermalAnalysisService(QObject):
 
     def _try_backend_thermal(
         self,
-        circuit: "Circuit",
+        circuit: Circuit,
         electrical_result: SimulationResult | None,
         circuit_data: dict | None,
     ) -> ThermalResult:
@@ -231,7 +232,7 @@ class ThermalAnalysisService(QObject):
                 )
 
         try:
-            from pulsimgui.services.backend_types import ThermalSettings, TransientResult
+            from pulsimgui.services.backend_types import ThermalSettings
 
             settings = ThermalSettings(
                 ambient_temperature=self._ambient_temperature,
@@ -264,7 +265,7 @@ class ThermalAnalysisService(QObject):
                 f"Backend thermal analysis failed: {exc}",
             )
 
-    def _circuit_to_data(self, circuit: "Circuit") -> dict | None:
+    def _circuit_to_data(self, circuit: Circuit) -> dict | None:
         """Convert GUI Circuit to serialized data for backend."""
         try:
             # Use the circuit's serialization method if available
@@ -290,7 +291,7 @@ class ThermalAnalysisService(QObject):
 
     def _simulation_to_transient(
         self, electrical_result: SimulationResult | None
-    ) -> "TransientResult":
+    ) -> TransientResult:
         """Convert SimulationResult to TransientResult for backend."""
         from pulsimgui.services.backend_types import TransientResult
 
@@ -304,7 +305,7 @@ class ThermalAnalysisService(QObject):
 
     def _convert_backend_result(
         self,
-        backend_result: "BackendThermalResult",
+        backend_result: BackendThermalResult,
         circuit_data: dict | None = None,
     ) -> ThermalResult:
         """Convert backend ThermalResult to service ThermalResult."""
@@ -553,7 +554,7 @@ class ThermalAnalysisService(QObject):
         return "".join(ch for ch in token if ch.isalnum())
 
     @staticmethod
-    def _resolve_thermal_limit(component: "Component") -> float | None:
+    def _resolve_thermal_limit(component: Component) -> float | None:
         """Best-effort extraction of component thermal limit from parameter aliases."""
         params = dict(getattr(component, "parameters", {}) or {})
         for key in ("thermal_limit", "tj_max", "temperature_limit", "temp_max"):

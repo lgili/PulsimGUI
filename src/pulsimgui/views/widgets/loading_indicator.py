@@ -1,14 +1,14 @@
 """Loading indicator widgets for showing progress during long operations."""
 
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush
+from PySide6.QtCore import Property, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QWidget,
+    QApplication,
     QDialog,
-    QVBoxLayout,
     QLabel,
     QPushButton,
-    QApplication,
+    QVBoxLayout,
+    QWidget,
 )
 
 

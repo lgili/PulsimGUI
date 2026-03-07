@@ -1,8 +1,7 @@
 """Tests for command system."""
 
-import pytest
 
-from pulsimgui.commands.base import Command, CommandStack
+from pulsimgui.commands.base import Command
 from pulsimgui.commands.component_commands import (
     AddComponentCommand,
     DeleteComponentCommand,
@@ -11,7 +10,6 @@ from pulsimgui.commands.component_commands import (
     RotateComponentCommand,
     UpdateComponentStateCommand,
 )
-from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.wire import Wire, WireConnection
 

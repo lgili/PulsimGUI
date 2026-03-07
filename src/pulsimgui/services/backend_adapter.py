@@ -3,41 +3,42 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
-from importlib import import_module, metadata
 import logging
-from pathlib import Path
 import math
 import threading
 import time
-from typing import Any, Callable, Protocol, TYPE_CHECKING
-
-log = logging.getLogger(__name__)
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from importlib import import_module, metadata
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     from pulsimgui.services.simulation_service import SimulationSettings
 
-from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 from pulsimgui.services.backend_types import (
+    MIN_BACKEND_API,
     ACResult,
     ACSettings,
     BackendVersion,
     ConvergenceInfo,
     DCResult,
     DCSettings,
+    FosterStage,
     IterationRecord,
-    MIN_BACKEND_API,
+    LossBreakdown,
     ProblematicVariable,
     ThermalDeviceResult,
     ThermalResult,
     ThermalSettings,
     TransientResult,
     TransientSettings,
-    FosterStage,
-    LossBreakdown,
 )
+from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
+
+log = logging.getLogger(__name__)
 
 _SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
 _PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
@@ -142,7 +143,7 @@ class SimulationBackend(Protocol):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
         ...
@@ -207,7 +208,7 @@ class PlaceholderBackend(SimulationBackend):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
         result = BackendRunResult()
@@ -359,7 +360,7 @@ class PlaceholderBackend(SimulationBackend):
 
         # MOSFET M1
         m1_temps = []
-        for i, t in enumerate(time):
+        for _i, t in enumerate(time):
             # Exponential rise to steady state
             tau = 0.1e-3  # Thermal time constant
             steady_state = settings.ambient_temperature + 50.0
@@ -389,7 +390,7 @@ class PlaceholderBackend(SimulationBackend):
 
         # Diode D1
         d1_temps = []
-        for i, t in enumerate(time):
+        for _i, t in enumerate(time):
             tau = 0.05e-3
             steady_state = settings.ambient_temperature + 30.0
             temp = settings.ambient_temperature + (steady_state - settings.ambient_temperature) * (
@@ -473,7 +474,7 @@ class PulsimBackend(SimulationBackend):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
     ) -> BackendRunResult:
         result = BackendRunResult()
@@ -949,7 +950,7 @@ class PulsimBackend(SimulationBackend):
     def _build_thermal_device_map(
         self,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> dict[str, Any]:
         components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
         thermal_map: dict[str, Any] = {}
@@ -1040,7 +1041,7 @@ class PulsimBackend(SimulationBackend):
         }
         return mapping.get(method, "BDF1")
 
-    def _should_use_simulation_options(self, settings: "SimulationSettings") -> bool:
+    def _should_use_simulation_options(self, settings: SimulationSettings) -> bool:
         # Use SimulationOptions only when the backend API is new enough.
         # Legacy/early backends can expose SimulationOptions/Simulator but still
         # run as a fully blocking path with poor runtime for closed-loop
@@ -1062,7 +1063,7 @@ class PulsimBackend(SimulationBackend):
 
         return parsed_version.is_compatible_with(_SIMULATION_OPTIONS_MIN_BACKEND)
 
-    def _build_dc_convergence_config(self, settings: "SimulationSettings") -> Any | None:
+    def _build_dc_convergence_config(self, settings: SimulationSettings) -> Any | None:
         config_cls = getattr(self._module, "DCConvergenceConfig", None)
         if config_cls is None:
             return None
@@ -1092,7 +1093,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_simulation_options_from_yaml_parser(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> Any | None:
         """Build SimulationOptions via backend YamlParser defaults.
 
@@ -1261,7 +1262,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_simulation_options(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
         newton_opts: Any,
         linear_solver: Any | None,
@@ -1415,7 +1416,7 @@ class PulsimBackend(SimulationBackend):
         self,
         circuit: Any,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         signal_names: list[str],
         dt: float,
@@ -1519,7 +1520,7 @@ class PulsimBackend(SimulationBackend):
                 for name in signal_names:
                     result.signals.setdefault(name, [])
 
-        for t, state in zip(times, states):
+        for t, state in zip(times, states, strict=False):
             result.time.append(float(t))
             for idx, name in enumerate(signal_names):
                 if idx < len(state):
@@ -1582,7 +1583,7 @@ class PulsimBackend(SimulationBackend):
         self,
         circuit: Any,
         circuit_data: dict[str, Any],
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         dt: float,
         x0: Any,
@@ -1739,7 +1740,7 @@ class PulsimBackend(SimulationBackend):
 
     def _should_prefer_nonblocking_transient(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
     ) -> bool:
         """Prefer shared/streaming APIs for long runs to keep UI responsive."""
@@ -1751,7 +1752,7 @@ class PulsimBackend(SimulationBackend):
 
     def _build_transient_retry_profiles(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
     ) -> list[_TransientRetryProfile]:
         """Build progressive retry profiles for Newton convergence failures."""
         base_iterations = max(1, int(getattr(settings, "max_newton_iterations", 50)))
@@ -1785,9 +1786,9 @@ class PulsimBackend(SimulationBackend):
 
     def _apply_transient_retry_profile(
         self,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         profile: _TransientRetryProfile,
-    ) -> "SimulationSettings":
+    ) -> SimulationSettings:
         """Clone runtime settings and apply retry profile overrides."""
         try:
             attempt_settings = copy.deepcopy(settings)
@@ -1829,7 +1830,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_streaming(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -1891,15 +1892,15 @@ class PulsimBackend(SimulationBackend):
             retry_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
             try:
                 times, states, success, message = self._module.run_transient_streaming(*retry_args)
-            except TypeError:
-                raise exc
+            except TypeError as err:
+                raise exc from err
 
         if not success:
             result.error_message = message
             return result
 
         # Build final result from complete simulation data
-        for t, state in zip(times, states):
+        for t, state in zip(times, states, strict=False):
             result.time.append(float(t))
             for i, name in enumerate(signal_names):
                 result.signals[name].append(float(state[i]))
@@ -1917,7 +1918,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_shared(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -2050,7 +2051,7 @@ class PulsimBackend(SimulationBackend):
     def _run_transient_chunked(
         self,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         callbacks: BackendCallbacks,
         result: BackendRunResult,
         signal_names: list[str],
@@ -2228,9 +2229,6 @@ class PulsimBackend(SimulationBackend):
     def _run_dc_v1(self, circuit: Any, settings: DCSettings, newton_opts: Any) -> DCResult:
         """Run DC analysis using v1 DCConvergenceSolver."""
         v1 = self._module.v1
-
-        # Map strategy string to enum if available
-        strategy = self._map_dc_strategy(settings.strategy)
 
         # Create DC convergence solver
         solver = v1.DCConvergenceSolver(circuit, newton_opts)
@@ -2874,11 +2872,11 @@ class PulsimBackend(SimulationBackend):
         if payload is None:
             return {}
         out: dict[str, Any] = {}
-        for field in fields:
-            value = PulsimBackend._extract_telemetry_field(payload, field)
+        for field_name in fields:
+            value = PulsimBackend._extract_telemetry_field(payload, field_name)
             coerced = PulsimBackend._coerce_telemetry_scalar(value)
             if coerced is not None:
-                out[field] = coerced
+                out[field_name] = coerced
         return out
 
     @staticmethod
@@ -3164,7 +3162,7 @@ class PulsimBackend(SimulationBackend):
                 backend_result.statistics["status"] = status_value
         self._append_electrothermal_statistics(backend_result.statistics, sim_result, payload)
 
-    def _compute_time_step(self, settings: "SimulationSettings") -> float:
+    def _compute_time_step(self, settings: SimulationSettings) -> float:
         duration = settings.t_stop - settings.t_start
         if duration <= 0:
             raise ValueError("Simulation stop time must be greater than start time.")
@@ -3186,7 +3184,7 @@ class PulsimBackend(SimulationBackend):
         self,
         *,
         circuit: Any,
-        settings: "SimulationSettings",
+        settings: SimulationSettings,
         dt: float,
         x0: Any,
         newton_opts: Any,
@@ -3201,7 +3199,7 @@ class PulsimBackend(SimulationBackend):
             args.append(linear_solver)
         return args
 
-    def _invoke_run_transient(self, args: list[Any], settings: "SimulationSettings") -> tuple[Any, Any, bool, str]:
+    def _invoke_run_transient(self, args: list[Any], settings: SimulationSettings) -> tuple[Any, Any, bool, str]:
         """Invoke run_transient with optional robust kwargs when supported."""
         robust = bool(getattr(settings, "transient_robust_mode", True))
         auto_regularize = bool(getattr(settings, "transient_auto_regularize", True))
@@ -3217,7 +3215,7 @@ class PulsimBackend(SimulationBackend):
                 raise
         return self._module.run_transient(*args)
 
-    def _build_newton_options(self, settings: "SimulationSettings", circuit: Any) -> Any:
+    def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
         if hasattr(self._module, "NewtonOptions"):
             opts = self._module.NewtonOptions()
@@ -3278,7 +3276,7 @@ class PulsimBackend(SimulationBackend):
             config.auto_select = True
         return config
 
-    def _build_initial_state(self, circuit: Any, settings: "SimulationSettings") -> Any:
+    def _build_initial_state(self, circuit: Any, settings: SimulationSettings) -> Any:
         """Compute initial state, preferring DC operating point when available."""
         if hasattr(self._module, "dc_operating_point"):
             try:
@@ -3474,7 +3472,7 @@ class BackendLoader:
                 return identifier
         return next(iter(self._candidates))
 
-    def _discover_candidates(self) -> dict[str, "BackendLoader._BackendCandidate"]:
+    def _discover_candidates(self) -> dict[str, BackendLoader._BackendCandidate]:
         candidates: dict[str, BackendLoader._BackendCandidate] = {}
 
         pulsim_candidate, pulsim_error = self._create_pulsim_candidate()
@@ -3503,7 +3501,7 @@ class BackendLoader:
         *,
         message: str,
         status: str = "placeholder",
-    ) -> "BackendLoader._BackendCandidate":
+    ) -> BackendLoader._BackendCandidate:
         info = BackendInfo(
             identifier="placeholder",
             name="Demo backend",
@@ -3514,7 +3512,7 @@ class BackendLoader:
         )
         return BackendLoader._BackendCandidate(info=info, factory=lambda: PlaceholderBackend(info))
 
-    def _create_pulsim_candidate(self) -> tuple["BackendLoader._BackendCandidate" | None, str | None]:
+    def _create_pulsim_candidate(self) -> tuple[BackendLoader._BackendCandidate | None, str | None]:
         try:
             module = import_module("pulsim")
         except Exception as exc:  # pragma: no cover - pulsim missing
@@ -3568,7 +3566,7 @@ class BackendLoader:
         )
         return candidate, None
 
-    def _load_entry_point_candidates(self) -> list["BackendLoader._BackendCandidate"]:
+    def _load_entry_point_candidates(self) -> list[BackendLoader._BackendCandidate]:
         try:
             entry_points = metadata.entry_points()
         except Exception:  # pragma: no cover - entry point lookup failed
@@ -3583,7 +3581,6 @@ class BackendLoader:
 
         candidates: list[BackendLoader._BackendCandidate] = []
         for entry in entries:
-            identifier = entry.name
             try:
                 loaded = entry.load()
             except Exception:

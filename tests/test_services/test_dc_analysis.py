@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from pulsimgui.services.backend_adapter import PlaceholderBackend, PulsimBackend, BackendInfo
+from pulsimgui.services.backend_adapter import BackendInfo, PlaceholderBackend
 from pulsimgui.services.backend_types import (
     ConvergenceInfo,
-    DCResult as BackendDCResult,
     DCSettings,
     IterationRecord,
     ProblematicVariable,
+)
+from pulsimgui.services.backend_types import (
+    DCResult as BackendDCResult,
 )
 from pulsimgui.services.simulation_service import DCResult, SimulationService
 

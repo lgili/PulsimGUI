@@ -7,12 +7,12 @@ GUI can keep the active backend aligned with a configured target version.
 from __future__ import annotations
 
 import importlib
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
-import re
 
 DEFAULT_BACKEND_TARGET_VERSION = "v0.6.5"
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Standalone test to benchmark and optimize the waveform viewer performance.
 
@@ -10,11 +11,12 @@ Run with:
     python tests/test_scope_performance.py --bench  # Benchmark mode (no GUI)
 """
 
-import sys
 import os
+import sys
 import time
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -28,14 +30,23 @@ if BENCHMARK_MODE:
 
 # Fix Qt plugin path before importing any Qt modules
 import PySide6
+
 _pyside6_dir = Path(PySide6.__path__[0])
 _qt_plugins = _pyside6_dir / "Qt" / "plugins"
 if _qt_plugins.exists():
     os.environ["QT_PLUGIN_PATH"] = str(_qt_plugins)
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QLabel, QHBoxLayout
-from PySide6.QtCore import QTimer, QCoreApplication
 import pyqtgraph as pg
+from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 # Ensure library paths include PySide6 plugins
 QCoreApplication.addLibraryPath(str(_qt_plugins))

@@ -707,12 +707,12 @@ class CircuitConverter:
             if key in {"rds_on", "ron"} and not has_explicit_g_on and hasattr(target, "g_on"):
                 g_on = self._conductance_from_resistance(value)
                 if g_on is not None:
-                    setattr(target, "g_on", g_on)
+                    target.g_on = g_on
                     continue
             if key in {"roff"} and not has_explicit_g_off and hasattr(target, "g_off"):
                 g_off = self._conductance_from_resistance(value)
                 if g_off is not None:
-                    setattr(target, "g_off", g_off)
+                    target.g_off = g_off
                     continue
 
             for attr in self._attribute_candidates(str(key)):

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor, QPalette
 
+import pulsimgui.views.main_window as main_window_module
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType, set_thermal_port_enabled
 from pulsimgui.models.project import Project
 from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.services.simulation_service import SimulationResult, SimulationState
 from pulsimgui.utils.signal_utils import format_signal_key
-import pulsimgui.views.main_window as main_window_module
 from pulsimgui.views.main_window import MainWindow
 
 

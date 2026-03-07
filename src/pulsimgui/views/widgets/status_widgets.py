@@ -1,8 +1,7 @@
 """Status bar widgets with icons and visual feedback."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme

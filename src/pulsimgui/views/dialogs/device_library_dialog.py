@@ -3,22 +3,22 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
+    QDialogButtonBox,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
     QSplitter,
-    QTreeWidget,
-    QTreeWidgetItem,
     QTableWidget,
     QTableWidgetItem,
-    QDialogButtonBox,
-    QLineEdit,
-    QLabel,
-    QGroupBox,
-    QHeaderView,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
 )
 
 from pulsimgui.models.component import ComponentType
-
 
 # Pre-defined device library
 # In a real implementation, this would be loaded from files or a database
@@ -236,7 +236,6 @@ class DeviceLibraryDialog(QDialog):
         splitter.addWidget(self._tree)
 
         # Details panel
-        details_widget = QVBoxLayout()
         details_container = QGroupBox("Device Details")
         details_layout = QVBoxLayout(details_container)
 
@@ -258,26 +257,9 @@ class DeviceLibraryDialog(QDialog):
         self._specs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         details_layout.addWidget(self._specs_table)
 
-        details_wrapper = QVBoxLayout()
-        details_wrapper.addWidget(details_container)
-        details_wrapper.addStretch()
-
-        details_widget_container = QVBoxLayout()
-        details_widget_container.addWidget(details_container)
-
-        right_widget = QVBoxLayout()
-        right_widget.addWidget(details_container)
-
-        right_container = QVBoxLayout()
-        right_container.addWidget(details_container)
-
-        right_frame = QVBoxLayout()
-        right_frame.addWidget(details_container)
-
         wrapper = QVBoxLayout()
         wrapper.addWidget(details_container)
-
-        from PySide6.QtWidgets import QFrame
+        wrapper.addStretch()
 
         right_panel = QFrame()
         right_panel.setLayout(wrapper)

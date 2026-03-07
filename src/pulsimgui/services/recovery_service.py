@@ -5,9 +5,8 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QMessageBox
 
 from pulsimgui.models.project import Project
@@ -26,7 +25,7 @@ class RecoveryService(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._project: Optional[Project] = None
+        self._project: Project | None = None
         self._recovery_timer = QTimer(self)
         self._recovery_timer.timeout.connect(self._save_recovery_data)
         self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -34,7 +33,7 @@ class RecoveryService(QObject):
         # Ensure recovery directory exists
         self.RECOVERY_DIR.mkdir(parents=True, exist_ok=True)
 
-    def start_session(self) -> Optional[str]:
+    def start_session(self) -> str | None:
         """
         Start a new session and check for crash recovery files.
 
@@ -72,7 +71,7 @@ class RecoveryService(QObject):
         """Force an immediate save of recovery data."""
         self._save_recovery_data()
 
-    def _check_for_recovery(self) -> Optional[str]:
+    def _check_for_recovery(self) -> str | None:
         """
         Check if there are recovery files from a previous crash.
 
@@ -83,7 +82,7 @@ class RecoveryService(QObject):
         if self.LOCK_FILE.exists():
             try:
                 # Read lock file to get session info
-                with open(self.LOCK_FILE, "r") as f:
+                with open(self.LOCK_FILE) as f:
                     lock_data = json.load(f)
                 pid = lock_data.get("pid")
 
@@ -91,13 +90,13 @@ class RecoveryService(QObject):
                 if pid and self._is_process_running(pid):
                     # Another instance is running - don't recover
                     return None
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass  # Lock file corrupted, proceed with recovery check
 
         # Check for state file from crashed session
         if self.STATE_FILE.exists():
             try:
-                with open(self.STATE_FILE, "r") as f:
+                with open(self.STATE_FILE) as f:
                     state = json.load(f)
 
                 recovery_file = state.get("recovery_file")
@@ -105,7 +104,7 @@ class RecoveryService(QObject):
                     # Found recovery data - return the path
                     return recovery_file
 
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass  # State file corrupted, can't recover
 
         return None
@@ -146,7 +145,7 @@ class RecoveryService(QObject):
         except Exception:
             return False
 
-    def recover_project(self, recovery_path: str) -> Optional[Project]:
+    def recover_project(self, recovery_path: str) -> Project | None:
         """
         Load a project from a recovery file.
 
@@ -215,7 +214,7 @@ class RecoveryService(QObject):
             }
             with open(self.LOCK_FILE, "w") as f:
                 json.dump(lock_data, f)
-        except IOError:
+        except OSError:
             pass
 
     def _remove_lock_file(self) -> None:
@@ -223,7 +222,7 @@ class RecoveryService(QObject):
         try:
             if self.LOCK_FILE.exists():
                 self.LOCK_FILE.unlink()
-        except IOError:
+        except OSError:
             pass
 
     def _cleanup_recovery_files(self) -> None:
@@ -237,7 +236,7 @@ class RecoveryService(QObject):
             for recovery_file in self.RECOVERY_DIR.glob("recovery_*.pulsim"):
                 try:
                     recovery_file.unlink()
-                except IOError:
+                except OSError:
                     pass
 
         except Exception:

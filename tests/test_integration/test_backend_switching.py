@@ -9,16 +9,13 @@ These tests verify that:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from pulsimgui.services import backend_adapter
 from pulsimgui.services.backend_adapter import (
     BackendLoader,
-    BackendInfo,
-    PlaceholderBackend,
-    PulsimBackend,
 )
 
 

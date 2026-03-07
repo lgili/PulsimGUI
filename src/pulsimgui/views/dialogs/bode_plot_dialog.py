@@ -4,21 +4,21 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QVBoxLayout,
+    QFileDialog,
+    QGroupBox,
     QHBoxLayout,
-    QWidget,
-    QSplitter,
+    QHeaderView,
     QLabel,
     QPushButton,
-    QComboBox,
-    QCheckBox,
-    QGroupBox,
-    QFileDialog,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
     QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.services.simulation_service import ACResult
@@ -447,7 +447,7 @@ class BodePlotDialog(QDialog):
 
         self._data_table.setRowCount(len(frequencies))
 
-        for row, (f, m, p) in enumerate(zip(frequencies, magnitude, phase)):
+        for row, (f, m, p) in enumerate(zip(frequencies, magnitude, phase, strict=False)):
             self._data_table.setItem(row, 0, QTableWidgetItem(f"{f:.2f}"))
             self._data_table.setItem(row, 1, QTableWidgetItem(f"{m:.2f}"))
             self._data_table.setItem(row, 2, QTableWidgetItem(f"{p:.2f}"))
@@ -493,7 +493,7 @@ class BodePlotDialog(QDialog):
                     magnitude = self._result.magnitude[signal_name]
                     phase = self._result.phase[signal_name]
 
-                    for freq, mag, ph in zip(frequencies, magnitude, phase):
+                    for freq, mag, ph in zip(frequencies, magnitude, phase, strict=False):
                         f.write(f"{freq},{mag},{ph}\n")
 
                     f.write("\n")

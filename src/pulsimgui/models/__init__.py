@@ -1,8 +1,7 @@
 """Data models for PulsimGui."""
 
-from pulsimgui.models.component import Component, ComponentType, Pin
-from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.component import Component, ComponentType, Pin
 from pulsimgui.models.project import Project
 from pulsimgui.models.subcircuit import (
     SubcircuitDefinition,
@@ -10,6 +9,7 @@ from pulsimgui.models.subcircuit import (
     SubcircuitPort,
     create_subcircuit_from_selection,
 )
+from pulsimgui.models.wire import Wire, WireSegment
 
 __all__ = [
     "Component",

@@ -2,8 +2,8 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QPen, QColor, QPainter, QBrush, QPainterPath
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
 from pulsimgui.models.circuit import Circuit
@@ -405,7 +405,7 @@ class SchematicScene(QGraphicsScene):
             return
 
         # Add component items
-        from pulsimgui.views.schematic.items import create_component_item, WireItem
+        from pulsimgui.views.schematic.items import WireItem, create_component_item
 
         for component in self._circuit.components.values():
             item = create_component_item(component)

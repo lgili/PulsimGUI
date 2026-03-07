@@ -2,33 +2,31 @@
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
-from PySide6.QtGui import QDrag, QColor, QPalette
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QComboBox,
-    QLabel,
+    QAbstractItemView,
     QCheckBox,
-    QGroupBox,
-    QSplitter,
+    QComboBox,
     QFrame,
     QGridLayout,
-    QSpinBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
     QListWidget,
     QListWidgetItem,
-    QAbstractItemView,
-    QHeaderView,
+    QPushButton,
     QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.services.theme_service import ThemeService, Theme
-
+from pulsimgui.services.theme_service import Theme, ThemeService
 
 # Maximum points to display before decimation kicks in
 # Higher = better resolution but slower updates
@@ -1159,7 +1157,6 @@ class WaveformViewer(QWidget):
                     continue
                 val = self._interpolate_value(self._time_array, values, t)
                 if val is not None:
-                    color = self._signal_list_panel.get_signal_color(name)
                     lines.append(f"{name}: {val:.6g}")
             self._hover_tooltip.setText("\n".join(lines))
 

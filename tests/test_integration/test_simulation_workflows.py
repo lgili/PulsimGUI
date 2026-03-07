@@ -6,25 +6,20 @@ Each test corresponds to a GUI validation scenario described in example_circuits
 
 from __future__ import annotations
 
-import math
-import pytest
-
-from pulsimgui.services.backend_adapter import PlaceholderBackend, BackendInfo
+from pulsimgui.services.backend_adapter import PlaceholderBackend
 from pulsimgui.services.backend_types import (
-    DCSettings,
     ACSettings,
-    TransientSettings,
-    ThermalSettings,
+    DCSettings,
 )
 from pulsimgui.services.thermal_service import ThermalAnalysisService
 
 from .example_circuits import (
-    voltage_divider,
+    diode_rectifier,
+    mosfet_switch,
     rc_lowpass_filter,
     rc_transient,
-    mosfet_switch,
-    diode_rectifier,
     rl_circuit,
+    voltage_divider,
 )
 
 
@@ -324,11 +319,16 @@ class TestThermalWorkflow:
         3. Check Thermal Viewer shows real data (no synthetic badge)
         """
         from unittest.mock import MagicMock
+
         from pulsimgui.services.backend_types import (
-            ThermalResult as BackendThermalResult,
-            ThermalDeviceResult as BackendThermalDeviceResult,
             FosterStage,
             LossBreakdown,
+        )
+        from pulsimgui.services.backend_types import (
+            ThermalDeviceResult as BackendThermalDeviceResult,
+        )
+        from pulsimgui.services.backend_types import (
+            ThermalResult as BackendThermalResult,
         )
 
         mock_backend = MagicMock()

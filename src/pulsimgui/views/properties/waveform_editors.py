@@ -1,21 +1,21 @@
 """Waveform editor widgets for source components."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QPen, QColor
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
-    QComboBox,
-    QTabWidget,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QPushButton,
-    QHeaderView,
-    QGroupBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.views.properties.properties_panel import SIValueWidget

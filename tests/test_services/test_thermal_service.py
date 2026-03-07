@@ -2,22 +2,23 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.services.thermal_service import (
-    ThermalAnalysisService,
-    ThermalResult,
-    ThermalDeviceResult,
-    ThermalStage,
+from pulsimgui.services.backend_types import (
+    FosterStage,
+    LossBreakdown,
+)
+from pulsimgui.services.backend_types import (
+    ThermalDeviceResult as BackendThermalDeviceResult,
 )
 from pulsimgui.services.backend_types import (
     ThermalResult as BackendThermalResult,
-    ThermalDeviceResult as BackendThermalDeviceResult,
-    FosterStage,
-    LossBreakdown,
+)
+from pulsimgui.services.simulation_service import SimulationResult
+from pulsimgui.services.thermal_service import (
+    ThermalAnalysisService,
+    ThermalDeviceResult,
+    ThermalResult,
 )
 
 

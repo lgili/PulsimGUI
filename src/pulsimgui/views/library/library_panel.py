@@ -1,30 +1,34 @@
 """Component library panel with grid card layout and drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize, QEvent
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QDrag, QPixmap, QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QFont, QPainterPath, QCursor,
+    QColor,
+    QCursor,
+    QDrag,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGridLayout,
-    QLineEdit,
-    QLabel,
-    QScrollArea,
-    QFrame,
     QApplication,
-    QSizePolicy,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
     QStyleOptionGraphicsItem,
     QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
 from pulsimgui.resources.icons import IconService
-from pulsimgui.services.theme_service import ThemeService, Theme
-
+from pulsimgui.services.theme_service import Theme, ThemeService
 
 # Component metadata for library display.
 # Keep this list aligned with backend-supported + GUI-functional blocks only.

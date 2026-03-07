@@ -2,27 +2,26 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QWidget,
-    QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
+    QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
-    QFormLayout,
-    QTextBrowser,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
 )
 
-from pulsimgui.services.backend_types import ConvergenceInfo, IterationRecord
+from pulsimgui.services.backend_types import ConvergenceInfo
 from pulsimgui.views.widgets import StatusBanner
 
 

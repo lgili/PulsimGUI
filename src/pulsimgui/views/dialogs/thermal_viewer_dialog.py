@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
-    QDialogButtonBox,
 )
 
+from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.services.thermal_service import ThermalResult
-from pulsimgui.services.theme_service import ThemeService, Theme
 from pulsimgui.views.thermal import ThermalViewerWidget
 
 

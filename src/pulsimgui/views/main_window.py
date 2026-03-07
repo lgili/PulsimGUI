@@ -5,19 +5,18 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QColor, QPalette
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
 from PySide6.QtWidgets import (
-    QMainWindow,
-    QDockWidget,
-    QToolBar,
-    QStatusBar,
-    QLabel,
-    QWidget,
-    QVBoxLayout,
-    QMessageBox,
-    QFileDialog,
     QApplication,
+    QDockWidget,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QStatusBar,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui import __version__ as APP_VERSION
@@ -34,8 +33,8 @@ from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     CONNECTION_DOMAIN_ANY,
-    ComponentType,
     THERMAL_PORT_PARAMETER,
+    ComponentType,
     can_connect_measurement_pins,
     is_restricted_measurement_pin,
     pin_connection_domain,
@@ -46,46 +45,46 @@ from pulsimgui.models.subcircuit import (
     create_subcircuit_from_selection,
     detect_boundary_ports,
 )
-from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_adapter import BackendInfo
+from pulsimgui.services.export_service import ExportService
+from pulsimgui.services.hierarchy_service import HierarchyService
+from pulsimgui.services.settings_service import SettingsService
+from pulsimgui.services.shortcut_service import ShortcutService
 from pulsimgui.services.simulation_service import (
+    ParameterSweepResult,
     SimulationResult,
     SimulationService,
     SimulationState,
-    ParameterSweepResult,
     normalize_control_mode,
     normalize_formulation_mode,
     normalize_integration_method,
     normalize_step_mode,
     normalize_thermal_policy,
 )
+from pulsimgui.services.template_service import TemplateService
+from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.services.thermal_service import ThermalAnalysisService
-from pulsimgui.services.theme_service import ThemeService, Theme
-from pulsimgui.services.export_service import ExportService
-from pulsimgui.services.shortcut_service import ShortcutService
-from pulsimgui.services.hierarchy_service import HierarchyService
-from pulsimgui.resources.icons import IconService
+from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.dialogs import (
-    PreferencesDialog,
-    SimulationSettingsDialog,
-    DCResultsDialog,
     BodePlotDialog,
-    KeyboardShortcutsDialog,
-    TemplateDialog,
+    ComponentPropertiesDialog,
     CreateSubcircuitDialog,
+    DCResultsDialog,
+    KeyboardShortcutsDialog,
     ParameterSweepDialog,
     ParameterSweepResultsDialog,
+    PreferencesDialog,
+    SimulationSettingsDialog,
+    TemplateDialog,
     ThermalViewerDialog,
-    ComponentPropertiesDialog,
 )
-from pulsimgui.services.template_service import TemplateService
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
-from pulsimgui.utils.signal_utils import format_signal_key
 
 
 class MainWindow(QMainWindow):
@@ -477,7 +476,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
-        from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QSizePolicy
+        from PySide6.QtWidgets import QFrame, QHBoxLayout, QSizePolicy, QToolButton
 
         self._toolbar = QToolBar("Main Toolbar")
         self._toolbar.setObjectName("MainToolbar")
@@ -535,12 +534,13 @@ class MainWindow(QMainWindow):
     def _create_status_bar(self) -> None:
         """Create the status bar with icons."""
         from PySide6.QtWidgets import QProgressBar
+
         from pulsimgui.views.widgets import (
             CoordinateWidget,
-            ZoomWidget,
-            SelectionWidget,
             ModifiedWidget,
+            SelectionWidget,
             SimulationStatusWidget,
+            ZoomWidget,
         )
 
         status_bar = QStatusBar()
@@ -1024,6 +1024,7 @@ class MainWindow(QMainWindow):
     def _on_scene_selection_changed(self) -> None:
         """Handle selection change in schematic scene."""
         from shiboken6 import isValid
+
         from pulsimgui.views.schematic.items import ComponentItem
 
         scene = self._schematic_scene
@@ -1094,8 +1095,8 @@ class MainWindow(QMainWindow):
 
     def _on_create_subcircuit(self) -> None:
         """Create a subcircuit definition from the current selection."""
-        from pulsimgui.views.schematic.items import ComponentItem, WireItem
         from pulsimgui.models.component import ComponentType
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
 
         selected_items = self._schematic_scene.selectedItems()
         component_items = [item for item in selected_items if isinstance(item, ComponentItem)]
@@ -1603,10 +1604,8 @@ class MainWindow(QMainWindow):
 
     def _get_smart_placement_position(self) -> tuple[float, float]:
         """Get smart position for new component based on selection or view center."""
-        from PySide6.QtCore import QPointF
 
         scene = self._schematic_view.scene()
-        grid_spacing = 20  # Default grid spacing
 
         # Check if there's a selected component
         if scene:
@@ -1874,6 +1873,7 @@ class MainWindow(QMainWindow):
     def _on_wire_created(self, segments: list) -> None:
         """Handle wire creation from schematic view."""
         from PySide6.QtCore import QPointF
+
         from pulsimgui.models.wire import Wire, WireConnection, WireSegment
 
         if not segments:
@@ -2709,7 +2709,6 @@ class MainWindow(QMainWindow):
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
         """Handle simulation state change."""
         is_running = state in (SimulationState.RUNNING, SimulationState.PAUSED)
-        is_paused = state == SimulationState.PAUSED
 
         if is_running and not self._sim_progress_active:
             self._sim_progress_last_value = 0

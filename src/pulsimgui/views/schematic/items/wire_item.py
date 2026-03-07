@@ -1,7 +1,7 @@
 """Wire graphics item with orthogonal routing."""
 
-from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath, QBrush, QFontMetricsF
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QGraphicsPathItem,
     QStyleOptionGraphicsItem,
@@ -499,7 +499,7 @@ class WireItem(QGraphicsPathItem):
 
         Pin-connected first / last segments cannot be dragged to prevent
         disconnecting the wire endpoint from its component pin.
-        """        
+        """
         if seg_idx < 0 or seg_idx >= len(self._wire.segments):
             return
 

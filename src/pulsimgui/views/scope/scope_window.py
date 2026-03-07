@@ -4,28 +4,27 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QCloseEvent, QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
     QSplitter,
-    QInputDialog,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,9 +34,9 @@ from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.waveform.waveform_viewer import (
+    TRACE_COLORS,
     MeasurementsPanel,
     SignalListPanel,
-    TRACE_COLORS,
 )
 
 from .bindings import ScopeChannelBinding, ScopeSignal

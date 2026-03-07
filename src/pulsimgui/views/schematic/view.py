@@ -1,11 +1,24 @@
 """Schematic view with pan and zoom."""
 
-from enum import Enum, auto
 from collections.abc import Callable
+from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
-from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsView, QLineEdit, QMenu
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
@@ -18,8 +31,8 @@ from pulsimgui.models.component import (
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
+from pulsimgui.views.schematic.items.wire_item import WireInProgressItem, WireItem, WirePreviewItem
 from pulsimgui.views.schematic.scene import SchematicScene
-from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
 
 class PinHighlightItem(QGraphicsItem):
@@ -1030,6 +1043,7 @@ class SchematicView(QGraphicsView):
         """Paste a component from clipboard at the given position."""
         from copy import deepcopy
         from uuid import uuid4
+
         from pulsimgui.models.component import Component
         from pulsimgui.views.schematic.items import create_component_item
 

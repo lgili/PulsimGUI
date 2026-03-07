@@ -1,7 +1,6 @@
 """Subcircuit model for hierarchical schematics."""
 
 from dataclasses import dataclass, field
-from typing import Any
 from uuid import UUID, uuid4
 
 from pulsimgui.models.circuit import Circuit

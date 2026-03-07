@@ -1,24 +1,20 @@
 """Base class for component graphics items."""
 
-from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
-    QPainter,
-    QPen,
-    QColor,
     QBrush,
+    QColor,
     QFont,
     QFontMetricsF,
-    QTransform,
-    QRadialGradient,
     QLinearGradient,
+    QPainter,
     QPainterPath,
+    QPen,
     QPolygonF,
 )
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsTextItem,
-    QGraphicsSimpleTextItem,
-    QGraphicsDropShadowEffect,
     QStyleOptionGraphicsItem,
     QWidget,
 )

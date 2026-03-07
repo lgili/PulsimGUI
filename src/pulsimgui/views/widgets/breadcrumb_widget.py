@@ -2,11 +2,11 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget,
     QHBoxLayout,
-    QPushButton,
     QLabel,
+    QPushButton,
     QSizePolicy,
+    QWidget,
 )
 
 from pulsimgui.services.hierarchy_service import HierarchyLevel
