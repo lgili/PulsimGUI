@@ -68,5 +68,6 @@ nav:
   - Technical Reference:
       - Backend Adapter: backend-adapter.md
       - Developer Guide: developer-guide.md
+      - Frontend Architecture and Performance: frontend-architecture.md
   - Support:
       - FAQ and Troubleshooting: faq.md

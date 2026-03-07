@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.project import Project
@@ -14,8 +14,8 @@ from pulsimgui.services.backend_runtime_service import (
     BackendRuntimeConfig,
 )
 from pulsimgui.services.simulation_service import (
-    SimulationService,
     SimulationResult,
+    SimulationService,
     SimulationSettings,
     SimulationState,
     SimulationWorker,
@@ -496,6 +496,64 @@ def test_convert_gui_circuit_emits_pulsim_v1_simulation_contract(monkeypatch) ->
     assert "sundials" not in sim
 
 
+def test_convert_gui_circuit_returns_detached_cached_payload(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="DetachedPayload")
+    circuit = project.get_active_circuit()
+    resistor = Component(type=ComponentType.RESISTOR, name="R1")
+    resistor.parameters["resistance"] = 10.0
+    circuit.add_component(resistor)
+
+    first = service.convert_gui_circuit(project)
+    comp_first = next(comp for comp in first["components"] if comp.get("name") == "R1")
+    comp_first["parameters"]["resistance"] = 999.0
+
+    second = service.convert_gui_circuit(project)
+    comp_second = next(comp for comp in second["components"] if comp.get("name") == "R1")
+
+    assert comp_second["parameters"]["resistance"] == 10.0
+
+
+def test_worker_conversion_reuses_cache_until_project_changes(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="WorkerCache")
+    circuit = project.get_active_circuit()
+    circuit.add_component(Component(type=ComponentType.VOLTAGE_SOURCE, name="Vin"))
+    circuit.add_component(Component(type=ComponentType.RESISTOR, name="R1"))
+
+    first = service.convert_gui_circuit_cached(project)
+    second = service.convert_gui_circuit_cached(project)
+    assert first is second
+
+    circuit.add_component(Component(type=ComponentType.CAPACITOR, name="C1"))
+    project.mark_dirty()
+
+    third = service.convert_gui_circuit_cached(project)
+    assert third is not second
+    assert any(comp.get("name") == "C1" for comp in third["components"])
+
+
+def test_worker_conversion_cache_invalidated_when_settings_change(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    project = Project(name="SettingsCache")
+    circuit = project.get_active_circuit()
+    circuit.add_component(Component(type=ComponentType.RESISTOR, name="R1"))
+
+    first = service.convert_gui_circuit_cached(project)
+    assert first["simulation"]["tstop"] == service.settings.t_stop
+
+    service.settings = SimulationSettings(t_stop=2e-3, t_step=2e-6)
+    second = service.convert_gui_circuit_cached(project)
+
+    assert second is not first
+    assert second["simulation"]["tstop"] == 2e-3
+
+
 def test_prevalidate_blocks_component_thermal_when_global_thermal_disabled(monkeypatch) -> None:
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()
@@ -591,6 +649,36 @@ def test_worker_builds_circuit_data_before_running_backend() -> None:
     assert results
     assert results[0].error_message == ""
     assert results[0].time == [0.0, 1e-6]
+
+
+def test_worker_reuses_backend_buffers_for_transient_vectors() -> None:
+    backend_time = [0.0, 1e-6, 2e-6]
+    backend_signal = [0.1, 0.2, 0.3]
+    backend_stats: dict[str, object] = {"meta": "ok"}
+
+    class _Backend:
+        def run_transient(self, _circuit_data, _settings, _callbacks):  # noqa: ANN001
+            return SimpleNamespace(
+                time=backend_time,
+                signals={"V(out)": backend_signal},
+                statistics=backend_stats,
+                error_message="",
+            )
+
+    worker = SimulationWorker(
+        backend=_Backend(),  # type: ignore[arg-type]
+        circuit_data={"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]},
+        settings=SimulationSettings(),
+    )
+
+    results: list[SimulationResult] = []
+    worker.finished_signal.connect(results.append)
+    worker.run()
+
+    assert results
+    assert results[0].time is backend_time
+    assert results[0].signals["V(out)"] is backend_signal
+    assert results[0].statistics is backend_stats
 
 
 def test_worker_stops_before_backend_when_contract_validator_fails() -> None:

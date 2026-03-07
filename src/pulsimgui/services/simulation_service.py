@@ -6,12 +6,13 @@ import copy
 import math
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, QTimer, Signal
+from PySide6.QtCore import QMutex, QObject, QThread, QTimer, QWaitCondition, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
@@ -34,6 +35,7 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
+from pulsimgui.services.circuit_data_builder import CircuitDataBuilder
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -461,9 +463,16 @@ class SimulationWorker(QThread):
                 callbacks,
             )
 
-            result.time = list(backend_result.time)
-            result.signals = {name: list(values) for name, values in backend_result.signals.items()}
-            result.statistics = dict(backend_result.statistics)
+            result.time = self._as_list_fast(backend_result.time)
+            result.signals = {
+                name: self._as_list_fast(values)
+                for name, values in backend_result.signals.items()
+            }
+            result.statistics = (
+                backend_result.statistics
+                if isinstance(backend_result.statistics, dict)
+                else dict(backend_result.statistics)
+            )
             result.error_message = backend_result.error_message
 
             self._append_runtime_contract_checks(result)
@@ -481,6 +490,17 @@ class SimulationWorker(QThread):
             self.finished_signal.emit(result)
         finally:
             self._thread_ident = None
+
+    @staticmethod
+    def _as_list_fast(values: Any) -> list[Any]:
+        """Return list-like data with minimal overhead.
+
+        Backend adapters already emit Python lists in the common path.
+        Reusing list instances avoids expensive large copies at simulation end.
+        """
+        if isinstance(values, list):
+            return values
+        return list(values)
 
     def _wait_if_paused(self) -> None:
         self._mutex.lock()
@@ -834,6 +854,7 @@ class SimulationService(QObject):
         self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
         self._runtime_service = BackendRuntimeService()
+        self._circuit_data_builder = CircuitDataBuilder()
         self._runtime_config = BackendRuntimeConfig()
         self._runtime_issue: str | None = None
         preferred_backend = None
@@ -994,6 +1015,7 @@ class SimulationService(QObject):
         )
         self._settings.control_mode = normalize_control_mode(self._settings.control_mode)
         self._settings.control_sample_time = max(0.0, float(self._settings.control_sample_time))
+        self._circuit_data_builder.clear()
         self._persist_simulation_settings()
 
     @property
@@ -1420,7 +1442,7 @@ class SimulationService(QObject):
             None,
             self._settings,
             circuit_source=project,
-            circuit_builder=self.convert_gui_circuit,
+            circuit_builder=self.convert_gui_circuit_cached,
             contract_validator=self._prevalidate_runtime_contract,
         )
         self._attach_and_schedule_worker(worker)
@@ -1685,77 +1707,38 @@ class SimulationService(QObject):
 
     def convert_gui_circuit(self, project) -> dict:
         """Convert GUI project/circuit to simulation data format."""
-        control_mode = normalize_control_mode(self._settings.control_mode)
-        control_sample_time = max(0.0, float(self._settings.control_sample_time))
-        control_cfg: dict[str, Any] = {"mode": control_mode}
-        if control_sample_time > 0.0 or control_mode == "discrete":
-            control_cfg["sample_time"] = max(control_sample_time, 1e-12)
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=True,
+            cooperative_yield=True,
+        )
 
-        circuit_data = {
-            "schema": "pulsim-v1",
-            "version": 1,
-            "simulation": {
-                "tstart": float(self._settings.t_start),
-                "tstop": float(self._settings.t_stop),
-                "dt": float(self._settings.t_step),
-                "step_mode": normalize_step_mode(self._settings.step_mode),
-                "formulation": normalize_formulation_mode(self._settings.formulation_mode),
-                "direct_formulation_fallback": bool(self._settings.direct_formulation_fallback),
-                "enable_events": bool(self._settings.enable_events),
-                "enable_losses": bool(self._settings.enable_losses),
-                "control": control_cfg,
-                "thermal": {
-                    "enabled": bool(self._settings.enable_losses),
-                    "ambient": float(self._settings.thermal_ambient),
-                    "policy": normalize_thermal_policy(self._settings.thermal_policy),
-                    "default_rth": max(0.0, float(self._settings.thermal_default_rth)),
-                    "default_cth": max(0.0, float(self._settings.thermal_default_cth)),
-                },
-            },
-            "components": [],
-            "wires": [],
-            "nodes": {},
-            "node_map": {},
-            "node_aliases": {},
-            "metadata": {},
-        }
+    def convert_gui_circuit_cached(self, project) -> dict:
+        """Convert GUI circuit using cache-optimized worker semantics.
 
-        if not project:
-            return circuit_data
+        Returns payload references directly from conversion cache. Callers must
+        treat the returned dict as read-only.
+        """
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=False,
+            cooperative_yield=False,
+        )
 
-        circuit = project.get_active_circuit()
-        if circuit is None:
-            return circuit_data
-
-        node_map_raw = build_node_map(circuit)
-        alias_map = build_node_alias_map(circuit, node_map_raw)
-        circuit_data["node_aliases"] = alias_map
-        circuit_data["metadata"] = {"name": circuit.name}
-
-        component_node_map: dict[str, list[str]] = {}
-
-        for comp_index, comp in enumerate(circuit.components.values()):
-            if comp_index and comp_index % 128 == 0:
-                # Cooperative yield keeps UI responsive during very large netlist conversion.
-                time.sleep(0)
-            comp_dict = comp.to_dict()
-            comp_dict["parameters"] = copy.deepcopy(comp.parameters)
-            comp_id = str(comp.id)
-            pin_nodes: list[str] = []
-            for pin_index in range(len(comp.pins)):
-                node_name = node_map_raw.get((comp_id, pin_index))
-                if node_name is None:
-                    node_name = ""
-                pin_nodes.append(node_name)
-            comp_dict["pin_nodes"] = pin_nodes
-            circuit_data["components"].append(comp_dict)
-            component_node_map[comp_id] = pin_nodes
-
-        circuit_data["node_map"] = component_node_map
-
-        for wire_index, wire in enumerate(circuit.wires.values()):
-            if wire_index and wire_index % 128 == 0:
-                time.sleep(0)
-            circuit_data["wires"].append(wire.to_dict())
-
-        return circuit_data
+    def _convert_gui_circuit_for_worker(self, project) -> dict:
+        """Backward-compatible alias for worker conversion path."""
+        return self.convert_gui_circuit_cached(project)
