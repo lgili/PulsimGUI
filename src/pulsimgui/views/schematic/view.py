@@ -735,6 +735,17 @@ class SchematicView(QGraphicsView):
         key = event.key()
         modifiers = event.modifiers()
 
+        # Treat keypad/shift variants as delete too; ignore only command modifiers.
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            blocked_modifiers = (
+                Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+            if not (modifiers & blocked_modifiers):
+                self._delete_selected_items()
+                return
+
         # Zoom and edit shortcuts with Ctrl modifier
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             if key == Qt.Key.Key_Plus or key == Qt.Key.Key_Equal:
@@ -821,12 +832,12 @@ class SchematicView(QGraphicsView):
             elif key == Qt.Key.Key_D:
                 self.quick_add_component.emit(ComponentType.DIODE)
                 return
-            elif key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
-                # Delete selected items
-                self._delete_selected_items()
-                return
 
         super().keyPressEvent(event)
+
+    def delete_selected_items(self) -> None:
+        """Public wrapper for deleting current selection."""
+        self._delete_selected_items()
 
     def _delete_selected_items(self) -> None:
         """Delete all selected items (wires and components)."""
@@ -1162,6 +1173,15 @@ class SchematicView(QGraphicsView):
             if isinstance(item, ComponentItem):
                 self._cut_component(item)
                 break  # Only cut first selected component for now
+
+    def select_all_items(self) -> None:
+        """Select all selectable items in the schematic scene."""
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in scene.items():
+            if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
+                item.setSelected(True)
 
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
         """Intercept and optionally handle events before default dispatch."""

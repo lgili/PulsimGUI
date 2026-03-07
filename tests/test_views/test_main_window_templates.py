@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
+from PySide6.QtTest import QTest
 
 import pulsimgui.views.main_window as main_window_module
 from pulsimgui.models.circuit import Circuit
@@ -10,9 +13,12 @@ from pulsimgui.models.component import Component, ComponentType, set_thermal_por
 from pulsimgui.models.project import Project
 from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.services.backend_types import ConvergenceInfo
+from pulsimgui.services.template_service import TemplateService
 from pulsimgui.services.simulation_service import DCResult, SimulationResult, SimulationState
+from pulsimgui.utils.net_utils import build_node_map
 from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.main_window import MainWindow
+from pulsimgui.views.schematic.items import ComponentItem
 
 
 def test_on_new_from_template_uses_project_circuits_mapping(monkeypatch, qapp) -> None:
@@ -124,6 +130,42 @@ def test_open_project_file_syncs_saved_simulation_settings(monkeypatch, qapp, tm
         assert window._simulation_service.settings.t_stop == 0.02
         assert window._simulation_service.settings.t_step == 5e-6
         assert window._simulation_service.settings.max_newton_iterations == 88
+    finally:
+        window.close()
+
+
+def test_flyback_template_keeps_primary_and_output_nodes_after_scene_load(qapp) -> None:
+    """Flyback template wiring should stay topologically valid after scene normalization."""
+
+    project = TemplateService.create_project_from_template("flyback_converter")
+    assert project is not None
+
+    window = MainWindow()
+    try:
+        window._project = project
+        window._load_project_to_scene()
+
+        circuit = window._current_circuit()
+        assert circuit is not None
+        node_map = build_node_map(circuit)
+        by_name = {component.name: component for component in circuit.components.values()}
+
+        t1 = by_name["T1"]
+        m1 = by_name["M1"]
+        cout = by_name["Cout"]
+        rload = by_name["Rload"]
+
+        t1_primary_switch_node = node_map[(str(t1.id), 1)]  # P2
+        t1_secondary_return = node_map[(str(t1.id), 3)]  # S2
+        m1_drain_node = node_map[(str(m1.id), 0)]  # D
+        cout_positive_node = node_map[(str(cout.id), 0)]  # +
+        rload_positive_node = node_map[(str(rload.id), 0)]  # 1
+
+        assert t1_primary_switch_node == m1_drain_node
+        assert t1_primary_switch_node != "0"
+        assert t1_secondary_return == "0"
+        assert cout_positive_node == rload_positive_node
+        assert cout_positive_node != "0"
     finally:
         window.close()
 
@@ -242,6 +284,185 @@ def test_dc_finished_opens_results_dialog_with_parent_and_convergence_info(monke
         assert captured["convergence_info"] is convergence_info
         assert captured["parent"] is window
         assert captured["exec_called"] is True
+    finally:
+        window.close()
+
+
+def test_delete_action_removes_selected_component_without_view_focus(monkeypatch, qapp) -> None:
+    """Delete action should remove selected components even if focus moved away from scene."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        component = Component(type=ComponentType.RESISTOR, name="Rdel", x=0.0, y=0.0)
+        circuit = window._current_circuit()
+        circuit.add_component(component)
+        window._schematic_scene.add_component(component)
+
+        component_item = next(
+            item
+            for item in window._schematic_scene.items()
+            if isinstance(item, ComponentItem) and item.component.id == component.id
+        )
+        component_item.setSelected(True)
+
+        # Simulate typical focus loss from scene (common on Windows menus/docks).
+        window._library_panel.setFocus()
+        window.action_delete.trigger()
+
+        assert circuit.get_component(component.id) is None
+    finally:
+        window.close()
+
+
+def test_delete_action_ignored_while_typing_in_text_input(monkeypatch, qapp) -> None:
+    """Delete shortcut must not remove components while user edits text fields."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        monkeypatch.setattr(window, "_has_text_input_focus", lambda: True)
+        component = Component(type=ComponentType.RESISTOR, name="Rguard", x=0.0, y=0.0)
+        circuit = window._current_circuit()
+        circuit.add_component(component)
+        window._schematic_scene.add_component(component)
+
+        component_item = next(
+            item
+            for item in window._schematic_scene.items()
+            if isinstance(item, ComponentItem) and item.component.id == component.id
+        )
+        component_item.setSelected(True)
+
+        window.action_delete.trigger()
+
+        assert circuit.get_component(component.id) is not None
+    finally:
+        window.close()
+
+
+def test_schematic_view_delete_handles_keypad_modifier(monkeypatch, qapp) -> None:
+    """Delete via numpad key should remove selected items."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        component = Component(type=ComponentType.RESISTOR, name="Rkeypad", x=0.0, y=0.0)
+        circuit = window._current_circuit()
+        circuit.add_component(component)
+        window._schematic_scene.add_component(component)
+
+        component_item = next(
+            item
+            for item in window._schematic_scene.items()
+            if isinstance(item, ComponentItem) and item.component.id == component.id
+        )
+        component_item.setSelected(True)
+
+        window._schematic_view.setFocus()
+        window._schematic_view.viewport().setFocus()
+        QTest.keyClick(
+            window._schematic_view.viewport(),
+            Qt.Key.Key_Delete,
+            Qt.KeyboardModifier.KeypadModifier,
+        )
+
+        assert circuit.get_component(component.id) is None
+    finally:
+        window.close()
+
+
+def test_edit_actions_forward_to_schematic_view_when_not_typing(monkeypatch, qapp) -> None:
+    """Cut/copy/paste/delete/select-all actions should dispatch to schematic view."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        monkeypatch.setattr(window, "_has_text_input_focus", lambda: False)
+
+        calls: list[str] = []
+        monkeypatch.setattr(window._schematic_view, "cut_selected", lambda: calls.append("cut"))
+        monkeypatch.setattr(window._schematic_view, "copy_selected", lambda: calls.append("copy"))
+        monkeypatch.setattr(window._schematic_view, "paste_at_cursor", lambda: calls.append("paste"))
+        monkeypatch.setattr(window._schematic_view, "delete_selected_items", lambda: calls.append("delete"))
+        monkeypatch.setattr(window._schematic_view, "select_all_items", lambda: calls.append("select_all"))
+
+        window.action_cut.trigger()
+        window.action_copy.trigger()
+        window.action_paste.trigger()
+        window.action_delete.trigger()
+        window.action_select_all.trigger()
+
+        assert calls == ["cut", "copy", "paste", "delete", "select_all"]
+    finally:
+        window.close()
+
+
+def test_edit_actions_ignored_when_typing(monkeypatch, qapp) -> None:
+    """Cut/copy/paste/delete/select-all should be ignored while text input has focus."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        monkeypatch.setattr(window, "_has_text_input_focus", lambda: True)
+
+        for method_name in (
+            "cut_selected",
+            "copy_selected",
+            "paste_at_cursor",
+            "delete_selected_items",
+            "select_all_items",
+        ):
+            monkeypatch.setattr(
+                window._schematic_view,
+                method_name,
+                lambda method_name=method_name: (_ for _ in ()).throw(
+                    AssertionError(f"{method_name} should not be called")
+                ),
+            )
+
+        window.action_cut.trigger()
+        window.action_copy.trigger()
+        window.action_paste.trigger()
+        window.action_delete.trigger()
+        window.action_select_all.trigger()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    ("action_name", "key", "modifiers"),
+    [
+        ("action_rename_signal", Qt.Key.Key_F2, Qt.KeyboardModifier.NoModifier),
+        ("action_run", Qt.Key.Key_F5, Qt.KeyboardModifier.NoModifier),
+        ("action_stop", Qt.Key.Key_F5, Qt.KeyboardModifier.ShiftModifier),
+        ("action_dc_op", Qt.Key.Key_F6, Qt.KeyboardModifier.NoModifier),
+        ("action_ac", Qt.Key.Key_F7, Qt.KeyboardModifier.NoModifier),
+        ("action_pause", Qt.Key.Key_F8, Qt.KeyboardModifier.NoModifier),
+    ],
+)
+def test_function_shortcuts_trigger_expected_actions(
+    monkeypatch,
+    qapp,
+    action_name: str,
+    key: Qt.Key,
+    modifiers: Qt.KeyboardModifier,
+) -> None:
+    """Function-key shortcuts should trigger their corresponding actions."""
+    window = MainWindow()
+    try:
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        action = getattr(window, action_name)
+
+        # Isolate the shortcut trigger check from business-logic side effects.
+        action.triggered.disconnect()
+        fired: list[bool] = []
+        action.triggered.connect(lambda *_: fired.append(True))
+        action.setEnabled(True)
+
+        window.show()
+        window.activateWindow()
+        window.setFocus()
+        qapp.processEvents()
+        QTest.keyClick(window, key, modifiers)
+        qapp.processEvents()
+
+        assert fired == [True]
     finally:
         window.close()
 

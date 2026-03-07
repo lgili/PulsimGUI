@@ -51,7 +51,7 @@ python3 -m pulsimgui
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-Expected project baseline: `0.6.4`.
+Expected project baseline: `0.6.5`.
 
 ## Recommended In-App Runtime Settings
 
