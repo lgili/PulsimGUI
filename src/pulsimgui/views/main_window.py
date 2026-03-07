@@ -8,12 +8,17 @@ from uuid import UUID
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QDockWidget,
     QFileDialog,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QStatusBar,
+    QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -653,6 +658,11 @@ class MainWindow(QMainWindow):
 
         # Theme service signal
         self._theme_service.theme_changed.connect(self._on_theme_changed)
+        self.action_cut.triggered.connect(self._on_cut_selected)
+        self.action_copy.triggered.connect(self._on_copy_selected)
+        self.action_paste.triggered.connect(self._on_paste_selected)
+        self.action_delete.triggered.connect(self._on_delete_selected)
+        self.action_select_all.triggered.connect(self._on_select_all_items)
 
         # Simulation service signals
         self._simulation_service.state_changed.connect(self._on_simulation_state_changed)
@@ -1070,6 +1080,45 @@ class MainWindow(QMainWindow):
                 return True
             widget = widget.parent()
         return False
+
+    def _has_text_input_focus(self) -> bool:
+        """Return True when the focused widget is editing text/value fields."""
+        focus_widget = QApplication.focusWidget()
+        if focus_widget is None:
+            return False
+        if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return True
+        return isinstance(focus_widget, QComboBox) and focus_widget.isEditable()
+
+    def _on_delete_selected(self) -> None:
+        """Delete selected schematic items from menu/shortcut action."""
+        if self._has_text_input_focus():
+            return
+        self._schematic_view.delete_selected_items()
+
+    def _on_cut_selected(self) -> None:
+        """Cut selected schematic items from menu/shortcut action."""
+        if self._has_text_input_focus():
+            return
+        self._schematic_view.cut_selected()
+
+    def _on_copy_selected(self) -> None:
+        """Copy selected schematic items from menu/shortcut action."""
+        if self._has_text_input_focus():
+            return
+        self._schematic_view.copy_selected()
+
+    def _on_paste_selected(self) -> None:
+        """Paste clipboard schematic item from menu/shortcut action."""
+        if self._has_text_input_focus():
+            return
+        self._schematic_view.paste_at_cursor()
+
+    def _on_select_all_items(self) -> None:
+        """Select all schematic items from menu/shortcut action."""
+        if self._has_text_input_focus():
+            return
+        self._schematic_view.select_all_items()
 
     def _on_hierarchy_changed(self, _level) -> None:
         """Refresh scene when hierarchy level changes."""

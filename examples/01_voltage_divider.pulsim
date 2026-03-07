@@ -2,20 +2,21 @@
   "version": "1.0",
   "name": "Voltage Divider",
   "created": "2025-12-14T15:49:20.200485",
-  "modified": "2025-12-14T15:49:20.200485",
+  "modified": "2026-03-07T19:11:47.578184",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.02,
     "dt": 1e-06,
     "max_step": 1e-06,
     "tstart": 0.0,
-    "abstol": 1e-12,
+    "abstol": 1e-10,
     "reltol": 0.001,
     "solver": "auto",
     "step_mode": "fixed",
     "output_points": 10000,
     "enable_events": true,
     "max_step_retries": 8,
+    "enable_losses": true,
     "max_iterations": 50,
     "enable_voltage_limiting": false,
     "max_voltage_step": 5.0,
@@ -24,7 +25,18 @@
     "gmin_final": 1e-12,
     "dc_source_steps": 10,
     "transient_robust_mode": true,
-    "transient_auto_regularize": true
+    "transient_auto_regularize": true,
+    "thermal_ambient": 25.0,
+    "thermal_include_switching_losses": true,
+    "thermal_include_conduction_losses": true,
+    "thermal_network": "foster",
+    "thermal_policy": "loss_with_temperature_scaling",
+    "thermal_default_rth": 1.0,
+    "thermal_default_cth": 0.1,
+    "formulation_mode": "projected_wrapper",
+    "direct_formulation_fallback": true,
+    "control_mode": "auto",
+    "control_sample_time": 0.0
   },
   "circuits": {
     "main": {
@@ -140,8 +152,8 @@
           "id": "82834566-2e2f-44f0-b278-3c8217cc074a",
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope1",
-          "x": 420.0,
-          "y": 100.0,
+          "x": 440.0,
+          "y": 120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -170,6 +182,34 @@
               "name": "CH2",
               "x": -40.0,
               "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "f3e3e747-20e0-44ee-bec6-4d90c44fe19d",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "X1",
+          "x": 340.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "Vg",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
             }
           ]
         }
@@ -233,7 +273,12 @@
             "component_id": "17a22bfe-81a9-497b-a57c-12eebd559175",
             "pin_index": 1
           },
-          "junctions": [],
+          "junctions": [
+            [
+              280.0,
+              100.0
+            ]
+          ],
           "node_name": "OUT",
           "alias": ""
         },
@@ -261,7 +306,12 @@
             "component_id": "11bad6d5-6cdd-481f-b008-12d5affe5bfa",
             "pin_index": 1
           },
-          "junctions": [],
+          "junctions": [
+            [
+              100.0,
+              300.0
+            ]
+          ],
           "node_name": "0",
           "alias": ""
         },
@@ -280,38 +330,81 @@
             "component_id": "032c8da5-b6c0-49d2-b535-f8730a9d66b6",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              100.0,
+              300.0
+            ]
+          ],
           "node_name": "0",
           "alias": ""
         },
         {
-          "id": "df361be0-3460-4dbc-bc81-0921f1f82a7b",
+          "id": "a3fd12a3-54c3-4a92-8192-e0a3a9876de8",
           "segments": [
             {
-              "x1": 280.0,
+              "x1": 320.0,
               "y1": 100.0,
-              "x2": 380.0,
+              "x2": 280.0,
               "y2": 100.0
             },
             {
-              "x1": 380.0,
+              "x1": 280.0,
               "y1": 100.0,
-              "x2": 380.0,
-              "y2": 120.0
+              "x2": 280.0,
+              "y2": 100.0
             }
           ],
-          "start_connection": null,
-          "end_connection": {
-            "component_id": "82834566-2e2f-44f0-b278-3c8217cc074a",
+          "start_connection": {
+            "component_id": "f3e3e747-20e0-44ee-bec6-4d90c44fe19d",
+            "pin_index": 0
+          },
+          "end_connection": null,
+          "junctions": [
+            [
+              280.0,
+              100.0
+            ]
+          ],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "0b41f4df-6813-4db4-8bee-7057410d28e1",
+          "segments": [
+            {
+              "x1": 360.0,
+              "y1": 100.0,
+              "x2": 400.0,
+              "y2": 100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f3e3e747-20e0-44ee-bec6-4d90c44fe19d",
             "pin_index": 1
           },
+          "end_connection": {
+            "component_id": "82834566-2e2f-44f0-b278-3c8217cc074a",
+            "pin_index": 0
+          },
           "junctions": [],
-          "node_name": "OUT",
+          "node_name": "",
           "alias": ""
         }
       ]
     }
   },
   "subcircuits": [],
-  "scope_windows": {}
+  "scope_windows": {
+    "82834566-2e2f-44f0-b278-3c8217cc074a": {
+      "component_id": "82834566-2e2f-44f0-b278-3c8217cc074a",
+      "is_open": false,
+      "geometry": [
+        261,
+        115,
+        1040,
+        700
+      ]
+    }
+  }
 }
