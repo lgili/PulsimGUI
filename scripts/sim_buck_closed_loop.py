@@ -3,9 +3,8 @@
 Circuit:  Vin=12 V  →  MOSFET/Diode switch + L=220 µH + Cout=220 µF + Rload=8 Ω
 Control:  Vout feedback → SUB1(error = 6V − Vout) → PI(kp=1,ki=100) → PWM1 duty
 
-Runs through PulsimBackend so the full closed-loop signal evaluator pipeline
-(CONSTANT → SUBTRACTOR → PI_CONTROLLER → PWM_GENERATOR.DUTY_IN) is exercised
-exactly as it would be in the GUI.
+Runs through PulsimBackend using native backend control semantics
+(`pi_controller` + `pwm_generator`) exactly as exercised by the GUI.
 
 Usage
 -----
@@ -29,11 +28,34 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import pulsim as ps
+from pulsimgui.models.component import ComponentType
 from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
-from pulsimgui.services.signal_evaluator import SIGNAL_TYPES
+from pulsimgui.models.project import Project
 from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
-from pulsimgui.models.project import Project
+
+SIGNAL_COMPONENT_TYPES = {
+    ComponentType.CONSTANT.name,
+    ComponentType.SUM.name,
+    ComponentType.SUBTRACTOR.name,
+    ComponentType.GAIN.name,
+    ComponentType.MATH_BLOCK.name,
+    ComponentType.PI_CONTROLLER.name,
+    ComponentType.PID_CONTROLLER.name,
+    ComponentType.PWM_GENERATOR.name,
+    ComponentType.INTEGRATOR.name,
+    ComponentType.DIFFERENTIATOR.name,
+    ComponentType.LIMITER.name,
+    ComponentType.RATE_LIMITER.name,
+    ComponentType.HYSTERESIS.name,
+    ComponentType.LOOKUP_TABLE.name,
+    ComponentType.TRANSFER_FUNCTION.name,
+    ComponentType.DELAY_BLOCK.name,
+    ComponentType.SAMPLE_HOLD.name,
+    ComponentType.STATE_MACHINE.name,
+    ComponentType.SIGNAL_MUX.name,
+    ComponentType.SIGNAL_DEMUX.name,
+}
 
 # ---------------------------------------------------------------------------
 # Load circuit
@@ -79,7 +101,11 @@ def run(t_stop: float = 5e-3, dt: float = 0.2e-6) -> None:
     circuit_data = load_circuit_data(CIRCUIT_FILE)
 
     # Print signal block summary
-    sig_comps = [c for c in circuit_data["components"] if c["type"] in SIGNAL_TYPES]
+    sig_comps = [
+        c
+        for c in circuit_data["components"]
+        if str(c.get("type") or "").upper() in SIGNAL_COMPONENT_TYPES
+    ]
     print(f"Signal blocks found: {len(sig_comps)}")
     for c in sig_comps:
         print(f"  [{c['type']:20s}] {c['name']}  params={c.get('parameters', {})}")
@@ -88,7 +114,7 @@ def run(t_stop: float = 5e-3, dt: float = 0.2e-6) -> None:
     info = BackendInfo(
         identifier="pulsim",
         name="pulsim",
-        version="dev",
+        version=str(getattr(ps, "__version__", "0.0.0")),
         status="available",
         capabilities={"transient"},
         message="",

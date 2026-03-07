@@ -92,6 +92,12 @@ jobs:
         run: |
           python -c "import pulsim, pulsim._pulsim; print('pulsim backend available:', pulsim.__version__)"
 
+      - name: Smoke test built-in templates
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python scripts/smoke_templates.py
+
       - name: Build package
         shell: pwsh
         run: python scripts/build.py --platform windows --no-installer
@@ -329,6 +335,11 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Smoke test built-in templates
+        shell: bash
+        run: |
+          PYTHONPATH=src python scripts/smoke_templates.py
+
       - name: Build package
         shell: bash
         run: python scripts/build.py --platform macos
@@ -430,6 +441,11 @@ jobs:
           import pulsim._pulsim
           print("pulsim backend available:", pulsim.__version__)
           PY
+
+      - name: Smoke test built-in templates
+        shell: bash
+        run: |
+          PYTHONPATH=src python scripts/smoke_templates.py
 
       - name: Build package
         shell: bash

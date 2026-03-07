@@ -107,6 +107,12 @@ With modern Pulsim backends, transient runs expose structured diagnostics in `Si
 pytest
 ```
 
+### Template Smoke Test (Pre-release)
+
+```bash
+PYTHONPATH=src python3 scripts/smoke_templates.py
+```
+
 ### Lint
 
 ```bash
