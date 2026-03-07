@@ -833,11 +833,67 @@ class ScopeWindow(QWidget):
                 else:
                     missing_channels.append(label)
 
+        # Thermal scopes can still render backend-native thermal traces even when
+        # users have not wired dedicated TH pins yet.
+        if self._scope_type == ComponentType.THERMAL_SCOPE and not subset.signals:
+            subset.signals = self._collect_backend_thermal_fallback_signals(result)
+            if subset.signals:
+                found_channels = list(subset.signals.keys())
+                missing_channels = []
+
         self._current_result = subset if subset.signals else SimulationResult(time=subset.time, signals={})
         self._refresh_stacked_sidebar(self._current_result)
         self._rebuild_stacked_plots(self._current_result)
 
         self._message_label.setText(self._format_status(found_channels, missing_channels))
+
+    @staticmethod
+    def _virtual_metadata_field(metadata_entry: object | None, field: str) -> str:
+        if isinstance(metadata_entry, dict):
+            raw = metadata_entry.get(field)
+        else:
+            raw = getattr(metadata_entry, field, None) if metadata_entry is not None else None
+        return str(raw or "").strip()
+
+    @classmethod
+    def _is_thermal_signal_name(cls, signal_name: str, metadata_entry: object | None) -> bool:
+        domain = cls._virtual_metadata_field(metadata_entry, "domain").lower()
+        component_type = cls._virtual_metadata_field(metadata_entry, "component_type").lower()
+        if domain == "thermal" or component_type == "thermal_trace":
+            return True
+
+        upper = str(signal_name or "").strip().upper()
+        if not upper:
+            return False
+        if upper.startswith(("T(", "TJ(", "TEMP(", "THERMAL(")):
+            return True
+        if upper.startswith(("T_", "TJ_", "TEMP_")):
+            return True
+        return "TEMP" in upper
+
+    def _collect_backend_thermal_fallback_signals(
+        self,
+        result: SimulationResult,
+    ) -> dict[str, list[float]]:
+        metadata = (
+            result.statistics.get("virtual_channel_metadata")
+            if isinstance(result.statistics, dict)
+            else None
+        )
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        fallback: dict[str, list[float]] = {}
+        for raw_name, series in result.signals.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if not series:
+                continue
+            if not self._is_thermal_signal_name(name, metadata.get(name)):
+                continue
+            fallback[name] = list(series)
+        return fallback
 
     @staticmethod
     def _infer_signal_categories(signal_names: list[str]) -> dict[str, str]:
