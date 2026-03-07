@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pulsimgui"
-version = "0.6.4"
+version = "0.6.5"
 description = "Cross-platform GUI for Pulsim power electronics simulator"
 readme = "README.md"
 license = "MIT"
