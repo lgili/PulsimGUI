@@ -171,7 +171,7 @@ If PyInstaller can't find certain modules:
 
 Ensure pulsim is installed before building:
 ```bash
-pip install pulsim>=0.7.2
+pip install pulsim>=0.7.4
 ```
 
 The spec file automatically locates and bundles the native `.so`/`.pyd` extension.
