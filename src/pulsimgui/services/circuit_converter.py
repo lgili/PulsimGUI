@@ -237,6 +237,8 @@ class CircuitConverter:
 
     @staticmethod
     def _allows_unmapped_pin(comp_type: ComponentType, pin_index: int) -> bool:
+        if comp_type == ComponentType.C_BLOCK:
+            return True
         if comp_type == ComponentType.VOLTAGE_PROBE:
             return pin_index == 2
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
@@ -769,6 +771,8 @@ class CircuitConverter:
 
     def _virtual_component_nodes(self, comp_type: ComponentType, nodes: list[str]) -> list[str]:
         """Return node subset/normalization used for backend virtual components."""
+        if comp_type == ComponentType.C_BLOCK:
+            return nodes or ["0"]
         if comp_type == ComponentType.VOLTAGE_PROBE:
             return nodes[:2]
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
@@ -1177,6 +1181,42 @@ class CircuitConverter:
         params: dict[str, Any],
     ) -> dict[str, Any]:
         normalized = dict(params)
+
+        if comp_type == ComponentType.C_BLOCK:
+            normalized.pop("compiler", None)
+            implementation = str(normalized.get("implementation", "") or "").strip().lower()
+            source = str(normalized.get("source", "") or "").strip()
+            lib_path = str(normalized.get("lib_path", "") or "").strip()
+            if implementation == "library":
+                source = ""
+            elif implementation == "source":
+                lib_path = ""
+            elif source and lib_path:
+                lib_path = ""
+
+            try:
+                normalized["n_inputs"] = max(1, int(normalized.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                normalized["n_inputs"] = 1
+            try:
+                normalized["n_outputs"] = max(1, int(normalized.get("n_outputs", 1) or 1))
+            except (TypeError, ValueError):
+                normalized["n_outputs"] = 1
+
+            flags = normalized.get("extra_cflags", [])
+            if isinstance(flags, list):
+                normalized["extra_cflags"] = [str(item).strip() for item in flags if str(item).strip()]
+            elif isinstance(flags, str):
+                text = flags.strip()
+                tokens = [part.strip() for part in text.split(",")] if "," in text else text.split()
+                normalized["extra_cflags"] = [token for token in tokens if token]
+            else:
+                normalized["extra_cflags"] = []
+
+            normalized["source"] = source.replace("\\", "/")
+            normalized["lib_path"] = lib_path.replace("\\", "/")
+            normalized.pop("implementation", None)
+            normalized.pop("source_code", None)
 
         if "lower_limit" in normalized and "output_min" not in normalized:
             normalized["output_min"] = normalized["lower_limit"]

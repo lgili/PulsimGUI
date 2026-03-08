@@ -1042,6 +1042,27 @@ class GainItem(BlockComponentItem):
         return f"k={gain:g}"
 
 
+class CBlockItem(BlockComponentItem):
+    """Item for user-defined C-Block control kernels."""
+
+    ACCENT_COLOR = QColor(78, 124, 205)
+
+    def block_label(self) -> str:
+        """Return the short label shown in the block body."""
+        return "C"
+
+    def _get_value_text(self) -> str:
+        try:
+            n_inputs = int(self._component.parameters.get("n_inputs", 1) or 1)
+        except (TypeError, ValueError):
+            n_inputs = 1
+        try:
+            n_outputs = int(self._component.parameters.get("n_outputs", 1) or 1)
+        except (TypeError, ValueError):
+            n_outputs = 1
+        return f"{n_inputs}->{n_outputs}"
+
+
 class SumBaseItem(BlockComponentItem):
     """Base item for SUM/SUBTRACTOR blocks with per-input signs."""
 
@@ -1948,6 +1969,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.PID_CONTROLLER: PIDControllerItem,
         ComponentType.MATH_BLOCK: MathBlockItem,
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
+        ComponentType.C_BLOCK: CBlockItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

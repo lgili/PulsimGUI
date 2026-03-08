@@ -245,6 +245,76 @@ def test_converter_uses_virtual_component_for_unmapped_types() -> None:
     assert metadata["notes"] == "[\"demo\", \"virtual\"]"
 
 
+def test_converter_normalizes_cblock_virtual_component_metadata() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "source",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "source": "C:\\workspace\\blocks\\ctrl.c",
+                    "extra_cflags": ["-O3", "-DGAIN=2"],
+                    "compiler": "clang",
+                    "source_code": "int main(void){return 0;}",
+                },
+                "pin_nodes": ["1", "2", "3"],
+            }
+        ],
+        "node_map": {"cb1": ["1", "2", "3"]},
+        "node_aliases": {"1": "IN_A", "2": "IN_B", "3": "OUT"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    comp_type, name, _nodes, numeric_params, metadata = converted.virtual_components[0]
+    assert comp_type == "c_block"
+    assert name == "CB1"
+    assert numeric_params["n_inputs"] == 2.0
+    assert numeric_params["n_outputs"] == 1.0
+    assert "compiler" not in metadata
+    assert "source_code" not in metadata
+    assert metadata["source"] == "C:/workspace/blocks/ctrl.c"
+    assert metadata["extra_cflags"] == "[\"-O3\", \"-DGAIN=2\"]"
+
+
+def test_converter_allows_unmapped_cblock_pins_by_grounding_them() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["", "", ""],
+            }
+        ],
+        "node_map": {"cb1": ["", "", ""]},
+        "node_aliases": {},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    _comp_type, _name, nodes, _numeric_params, _metadata = converted.virtual_components[0]
+    assert nodes == [0, 0, 0]
+
+
 def test_converter_maps_delay_block_delay_time_to_backend_delay() -> None:
     """Delay block should forward delay_time using backend's expected delay key."""
     fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)

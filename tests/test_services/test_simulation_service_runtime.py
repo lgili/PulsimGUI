@@ -1043,6 +1043,86 @@ def test_worker_stops_before_backend_when_contract_validator_fails() -> None:
     assert results[0].error_message == "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"
 
 
+def test_prevalidate_blocks_cblock_without_source_or_library(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "extra_cflags": [],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED" in issue
+
+
+def test_prevalidate_blocks_cblock_invalid_extra_cflags_type(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb1.c"
+    source.write_text("/* test */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 1,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": "-O2",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_RANGE_INVALID" in issue
+
+
+def test_prevalidate_accepts_valid_cblock_source_configuration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb_ok.c"
+    source.write_text("/* valid */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": ["-O3"],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
 def test_run_post_processing_forwards_transient_payload_to_service(monkeypatch) -> None:
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()

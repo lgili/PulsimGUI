@@ -2180,6 +2180,7 @@ class MainWindow(QMainWindow):
             ComponentType.SWITCH: "S",
             ComponentType.TRANSFORMER: "T",
             ComponentType.PWM_GENERATOR: "PWM",
+            ComponentType.C_BLOCK: "CB",
             ComponentType.PI_CONTROLLER: "PI",
             ComponentType.GAIN: "K",
             ComponentType.SUM: "SUM",
@@ -3120,7 +3121,37 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_error(self, message: str) -> None:
         """Handle simulation error."""
-        QMessageBox.critical(self, "Simulation Error", message)
+        normalized = (message or "").strip()
+        lowered = normalized.lower()
+
+        if "cblockcompileerror" in lowered or "c-block compile" in lowered:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block Build Error")
+            box.setText("C-Block compilation failed. Review compiler output in details.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        if "cblockabierror" in lowered or ("abi" in lowered and "c-block" in lowered):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block ABI Error")
+            box.setText("C-Block ABI is incompatible or required symbols are missing.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        if "cblockruntimeerror" in lowered or "c-block runtime" in lowered:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block Runtime Error")
+            box.setText("C-Block execution returned an error during transient simulation.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        QMessageBox.critical(self, "Simulation Error", normalized or "Unknown simulation error.")
 
     # Export handlers
     def _on_export_spice(self) -> None:

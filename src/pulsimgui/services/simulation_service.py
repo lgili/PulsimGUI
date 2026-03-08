@@ -10,6 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QMutex, QObject, QThread, QTimer, QWaitCondition, Signal
@@ -120,6 +121,7 @@ _NON_ELECTRICAL_COMPONENT_TYPES = frozenset({
     "DELAY_BLOCK",
     "SAMPLE_HOLD",
     "STATE_MACHINE",
+    "C_BLOCK",
     "VOLTAGE_PROBE",
     "VOLTAGE_PROBE_GND",
     "CURRENT_PROBE",
@@ -1572,6 +1574,21 @@ class SimulationService(QObject):
         return []
 
     @staticmethod
+    def _to_string_sequence(value: Any) -> list[str] | None:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            out: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    return None
+                token = item.strip()
+                if token:
+                    out.append(token)
+            return out
+        return None
+
+    @staticmethod
     def _normalize_component_thermal_network(
         raw_value: Any,
         *,
@@ -1710,10 +1727,58 @@ class SimulationService(QObject):
             if component_index and component_index % 128 == 0:
                 time.sleep(0)
             comp_type = self._normalize_component_type(component.get("type", ""))
-            comp_name = str(component.get("name") or component.get("id") or "").strip()
+            comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
             if comp_name:
                 by_name[comp_name] = comp_type
+
+            if comp_type == "C_BLOCK":
+                try:
+                    n_inputs = int(params.get("n_inputs", 0))
+                    n_outputs = int(params.get("n_outputs", 0))
+                except (TypeError, ValueError):
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires integer n_inputs and n_outputs >= 1."
+                    )
+                if n_inputs < 1 or n_outputs < 1:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires n_inputs and n_outputs >= 1."
+                    )
+
+                mode = str(params.get("implementation", "") or "").strip().lower()
+                source = str(params.get("source") or "").strip()
+                lib_path = str(params.get("lib_path") or "").strip()
+                if mode not in {"source", "library"}:
+                    mode = "library" if lib_path and not source else "source"
+
+                selected_source = source if mode == "source" else ""
+                selected_lib = lib_path if mode == "library" else ""
+                if not selected_source and not selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' requires source or lib_path."
+                    )
+                if selected_source and selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' must use only one implementation (source or lib_path)."
+                    )
+
+                selected_path = selected_source or selected_lib
+                if selected_path and not Path(selected_path).expanduser().exists():
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_FILE_NOT_FOUND: "
+                        f"component '{comp_name}' path not found: {selected_path}"
+                    )
+
+                flags = self._to_string_sequence(params.get("extra_cflags", []))
+                if flags is None:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' extra_cflags must be a list[str]."
+                    )
 
             if comp_type != "PWM_GENERATOR":
                 continue

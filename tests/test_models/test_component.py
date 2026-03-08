@@ -11,6 +11,7 @@ from pulsimgui.models.component import (
     Pin,
     can_connect_measurement_pins,
     pin_connection_domain,
+    set_cblock_io_counts,
     set_scope_channel_count,
     set_thermal_port_enabled,
 )
@@ -134,6 +135,32 @@ class TestComponent:
         # PWM exposes DUTY_IN for closed-loop signal control.
         assert pwm.pins[0].name == "OUT"
         assert pwm.pins[1].name == "DUTY_IN"
+
+    def test_cblock_defaults_and_pin_names(self):
+        cblock = Component(type=ComponentType.C_BLOCK, name="CB1")
+
+        assert cblock.parameters["n_inputs"] == 1
+        assert cblock.parameters["n_outputs"] == 1
+        assert cblock.parameters["implementation"] == "source"
+        assert [pin.name for pin in cblock.pins] == ["IN0", "OUT"]
+
+    def test_cblock_io_updates_rebuild_pins(self):
+        cblock = Component(type=ComponentType.C_BLOCK, name="CB1")
+
+        set_cblock_io_counts(cblock, n_inputs=3, n_outputs=2)
+
+        assert cblock.parameters["n_inputs"] == 3
+        assert cblock.parameters["n_outputs"] == 2
+        assert [pin.name for pin in cblock.pins] == ["IN0", "IN1", "IN2", "OUT0", "OUT1"]
+
+    def test_cblock_io_clamps_to_valid_range(self):
+        cblock = Component(type=ComponentType.C_BLOCK, name="CB1")
+
+        set_cblock_io_counts(cblock, n_inputs=0, n_outputs=0)
+
+        assert cblock.parameters["n_inputs"] == 1
+        assert cblock.parameters["n_outputs"] == 1
+        assert [pin.name for pin in cblock.pins] == ["IN0", "OUT"]
 
     def test_thermal_port_default_is_disabled(self):
         resistor = Component(type=ComponentType.RESISTOR)
