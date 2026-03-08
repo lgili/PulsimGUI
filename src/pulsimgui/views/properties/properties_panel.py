@@ -1,6 +1,9 @@
 """Properties panel for editing component parameters."""
 
+import shutil
+import tempfile
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -538,6 +541,7 @@ class PropertiesPanel(QWidget):
         self._cblock_source_row: QWidget | None = None
         self._cblock_template_row: QWidget | None = None
         self._cblock_template_combo: QComboBox | None = None
+        self._cblock_compile_btn: QPushButton | None = None
         self._cblock_last_committed_source = ""
         self._main_layout: QVBoxLayout | None = None
         self._show_position_controls = False
@@ -822,6 +826,7 @@ class PropertiesPanel(QWidget):
         self._cblock_source_row = None
         self._cblock_template_row = None
         self._cblock_template_combo = None
+        self._cblock_compile_btn = None
         self._cblock_last_committed_source = ""
 
     def _create_param_widgets(self) -> None:
@@ -1371,6 +1376,12 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         self._cblock_source_row = source_editor
         self._params_layout.addRow("Source code:", source_editor)
 
+        compile_btn = QPushButton("Test Compilation")
+        compile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        compile_btn.clicked.connect(self._on_test_cblock_compilation)
+        self._cblock_compile_btn = compile_btn
+        self._params_layout.addRow("Build:", compile_btn)
+
         abi_hint = QLabel(
             "ABI contract: pulsim_cblock_abi_version and pulsim_cblock_step are required."
         )
@@ -1414,7 +1425,8 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     def _on_cblock_path_changed(self) -> None:
         if not self._component or self._cblock_path_edit is None:
             return
-        path = self._cblock_path_edit.text().strip()
+        path = self._cblock_path_edit.text().strip().replace("\\", "/")
+        self._cblock_path_edit.setText(path)
         mode = self._current_cblock_mode()
         if mode == "source":
             self._component.parameters["source"] = path
@@ -1490,6 +1502,203 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         self._cblock_source_editor.setPlainText(source_code)
         self._on_cblock_source_code_changed(source_code)
 
+    @staticmethod
+    def _safe_cblock_stem(name: str) -> str:
+        stem = "".join(ch.lower() if ch.isalnum() else "_" for ch in name.strip())
+        stem = stem.strip("_")
+        return stem or "cblock"
+
+    @staticmethod
+    def _coerce_cblock_flags(value: Any) -> list[str] | None:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            tokens = [part.strip() for part in text.split(",")] if "," in text else text.split()
+            return [token for token in tokens if token]
+        return None
+
+    def _show_cblock_build_message(
+        self,
+        *,
+        title: str,
+        message: str,
+        details: str = "",
+        icon: QMessageBox.Icon = QMessageBox.Icon.Information,
+    ) -> None:
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(message)
+        if details:
+            box.setDetailedText(details)
+        box.exec()
+
+    def _on_test_cblock_compilation(self) -> None:
+        if self._component is None:
+            return
+
+        params = self._component.parameters
+        try:
+            n_inputs = int(params.get("n_inputs", 1) or 1)
+            n_outputs = int(params.get("n_outputs", 1) or 1)
+        except (TypeError, ValueError):
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="n_inputs and n_outputs must be integers >= 1.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+        if n_inputs < 1 or n_outputs < 1:
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="n_inputs and n_outputs must be >= 1.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        flags = self._coerce_cblock_flags(params.get("extra_cflags", []))
+        if flags is None:
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="extra_cflags must be list[str].",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        mode = self._current_cblock_mode()
+        if mode == "library":
+            lib_path = str(params.get("lib_path", "") or "").strip()
+            if not lib_path and self._cblock_path_edit is not None:
+                lib_path = self._cblock_path_edit.text().strip()
+            if not lib_path:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Select a shared library path before validating.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            lib_candidate = Path(lib_path).expanduser()
+            if not lib_candidate.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Shared library path was not found.",
+                    details=lib_candidate.as_posix(),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            self._show_cblock_build_message(
+                title="C-Block Validation",
+                message="Shared library path is valid.",
+                details=lib_candidate.as_posix(),
+                icon=QMessageBox.Icon.Information,
+            )
+            return
+
+        source_text = ""
+        if self._cblock_source_editor is not None:
+            source_text = self._cblock_source_editor.toPlainText()
+        elif "source_code" in params:
+            source_text = str(params.get("source_code", "") or "")
+
+        source_raw = str(params.get("source", "") or "").strip()
+        if not source_raw and self._cblock_path_edit is not None:
+            source_raw = self._cblock_path_edit.text().strip()
+
+        temp_dir: Path | None = None
+        source_path: Path | None = None
+        try:
+            if source_raw:
+                source_path = Path(source_raw).expanduser()
+                if source_text.strip():
+                    try:
+                        source_path.parent.mkdir(parents=True, exist_ok=True)
+                        source_path.write_text(source_text, encoding="utf-8")
+                    except OSError as exc:
+                        self._show_cblock_build_message(
+                            title="C-Block Validation Error",
+                            message="Failed to write C source file.",
+                            details=str(exc),
+                            icon=QMessageBox.Icon.Warning,
+                        )
+                        return
+            elif source_text.strip():
+                temp_dir = Path(tempfile.mkdtemp(prefix="pulsimgui-cblock-test-"))
+                source_path = temp_dir / f"{self._safe_cblock_stem(self._component.name)}.c"
+                source_path.write_text(source_text, encoding="utf-8")
+            else:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Provide source code or select a source file path.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+
+            if source_path is None or not source_path.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="C source file was not found.",
+                    details=(source_path.as_posix() if source_path is not None else ""),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+
+            try:
+                from pulsim.cblock import CBlockCompileError, compile_cblock
+            except Exception as exc:  # pragma: no cover - depends on backend install
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="Unable to import pulsim.cblock compile API.",
+                    details=str(exc),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+
+            try:
+                built_lib = compile_cblock(
+                    source_path,
+                    name=self._safe_cblock_stem(self._component.name),
+                    extra_cflags=flags,
+                )
+            except CBlockCompileError as exc:
+                details: list[str] = [str(exc)]
+                compiler_path = str(getattr(exc, "compiler_path", "") or "").strip()
+                stderr_output = str(getattr(exc, "stderr_output", "") or "").strip()
+                source_hint = str(getattr(exc, "source", "") or source_path.as_posix()).strip()
+                if compiler_path:
+                    details.append(f"\nCompiler: {compiler_path}")
+                if source_hint:
+                    details.append(f"\nSource: {source_hint}")
+                if stderr_output:
+                    details.append(f"\nStderr:\n{stderr_output}")
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="C-Block compilation failed.",
+                    details="".join(details),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="Unexpected error while compiling C-Block.",
+                    details=str(exc),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+
+            self._show_cblock_build_message(
+                title="C-Block Build",
+                message="C-Block compiled successfully.",
+                details=str(built_lib),
+                icon=QMessageBox.Icon.Information,
+            )
+        finally:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
     def _refresh_cblock_visibility(self) -> None:
         mode = self._current_cblock_mode()
         source_mode = mode == "source"
@@ -1505,6 +1714,10 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             self._cblock_source_row.setVisible(source_mode)
         if self._cblock_template_row is not None:
             self._cblock_template_row.setVisible(source_mode)
+        if self._cblock_compile_btn is not None:
+            self._cblock_compile_btn.setText(
+                "Test Compilation" if source_mode else "Validate Library Path"
+            )
 
     # --- Utilities ----------------------------------------------------------------
 

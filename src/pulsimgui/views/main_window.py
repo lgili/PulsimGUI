@@ -2234,6 +2234,8 @@ class MainWindow(QMainWindow):
                     "channel_count",
                     "input_count",
                     "output_count",
+                    "n_inputs",
+                    "n_outputs",
                     "signs",
                 }
                 if pin_layout_changed:
