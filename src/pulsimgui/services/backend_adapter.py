@@ -27,21 +27,54 @@ from pulsimgui.services.backend_types import (
     DCResult,
     DCSettings,
     FosterStage,
+    FrequencyAnalysisResult,
+    HarmonicEntry,
     IterationRecord,
     LossBreakdown,
+    PostProcessingJobResult,
+    PostProcessingResult,
     ProblematicVariable,
+    ScalarMetric,
+    SpectralBin,
     ThermalDeviceResult,
     ThermalResult,
     ThermalSettings,
     TransientResult,
     TransientSettings,
+    UndefinedMetricEntry,
 )
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 
 log = logging.getLogger(__name__)
 
-_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
+_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 7, 0, api_version=1)
 _PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
+
+
+def _optional_float(value: Any) -> float | None:
+    """Convert a value to float, returning None if it is None or not numeric."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        return numeric
+    except (TypeError, ValueError):
+        return None
+
+
+def _enum_name_or_value(value: Any) -> str:
+    """Return a stable string from either plain values or Enum-like objects."""
+    if value is None:
+        return ""
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None and not isinstance(enum_value, type):
+        return str(enum_value)
+    enum_name = getattr(value, "name", None)
+    if enum_name is not None:
+        return str(enum_name)
+    return str(value)
 
 
 @dataclass
@@ -86,7 +119,7 @@ class BackendInfo:
             )
 
         # Determine unavailable features based on capabilities
-        all_features = {"dc", "ac", "thermal", "transient"}
+        all_features = {"dc", "ac", "thermal", "transient", "post_processing", "frequency_analysis", "averaged"}
         self.unavailable_features = sorted(all_features - self.capabilities)
 
 
@@ -186,6 +219,38 @@ class SimulationBackend(Protocol):
         """Request backend stop for the active simulation execution."""
         ...
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Run post-processing jobs on a transient result.
+
+        Args:
+            transient_result: Completed transient simulation result.
+            jobs: List of job specification dicts (job_id, kind, signals, ...).
+
+        Returns:
+            PostProcessingResult with per-job results.
+        """
+        ...
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Run frequency-domain (Bode sweep) analysis.
+
+        Args:
+            circuit_data: Serialised circuit definition.
+            settings: AC/frequency analysis settings.
+
+        Returns:
+            FrequencyAnalysisResult with Bode data and stability margins.
+        """
+        ...
+
 
 class PlaceholderBackend(SimulationBackend):
     """Fallback backend that generates synthetic data for demo mode."""
@@ -196,7 +261,7 @@ class PlaceholderBackend(SimulationBackend):
             name="Demo backend",
             version="0.0",
             status="placeholder",
-            capabilities={"transient", "dc", "ac", "thermal"},
+            capabilities={"transient", "dc", "ac", "thermal", "post_processing", "frequency_analysis", "averaged"},
             message="Running in demo mode; install pulsim backend to enable real simulations.",
         )
 
@@ -437,6 +502,110 @@ class PlaceholderBackend(SimulationBackend):
     def request_stop(self, run_id: int | None = None) -> None:  # pragma: no cover - trivial
         """Placeholder backend executes entirely within GUI thread control."""
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Return synthetic post-processing results for demo mode."""
+        import math
+
+        job_results: list[PostProcessingJobResult] = []
+        for job in jobs:
+            kind = job.get("kind", "time_domain")
+            job_id = job.get("job_id", "demo_job")
+            signals = job.get("signals", list(transient_result.signals.keys())[:1])
+
+            if kind == "spectral":
+                fundamental = job.get("fundamental_hz", 1000.0)
+                bins = [
+                    SpectralBin(frequency_hz=fundamental * i, amplitude=1.0 / i, phase_deg=0.0)
+                    for i in range(1, 6)
+                ]
+                harmonics = [
+                    HarmonicEntry(
+                        order=i,
+                        frequency_hz=fundamental * i,
+                        amplitude=1.0 / i,
+                        amplitude_db=-20 * math.log10(i),
+                    )
+                    for i in range(1, 4)
+                ]
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    spectrum_bins=bins,
+                    harmonics=harmonics,
+                    thd_pct=5.0,
+                    fundamental_hz=fundamental,
+                    signal_names=signals,
+                ))
+            elif kind == "power_efficiency":
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    average_input_power=10.0,
+                    average_output_power=9.3,
+                    efficiency=0.93,
+                    power_factor=0.98,
+                    signal_names=signals,
+                ))
+            else:
+                # time_domain: synthetic scalar metrics
+                metrics = {
+                    "mean": ScalarMetric(name="mean", value=1.0, unit="V", signal_name=signals[0] if signals else ""),
+                    "rms": ScalarMetric(name="rms", value=1.414, unit="V", signal_name=signals[0] if signals else ""),
+                    "peak": ScalarMetric(name="peak", value=2.0, unit="V", signal_name=signals[0] if signals else ""),
+                    "ripple": ScalarMetric(name="ripple", value=0.05, unit="V", signal_name=signals[0] if signals else ""),
+                }
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    scalar_metrics=metrics,
+                    signal_names=signals,
+                ))
+
+        return PostProcessingResult(jobs=job_results, success=True)
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Return synthetic Bode plot data for demo mode."""
+        import numpy as np
+
+        num_decades = max(1, int(math.log10(settings.f_stop / max(settings.f_start, 1))))
+        num_points = max(20, num_decades * settings.points_per_decade)
+        freqs = list(np.logspace(
+            math.log10(settings.f_start),
+            math.log10(settings.f_stop),
+            num_points,
+        ))
+
+        fc = 1000.0
+        mag: list[float] = []
+        phase: list[float] = []
+        for f in freqs:
+            ratio = f / fc
+            mag.append(-10 * math.log10(1 + ratio**2))
+            phase.append(-math.degrees(math.atan(ratio)))
+
+        key = settings.output_nodes[0] if settings.output_nodes else "H(s)"
+        return FrequencyAnalysisResult(
+            frequencies=freqs,
+            magnitude_db={key: mag},
+            phase_deg={key: phase},
+            gain_margin_db=12.0,
+            phase_margin_deg=45.0,
+            gain_crossover_hz=fc * 10,
+            phase_crossover_hz=fc * 100,
+            success=True,
+        )
+
 
 class PulsimBackend(SimulationBackend):
     """Adapter that executes simulations via the native Pulsim backend."""
@@ -468,6 +637,18 @@ class PulsimBackend(SimulationBackend):
         # Check for thermal simulation
         if self._supports_thermal_analysis(self._module):
             caps.add("thermal")
+
+        # Check for post-processing (pulsim >= 0.7.0)
+        if hasattr(self._module, "run_post_processing"):
+            caps.add("post_processing")
+
+        # Check for frequency analysis (pulsim >= 0.7.0)
+        if hasattr(self._module, "run_frequency_analysis"):
+            caps.add("frequency_analysis")
+
+        # Check for averaged converter options (pulsim >= 0.7.0)
+        if hasattr(self._module, "AveragedConverterOptions"):
+            caps.add("averaged")
 
         self._cached_capabilities = caps
         return caps
@@ -1689,6 +1870,38 @@ class PulsimBackend(SimulationBackend):
 
         if hasattr(opts, "thermal_devices") and circuit_data is not None:
             opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
+
+        # Averaged converter mode (pulsim >= 0.7.0)
+        averaged_options_dict = getattr(settings, "averaged_options", None)
+        if averaged_options_dict and hasattr(self._module, "AveragedConverterOptions"):
+            try:
+                AvgOpts = self._module.AveragedConverterOptions
+                AvgTopology = getattr(self._module, "AveragedConverterTopology", None)
+                AvgMode = getattr(self._module, "AveragedOperatingMode", None)
+                AvgEnvelope = getattr(self._module, "AveragedEnvelopePolicy", None)
+
+                avg_kwargs: dict[str, Any] = {}
+                if AvgTopology and "topology" in averaged_options_dict:
+                    try:
+                        avg_kwargs["topology"] = AvgTopology[averaged_options_dict["topology"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+                if AvgMode and "mode" in averaged_options_dict:
+                    try:
+                        avg_kwargs["mode"] = AvgMode[averaged_options_dict["mode"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+                if AvgEnvelope and "envelope" in averaged_options_dict:
+                    try:
+                        avg_kwargs["envelope"] = AvgEnvelope[averaged_options_dict["envelope"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+
+                avg_opts_obj = AvgOpts(**avg_kwargs)
+                if hasattr(opts, "averaged_converter"):
+                    opts.averaged_converter = avg_opts_obj
+            except Exception:
+                log.debug("Failed to apply averaged_options; skipping", exc_info=True)
 
         if not using_parser_defaults:
             # Fallback policy: enable transient gmin stepping for switching circuit convergence.
@@ -3393,6 +3606,431 @@ class PulsimBackend(SimulationBackend):
         if controller:
             controller.request_stop()
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Run post-processing jobs via pulsim.run_post_processing."""
+        if not self.has_capability("post_processing"):
+            return PostProcessingResult(
+                success=False,
+                error_message="Post-processing not supported by this backend version",
+            )
+
+        ps = self._module
+        try:
+            sim_result_cls = getattr(ps, "SimulationResult", None)
+            if sim_result_cls is None:
+                return PostProcessingResult(
+                    success=False,
+                    error_message="pulsim.SimulationResult not available",
+                )
+            ps_result = self._build_post_processing_input(sim_result_cls, transient_result)
+
+            parse_fn = getattr(ps, "parse_post_processing_yaml", None)
+            if callable(parse_fn):
+                pp_options = parse_fn({"jobs": jobs})
+            else:
+                opts_cls = getattr(ps, "PostProcessingOptions", None)
+                job_cls = getattr(ps, "PostProcessingJob", None)
+                if opts_cls is None or job_cls is None:
+                    return PostProcessingResult(
+                        success=False,
+                        error_message="pulsim.PostProcessingOptions not available",
+                    )
+                pp_options = opts_cls()
+                job_items: list[Any] = []
+                for raw_job in jobs:
+                    if not isinstance(raw_job, dict):
+                        continue
+                    job_items.append(self._build_post_processing_job(job_cls, raw_job))
+                if hasattr(pp_options, "jobs"):
+                    pp_options.jobs = job_items
+
+            ps_pp_result = ps.run_post_processing(ps_result, pp_options)
+            return self._map_pp_result(ps_pp_result)
+
+        except Exception as exc:
+            log.exception("run_post_processing failed")
+            return PostProcessingResult(success=False, error_message=str(exc))
+
+    @staticmethod
+    def _build_post_processing_input(sim_result_cls: Any, transient_result: TransientResult) -> Any:
+        """Create a backend-compatible SimulationResult-like object for post-processing."""
+        base_time = list(transient_result.time)
+        base_signals = {str(k): list(v) for k, v in transient_result.signals.items()}
+
+        # Newer Python wrappers often accept kwargs.
+        for kwargs in (
+            {"time": base_time, "virtual_channels": base_signals},
+            {"time": base_time, "signals": base_signals},
+            {"time": base_time},
+        ):
+            try:
+                candidate = sim_result_cls(**kwargs)
+                try:
+                    candidate.virtual_channels = base_signals
+                except Exception:
+                    pass
+                try:
+                    candidate.signals = base_signals
+                except Exception:
+                    pass
+                return candidate
+            except Exception:
+                continue
+
+        # Fallback for pybind classes that require empty init + attribute assignment.
+        candidate = sim_result_cls()
+        try:
+            candidate.time = base_time
+        except Exception:
+            pass
+        try:
+            candidate.virtual_channels = base_signals
+        except Exception:
+            pass
+        try:
+            candidate.signals = base_signals
+        except Exception:
+            pass
+        return candidate
+
+    @staticmethod
+    def _build_post_processing_job(job_cls: Any, payload: dict[str, Any]) -> Any:
+        """Create a backend PostProcessingJob handling dataclass/pybind variants."""
+        try:
+            return job_cls(**payload)
+        except Exception:
+            job = job_cls()
+            for key, value in payload.items():
+                if hasattr(job, key):
+                    setattr(job, key, value)
+            return job
+
+    @staticmethod
+    def _map_pp_result(ps_result: Any) -> PostProcessingResult:
+        """Map a pulsim PostProcessingResult to the GUI wrapper type."""
+        def _field(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        top_success = bool(_field(ps_result, "success", True))
+        top_error = str(
+            _field(ps_result, "error_message", "")
+            or _field(ps_result, "message", "")
+            or ""
+        ).strip()
+
+        job_results: list[PostProcessingJobResult] = []
+        for jr in list(_field(ps_result, "jobs", []) or []):
+            scalar_metrics: dict[str, ScalarMetric] = {}
+            raw_scalar = _field(jr, "scalar_metrics", {}) or {}
+            scalar_entries: list[tuple[str, Any]]
+            if isinstance(raw_scalar, dict):
+                scalar_entries = list(raw_scalar.items())
+            else:
+                scalar_entries = []
+                for raw_item in list(raw_scalar):
+                    metric_name = str(_field(raw_item, "name", "")).strip()
+                    scalar_entries.append((metric_name, raw_item))
+
+            for metric_key, raw_m in scalar_entries:
+                metric_name = str(_field(raw_m, "name", metric_key)).strip() or str(metric_key).strip()
+                metric_value = _optional_float(_field(raw_m, "value", None))
+                if not metric_name or metric_value is None:
+                    continue
+                sm = ScalarMetric(
+                    name=metric_name,
+                    value=metric_value,
+                    unit=str(_field(raw_m, "unit", "") or ""),
+                    domain=str(_field(raw_m, "domain", "") or ""),
+                    signal_name=str(_field(raw_m, "signal_name", "") or ""),
+                    source_signal=str(_field(raw_m, "source_signal", "") or ""),
+                )
+                scalar_metrics[sm.name] = sm
+
+            spectrum_bins = [
+                SpectralBin(
+                    frequency_hz=_optional_float(_field(b, "frequency_hz", 0.0)) or 0.0,
+                    amplitude=(
+                        _optional_float(_field(b, "amplitude", None))
+                        or _optional_float(_field(b, "magnitude", None))
+                        or 0.0
+                    ),
+                    phase_deg=_optional_float(_field(b, "phase_deg", 0.0)) or 0.0,
+                )
+                for b in list(_field(jr, "spectrum_bins", []) or [])
+            ]
+            harmonics = [
+                HarmonicEntry(
+                    order=int(
+                        _optional_float(_field(h, "order", None))
+                        or _optional_float(_field(h, "harmonic_number", None))
+                        or 0.0
+                    ),
+                    frequency_hz=_optional_float(_field(h, "frequency_hz", 0.0)) or 0.0,
+                    amplitude=(
+                        _optional_float(_field(h, "amplitude", None))
+                        or _optional_float(_field(h, "magnitude", None))
+                        or 0.0
+                    ),
+                    phase_deg=_optional_float(_field(h, "phase_deg", 0.0)) or 0.0,
+                    amplitude_db=_optional_float(_field(h, "amplitude_db", None)),
+                    magnitude_pct_fundamental=_optional_float(
+                        _field(h, "magnitude_pct_fundamental", None)
+                    ),
+                )
+                for h in list(_field(jr, "harmonics", []) or [])
+            ]
+            undefined_metrics = [
+                UndefinedMetricEntry(
+                    name=str(_field(entry, "name", "") or ""),
+                    reason=_enum_name_or_value(_field(entry, "reason", "")),
+                    reason_message=str(_field(entry, "reason_message", "") or ""),
+                )
+                for entry in list(_field(jr, "undefined_metrics", []) or [])
+            ]
+            job_results.append(PostProcessingJobResult(
+                job_id=str(_field(jr, "job_id", "") or ""),
+                kind=_enum_name_or_value(_field(jr, "kind", "")),
+                success=bool(_field(jr, "success", True)),
+                diagnostic=_enum_name_or_value(_field(jr, "diagnostic", "")),
+                diagnostic_message=str(_field(jr, "diagnostic_message", "") or ""),
+                scalar_metrics=scalar_metrics,
+                spectrum_bins=spectrum_bins,
+                harmonics=harmonics,
+                thd_pct=_optional_float(_field(jr, "thd_pct", None)),
+                fundamental_hz=_optional_float(_field(jr, "fundamental_hz", None)),
+                average_input_power=_optional_float(_field(jr, "average_input_power", None)),
+                average_output_power=_optional_float(_field(jr, "average_output_power", None)),
+                efficiency=_optional_float(_field(jr, "efficiency", None)),
+                power_factor=_optional_float(_field(jr, "power_factor", None)),
+                undefined_metrics=[entry for entry in undefined_metrics if entry.name],
+                signal_names=[str(name) for name in list(_field(jr, "signal_names", []) or [])],
+                sample_count=int(_optional_float(_field(jr, "sample_count", 0)) or 0),
+                runtime_seconds=_optional_float(_field(jr, "runtime_seconds", 0.0)) or 0.0,
+            ))
+
+        success = top_success and all(job.success for job in job_results)
+        return PostProcessingResult(
+            jobs=job_results,
+            success=success,
+            error_message=top_error,
+        )
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Run frequency-domain analysis via pulsim.run_frequency_analysis."""
+        if not self.has_capability("frequency_analysis"):
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="unsupported",
+                diagnostic_message="Frequency analysis not supported by this backend version",
+            )
+
+        ps = self._module
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="circuit_error",
+                diagnostic_message=str(exc),
+            )
+
+        try:
+            fa_opts_cls = getattr(ps, "FrequencyAnalysisOptions", None)
+            if fa_opts_cls is None:
+                return FrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="unsupported",
+                    diagnostic_message="pulsim.FrequencyAnalysisOptions not available",
+                )
+
+            fa_opts = fa_opts_cls()
+            if hasattr(fa_opts, "enabled"):
+                fa_opts.enabled = True
+            if hasattr(fa_opts, "f_start_hz"):
+                fa_opts.f_start_hz = max(float(settings.f_start), 1e-12)
+            if hasattr(fa_opts, "f_stop_hz"):
+                f_start = max(float(settings.f_start), 1e-12)
+                fa_opts.f_stop_hz = max(float(settings.f_stop), f_start * (1.0 + 1e-12))
+            if hasattr(fa_opts, "points"):
+                f_start = max(float(settings.f_start), 1e-12)
+                f_stop = max(float(settings.f_stop), f_start * (1.0 + 1e-12))
+                ppd = max(1, int(settings.points_per_decade))
+                decades = max(1.0, math.log10(f_stop / f_start))
+                fa_opts.points = max(2, int(math.ceil(decades * ppd)) + 1)
+            if hasattr(fa_opts, "injection_current_amplitude"):
+                amplitude = _optional_float(getattr(settings, "injection_current_amplitude", 1.0))
+                fa_opts.injection_current_amplitude = amplitude if amplitude is not None else 1.0
+
+            mode_raw = str(getattr(settings, "mode", "open_loop_transfer") or "open_loop_transfer").strip().lower()
+            mode_map = {
+                "open_loop_transfer": "OpenLoopTransfer",
+                "closed_loop_transfer": "ClosedLoopTransfer",
+                "input_impedance": "InputImpedance",
+                "output_impedance": "OutputImpedance",
+            }
+            mode_enum = getattr(ps, "FrequencyAnalysisMode", None)
+            mode_name = mode_map.get(mode_raw, "OpenLoopTransfer")
+            if mode_enum is not None and hasattr(mode_enum, mode_name) and hasattr(fa_opts, "mode"):
+                fa_opts.mode = getattr(mode_enum, mode_name)
+
+            anchor_raw = str(getattr(settings, "anchor_mode", "auto") or "auto").strip().lower()
+            anchor_map = {
+                "auto": "Auto",
+                "dc": "DC",
+                "periodic": "Periodic",
+                "averaged": "Averaged",
+            }
+            anchor_enum = getattr(ps, "FrequencyAnchorMode", None)
+            anchor_name = anchor_map.get(anchor_raw, "Auto")
+            if anchor_enum is not None and hasattr(anchor_enum, anchor_name) and hasattr(fa_opts, "anchor_mode"):
+                fa_opts.anchor_mode = getattr(anchor_enum, anchor_name)
+
+            scale_raw = str(getattr(settings, "sweep_scale", "decade") or "decade").strip().lower()
+            if scale_raw in {"decade", "log", "logarithmic"}:
+                scale_name = "Logarithmic"
+            else:
+                scale_name = "Linear"
+            scale_enum = getattr(ps, "FrequencySweepScale", None)
+            if scale_enum is not None and hasattr(scale_enum, scale_name) and hasattr(fa_opts, "sweep_scale"):
+                fa_opts.sweep_scale = getattr(scale_enum, scale_name)
+
+            input_hint = str(getattr(settings, "input_source", "") or "").strip()
+            output_hint = (
+                str(settings.output_nodes[0]).strip()
+                if getattr(settings, "output_nodes", None)
+                else ""
+            )
+            inj_positive, inj_negative = self._parse_port_nodes(
+                str(getattr(settings, "injection_node", "") or "").strip(),
+                default_positive=input_hint or "in",
+            )
+            out_positive, out_negative = self._parse_port_nodes(
+                str(getattr(settings, "measurement_node", "") or "").strip(),
+                default_positive=output_hint or "out",
+            )
+
+            if hasattr(fa_opts, "perturbation_port"):
+                fa_opts.perturbation_port = self._make_frequency_port(inj_positive, inj_negative)
+            if hasattr(fa_opts, "output_port"):
+                fa_opts.output_port = self._make_frequency_port(out_positive, out_negative)
+
+            run_frequency = ps.run_frequency_analysis
+            try:
+                ps_fa_result = run_frequency(circuit, fa_opts, raise_on_failure=False)
+            except TypeError:
+                ps_fa_result = run_frequency(circuit, fa_opts)
+            return self._map_fa_result(ps_fa_result)
+
+        except Exception as exc:
+            log.exception("run_frequency_analysis failed")
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="internal_error",
+                diagnostic_message=str(exc),
+            )
+
+    def _make_frequency_port(self, positive_node: str, negative_node: str) -> Any:
+        """Create FrequencyAnalysisPort for pybind/dataclass backends."""
+        port_cls = getattr(self._module, "FrequencyAnalysisPort", None)
+        if port_cls is None:
+            return {"positive_node": positive_node, "negative_node": negative_node}
+        try:
+            port = port_cls()
+        except Exception:
+            port = port_cls
+        if hasattr(port, "positive_node"):
+            port.positive_node = positive_node
+        if hasattr(port, "negative_node"):
+            port.negative_node = negative_node
+        return port
+
+    @staticmethod
+    def _parse_port_nodes(raw: str, *, default_positive: str) -> tuple[str, str]:
+        """Parse a node specification into (positive, negative)."""
+        text = str(raw or "").strip()
+        if not text:
+            return default_positive, "0"
+        for sep in (",", ";", ":", "/", "->"):
+            if sep in text:
+                left, right = text.split(sep, 1)
+                positive = left.strip() or default_positive
+                negative = right.strip() or "0"
+                return positive, negative
+        return text, "0"
+
+    @staticmethod
+    def _map_fa_result(ps_result: Any) -> FrequencyAnalysisResult:
+        """Map a pulsim FrequencyAnalysisResult to the GUI wrapper type."""
+        def _field(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        def _coerce_series(raw: Any) -> list[float]:
+            if raw is None:
+                return []
+            values = raw.tolist() if isinstance(raw, np.ndarray) else list(raw)
+            out: list[float] = []
+            for value in values:
+                numeric = _optional_float(value)
+                if numeric is None:
+                    continue
+                out.append(numeric)
+            return out
+
+        freqs = _coerce_series(_field(ps_result, "frequency_hz", None) or _field(ps_result, "frequencies", []))
+
+        raw_mag = _field(ps_result, "magnitude_db", None) or _field(ps_result, "magnitude", None)
+        raw_phase = _field(ps_result, "phase_deg", None) or _field(ps_result, "phase", None)
+        if isinstance(raw_mag, dict):
+            magnitude_db = {str(key): _coerce_series(values) for key, values in raw_mag.items()}
+        else:
+            magnitude_db = {"H(s)": _coerce_series(raw_mag)} if raw_mag is not None else {}
+        if isinstance(raw_phase, dict):
+            phase_deg = {str(key): _coerce_series(values) for key, values in raw_phase.items()}
+        else:
+            phase_deg = {"H(s)": _coerce_series(raw_phase)} if raw_phase is not None else {}
+
+        diagnostic = _field(ps_result, "diagnostic", None)
+        diagnostic_code = _enum_name_or_value(diagnostic)
+        diagnostic_message = str(
+            _field(ps_result, "message", "")
+            or _field(diagnostic, "message", "")
+            or _field(ps_result, "diagnostic_message", "")
+            or ""
+        ).strip()
+
+        return FrequencyAnalysisResult(
+            frequencies=freqs,
+            magnitude_db=magnitude_db,
+            phase_deg=phase_deg,
+            gain_margin_db=_optional_float(_field(ps_result, "gain_margin_db", None)),
+            phase_margin_deg=_optional_float(_field(ps_result, "phase_margin_deg", None)),
+            gain_crossover_hz=_optional_float(_field(ps_result, "gain_crossover_hz", None)),
+            phase_crossover_hz=_optional_float(_field(ps_result, "phase_crossover_hz", None)),
+            success=bool(_field(ps_result, "success", True)),
+            diagnostic_code=diagnostic_code,
+            diagnostic_message=diagnostic_message,
+            mode=_enum_name_or_value(_field(ps_result, "mode", "")),
+            anchor_mode_selected=_enum_name_or_value(_field(ps_result, "anchor_mode_selected", "")),
+            failed_point_index=int(_optional_float(_field(ps_result, "failed_point_index", -1)) or -1),
+            failed_frequency_hz=_optional_float(_field(ps_result, "failed_frequency_hz", None)),
+            gain_crossover_reason=_enum_name_or_value(_field(ps_result, "gain_crossover_reason", "")),
+            phase_crossover_reason=_enum_name_or_value(_field(ps_result, "phase_crossover_reason", "")),
+            phase_margin_reason=_enum_name_or_value(_field(ps_result, "phase_margin_reason", "")),
+            gain_margin_reason=_enum_name_or_value(_field(ps_result, "gain_margin_reason", "")),
+        )
+
     def _register_controller(self, run_id: int, controller: Any) -> None:
         with self._lock:
             self._controllers[run_id] = controller
@@ -4024,7 +4662,7 @@ class BackendLoader:
         self._candidates = self._discover_candidates()
         if not self._candidates:
             placeholder = self._create_placeholder_candidate(
-                message="Running in demo mode; install pulsit backend to enable real simulations.",
+                message="Running in demo mode; install pulsim backend to enable real simulations.",
             )
             self._candidates[placeholder.info.identifier] = placeholder
         self._active_id: str | None = None
@@ -4106,7 +4744,15 @@ class BackendLoader:
             name="Demo backend",
             version="0.0",
             status=status,
-            capabilities={"transient", "dc", "ac", "thermal"},
+            capabilities={
+                "transient",
+                "dc",
+                "ac",
+                "thermal",
+                "post_processing",
+                "frequency_analysis",
+                "averaged",
+            },
             message=message,
         )
         return BackendLoader._BackendCandidate(info=info, factory=lambda: PlaceholderBackend(info))
@@ -4133,6 +4779,15 @@ class BackendLoader:
 
         if PulsimBackend._supports_thermal_analysis(module):
             capabilities.add("thermal")
+
+        if hasattr(module, "run_post_processing"):
+            capabilities.add("post_processing")
+
+        if hasattr(module, "run_frequency_analysis"):
+            capabilities.add("frequency_analysis")
+
+        if hasattr(module, "AveragedConverterOptions"):
+            capabilities.add("averaged")
 
         # Parse version for compatibility checking
         parsed_version = None

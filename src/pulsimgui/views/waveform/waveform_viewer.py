@@ -19,14 +19,17 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from pulsimgui.services.backend_types import PostProcessingResult
 from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.views.waveform.post_processing_panel import PostProcessingPanel
 
 # Maximum points to display before decimation kicks in
 # Higher = better resolution but slower updates
@@ -864,6 +867,8 @@ class SignalListPanel(QFrame):
 class WaveformViewer(QWidget):
     """Widget for displaying simulation waveforms using PyQtGraph."""
 
+    post_processing_requested = Signal(object)  # list[dict]
+
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("WaveformViewerRoot")
@@ -1074,11 +1079,19 @@ class WaveformViewer(QWidget):
         plot_layout.addWidget(controls)
         splitter.addWidget(plot_container)
 
-        # ── RIGHT: Measurements panel ─────────────────────────────────────────
+        # ── RIGHT: Measurements + Post-Processing tabs ───────────────────────
+        self._right_panel_tabs = QTabWidget()
+        self._right_panel_tabs.setObjectName("waveformRightTabs")
+        self._right_panel_tabs.setMinimumWidth(260)
+        self._right_panel_tabs.setMaximumWidth(520)
+
         self._measurements_panel = MeasurementsPanel()
-        self._measurements_panel.setMinimumWidth(240)
-        self._measurements_panel.setMaximumWidth(460)
-        splitter.addWidget(self._measurements_panel)
+        self._right_panel_tabs.addTab(self._measurements_panel, "Measurements")
+
+        self._post_processing_panel = PostProcessingPanel()
+        self._post_processing_panel.run_requested.connect(self._on_post_processing_requested)
+        self._right_panel_tabs.addTab(self._post_processing_panel, "Post-Processing")
+        splitter.addWidget(self._right_panel_tabs)
 
         splitter.setStretchFactor(0, 0)   # signal list: fixed
         splitter.setStretchFactor(1, 1)   # plot: expands
@@ -1484,6 +1497,7 @@ class WaveformViewer(QWidget):
         if result.signals:
             signal_names = list(result.signals.keys())
             self._signal_list_panel.set_signals(signal_names)
+            self._post_processing_panel.set_available_signals(signal_names)
             self._refresh_signal_list_colors()
             first_signal = signal_names[0]
             self._active_signal = first_signal
@@ -1501,8 +1515,25 @@ class WaveformViewer(QWidget):
             self._auto_range()
         else:
             self._signal_list_panel.clear()
+            self._post_processing_panel.set_available_signals([])
             self._active_signal = None
         self._refresh_measurements_table()
+
+    def _on_post_processing_requested(self, jobs: list[dict]) -> None:
+        """Forward post-processing requests to the window/service layer."""
+        self.post_processing_requested.emit(list(jobs))
+
+    def on_post_processing_started(self) -> None:
+        """Mark post-processing panel as running."""
+        self._post_processing_panel.set_running(True)
+
+    def on_post_processing_completed(self, result: PostProcessingResult) -> None:
+        """Render a completed post-processing result."""
+        self._post_processing_panel.show_result(result)
+
+    def on_post_processing_failed(self, message: str) -> None:
+        """Render post-processing top-level failure."""
+        self._post_processing_panel.show_error(message)
 
     def _update_signal_combo(self) -> None:
         """Update the signal combo box with available signals."""

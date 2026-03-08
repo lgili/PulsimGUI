@@ -105,7 +105,7 @@ class BackendVersion:
 
 
 # Minimum required backend API version for full functionality
-MIN_BACKEND_API = BackendVersion(0, 2, 0, api_version=1)
+MIN_BACKEND_API = BackendVersion(0, 7, 0, api_version=1)
 
 
 # =============================================================================
@@ -204,6 +204,152 @@ class ConvergenceInfo:
 # =============================================================================
 # Result Types
 # =============================================================================
+
+
+@dataclass
+class ScalarMetric:
+    """A single scalar metric from a post-processing job."""
+
+    name: str
+    value: float
+    unit: str = ""
+    domain: str = ""
+    signal_name: str = ""
+    source_signal: str = ""
+
+
+@dataclass
+class SpectralBin:
+    """A single spectral bin from FFT."""
+
+    frequency_hz: float
+    amplitude: float
+    phase_deg: float = 0.0
+
+
+@dataclass
+class HarmonicEntry:
+    """A single harmonic from spectral analysis."""
+
+    order: int
+    frequency_hz: float
+    amplitude: float
+    phase_deg: float = 0.0
+    amplitude_db: float | None = None
+    magnitude_pct_fundamental: float | None = None
+
+
+@dataclass
+class UndefinedMetricEntry:
+    """Metric that could not be computed, including a stable diagnostic reason."""
+
+    name: str
+    reason: str
+    reason_message: str = ""
+
+
+@dataclass
+class PostProcessingJobResult:
+    """Result of a single post-processing job.
+
+    Attributes:
+        job_id: Job identifier.
+        kind: Job kind ("time_domain", "spectral", "power_efficiency").
+        success: Whether the job completed successfully.
+        diagnostic: Diagnostic code string.
+        diagnostic_message: Human-readable diagnostic message.
+        scalar_metrics: Dict of metric name → ScalarMetric.
+        spectrum_bins: FFT spectrum bins (Spectral jobs).
+        harmonics: Harmonic table (Spectral jobs).
+        thd_pct: Total harmonic distortion % (Spectral jobs).
+        fundamental_hz: Fundamental frequency (Spectral jobs).
+        average_input_power: Average input power W (PowerEfficiency jobs).
+        average_output_power: Average output power W (PowerEfficiency jobs).
+        efficiency: Efficiency 0–1 (PowerEfficiency jobs).
+        power_factor: Power factor 0–1 (PowerEfficiency jobs).
+        signal_names: Signal names this job covered.
+    """
+
+    job_id: str = ""
+    kind: str = ""
+    success: bool = True
+    diagnostic: str = ""
+    diagnostic_message: str = ""
+    scalar_metrics: dict[str, ScalarMetric] = field(default_factory=dict)
+    spectrum_bins: list[SpectralBin] = field(default_factory=list)
+    harmonics: list[HarmonicEntry] = field(default_factory=list)
+    thd_pct: float | None = None
+    fundamental_hz: float | None = None
+    average_input_power: float | None = None
+    average_output_power: float | None = None
+    efficiency: float | None = None
+    power_factor: float | None = None
+    undefined_metrics: list[UndefinedMetricEntry] = field(default_factory=list)
+    signal_names: list[str] = field(default_factory=list)
+    sample_count: int = 0
+    runtime_seconds: float = 0.0
+
+
+@dataclass
+class PostProcessingResult:
+    """Result of running post-processing on a transient result.
+
+    Attributes:
+        jobs: List of individual job results.
+        success: True when no top-level error occurred.
+        error_message: Top-level error message (empty on success).
+    """
+
+    jobs: list[PostProcessingJobResult] = field(default_factory=list)
+    success: bool = True
+    error_message: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        """Compatibility alias for callers expecting ``is_valid`` semantics."""
+        return self.success and not self.error_message
+
+
+@dataclass
+class FrequencyAnalysisResult:
+    """Result of a frequency-domain analysis (Bode sweep).
+
+    Attributes:
+        frequencies: Frequency points (Hz).
+        magnitude_db: Dict of transfer-function key → magnitude list (dB).
+        phase_deg: Dict of transfer-function key → phase list (degrees).
+        gain_margin_db: Gain margin (dB); None if not available.
+        phase_margin_deg: Phase margin (degrees); None if not available.
+        gain_crossover_hz: Gain crossover frequency (Hz); None if not available.
+        phase_crossover_hz: Phase crossover frequency (Hz); None if not available.
+        success: Whether the analysis completed successfully.
+        diagnostic_code: Short code string for failure reason.
+        diagnostic_message: Human-readable failure description.
+    """
+
+    frequencies: list[float] = field(default_factory=list)
+    magnitude_db: dict[str, list[float]] = field(default_factory=dict)
+    phase_deg: dict[str, list[float]] = field(default_factory=dict)
+    gain_margin_db: float | None = None
+    phase_margin_deg: float | None = None
+    gain_crossover_hz: float | None = None
+    phase_crossover_hz: float | None = None
+    success: bool = True
+    diagnostic_code: str = ""
+    diagnostic_message: str = ""
+    mode: str = ""
+    anchor_mode_selected: str = ""
+    failed_point_index: int = -1
+    failed_frequency_hz: float | None = None
+    gain_crossover_reason: str = ""
+    phase_crossover_reason: str = ""
+    phase_margin_reason: str = ""
+    gain_margin_reason: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        """True when analysis succeeded and has at least one frequency point."""
+        return self.success and len(self.frequencies) > 0
 
 
 @dataclass
@@ -428,6 +574,10 @@ class TransientSettings:
     max_iterations: int = 50
     enable_limiting: bool = True
     max_voltage_step: float = 5.0
+    # Averaged converter options (pulsim >= 0.7.0).
+    # Dict with keys: topology, mode, envelope (all strings).
+    # None means switching-mode simulation (default behaviour).
+    averaged_options: dict | None = None
 
 
 @dataclass
@@ -477,6 +627,11 @@ class ACSettings:
     points_per_decade: int = 10
     input_source: str = ""
     output_nodes: list[str] = field(default_factory=list)
+    # Extended frequency analysis options (pulsim >= 0.7.0)
+    anchor_mode: str = "auto"  # auto, dc, periodic, averaged
+    sweep_scale: str = "decade"  # decade, log, linear
+    injection_node: str = ""
+    measurement_node: str = ""
 
 
 @dataclass
@@ -512,6 +667,13 @@ __all__ = [
     "ThermalDeviceResult",
     "FosterStage",
     "LossBreakdown",
+    "PostProcessingResult",
+    "PostProcessingJobResult",
+    "ScalarMetric",
+    "SpectralBin",
+    "HarmonicEntry",
+    "UndefinedMetricEntry",
+    "FrequencyAnalysisResult",
     # Settings
     "TransientSettings",
     "DCSettings",

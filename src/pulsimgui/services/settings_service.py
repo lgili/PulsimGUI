@@ -152,6 +152,9 @@ class SettingsService:
     # Simulation settings
     def get_simulation_settings(self) -> dict:
         """Get saved simulation settings."""
+        averaged_options = self._settings.value("simulation/averaged_options", None)
+        if not isinstance(averaged_options, dict):
+            averaged_options = None
         return {
             "t_stop": float(self._settings.value("simulation/t_stop", 1e-3)),
             "t_step": float(self._settings.value("simulation/t_step", 1e-6)),
@@ -163,6 +166,17 @@ class SettingsService:
             "output_points": int(self._settings.value("simulation/output_points", 10000)),
             "enable_events": self._settings.value("simulation/enable_events", True, type=bool),
             "max_step_retries": int(self._settings.value("simulation/max_step_retries", 8)),
+            "enable_losses": self._settings.value("simulation/enable_losses", True, type=bool),
+            "averaged_options": averaged_options,
+            "ac_f_start": float(self._settings.value("simulation/ac_f_start", 1.0)),
+            "ac_f_stop": float(self._settings.value("simulation/ac_f_stop", 1e6)),
+            "ac_points_per_decade": int(
+                self._settings.value("simulation/ac_points_per_decade", 10)
+            ),
+            "ac_anchor_mode": self._settings.value("simulation/ac_anchor_mode", "auto"),
+            "ac_sweep_scale": self._settings.value("simulation/ac_sweep_scale", "decade"),
+            "ac_injection_node": self._settings.value("simulation/ac_injection_node", ""),
+            "ac_measurement_node": self._settings.value("simulation/ac_measurement_node", ""),
         }
 
     def set_simulation_settings(self, settings: dict) -> None:

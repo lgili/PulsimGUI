@@ -52,6 +52,7 @@ from pulsimgui.models.subcircuit import (
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_adapter import BackendInfo
+from pulsimgui.services.backend_types import ACSettings
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.hierarchy_service import HierarchyService
 from pulsimgui.services.settings_service import SettingsService
@@ -63,6 +64,8 @@ from pulsimgui.services.simulation_service import (
     SimulationState,
     normalize_control_mode,
     normalize_formulation_mode,
+    normalize_frequency_anchor_mode,
+    normalize_frequency_sweep_scale,
     normalize_integration_method,
     normalize_step_mode,
     normalize_thermal_policy,
@@ -671,11 +674,26 @@ class MainWindow(QMainWindow):
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
+        self._simulation_service.frequency_analysis_finished.connect(
+            self._on_frequency_analysis_finished
+        )
         self._simulation_service.parameter_sweep_finished.connect(
             self._on_parameter_sweep_finished
         )
+        self._simulation_service.post_processing_started.connect(
+            self._waveform_viewer.on_post_processing_started
+        )
+        self._simulation_service.post_processing_completed.connect(
+            self._waveform_viewer.on_post_processing_completed
+        )
+        self._simulation_service.post_processing_failed.connect(
+            self._waveform_viewer.on_post_processing_failed
+        )
         self._simulation_service.error.connect(self._on_simulation_error)
         self._simulation_service.backend_changed.connect(self._on_backend_changed)
+        self._waveform_viewer.post_processing_requested.connect(
+            self._on_post_processing_requested
+        )
         self._schematic_view.tool_changed.connect(self._sync_toolbar_tool_actions)
         self._sync_toolbar_tool_actions(self._schematic_view.current_tool)
 
@@ -691,11 +709,12 @@ class MainWindow(QMainWindow):
         is_running = self._simulation_service.is_running
         has_dc = self._simulation_service.has_capability("dc")
         has_ac = self._simulation_service.has_capability("ac")
+        has_frequency = self._simulation_service.has_capability("frequency_analysis")
         self.action_run.setEnabled(backend_ready and not is_running)
         self.action_stop.setEnabled(backend_ready and is_running)
         self.action_pause.setEnabled(backend_ready and is_running)
         self.action_dc_op.setEnabled(backend_ready and has_dc and not is_running)
-        self.action_ac.setEnabled(backend_ready and has_ac and not is_running)
+        self.action_ac.setEnabled(backend_ready and (has_ac or has_frequency) and not is_running)
         self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
 
     def _update_backend_status(self, info: BackendInfo | None = None) -> None:
@@ -1345,6 +1364,49 @@ class MainWindow(QMainWindow):
                 )
             ),
         )
+        runtime_settings.ac_f_start = max(
+            1e-12,
+            float(getattr(project_settings, "ac_f_start", runtime_settings.ac_f_start)),
+        )
+        runtime_settings.ac_f_stop = max(
+            runtime_settings.ac_f_start * (1.0 + 1e-12),
+            float(getattr(project_settings, "ac_f_stop", runtime_settings.ac_f_stop)),
+        )
+        runtime_settings.ac_points_per_decade = max(
+            1,
+            int(
+                getattr(
+                    project_settings,
+                    "ac_points_per_decade",
+                    runtime_settings.ac_points_per_decade,
+                )
+            ),
+        )
+        runtime_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            getattr(project_settings, "ac_anchor_mode", runtime_settings.ac_anchor_mode)
+        )
+        runtime_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            getattr(project_settings, "ac_sweep_scale", runtime_settings.ac_sweep_scale)
+        )
+        runtime_settings.ac_injection_node = str(
+            getattr(project_settings, "ac_injection_node", runtime_settings.ac_injection_node) or ""
+        )
+        runtime_settings.ac_measurement_node = str(
+            getattr(
+                project_settings,
+                "ac_measurement_node",
+                runtime_settings.ac_measurement_node,
+            )
+            or ""
+        )
+        raw_averaged_options = getattr(
+            project_settings,
+            "averaged_options",
+            runtime_settings.averaged_options,
+        )
+        runtime_settings.averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
         self._sync_thermal_service_context()
 
     def _apply_simulation_service_settings_to_project(self) -> None:
@@ -1401,6 +1463,25 @@ class MainWindow(QMainWindow):
         project_settings.control_sample_time = max(
             0.0,
             float(runtime_settings.control_sample_time),
+        )
+        project_settings.ac_f_start = max(1e-12, float(runtime_settings.ac_f_start))
+        project_settings.ac_f_stop = max(
+            project_settings.ac_f_start * (1.0 + 1e-12),
+            float(runtime_settings.ac_f_stop),
+        )
+        project_settings.ac_points_per_decade = max(1, int(runtime_settings.ac_points_per_decade))
+        project_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            runtime_settings.ac_anchor_mode
+        )
+        project_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            runtime_settings.ac_sweep_scale
+        )
+        project_settings.ac_injection_node = str(runtime_settings.ac_injection_node or "")
+        project_settings.ac_measurement_node = str(runtime_settings.ac_measurement_node or "")
+        project_settings.averaged_options = (
+            dict(runtime_settings.averaged_options)
+            if isinstance(runtime_settings.averaged_options, dict)
+            else None
         )
 
     # Slots
@@ -2659,7 +2740,9 @@ class MainWindow(QMainWindow):
 
     def _on_ac_analysis(self) -> None:
         """Run AC analysis."""
-        if not self._simulation_service.has_capability("ac"):
+        has_frequency = self._simulation_service.has_capability("frequency_analysis")
+        has_ac = self._simulation_service.has_capability("ac")
+        if not has_frequency and not has_ac:
             QMessageBox.warning(
                 self,
                 "AC Analysis Unavailable",
@@ -2669,10 +2752,37 @@ class MainWindow(QMainWindow):
                 ),
             )
             return
-        # TODO: Show AC settings dialog first
         self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-        self._simulation_service.run_ac_analysis(circuit_data, 1, 1e6, 10)
+
+        ac_settings = ACSettings(
+            f_start=max(1e-12, float(self._simulation_service.settings.ac_f_start)),
+            f_stop=max(
+                max(1e-12, float(self._simulation_service.settings.ac_f_start)) * (1.0 + 1e-12),
+                float(self._simulation_service.settings.ac_f_stop),
+            ),
+            points_per_decade=max(1, int(self._simulation_service.settings.ac_points_per_decade)),
+            anchor_mode=normalize_frequency_anchor_mode(
+                self._simulation_service.settings.ac_anchor_mode
+            ),
+            sweep_scale=normalize_frequency_sweep_scale(
+                self._simulation_service.settings.ac_sweep_scale
+            ),
+            injection_node=str(self._simulation_service.settings.ac_injection_node or ""),
+            measurement_node=str(self._simulation_service.settings.ac_measurement_node or ""),
+        )
+
+        if has_frequency:
+            self._simulation_service.run_frequency_analysis(circuit_data, ac_settings)
+            return
+
+        self._simulation_service.run_ac_analysis(
+            circuit_data,
+            ac_settings.f_start,
+            ac_settings.f_stop,
+            ac_settings.points_per_decade,
+            ac_settings=ac_settings,
+        )
 
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
@@ -2833,6 +2943,11 @@ class MainWindow(QMainWindow):
         # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
+    def _on_post_processing_requested(self, jobs: list[dict]) -> None:
+        """Run waveform post-processing for the latest electrical result."""
+        source = self._latest_electrical_result or self._simulation_service.last_result
+        self._simulation_service.run_post_processing(jobs, source_result=source)
+
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
@@ -2972,6 +3087,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "AC Analysis Error", f"AC analysis failed:\n{result.error_message}"
             )
+
+    def _on_frequency_analysis_finished(self, result) -> None:
+        """Handle frequency-domain analysis completion."""
+        if result.success and result.is_valid:
+            dialog = BodePlotDialog(result, self)
+            dialog.exec()
+            return
+        message = getattr(result, "diagnostic_message", "") or getattr(
+            result,
+            "diagnostic_code",
+            "Frequency analysis failed.",
+        )
+        QMessageBox.warning(self, "Frequency Analysis Error", f"Analysis failed:\n{message}")
 
     def _on_parameter_sweep_finished(self, result: ParameterSweepResult) -> None:
         """Handle parameter sweep completion."""

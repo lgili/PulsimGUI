@@ -1041,3 +1041,57 @@ def test_worker_stops_before_backend_when_contract_validator_fails() -> None:
     assert errors == ["PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"]
     assert results
     assert results[0].error_message == "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"
+
+
+def test_run_post_processing_forwards_transient_payload_to_service(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+        statistics={"steps": 2},
+    )
+
+    seen: dict[str, object] = {}
+
+    class _PPService:
+        def run_jobs(self, transient_result, jobs):  # noqa: ANN001
+            seen["transient"] = transient_result
+            seen["jobs"] = jobs
+
+    service._post_processing_service = _PPService()  # type: ignore[assignment]
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert "transient" in seen
+    transient = seen["transient"]
+    assert transient.time == [0.0, 1e-6]
+    assert transient.signals["V(out)"] == [0.0, 1.0]
+    assert seen["jobs"] == [{"kind": "time_domain", "signals": ["V(out)"]}]
+
+
+def test_run_post_processing_fails_when_result_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert failures
+    assert "No valid transient result" in failures[-1]
+
+
+def test_run_post_processing_fails_when_jobs_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+    )
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([])
+
+    assert failures == ["No post-processing jobs were provided."]

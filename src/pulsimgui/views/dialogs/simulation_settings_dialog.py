@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -31,6 +32,8 @@ from pulsimgui.services.simulation_service import (
     SimulationSettings,
     normalize_control_mode,
     normalize_formulation_mode,
+    normalize_frequency_anchor_mode,
+    normalize_frequency_sweep_scale,
     normalize_integration_method,
     normalize_step_mode,
     normalize_thermal_policy,
@@ -152,6 +155,7 @@ class SimulationSettingsDialog(QDialog):
         panel_layout.addWidget(self._create_advanced_section())
         panel_layout.addWidget(self._create_divider())
         panel_layout.addLayout(self._create_footer())
+        self._apply_capability_gates()
 
     def _create_section_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -389,6 +393,7 @@ class SimulationSettingsDialog(QDialog):
         body_layout.addWidget(self._create_newton_card(), 1)
         body_layout.addWidget(self._create_dc_card(), 1)
         body_layout.addWidget(self._create_thermal_card(), 1)
+        body_layout.addWidget(self._create_frequency_card(), 1)
         self._advanced_body.setVisible(False)
         layout.addWidget(self._advanced_body)
 
@@ -461,10 +466,35 @@ class SimulationSettingsDialog(QDialog):
         self._control_sample_time_spin.setValue(0.0)
         form.addRow("Control sample time:", self._control_sample_time_spin)
 
+        self._averaged_enabled_check = QCheckBox("Enable averaged converter model")
+        self._averaged_enabled_check.setChecked(False)
+        self._averaged_enabled_check.toggled.connect(self._sync_averaged_controls)
+        form.addRow(self._averaged_enabled_check)
+
+        self._averaged_topology_combo = QComboBox()
+        self._averaged_topology_combo.addItem("Buck", "buck")
+        self._averaged_topology_combo.addItem("Boost", "boost")
+        self._averaged_topology_combo.addItem("Buck-Boost", "buckboost")
+        self._averaged_topology_combo.addItem("Flyback", "flyback")
+        self._averaged_topology_combo.addItem("Forward", "forward")
+        form.addRow("Averaged topology:", self._averaged_topology_combo)
+
+        self._averaged_mode_combo = QComboBox()
+        self._averaged_mode_combo.addItem("CCM", "ccm")
+        self._averaged_mode_combo.addItem("Auto", "auto")
+        form.addRow("Averaged mode:", self._averaged_mode_combo)
+
+        self._averaged_envelope_combo = QComboBox()
+        self._averaged_envelope_combo.addItem("Strict", "strict")
+        self._averaged_envelope_combo.addItem("Lenient", "lenient")
+        self._averaged_envelope_combo.addItem("Ignore", "ignore")
+        form.addRow("Envelope policy:", self._averaged_envelope_combo)
+
         self._transient_robust_mode_check.toggled.connect(
             self._transient_auto_regularize_check.setEnabled
         )
         self._voltage_limiting_check.toggled.connect(self._max_voltage_step_spin.setEnabled)
+        self._sync_averaged_controls(self._averaged_enabled_check.isChecked())
 
         layout.addLayout(form)
         return card
@@ -576,6 +606,58 @@ class SimulationSettingsDialog(QDialog):
         self._thermal_include_switching_check = QCheckBox("Include switching losses")
         self._thermal_include_switching_check.setChecked(True)
         form.addRow(self._thermal_include_switching_check)
+
+        layout.addLayout(form)
+        return card
+
+    def _create_frequency_card(self) -> QWidget:
+        card, layout = self._create_card(
+            "Frequency Analysis",
+            "Parameters used by AC/frequency sweep analysis.",
+        )
+        form = self._create_form_layout()
+
+        self._ac_start_freq_spin = QDoubleSpinBox()
+        self._ac_start_freq_spin.setRange(1e-12, 1e12)
+        self._ac_start_freq_spin.setDecimals(6)
+        self._ac_start_freq_spin.setSingleStep(10.0)
+        self._ac_start_freq_spin.setSuffix(" Hz")
+        self._ac_start_freq_spin.setValue(1.0)
+        form.addRow("Start frequency:", self._ac_start_freq_spin)
+
+        self._ac_stop_freq_spin = QDoubleSpinBox()
+        self._ac_stop_freq_spin.setRange(1e-12, 1e12)
+        self._ac_stop_freq_spin.setDecimals(6)
+        self._ac_stop_freq_spin.setSingleStep(1000.0)
+        self._ac_stop_freq_spin.setSuffix(" Hz")
+        self._ac_stop_freq_spin.setValue(1e6)
+        form.addRow("Stop frequency:", self._ac_stop_freq_spin)
+
+        self._ac_points_spin = QSpinBox()
+        self._ac_points_spin.setRange(1, 1000)
+        self._ac_points_spin.setValue(10)
+        form.addRow("Points/decade:", self._ac_points_spin)
+
+        self._ac_anchor_mode_combo = QComboBox()
+        self._ac_anchor_mode_combo.addItem("Auto", "auto")
+        self._ac_anchor_mode_combo.addItem("DC", "dc")
+        self._ac_anchor_mode_combo.addItem("Periodic", "periodic")
+        self._ac_anchor_mode_combo.addItem("Averaged", "averaged")
+        form.addRow("Anchor mode:", self._ac_anchor_mode_combo)
+
+        self._ac_sweep_scale_combo = QComboBox()
+        self._ac_sweep_scale_combo.addItem("Decade", "decade")
+        self._ac_sweep_scale_combo.addItem("Log", "log")
+        self._ac_sweep_scale_combo.addItem("Linear", "linear")
+        form.addRow("Sweep scale:", self._ac_sweep_scale_combo)
+
+        self._ac_injection_node_edit = QLineEdit()
+        self._ac_injection_node_edit.setPlaceholderText("vin,0")
+        form.addRow("Injection node:", self._ac_injection_node_edit)
+
+        self._ac_measurement_node_edit = QLineEdit()
+        self._ac_measurement_node_edit.setPlaceholderText("vout,0")
+        form.addRow("Measurement node:", self._ac_measurement_node_edit)
 
         layout.addLayout(form)
         return card
@@ -709,6 +791,64 @@ class SimulationSettingsDialog(QDialog):
         else:
             self._backend_warning_label.setVisible(False)
 
+    def _backend_has_capability(self, capability: str) -> bool:
+        """Return True when the active backend advertises a capability."""
+        if self._backend_info is None:
+            return True
+        return capability in set(self._backend_info.capabilities or set())
+
+    def _set_capability_widgets_enabled(
+        self,
+        widgets: list[QWidget],
+        *,
+        enabled: bool,
+        tooltip: str,
+    ) -> None:
+        for widget in widgets:
+            widget.setEnabled(enabled)
+            widget.setToolTip("" if enabled else tooltip)
+
+    def _apply_capability_gates(self) -> None:
+        """Disable unavailable controls based on backend feature flags."""
+        averaged_enabled = self._backend_has_capability("averaged")
+        averaged_tip = "Requires backend capability: averaged (pulsim >= 0.7.0)."
+        self._set_capability_widgets_enabled(
+            [
+                self._averaged_enabled_check,
+                self._averaged_topology_combo,
+                self._averaged_mode_combo,
+                self._averaged_envelope_combo,
+            ],
+            enabled=averaged_enabled,
+            tooltip=averaged_tip,
+        )
+        if not averaged_enabled:
+            self._averaged_enabled_check.setChecked(False)
+        self._sync_averaged_controls(self._averaged_enabled_check.isChecked())
+
+        frequency_enabled = self._backend_has_capability("frequency_analysis")
+        frequency_tip = "Requires backend capability: frequency_analysis (pulsim >= 0.7.0)."
+        self._set_capability_widgets_enabled(
+            [
+                self._ac_start_freq_spin,
+                self._ac_stop_freq_spin,
+                self._ac_points_spin,
+                self._ac_anchor_mode_combo,
+                self._ac_sweep_scale_combo,
+                self._ac_injection_node_edit,
+                self._ac_measurement_node_edit,
+            ],
+            enabled=frequency_enabled,
+            tooltip=frequency_tip,
+        )
+
+    def _sync_averaged_controls(self, enabled: bool) -> None:
+        """Keep averaged option fields enabled only when averaged mode is active."""
+        fields_enabled = bool(enabled and self._averaged_enabled_check.isEnabled())
+        self._averaged_topology_combo.setEnabled(fields_enabled)
+        self._averaged_mode_combo.setEnabled(fields_enabled)
+        self._averaged_envelope_combo.setEnabled(fields_enabled)
+
     def _on_reset_defaults(self) -> None:
         defaults = SimulationSettings()
         self._populate_from(defaults)
@@ -756,6 +896,23 @@ class SimulationSettingsDialog(QDialog):
             max(0.0, float(getattr(source, "control_sample_time", 0.0)))
         )
         self._on_control_mode_changed(self._control_mode_combo.currentIndex())
+        averaged_options = getattr(source, "averaged_options", None)
+        averaged_enabled = isinstance(averaged_options, dict)
+        self._averaged_enabled_check.setChecked(averaged_enabled)
+        averaged_options = averaged_options if isinstance(averaged_options, dict) else {}
+        topology_idx = self._averaged_topology_combo.findData(
+            str(averaged_options.get("topology", "buck")).strip().lower()
+        )
+        self._averaged_topology_combo.setCurrentIndex(topology_idx if topology_idx >= 0 else 0)
+        mode_idx = self._averaged_mode_combo.findData(
+            str(averaged_options.get("mode", "ccm")).strip().lower()
+        )
+        self._averaged_mode_combo.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        envelope_idx = self._averaged_envelope_combo.findData(
+            str(averaged_options.get("envelope", "strict")).strip().lower()
+        )
+        self._averaged_envelope_combo.setCurrentIndex(envelope_idx if envelope_idx >= 0 else 0)
+        self._sync_averaged_controls(averaged_enabled)
 
         dc_strategy_map = {"auto": 0, "direct": 1, "gmin": 2, "source": 3, "pseudo": 4}
         self._dc_strategy_combo.setCurrentIndex(dc_strategy_map.get(source.dc_strategy, 0))
@@ -795,12 +952,39 @@ class SimulationSettingsDialog(QDialog):
         self._thermal_include_switching_check.setChecked(
             bool(getattr(source, "thermal_include_switching_losses", True))
         )
+        self._ac_start_freq_spin.setValue(max(1e-12, float(getattr(source, "ac_f_start", 1.0))))
+        self._ac_stop_freq_spin.setValue(
+            max(
+                self._ac_start_freq_spin.value() * (1.0 + 1e-12),
+                float(getattr(source, "ac_f_stop", 1e6)),
+            )
+        )
+        self._ac_points_spin.setValue(
+            max(1, int(getattr(source, "ac_points_per_decade", 10)))
+        )
+        ac_anchor_mode = normalize_frequency_anchor_mode(
+            str(getattr(source, "ac_anchor_mode", "auto") or "auto")
+        )
+        ac_anchor_mode_idx = self._ac_anchor_mode_combo.findData(ac_anchor_mode)
+        self._ac_anchor_mode_combo.setCurrentIndex(ac_anchor_mode_idx if ac_anchor_mode_idx >= 0 else 0)
+        ac_sweep_scale = normalize_frequency_sweep_scale(
+            str(getattr(source, "ac_sweep_scale", "decade") or "decade")
+        )
+        ac_sweep_scale_idx = self._ac_sweep_scale_combo.findData(ac_sweep_scale)
+        self._ac_sweep_scale_combo.setCurrentIndex(ac_sweep_scale_idx if ac_sweep_scale_idx >= 0 else 0)
+        self._ac_injection_node_edit.setText(
+            str(getattr(source, "ac_injection_node", "") or "")
+        )
+        self._ac_measurement_node_edit.setText(
+            str(getattr(source, "ac_measurement_node", "") or "")
+        )
 
         self._update_solver_description()
         self._update_dc_strategy_description()
         self._on_dc_strategy_changed(self._dc_strategy_combo.currentIndex())
         self._update_effective_step()
         self._sync_preset_to_values()
+        self._apply_capability_gates()
 
     def _sync_preset_to_values(self) -> None:
         method = str(self._solver_combo.currentData() or "auto")
@@ -867,6 +1051,14 @@ class SimulationSettingsDialog(QDialog):
         if self._settings.control_mode == "discrete" and control_sample_time <= 0.0:
             control_sample_time = max(float(self._settings.t_step), 1e-12)
         self._settings.control_sample_time = control_sample_time
+        if self._averaged_enabled_check.isChecked() and self._averaged_enabled_check.isEnabled():
+            self._settings.averaged_options = {
+                "topology": str(self._averaged_topology_combo.currentData() or "buck"),
+                "mode": str(self._averaged_mode_combo.currentData() or "ccm"),
+                "envelope": str(self._averaged_envelope_combo.currentData() or "strict"),
+            }
+        else:
+            self._settings.averaged_options = None
 
         dc_strategy_map = {0: "auto", 1: "direct", 2: "gmin", 3: "source", 4: "pseudo"}
         self._settings.dc_strategy = dc_strategy_map.get(self._dc_strategy_combo.currentIndex(), "auto")
@@ -902,6 +1094,20 @@ class SimulationSettingsDialog(QDialog):
         self._settings.thermal_include_switching_losses = (
             self._thermal_include_switching_check.isChecked()
         )
+        self._settings.ac_f_start = max(1e-12, float(self._ac_start_freq_spin.value()))
+        self._settings.ac_f_stop = max(
+            self._settings.ac_f_start * (1.0 + 1e-12),
+            float(self._ac_stop_freq_spin.value()),
+        )
+        self._settings.ac_points_per_decade = max(1, int(self._ac_points_spin.value()))
+        self._settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            str(self._ac_anchor_mode_combo.currentData() or "auto")
+        )
+        self._settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            str(self._ac_sweep_scale_combo.currentData() or "decade")
+        )
+        self._settings.ac_injection_node = str(self._ac_injection_node_edit.text() or "").strip()
+        self._settings.ac_measurement_node = str(self._ac_measurement_node_edit.text() or "").strip()
 
     def _commit_pending_inputs(self) -> None:
         """Commit text still being edited before reading values."""

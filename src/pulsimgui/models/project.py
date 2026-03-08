@@ -46,6 +46,14 @@ class SimulationSettings:
     direct_formulation_fallback: bool = True
     control_mode: str = "auto"
     control_sample_time: float = 0.0
+    ac_f_start: float = 1.0
+    ac_f_stop: float = 1e6
+    ac_points_per_decade: int = 10
+    ac_anchor_mode: str = "auto"
+    ac_sweep_scale: str = "decade"
+    ac_injection_node: str = ""
+    ac_measurement_node: str = ""
+    averaged_options: dict | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -82,6 +90,16 @@ class SimulationSettings:
             "direct_formulation_fallback": self.direct_formulation_fallback,
             "control_mode": self.control_mode,
             "control_sample_time": self.control_sample_time,
+            "ac_f_start": self.ac_f_start,
+            "ac_f_stop": self.ac_f_stop,
+            "ac_points_per_decade": self.ac_points_per_decade,
+            "ac_anchor_mode": self.ac_anchor_mode,
+            "ac_sweep_scale": self.ac_sweep_scale,
+            "ac_injection_node": self.ac_injection_node,
+            "ac_measurement_node": self.ac_measurement_node,
+            "averaged_options": dict(self.averaged_options)
+            if isinstance(self.averaged_options, dict)
+            else None,
         }
 
     @classmethod
@@ -120,6 +138,23 @@ class SimulationSettings:
         control_mode = control_mode_aliases.get(control_mode, control_mode)
         if control_mode not in {"auto", "continuous", "discrete"}:
             control_mode = "auto"
+        ac_anchor_mode = str(data.get("ac_anchor_mode", "auto") or "auto").strip().lower()
+        if ac_anchor_mode not in {"auto", "dc", "periodic", "averaged"}:
+            ac_anchor_mode = "auto"
+        ac_sweep_scale = str(data.get("ac_sweep_scale", "decade") or "decade").strip().lower()
+        if ac_sweep_scale in {"logarithmic"}:
+            ac_sweep_scale = "log"
+        if ac_sweep_scale not in {"decade", "log", "linear"}:
+            ac_sweep_scale = "decade"
+        ac_f_start = max(1e-12, float(data.get("ac_f_start", 1.0)))
+        ac_f_stop = max(
+            ac_f_start * (1.0 + 1e-12),
+            float(data.get("ac_f_stop", 1e6)),
+        )
+        raw_averaged_options = data.get("averaged_options")
+        averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
@@ -159,6 +194,14 @@ class SimulationSettings:
             ),
             control_mode=control_mode,
             control_sample_time=max(0.0, float(data.get("control_sample_time", 0.0))),
+            ac_f_start=ac_f_start,
+            ac_f_stop=ac_f_stop,
+            ac_points_per_decade=max(1, int(data.get("ac_points_per_decade", 10))),
+            ac_anchor_mode=ac_anchor_mode,
+            ac_sweep_scale=ac_sweep_scale,
+            ac_injection_node=str(data.get("ac_injection_node", "") or ""),
+            ac_measurement_node=str(data.get("ac_measurement_node", "") or ""),
+            averaged_options=averaged_options,
         )
 
 
