@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -387,13 +388,21 @@ class SimulationSettingsDialog(QDialog):
 
         self._advanced_body = QFrame()
         self._advanced_body.setObjectName("advancedBody")
-        body_layout = QHBoxLayout(self._advanced_body)
+        body_layout = QVBoxLayout(self._advanced_body)
         body_layout.setContentsMargins(10, 10, 10, 10)
         body_layout.setSpacing(10)
-        body_layout.addWidget(self._create_newton_card(), 1)
-        body_layout.addWidget(self._create_dc_card(), 1)
-        body_layout.addWidget(self._create_thermal_card(), 1)
-        body_layout.addWidget(self._create_frequency_card(), 1)
+        self._advanced_tabs = QTabWidget(self._advanced_body)
+        self._advanced_tabs.setObjectName("advancedTabs")
+        self._advanced_tabs.setDocumentMode(True)
+        self._advanced_tabs.setUsesScrollButtons(False)
+        self._advanced_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self._advanced_tabs.tabBar().setExpanding(True)
+        self._advanced_tabs.addTab(self._create_newton_card(), "Transient")
+        self._advanced_tabs.addTab(self._create_dc_card(), "DC Setup")
+        self._advanced_tabs.addTab(self._create_thermal_card(), "Thermal & Losses")
+        self._advanced_tabs.addTab(self._create_frequency_card(), "Frequency Analysis")
+        body_layout.addWidget(self._advanced_tabs)
         self._advanced_body.setVisible(False)
         layout.addWidget(self._advanced_body)
 
@@ -405,8 +414,14 @@ class SimulationSettingsDialog(QDialog):
         self._advanced_toggle.setArrowType(arrow)
 
     def _create_newton_card(self) -> QWidget:
-        card, layout = self._create_card("Transient Robustness", "Newton controls for convergence.")
+        card, layout = self._create_card(
+            "Transient Robustness",
+            "Newton controls for convergence.",
+            compact=True,
+            show_header=False,
+        )
         form = self._create_form_layout()
+        form.setVerticalSpacing(4)
 
         self._max_iterations_spin = QSpinBox()
         self._max_iterations_spin.setRange(10, 500)
@@ -500,8 +515,14 @@ class SimulationSettingsDialog(QDialog):
         return card
 
     def _create_dc_card(self) -> QWidget:
-        card, layout = self._create_card("DC Operating Point", "Fallback strategy before transient start.")
+        card, layout = self._create_card(
+            "DC Operating Point",
+            "Fallback strategy before transient start.",
+            compact=True,
+            show_header=False,
+        )
         form = self._create_form_layout()
+        form.setVerticalSpacing(4)
 
         self._dc_strategy_combo = QComboBox()
         self._dc_strategy_combo.addItems([
@@ -554,8 +575,14 @@ class SimulationSettingsDialog(QDialog):
         return card
 
     def _create_thermal_card(self) -> QWidget:
-        card, layout = self._create_card("Thermal & Losses", "Controls for thermal analysis fidelity.")
+        card, layout = self._create_card(
+            "Thermal & Losses",
+            "Controls for thermal analysis fidelity.",
+            compact=True,
+            show_header=False,
+        )
         form = self._create_form_layout()
+        form.setVerticalSpacing(4)
 
         self._enable_losses_check = QCheckBox("Enable electrical loss tracking")
         self._enable_losses_check.setChecked(True)
@@ -614,8 +641,11 @@ class SimulationSettingsDialog(QDialog):
         card, layout = self._create_card(
             "Frequency Analysis",
             "Parameters used by AC/frequency sweep analysis.",
+            compact=True,
+            show_header=False,
         )
         form = self._create_form_layout()
+        form.setVerticalSpacing(4)
 
         self._ac_start_freq_spin = QDoubleSpinBox()
         self._ac_start_freq_spin.setRange(1e-12, 1e12)
@@ -662,20 +692,33 @@ class SimulationSettingsDialog(QDialog):
         layout.addLayout(form)
         return card
 
-    def _create_card(self, title: str, subtitle: str) -> tuple[QFrame, QVBoxLayout]:
+    def _create_card(
+        self,
+        title: str,
+        subtitle: str,
+        *,
+        compact: bool = False,
+        show_header: bool = True,
+    ) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("settingsCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 9, 10, 10)
-        layout.setSpacing(6)
+        if compact:
+            layout.setContentsMargins(8, 6, 8, 8)
+            layout.setSpacing(3)
+        else:
+            layout.setContentsMargins(10, 9, 10, 10)
+            layout.setSpacing(6)
 
-        title_label = QLabel(title)
-        title_label.setObjectName("cardTitle")
-        layout.addWidget(title_label)
+        if show_header:
+            title_label = QLabel(title)
+            title_label.setObjectName("cardTitle")
+            layout.addWidget(title_label)
 
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("cardSubtitle")
-        layout.addWidget(subtitle_label)
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setObjectName("cardSubtitle")
+            subtitle_label.setWordWrap(True)
+            layout.addWidget(subtitle_label)
 
         return card, layout
 
@@ -1385,6 +1428,39 @@ QFrame#advancedBody {{
     border: 1px solid {border};
     border-radius: 10px;
     background-clip: padding;
+}}
+
+QTabWidget#advancedTabs::pane {{
+    border: 1px solid {border};
+    border-radius: 8px;
+    background-color: {card_bg};
+    top: -1px;
+}}
+
+QTabWidget#advancedTabs QTabBar::tab {{
+    background-color: {chip_bg};
+    border: 1px solid {border};
+    border-bottom: none;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    padding: 6px 14px;
+    margin-right: 2px;
+    color: {muted};
+    min-height: 22px;
+    min-width: 130px;
+    font-size: 11px;
+    font-weight: 650;
+}}
+
+QTabWidget#advancedTabs QTabBar::tab:selected {{
+    background-color: {card_bg};
+    color: {text};
+    border-color: {focus};
+}}
+
+QTabWidget#advancedTabs QTabBar::tab:hover {{
+    border-color: {focus};
+    color: {text};
 }}
 
 QToolButton#advancedToggle {{

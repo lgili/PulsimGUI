@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from PySide6.QtCore import Qt
 
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.backend_types import DCSettings
@@ -572,6 +573,21 @@ class TestEffectiveStepCalculation:
 
 class TestAdvancedAnalysisSettings:
     """Tests for averaged and frequency-analysis controls."""
+
+    def test_advanced_section_uses_tabs_to_avoid_horizontal_overflow(self, qapp) -> None:
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+
+        dialog._advanced_toggle.setChecked(True)
+
+        assert hasattr(dialog, "_advanced_tabs")
+        assert dialog._advanced_tabs.count() == 4
+        assert dialog._advanced_tabs.tabText(0) == "Transient"
+        assert dialog._advanced_tabs.tabText(1) == "DC Setup"
+        assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
+        assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
+        assert dialog._advanced_tabs.elideMode() == Qt.TextElideMode.ElideNone
+        assert dialog._advanced_tabs.tabBar().expanding()
 
     def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
         settings = SimulationSettings()
