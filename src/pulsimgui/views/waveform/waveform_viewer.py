@@ -1037,9 +1037,9 @@ class WaveformViewer(QWidget):
         self._clear_btn.clicked.connect(self.clear_traces)
         controls_layout.addWidget(self._clear_btn)
 
-        self._post_panel_toggle_btn = QPushButton("Post")
+        self._post_panel_toggle_btn = QPushButton("Analyze")
         self._post_panel_toggle_btn.setCheckable(True)
-        self._post_panel_toggle_btn.setToolTip("Show post-processing panel")
+        self._post_panel_toggle_btn.setToolTip("Show analysis and measurement panel")
         self._post_panel_toggle_btn.toggled.connect(self._toggle_post_processing_panel)
         controls_layout.addWidget(self._post_panel_toggle_btn)
 
@@ -1104,7 +1104,7 @@ class WaveformViewer(QWidget):
 
         self._post_processing_panel = PostProcessingPanel()
         self._post_processing_panel.run_requested.connect(self._on_post_processing_requested)
-        self._right_panel_tabs.addTab(self._post_processing_panel, "Post-Processing")
+        self._right_panel_tabs.addTab(self._post_processing_panel, "Analysis")
         splitter.addWidget(self._right_panel_tabs)
 
         splitter.setStretchFactor(0, 0)   # signal list: fixed
@@ -1545,16 +1545,16 @@ class WaveformViewer(QWidget):
         self._post_processing_capability_enabled = bool(enabled)
         if self._post_processing_capability_enabled:
             self._post_panel_toggle_btn.setEnabled(True)
-            self._post_panel_toggle_btn.setToolTip("Show post-processing panel")
+            self._post_panel_toggle_btn.setToolTip("Show analysis and measurement panel")
             self._post_processing_panel.set_capability_enabled(True)
             return
 
         self._post_panel_toggle_btn.setChecked(False)
         self._post_panel_toggle_btn.setEnabled(False)
-        self._post_panel_toggle_btn.setToolTip("Post-processing requires backend ≥ 0.7.0")
+        self._post_panel_toggle_btn.setToolTip("Analysis requires backend >= 0.7.0")
         self._post_processing_panel.set_capability_enabled(
             False,
-            "Post-processing requires backend ≥ 0.7.0.",
+            "Analysis requires backend >= 0.7.0.",
         )
 
     def _on_splitter_moved(self, _pos: int, _index: int) -> None:

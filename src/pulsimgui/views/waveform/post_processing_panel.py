@@ -44,7 +44,7 @@ class PostProcessingPanel(QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        title = QLabel("Post-Processing")
+        title = QLabel("Analysis & Measurements")
         title.setObjectName("postProcessingTitle")
         layout.addWidget(title)
 

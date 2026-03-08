@@ -457,7 +457,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
-        self.panels_menu.setEnabled(False)
+        # Keep panel toggles always accessible so users can reveal hidden docks.
+        self.panels_menu.setEnabled(True)
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("&Theme")
         theme_menu.addAction(self.action_theme_light)
@@ -2954,7 +2955,7 @@ class MainWindow(QMainWindow):
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
-            # Finalize streaming in the dock viewer without forcing it open.
+            # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
 
             self.statusBar().showMessage(
