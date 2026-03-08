@@ -6,6 +6,8 @@ import sys
 import types
 from pathlib import Path
 
+from PySide6.QtCore import QUrl
+
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.views.properties import PropertiesPanel
 
@@ -158,3 +160,112 @@ def test_cblock_path_editor_normalizes_windows_separators(qapp) -> None:
 
     assert comp.parameters["source"] == "C:/workspace/blocks/ctrl.c"
 
+
+def test_create_base_file_generates_documented_template_and_loads_path(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    comp = Component(type=ComponentType.C_BLOCK, name="CB_STARTER")
+    comp.parameters["n_inputs"] = 2
+    comp.parameters["n_outputs"] = 2
+    panel = PropertiesPanel()
+    panel.set_component(comp)
+
+    output_path = tmp_path / "starter_block.c"
+    monkeypatch.setattr(
+        "pulsimgui.views.properties.properties_panel.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (output_path.as_posix(), "C source (*.c)"),
+    )
+
+    messages: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        panel,
+        "_show_cblock_build_message",
+        lambda **kwargs: messages.append(kwargs),
+    )
+
+    changed: list[tuple[str, object]] = []
+    panel.property_changed.connect(lambda name, value: changed.append((name, value)))
+
+    panel._on_create_cblock_base_file()
+
+    assert output_path.exists()
+    content = output_path.read_text(encoding="utf-8")
+    assert "Pulsim C-Block starter template." in content
+    assert "Quick guide:" in content
+    assert "n_inputs  = 2" in content
+    assert "n_outputs = 2" in content
+    assert "PULSIM_CBLOCK_EXPORT int pulsim_cblock_step" in content
+    assert "out[1] = base;" in content
+
+    assert comp.parameters["source"] == output_path.as_posix()
+    assert comp.parameters["source_code"] == content
+    assert panel._cblock_path_edit is not None
+    assert panel._cblock_path_edit.text() == output_path.as_posix()
+    assert ("source", output_path.as_posix()) in changed
+    assert any(name == "source_code" for name, _ in changed)
+    assert messages[-1]["title"] == "C-Block File Created"
+
+
+def test_create_base_file_in_library_mode_shows_warning(qapp, monkeypatch) -> None:
+    comp = Component(type=ComponentType.C_BLOCK, name="CB_LIB_ONLY")
+    comp.parameters["implementation"] = "library"
+    panel = PropertiesPanel()
+    panel.set_component(comp)
+
+    assert panel._cblock_mode_combo is not None
+    panel._cblock_mode_combo.setCurrentIndex(1)
+
+    messages: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        panel,
+        "_show_cblock_build_message",
+        lambda **kwargs: messages.append(kwargs),
+    )
+
+    panel._on_create_cblock_base_file()
+
+    assert messages
+    assert messages[-1]["title"] == "C-Block Mode"
+
+
+def test_open_in_editor_uses_desktop_services_with_existing_source(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    source_path = tmp_path / "external_edit.c"
+    source_path.write_text("int main(void){return 0;}\n", encoding="utf-8")
+
+    comp = Component(type=ComponentType.C_BLOCK, name="CB_EDIT")
+    comp.parameters["source"] = source_path.as_posix()
+    panel = PropertiesPanel()
+    panel.set_component(comp)
+
+    opened_urls: list[QUrl] = []
+    monkeypatch.setattr(
+        "pulsimgui.views.properties.properties_panel.QDesktopServices.openUrl",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    panel._on_open_cblock_source_external()
+
+    assert opened_urls
+    assert opened_urls[0].isLocalFile()
+    assert Path(opened_urls[0].toLocalFile()) == source_path
+
+
+def test_open_in_editor_warns_when_source_is_missing(qapp, monkeypatch) -> None:
+    comp = Component(type=ComponentType.C_BLOCK, name="CB_MISSING")
+    panel = PropertiesPanel()
+    panel.set_component(comp)
+
+    messages: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        panel,
+        "_show_cblock_build_message",
+        lambda **kwargs: messages.append(kwargs),
+    )
+
+    panel._on_open_cblock_source_external()
+
+    assert messages
+    assert messages[-1]["title"] == "C-Block Validation Error"
+    assert "source file" in str(messages[-1]["message"]).lower()

@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QWidget
 
-from pulsimgui.models.component import Component
+from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.services.theme_service import ThemeService
 from pulsimgui.views.properties import PropertiesPanel
 
@@ -25,8 +25,12 @@ class ComponentPropertiesDialog(QDialog):
 
         self.setModal(True)
         self.setWindowTitle(f"Component Properties - {component.name}")
-        self.resize(450, 530)
-        self.setMinimumSize(420, 480)
+        if component.type == ComponentType.C_BLOCK:
+            self.resize(900, 620)
+            self.setMinimumSize(840, 560)
+        else:
+            self.resize(450, 530)
+            self.setMinimumSize(420, 480)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
