@@ -2,7 +2,7 @@
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -868,6 +868,7 @@ class WaveformViewer(QWidget):
     """Widget for displaying simulation waveforms using PyQtGraph."""
 
     post_processing_requested = Signal(object)  # list[dict]
+    _POST_PANEL_WIDTH_KEY = "waveform/post_processing_panel_width"
 
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
@@ -907,6 +908,12 @@ class WaveformViewer(QWidget):
         self._streaming_traces: dict[str, pg.PlotDataItem] = {}
         self._auto_scroll = True
         self._scroll_window = 0.001  # Default 1ms window
+        self._ui_settings = QSettings("Pulsim", "PulsimGui")
+        self._post_panel_width = max(
+            220,
+            int(self._ui_settings.value(self._POST_PANEL_WIDTH_KEY, 280)),
+        )
+        self._post_processing_capability_enabled = True
 
         # Update timer for batching streaming updates
         self._update_timer = QTimer()
@@ -937,6 +944,7 @@ class WaveformViewer(QWidget):
         # ── Main 3-column splitter ────────────────────────────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        self._main_splitter = splitter
 
         # ── LEFT: Signal list panel ───────────────────────────────────────────
         self._signal_list_panel = SignalListPanel()
@@ -1029,6 +1037,12 @@ class WaveformViewer(QWidget):
         self._clear_btn.clicked.connect(self.clear_traces)
         controls_layout.addWidget(self._clear_btn)
 
+        self._post_panel_toggle_btn = QPushButton("Post")
+        self._post_panel_toggle_btn.setCheckable(True)
+        self._post_panel_toggle_btn.setToolTip("Show post-processing panel")
+        self._post_panel_toggle_btn.toggled.connect(self._toggle_post_processing_panel)
+        controls_layout.addWidget(self._post_panel_toggle_btn)
+
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.VLine)
         sep1.setFixedWidth(1)
@@ -1096,7 +1110,10 @@ class WaveformViewer(QWidget):
         splitter.setStretchFactor(0, 0)   # signal list: fixed
         splitter.setStretchFactor(1, 1)   # plot: expands
         splitter.setStretchFactor(2, 0)   # measurements: fixed
-        splitter.setSizes([200, 700, 280])
+        splitter.setSizes([200, 700, 0])
+        splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._right_panel_tabs.setVisible(False)
+        self._post_panel_toggle_btn.setChecked(False)
 
         layout.addWidget(splitter)
         self._update_manual_signal_add_controls()
@@ -1523,17 +1540,66 @@ class WaveformViewer(QWidget):
         """Forward post-processing requests to the window/service layer."""
         self.post_processing_requested.emit(list(jobs))
 
+    def set_post_processing_capability(self, enabled: bool) -> None:
+        """Enable/disable post-processing access based on backend capability."""
+        self._post_processing_capability_enabled = bool(enabled)
+        if self._post_processing_capability_enabled:
+            self._post_panel_toggle_btn.setEnabled(True)
+            self._post_panel_toggle_btn.setToolTip("Show post-processing panel")
+            self._post_processing_panel.set_capability_enabled(True)
+            return
+
+        self._post_panel_toggle_btn.setChecked(False)
+        self._post_panel_toggle_btn.setEnabled(False)
+        self._post_panel_toggle_btn.setToolTip("Post-processing requires backend ≥ 0.7.0")
+        self._post_processing_panel.set_capability_enabled(
+            False,
+            "Post-processing requires backend ≥ 0.7.0.",
+        )
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._right_panel_tabs.isVisible():
+            sizes = self._main_splitter.sizes()
+            if len(sizes) >= 3 and sizes[2] > 0:
+                self._post_panel_width = max(220, int(sizes[2]))
+                self._ui_settings.setValue(self._POST_PANEL_WIDTH_KEY, self._post_panel_width)
+
+    def _toggle_post_processing_panel(self, visible: bool) -> None:
+        """Expand/collapse right-side panel while preserving previous width."""
+        if visible and not self._post_processing_capability_enabled:
+            self._post_panel_toggle_btn.blockSignals(True)
+            self._post_panel_toggle_btn.setChecked(False)
+            self._post_panel_toggle_btn.blockSignals(False)
+            return
+
+        sizes = self._main_splitter.sizes()
+        if len(sizes) < 3:
+            return
+
+        if visible:
+            self._right_panel_tabs.setVisible(True)
+            right_width = max(220, int(self._post_panel_width))
+            center_width = max(360, sizes[1] - right_width if sizes[1] > right_width else int(sizes[1] * 0.7))
+            self._main_splitter.setSizes([sizes[0], center_width, right_width])
+            self._right_panel_tabs.setCurrentWidget(self._post_processing_panel)
+        else:
+            if sizes[2] > 0:
+                self._post_panel_width = max(220, int(sizes[2]))
+                self._ui_settings.setValue(self._POST_PANEL_WIDTH_KEY, self._post_panel_width)
+            self._main_splitter.setSizes([sizes[0], sizes[1] + max(sizes[2], 0), 0])
+            self._right_panel_tabs.setVisible(False)
+
     def on_post_processing_started(self) -> None:
         """Mark post-processing panel as running."""
         self._post_processing_panel.set_running(True)
 
     def on_post_processing_completed(self, result: PostProcessingResult) -> None:
         """Render a completed post-processing result."""
-        self._post_processing_panel.show_result(result)
+        self._post_processing_panel._on_result(result)
 
     def on_post_processing_failed(self, message: str) -> None:
         """Render post-processing top-level failure."""
-        self._post_processing_panel.show_error(message)
+        self._post_processing_panel._on_error(message)
 
     def _update_signal_combo(self) -> None:
         """Update the signal combo box with available signals."""

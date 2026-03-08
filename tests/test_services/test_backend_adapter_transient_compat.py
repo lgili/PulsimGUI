@@ -568,7 +568,7 @@ def test_transient_keeps_simulation_options_failure_diagnostics_after_fallback()
         return [t_start, t_stop], [[0.0], [1.0]], True, ""
 
     fake_module = SimpleNamespace(
-        __version__="0.6.5",
+        __version__="0.7.0",
         Circuit=_FakeCircuit,
         NewtonOptions=_FakeNewtonOptions,
         Tolerances=_FakeTolerances,
@@ -582,7 +582,7 @@ def test_transient_keeps_simulation_options_failure_diagnostics_after_fallback()
         BackendInfo(
             identifier="pulsim",
             name="Pulsim",
-            version="0.6.5",
+            version="0.7.0",
             status="available",
         ),
     )

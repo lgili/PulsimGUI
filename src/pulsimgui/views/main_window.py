@@ -753,6 +753,9 @@ class MainWindow(QMainWindow):
     def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
         """Apply backend changes and optionally notify the user."""
         self._sync_thermal_service_context()
+        self._waveform_viewer.set_post_processing_capability(
+            self._simulation_service.has_capability("post_processing")
+        )
         self._update_backend_status(info)
         if not notify:
             return

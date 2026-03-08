@@ -60,7 +60,7 @@
       - On change → updates `SimulationSettings.averaged_options`.
 
 ## 5. Post-processing panel (`views/waveform/post_processing_panel.py`)
-- [ ] 5.1 Create `PostProcessingPanel(QWidget)`:
+- [x] 5.1 Create `PostProcessingPanel(QWidget)`:
       - Signal checklist populated from `TransientResult.signals` keys.
       - Job kind combo: TimeDomain / Spectral / PowerEfficiency.
       - Window group: mode (Time/Index/Cycle) + parameter fields that
@@ -73,10 +73,10 @@
           bins scatter plot.
         - PowerEfficiency: numeric labels for P_in, P_out, η, PF.
       - Diagnostic banner (`StatusBanner`) when `PostProcessingJobResult.success == False`.
-- [ ] 5.2 Embed `PostProcessingPanel` as a collapsible sidebar in
+- [x] 5.2 Embed `PostProcessingPanel` as a collapsible sidebar in
       `WaveformViewer` (add `QSplitter` + toggle button; does not change existing
       plot area layout).
-- [ ] 5.3 Connect `PostProcessingService.analysis_completed` →
+- [x] 5.3 Connect `PostProcessingService.analysis_completed` →
       `PostProcessingPanel._on_result`.
 
 ## 6. Bode plot dialog (`bode_plot_dialog.py`)
@@ -107,6 +107,6 @@
       - `PulsimBackend.run_transient` passes `averaged_options` when set.
 
 ## 8. Quality gates
-- [ ] 8.1 All new tests pass under `QT_QPA_PLATFORM=offscreen pytest tests/`.
-- [ ] 8.2 No regressions in existing transient / DC / thermal tests.
-- [ ] 8.3 `openspec validate integrate-core-analysis-features --strict` passes.
+- [x] 8.1 All new tests pass under `QT_QPA_PLATFORM=offscreen pytest tests/`.
+- [x] 8.2 No regressions in existing transient / DC / thermal tests.
+- [x] 8.3 `openspec validate integrate-core-analysis-features --strict` passes.
