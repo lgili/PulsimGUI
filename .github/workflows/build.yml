@@ -59,9 +59,20 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Validate macOS icon assets
+        shell: bash
+        run: |
+          test -f packaging/icons/pulsimgui.icns
+
       - name: Build package
         shell: bash
         run: python scripts/build.py
+
+      - name: Audit macOS app icon
+        shell: bash
+        run: |
+          test -d "dist/PulsimGui.app/Contents/Resources"
+          find "dist/PulsimGui.app/Contents/Resources" -name '*.icns' | grep -q .
 
       - name: Package app bundle as zip
         shell: bash
@@ -114,6 +125,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[build]"
+
+      - name: Ensure Windows app icon (.ico)
+        shell: pwsh
+        run: |
+          python scripts/ensure_windows_icon.py --strict
 
       - name: Verify backend dependency
         shell: pwsh
@@ -208,9 +224,32 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Validate Linux icon assets
+        shell: bash
+        run: |
+          test -f packaging/icons/pulsimgui.png
+          test -f packaging/linux/pulsimgui.desktop
+          grep -q '^Icon=pulsimgui$' packaging/linux/pulsimgui.desktop
+
       - name: Build package
         shell: bash
         run: python scripts/build.py
+
+      - name: Audit Linux AppImage icon assets
+        shell: bash
+        run: |
+          APPIMAGE="$(ls -1 dist/PulsimGui-*-x86_64.AppImage | head -n 1)"
+          test -n "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          rm -rf squashfs-root
+          "$APPIMAGE" --appimage-extract > /dev/null
+          test -f squashfs-root/usr/share/icons/hicolor/256x256/apps/pulsimgui.png
+          if [ -f squashfs-root/pulsimgui.desktop ]; then
+            grep -q '^Icon=pulsimgui$' squashfs-root/pulsimgui.desktop
+          else
+            grep -q '^Icon=pulsimgui$' squashfs-root/usr/share/applications/pulsimgui.desktop
+          fi
+          rm -rf squashfs-root
 
       - name: Create portable tarball
         shell: bash

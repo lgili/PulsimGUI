@@ -7,7 +7,16 @@ from typing import Callable
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QCloseEvent, QColor, QFont, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QFont,
+    QGuiApplication,
+    QMouseEvent,
+    QPainter,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -17,6 +26,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -1413,6 +1423,21 @@ class ScopeWindow(QWidget):
             QToolButton#scopeTraceMenuBtn::menu-indicator {{
                 image: none;
                 width: 0px;
+            }}
+            QToolButton#scopePlotCopyBtn {{
+                background-color: {"rgba(15, 23, 42, 170)" if is_dark else "rgba(255, 255, 255, 190)"};
+                color: {c.foreground};
+                border: 1px solid {c.panel_border};
+                border-radius: 7px;
+                padding: 1px 7px;
+                min-height: 22px;
+                font-size: 10px;
+                font-weight: 600;
+            }}
+            QToolButton#scopePlotCopyBtn:hover {{
+                background-color: {c.primary};
+                color: {c.primary_foreground};
+                border-color: {c.primary};
             }}
             QMenu {{
                 background-color: {c.panel_background};
@@ -2924,6 +2949,16 @@ class ScopeWindow(QWidget):
         scene.sigMouseClicked.connect(on_mouse_clicked)
         self._stacked_plot_interaction_refs.append((on_mouse_moved, on_mouse_clicked))
 
+    def _copy_plot_to_clipboard(self, plot: pg.PlotWidget | None) -> None:
+        """Copy one plot panel image to the system clipboard."""
+        if plot is None:
+            return
+        pixmap = plot.grab()
+        if pixmap.isNull():
+            return
+        QGuiApplication.clipboard().setPixmap(pixmap)
+        self._message_label.setText("Plot image copied to clipboard.")
+
     def _rebuild_stacked_plots(self, result: SimulationResult | None) -> None:
         self._clear_stacked_plots()
 
@@ -3113,7 +3148,26 @@ class ScopeWindow(QWidget):
                 plot.addItem(c2_line)
                 self._stacked_cursor_lines.append((c1_line, c2_line))
 
-            panel_layout.addWidget(plot)
+            plot_container = QWidget()
+            plot_overlay_layout = QGridLayout(plot_container)
+            plot_overlay_layout.setContentsMargins(0, 0, 0, 0)
+            plot_overlay_layout.setSpacing(0)
+            plot_overlay_layout.addWidget(plot, 0, 0)
+            copy_plot_btn = QToolButton(plot_container)
+            copy_plot_btn.setObjectName("scopePlotCopyBtn")
+            copy_plot_btn.setText("Copy")
+            copy_plot_btn.setToolTip("Copy this plot image to clipboard")
+            copy_plot_btn.clicked.connect(
+                lambda _checked=False, target_plot=plot: self._copy_plot_to_clipboard(target_plot)
+            )
+            plot_overlay_layout.addWidget(
+                copy_plot_btn,
+                0,
+                0,
+                alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
+            )
+
+            panel_layout.addWidget(plot_container)
 
             # --- Apply theming ---
             if self._theme is not None:

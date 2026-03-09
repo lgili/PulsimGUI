@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QToolButton
 
 from pulsimgui.models.component import ComponentType
 from pulsimgui.services.simulation_service import SimulationResult
@@ -50,6 +52,52 @@ def test_scope_split_all_groups_restores_dedicated_plots(qapp) -> None:
         assert len(window._plot_widgets) == 4
         for signal_name in ("S1", "S2", "S3", "S4"):
             assert window._plot_group_leader(signal_name) == signal_name
+    finally:
+        window.close()
+
+
+def test_scope_exposes_copy_button_per_plot(qapp) -> None:
+    """Each stacked plot should have one copy button in its corner."""
+    window = ScopeWindow("scope-group-copy-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        copy_buttons = window.findChildren(QToolButton, "scopePlotCopyBtn")
+        assert len(copy_buttons) == len(window._plot_widgets) == 3
+    finally:
+        window.close()
+
+
+def test_scope_copy_plot_to_clipboard_writes_pixmap(monkeypatch, qapp) -> None:
+    """Copy action should store a non-null pixmap in clipboard."""
+    window = ScopeWindow("scope-group-copy-2", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        copied: dict[str, QPixmap] = {}
+
+        class _FakeClipboard:
+            def setPixmap(self, pixmap: QPixmap) -> None:
+                copied["pixmap"] = pixmap
+
+        class _FakePlot:
+            @staticmethod
+            def grab() -> QPixmap:
+                pixmap = QPixmap(32, 20)
+                pixmap.fill(Qt.GlobalColor.white)
+                return pixmap
+
+        monkeypatch.setattr(
+            "pulsimgui.views.scope.scope_window.QGuiApplication.clipboard",
+            lambda: _FakeClipboard(),
+        )
+
+        window._copy_plot_to_clipboard(_FakePlot())
+
+        assert "pixmap" in copied
+        assert not copied["pixmap"].isNull()
+        assert window._message_label.text() == "Plot image copied to clipboard."
     finally:
         window.close()
 
