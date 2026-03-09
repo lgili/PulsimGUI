@@ -796,8 +796,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Signal routing
     ComponentType.SIGNAL_MUX: _default_mux_pins(4),
     ComponentType.SIGNAL_DEMUX: _default_demux_pins(4),
-    ComponentType.GOTO_LABEL: [Pin(0, "NET", 0, 0)],
-    ComponentType.FROM_LABEL: [Pin(0, "NET", 0, 0)],
+    ComponentType.GOTO_LABEL: [Pin(0, "NET", -40, 0)],
+    ComponentType.FROM_LABEL: [Pin(0, "NET", 40, 0)],
 
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],

@@ -1748,56 +1748,70 @@ class _NetLabelItem(ComponentItem):
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
         text = self._label_text()
-        width = max(44.0, min(160.0, 24.0 + float(len(text)) * 7.2))
-        x = -4.0 if self._ARROW_RIGHT else -width + 4.0
-        return self._with_pin_bounds(QRectF(x, -12.0, width, 24.0))
+        width = max(72.0, min(220.0, 30.0 + float(len(text)) * 7.4))
+        x = -6.0 if self._ARROW_RIGHT else -width + 6.0
+        return self._with_pin_bounds(QRectF(x, -13.0, width, 26.0))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         rect = self.boundingRect()
         pin_pos = self._pin_position_by_index(0, QPointF(0, 0))
         text = self._label_text()
 
-        body_color = self._surface_color()
-        stroke = self._line_color()
-        arrow_tip_x = rect.right() if self._ARROW_RIGHT else rect.left()
-        notch_x = rect.left() + 12.0 if self._ARROW_RIGHT else rect.right() - 12.0
+        head_width = 14.0
+        path = QPainterPath()
+        top = rect.top() + 1.0
+        bottom = rect.bottom() - 1.0
 
-        polygon = (
-            QPolygonF(
-                [
-                    QPointF(rect.left(), rect.top()),
-                    QPointF(notch_x, rect.top()),
-                    QPointF(arrow_tip_x, 0.0),
-                    QPointF(notch_x, rect.bottom()),
-                    QPointF(rect.left(), rect.bottom()),
-                ]
+        if self._ARROW_RIGHT:
+            body_end = rect.right() - head_width
+            path.moveTo(QPointF(rect.left(), top))
+            path.lineTo(QPointF(body_end, top))
+            path.lineTo(QPointF(rect.right(), 0.0))
+            path.lineTo(QPointF(body_end, bottom))
+            path.lineTo(QPointF(rect.left(), bottom))
+            path.closeSubpath()
+            lead_end_x = rect.left()
+            text_rect = QRectF(rect.left() + 7.0, rect.top() + 1.0, rect.width() - 31.0, rect.height() - 2.0)
+            chevron = (
+                QPointF(rect.right() - 15.0, -5.0),
+                QPointF(rect.right() - 10.0, 0.0),
+                QPointF(rect.right() - 15.0, 5.0),
             )
-            if self._ARROW_RIGHT
-            else QPolygonF(
-                [
-                    QPointF(rect.right(), rect.top()),
-                    QPointF(notch_x, rect.top()),
-                    QPointF(arrow_tip_x, 0.0),
-                    QPointF(notch_x, rect.bottom()),
-                    QPointF(rect.right(), rect.bottom()),
-                ]
+        else:
+            body_start = rect.left() + head_width
+            path.moveTo(QPointF(rect.right(), top))
+            path.lineTo(QPointF(body_start, top))
+            path.lineTo(QPointF(rect.left(), 0.0))
+            path.lineTo(QPointF(body_start, bottom))
+            path.lineTo(QPointF(rect.right(), bottom))
+            path.closeSubpath()
+            lead_end_x = rect.right()
+            text_rect = QRectF(rect.left() + 24.0, rect.top() + 1.0, rect.width() - 31.0, rect.height() - 2.0)
+            chevron = (
+                QPointF(rect.left() + 15.0, -5.0),
+                QPointF(rect.left() + 10.0, 0.0),
+                QPointF(rect.left() + 15.0, 5.0),
             )
-        )
 
-        painter.setPen(self._symbol_pen(1.8, stroke))
-        painter.setBrush(body_color)
-        painter.drawPolygon(polygon)
+        painter.setPen(self._symbol_pen(1.8, self._line_color()))
+        painter.setBrush(self._surface_color().lighter(102))
+        painter.drawPath(path)
 
         painter.setPen(self._lead_pen(1.8))
-        lead_end_x = rect.left() if self._ARROW_RIGHT else rect.right()
         painter.drawLine(pin_pos, QPointF(lead_end_x, 0.0))
+
+        # PLECS-like directional cue near the arrow head.
+        signal_color = self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
+        painter.setPen(self._symbol_pen(1.7, signal_color))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolyline(QPolygonF(list(chevron)))
 
         painter.setPen(self._symbol_pen(1.0, self._muted_color()))
         font = QFont(painter.font())
         font.setPointSize(8)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(rect.adjusted(6, 1, -6, -1), Qt.AlignmentFlag.AlignCenter, text)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter, text)
 
 
 class GotoLabelItem(_NetLabelItem):

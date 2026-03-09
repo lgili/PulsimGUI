@@ -73,3 +73,25 @@ def test_scope_pin_rejects_unconnected_control_tap_point(qapp) -> None:
         )
     finally:
         window.close()
+
+
+def test_goto_from_pins_accept_circuit_and_signal_domains(qapp) -> None:
+    """Goto/From pins should connect with both electrical and control domains."""
+    window = MainWindow()
+    try:
+        circuit = window._current_circuit()
+        goto = Component(type=ComponentType.GOTO_LABEL, name="G1", x=180.0, y=120.0)
+        from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=260.0, y=120.0)
+        resistor = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=120.0)
+        controller = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=340.0, y=120.0)
+        circuit.add_component(goto)
+        circuit.add_component(from_label)
+        circuit.add_component(resistor)
+        circuit.add_component(controller)
+
+        assert window._is_valid_wire_measurement_connection((goto, 0), (resistor, 1))
+        assert window._is_valid_wire_measurement_connection((resistor, 1), (goto, 0))
+        assert window._is_valid_wire_measurement_connection((from_label, 0), (controller, 0))
+        assert window._is_valid_wire_measurement_connection((controller, 0), (from_label, 0))
+    finally:
+        window.close()
