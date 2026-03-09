@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -533,6 +534,8 @@ class PropertiesPanel(QWidget):
         self._mux_channel_layout = None
         self._demux_channel_layout = None
         self._cblock_path_edit: AutoSelectLineEdit | None = None
+        self._cblock_mode_combo: QComboBox | None = None
+        self._cblock_source_editor: QPlainTextEdit | None = None
         self._cblock_extra_cflags_edit: AutoSelectLineEdit | None = None
         self._cblock_create_btn: QPushButton | None = None
         self._cblock_open_btn: QPushButton | None = None
@@ -865,6 +868,8 @@ class PropertiesPanel(QWidget):
         self._mux_channel_layout = None
         self._demux_channel_layout = None
         self._cblock_path_edit = None
+        self._cblock_mode_combo = None
+        self._cblock_source_editor = None
         self._cblock_extra_cflags_edit = None
         self._cblock_create_btn = None
         self._cblock_open_btn = None
@@ -1252,7 +1257,20 @@ class PropertiesPanel(QWidget):
             return
 
         params = self._component.parameters
-        params["implementation"] = "source"
+        implementation = str(params.get("implementation", "source") or "source").strip().lower()
+        if implementation not in {"source", "library"}:
+            implementation = "source"
+        params["implementation"] = implementation
+        params.setdefault("lib_path", "")
+        params.setdefault("source_code", "")
+
+        mode_combo = QComboBox()
+        mode_combo.addItem("Source (.c)", "source")
+        mode_combo.addItem("Library (.so/.dylib/.dll)", "library")
+        mode_combo.setCurrentIndex(1 if implementation == "library" else 0)
+        mode_combo.currentIndexChanged.connect(self._on_cblock_mode_changed)
+        self._cblock_mode_combo = mode_combo
+        self._params_layout.addRow("Mode:", mode_combo)
 
         n_inputs_spin = QSpinBox()
         n_inputs_spin.setRange(*C_BLOCK_IO_LIMITS)
@@ -1329,6 +1347,13 @@ class PropertiesPanel(QWidget):
         self._cblock_path_edit = path_edit
         self._params_layout.addRow("Path:", path_row)
 
+        source_editor = QPlainTextEdit(str(params.get("source_code", "") or ""))
+        source_editor.setPlaceholderText("Optional source snippet for quick editing/notes")
+        source_editor.setMinimumHeight(90)
+        source_editor.textChanged.connect(self._on_cblock_source_editor_changed)
+        self._cblock_source_editor = source_editor
+        self._params_layout.addRow("Source:", source_editor)
+
         flags = params.get("extra_cflags", [])
         if isinstance(flags, list):
             flags_text = ", ".join(str(item) for item in flags if str(item).strip())
@@ -1382,21 +1407,56 @@ class PropertiesPanel(QWidget):
             return
         path = self._cblock_path_edit.text().strip().replace("\\", "/")
         self._cblock_path_edit.setText(path)
-        self._component.parameters["source"] = path
-        self.property_changed.emit("source", path)
+        mode = self._active_cblock_mode()
+        if mode == "library":
+            self._component.parameters["lib_path"] = path
+            self.property_changed.emit("lib_path", path)
+        else:
+            self._component.parameters["source"] = path
+            self.property_changed.emit("source", path)
 
     def _on_browse_cblock_path(self) -> None:
         start = self._cblock_path_edit.text().strip() if self._cblock_path_edit else ""
+        mode = self._active_cblock_mode()
+        title = "Import C source file" if mode == "source" else "Import compiled C-Block library"
+        file_filter = (
+            "C source (*.c);;All files (*)"
+            if mode == "source"
+            else "Shared library (*.so *.dylib *.dll);;All files (*)"
+        )
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Import C source file",
+            title,
             start,
-            "C source (*.c);;All files (*)",
+            file_filter,
         )
         if not selected or self._cblock_path_edit is None:
             return
         self._cblock_path_edit.setText(selected)
         self._on_cblock_path_changed()
+
+    def _on_cblock_mode_changed(self) -> None:
+        if not self._component:
+            return
+        mode = self._active_cblock_mode()
+        self._component.parameters["implementation"] = mode
+        self.property_changed.emit("implementation", mode)
+        self._refresh_cblock_visibility()
+
+    def _on_cblock_source_editor_changed(self) -> None:
+        if not self._component or self._cblock_source_editor is None:
+            return
+        text = self._cblock_source_editor.toPlainText()
+        self._component.parameters["source_code"] = text
+        self.property_changed.emit("source_code", text)
+
+    def _active_cblock_mode(self) -> str:
+        if self._cblock_mode_combo is None:
+            return "source"
+        mode = self._cblock_mode_combo.currentData()
+        if mode in {"source", "library"}:
+            return str(mode)
+        return "source"
 
     def _on_cblock_extra_cflags_changed(self) -> None:
         if not self._component or self._cblock_extra_cflags_edit is None:
@@ -1474,6 +1534,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._component is None:
             return
 
+        if self._active_cblock_mode() == "library":
+            self._show_cblock_build_message(
+                title="C-Block Mode",
+                message="Switch to Source mode to create a starter C file.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
         start = ""
         if self._cblock_path_edit is not None:
             start = self._cblock_path_edit.text().strip()
@@ -1521,7 +1589,9 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._cblock_path_edit is not None:
             self._cblock_path_edit.setText(normalized_path)
         self._component.parameters["source"] = normalized_path
+        self._component.parameters["source_code"] = source_code
         self.property_changed.emit("source", normalized_path)
+        self.property_changed.emit("source_code", source_code)
 
         self._show_cblock_build_message(
             title="C-Block File Created",
@@ -1604,6 +1674,36 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             return
 
         params = self._component.parameters
+        mode = self._active_cblock_mode()
+
+        if mode == "library":
+            lib_raw = str(params.get("lib_path", "") or "").strip()
+            if not lib_raw and self._cblock_path_edit is not None:
+                lib_raw = self._cblock_path_edit.text().strip()
+            if not lib_raw:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Import a compiled library before validating.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            lib_path = Path(lib_raw).expanduser()
+            if not lib_path.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="C-Block library not found.",
+                    details=lib_path.as_posix(),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            self._show_cblock_build_message(
+                title="C-Block Build",
+                message="C-Block library path is valid.",
+                details=lib_path.as_posix(),
+                icon=QMessageBox.Icon.Information,
+            )
+            return
+
         try:
             n_inputs = int(params.get("n_inputs", 1) or 1)
             n_outputs = int(params.get("n_outputs", 1) or 1)
@@ -1710,17 +1810,32 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             pass
 
     def _refresh_cblock_visibility(self) -> None:
+        mode = self._active_cblock_mode()
+        if self._component is not None:
+            self._component.parameters["implementation"] = mode
+
         if self._cblock_path_edit is not None and self._component is not None:
             self._cblock_path_edit.blockSignals(True)
-            self._cblock_path_edit.setText(str(self._component.parameters.get("source", "") or ""))
-            self._cblock_path_edit.setPlaceholderText("Select a source file")
+            param_name = "source" if mode == "source" else "lib_path"
+            placeholder = "Select a source file" if mode == "source" else "Select a compiled library"
+            self._cblock_path_edit.setText(str(self._component.parameters.get(param_name, "") or ""))
+            self._cblock_path_edit.setPlaceholderText(placeholder)
             self._cblock_path_edit.blockSignals(False)
+        if self._cblock_source_editor is not None and self._component is not None:
+            self._cblock_source_editor.setVisible(mode == "source")
+            self._cblock_source_editor.blockSignals(True)
+            self._cblock_source_editor.setPlainText(
+                str(self._component.parameters.get("source_code", "") or "")
+            )
+            self._cblock_source_editor.blockSignals(False)
         if self._cblock_create_btn is not None:
-            self._cblock_create_btn.setVisible(True)
+            self._cblock_create_btn.setVisible(mode == "source")
         if self._cblock_open_btn is not None:
-            self._cblock_open_btn.setVisible(True)
+            self._cblock_open_btn.setVisible(mode == "source")
         if self._cblock_compile_btn is not None:
-            self._cblock_compile_btn.setText("Test Compilation")
+            self._cblock_compile_btn.setText(
+                "Test Compilation" if mode == "source" else "Validate Library"
+            )
 
     # --- Utilities ----------------------------------------------------------------
 
