@@ -64,6 +64,7 @@ class CircuitConverter:
         ComponentType.SUBTRACTOR: "subtraction",
         ComponentType.VOLTAGE_PROBE_GND: "voltage_probe",
     }
+    _CURRENT_PROBE_BYPASS_RESISTANCE_OHMS = 1e-4
 
     _ATTRIBUTE_ALIASES: dict[str, tuple[str, ...]] = {
         "vce_sat": ("v_ce_sat",),
@@ -591,6 +592,38 @@ class CircuitConverter:
                     "dead_time": params.get("dead_time", 0.0),
                 }
                 self._add_voltage_source(circuit, name, npos, nneg, waveform)
+            return
+
+        if comp_type == ComponentType.CURRENT_PROBE:
+            # Keep IN/OUT electrically continuous; the probe must not open the branch.
+            n_in, n_out = self._require_nodes(name, nodes, 2)
+            try:
+                bypass_r = float(
+                    params.get("series_resistance", self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS)
+                )
+            except (TypeError, ValueError):
+                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+            if bypass_r <= 0.0:
+                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+
+            circuit.add_resistor(
+                f"__IP_BYPASS_{name}",
+                self._node_index(circuit, n_in, node_cache),
+                self._node_index(circuit, n_out, node_cache),
+                bypass_r,
+            )
+
+            if hasattr(circuit, "add_virtual_component"):
+                virtual_params = dict(params)
+                virtual_params.setdefault("series_resistance", bypass_r)
+                self._add_virtual_component(
+                    circuit,
+                    comp_type,
+                    name,
+                    nodes,
+                    virtual_params,
+                    node_cache,
+                )
             return
 
         if hasattr(circuit, "add_virtual_component"):
@@ -1341,6 +1374,47 @@ class CircuitConverter:
                     continue
                 signal_driver_by_node.setdefault(node_name, channel_name)
 
+        known_control_channels = {
+            str(channel_name).strip()
+            for channel_name in signal_driver_by_node.values()
+            if str(channel_name or "").strip()
+        }
+        known_control_channels_lut = {
+            channel_name.lower(): channel_name for channel_name in known_control_channels
+        }
+
+        def _map_cblock_inputs_from_wiring(
+            *,
+            component_name: str,
+            pin_nodes: list[str],
+            n_inputs: int,
+        ) -> list[str]:
+            mapped: list[str] = []
+            for input_index in range(n_inputs):
+                node_name = (
+                    str(pin_nodes[input_index] or "").strip()
+                    if input_index < len(pin_nodes)
+                    else ""
+                )
+                if not node_name:
+                    raise CircuitConversionError(
+                        "C-Block "
+                        f"'{component_name}' input IN{input_index} is unconnected. "
+                        "Connect it to a control signal source "
+                        "(for example probe OUT, PI/PID OUT, SUM/SUB OUT, CONSTANT OUT) "
+                        "or set metadata 'inputs'."
+                    )
+                channel_name = signal_driver_by_node.get(node_name, "")
+                if not channel_name:
+                    raise CircuitConversionError(
+                        "C-Block "
+                        f"'{component_name}' input IN{input_index} must be driven by a "
+                        "control signal output. "
+                        f"No channel mapping was found for node '{node_name}'."
+                    )
+                mapped.append(channel_name)
+            return mapped
+
         overrides: dict[str, dict[str, Any]] = {}
         for component in components:
             comp_id = str(component.get("id") or "").strip()
@@ -1368,6 +1442,7 @@ class CircuitConverter:
             explicit_inputs = self._parse_cblock_input_channel_list(
                 params.get("inputs", params.get("input_channels"))
             )
+            mapped_inputs: list[str] | None = None
             if explicit_inputs:
                 if len(explicit_inputs) != n_inputs:
                     raise CircuitConversionError(
@@ -1375,32 +1450,39 @@ class CircuitConverter:
                         f"'{component_name}' expects n_inputs={n_inputs}, "
                         f"but metadata declares {len(explicit_inputs)} channels."
                     )
-                mapped_inputs = explicit_inputs
+
+                normalized_explicit: list[str] = []
+                unresolved_explicit: list[str] = []
+                for channel_name in explicit_inputs:
+                    raw_name = str(channel_name or "").strip()
+                    if not raw_name:
+                        continue
+                    canonical_name = known_control_channels_lut.get(raw_name.lower(), raw_name)
+                    normalized_explicit.append(canonical_name)
+                    if canonical_name not in known_control_channels:
+                        unresolved_explicit.append(raw_name)
+
+                if not unresolved_explicit:
+                    mapped_inputs = normalized_explicit
+                else:
+                    # Stale metadata can survive project edits even when GUI no longer
+                    # exposes the raw input-channel list. If wiring is available, prefer
+                    # deriving channels from IN pins to self-heal these projects.
+                    try:
+                        mapped_inputs = _map_cblock_inputs_from_wiring(
+                            component_name=component_name,
+                            pin_nodes=pin_nodes,
+                            n_inputs=n_inputs,
+                        )
+                    except CircuitConversionError:
+                        # Preserve legacy behavior when no wiring exists (library mode).
+                        mapped_inputs = normalized_explicit
             else:
-                mapped_inputs: list[str] = []
-                for input_index in range(n_inputs):
-                    node_name = (
-                        str(pin_nodes[input_index] or "").strip()
-                        if input_index < len(pin_nodes)
-                        else ""
-                    )
-                    if not node_name:
-                        raise CircuitConversionError(
-                            "C-Block "
-                            f"'{component_name}' input IN{input_index} is unconnected. "
-                            "Connect it to a control signal source "
-                            "(for example probe OUT, PI/PID OUT, SUM/SUB OUT, CONSTANT OUT) "
-                            "or set metadata 'inputs'."
-                        )
-                    channel_name = signal_driver_by_node.get(node_name, "")
-                    if not channel_name:
-                        raise CircuitConversionError(
-                            "C-Block "
-                            f"'{component_name}' input IN{input_index} must be driven by a "
-                            "control signal output. "
-                            f"No channel mapping was found for node '{node_name}'."
-                        )
-                    mapped_inputs.append(channel_name)
+                mapped_inputs = _map_cblock_inputs_from_wiring(
+                    component_name=component_name,
+                    pin_nodes=pin_nodes,
+                    n_inputs=n_inputs,
+                )
 
             cblock_override: dict[str, Any] = {
                 "inputs": list(mapped_inputs),

@@ -385,6 +385,65 @@ def test_converter_derives_cblock_input_channels_from_signal_wiring() -> None:
     assert "input_channel_1" not in metadata
 
 
+def test_converter_falls_back_to_wired_cblock_inputs_when_metadata_is_stale() -> None:
+    """Stale C-Block input channel metadata should be auto-healed from pin wiring."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["10"],
+            },
+            {
+                "id": "xout",
+                "type": "VOLTAGE_PROBE",
+                "name": "Xout",
+                "parameters": {},
+                "pin_nodes": ["2", "0", "11"],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                    "inputs": ["Xil", "Xout"],
+                },
+                "pin_nodes": ["10", "11", "12"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "IN1"},
+                    {"index": 2, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "xout": ["2", "0", "11"],
+            "cb1": ["10", "11", "12"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    _comp_type, nodes, _numeric, metadata = by_name["CB1"]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"K1\", \"Xout\"]"
+
+
 def test_converter_emits_constant_cblock_input_as_probe_channel_when_supported() -> None:
     """Backends that support sources should get CONSTANT->C_BLOCK channels as probe channels."""
     fake_module = SimpleNamespace(Circuit=_CircuitWithVirtualAndSource)
@@ -821,6 +880,39 @@ def test_converter_maps_current_probe_to_virtual_backend_component() -> None:
     assert comp_type == "current_probe"
     assert nodes == [1, 2]
     assert metadata.get("target_component") == "R1"
+    assert ("__IP_BYPASS_IP1", 1, 2, 1e-4) in converted.devices
+
+
+def test_converter_current_probe_keeps_branch_continuity_without_virtual_support() -> None:
+    """Current probe must not open the branch even when virtual probes are unavailable."""
+    fake_module = SimpleNamespace(Circuit=_CircuitNoAddNode)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "ip1",
+                "type": "CURRENT_PROBE",
+                "name": "IP1",
+                "parameters": {},
+                "pin_nodes": ["1", "2", ""],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 10.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"ip1": ["1", "2", ""], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VIN", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert ("__IP_BYPASS_IP1", 1, 2, 1e-4) in converted.devices
+    assert ("R1", 2, 0, 10.0) in converted.devices
 
 
 def test_converter_maps_power_probe_to_virtual_backend_component() -> None:
