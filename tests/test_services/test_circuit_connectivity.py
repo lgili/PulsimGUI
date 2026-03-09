@@ -786,6 +786,114 @@ def test_converter_infers_cblock_pwm_duty_channel_from_wiring() -> None:
     assert gate == 0
 
 
+def test_converter_virtual_pwm_drops_period_locked_sample_time() -> None:
+    """Virtual PWM should avoid sample_time values that lock carrier at phase reset."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "examples/cblocks/buck_pi_controller.c"},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {
+                    "frequency": 10000.0,
+                    "duty_cycle": 0.5,
+                    "duty_min": 0.0,
+                    "duty_max": 0.95,
+                    "sample_time": 1e-4,
+                },
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {"cb1": ["9", "7"], "pwm1": ["2", "7"], "m1": ["10", "2", "0"]},
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "PWM1" in by_name
+    _ptype, _nodes, pwm_numeric, pwm_meta = by_name["PWM1"]
+    assert pwm_meta.get("duty_from_channel") == "CB1"
+    assert pwm_meta.get("target_component") == "M1"
+    assert pwm_numeric.get("sample_time") == pytest.approx(0.0)
+    assert pwm_numeric.get("sample_period") == pytest.approx(0.0)
+
+
+def test_converter_virtual_pwm_keeps_fast_sample_time() -> None:
+    """Virtual PWM should preserve sample_time values well below switching period."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "examples/cblocks/buck_pi_controller.c"},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {
+                    "frequency": 10000.0,
+                    "duty_cycle": 0.5,
+                    "duty_min": 0.0,
+                    "duty_max": 0.95,
+                    "sample_time": 1e-6,
+                },
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {"cb1": ["9", "7"], "pwm1": ["2", "7"], "m1": ["10", "2", "0"]},
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "PWM1" in by_name
+    _ptype, _nodes, pwm_numeric, _pwm_meta = by_name["PWM1"]
+    assert pwm_numeric.get("sample_time") == pytest.approx(1e-6)
+    assert pwm_numeric.get("sample_period") == pytest.approx(1e-6)
+
+
 def test_converter_normalizes_explicit_cblock_duty_channel_to_first_output() -> None:
     """Explicit C-Block duty binding should be normalized to the first output channel."""
     fake_module = SimpleNamespace(

@@ -55,20 +55,20 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     const double* in,
     double* out)
 {
-    /* Tuned for the example:
-     * - fsw = 40 kHz
-     * - Vref = 24 V
-     * - Vin = 12 V
+    /* Tuned for this demo operating point:
+     * - fsw = 10 kHz
+     * - Vin = 5 V
+     * - Vref = 10 V
      */
-    const double kp_v = 0.05;
-    const double ki_v = 10.0;
-    const double kp_i = 0.03;
-    const double ki_i = 5.0;
-    const double ff_gain = 0.18;
+    const double kp_v = 0.25;
+    const double ki_v = 140.0;
+    const double kp_i = 0.07;
+    const double ki_i = 20.0;
+    const double ff_gain = 1.0;
 
     const double iref_min = 0.0;
     const double duty_min = 0.02;
-    const double duty_max = 0.80;
+    const double duty_max = 0.92;
 
     BoostCtrlState* st = (BoostCtrlState*)ctx;
     if (!st) return -2;

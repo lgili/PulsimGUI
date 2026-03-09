@@ -565,12 +565,14 @@ class CircuitConverter:
                 or bool(str(params.get("target_component") or "").strip())
             )
             if use_virtual_pwm:
+                virtual_params = dict(params)
+                self._sanitize_virtual_pwm_timing(virtual_params)
                 self._add_virtual_component(
                     circuit,
                     comp_type,
                     name,
                     nodes,
-                    params,
+                    virtual_params,
                     node_cache,
                 )
                 return
@@ -1903,6 +1905,39 @@ class CircuitConverter:
             normalized.setdefault("v_low", 0.0)
 
         return normalized
+
+    def _sanitize_virtual_pwm_timing(self, params: dict[str, Any]) -> None:
+        """Prevent virtual PWM carrier lock when sample interval matches switching period.
+
+        Some backend builds evaluate virtual PWM carrier only at control sampling
+        instants. If ``sample_time`` is equal to ``1/frequency``, the carrier is
+        repeatedly sampled at the reset phase and can appear frozen at 0.
+        """
+        try:
+            frequency = float(params.get("frequency", 0.0))
+        except (TypeError, ValueError):
+            return
+        if frequency <= 0.0:
+            return
+
+        sample_time: float | None = None
+        for key in ("sample_time", "sample_period"):
+            if key not in params:
+                continue
+            try:
+                candidate = float(params.get(key))
+            except (TypeError, ValueError):
+                continue
+            if candidate > 0.0:
+                sample_time = candidate
+                break
+        if sample_time is None:
+            return
+
+        switching_period = 1.0 / frequency
+        if sample_time >= switching_period * (1.0 - 1e-12):
+            params["sample_time"] = 0.0
+            params["sample_period"] = 0.0
 
     def _as_float(self, value: Any, *, default: float) -> float:
         try:
