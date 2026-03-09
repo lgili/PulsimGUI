@@ -2,6 +2,7 @@
 
 from pulsimgui.models.component import (
     CONNECTION_DOMAIN_ANY,
+    CONNECTION_DOMAIN_SIGNAL,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
     THERMAL_PORT_PARAMETER,
     THERMAL_PORT_PIN_NAME,
@@ -162,6 +163,12 @@ class TestComponent:
         assert cblock.parameters["n_outputs"] == 1
         assert [pin.name for pin in cblock.pins] == ["IN0", "OUT"]
 
+    def test_cblock_pins_use_signal_domain(self):
+        cblock = Component(type=ComponentType.C_BLOCK, name="CB1")
+
+        assert pin_connection_domain(cblock, 0) == CONNECTION_DOMAIN_SIGNAL
+        assert pin_connection_domain(cblock, 1) == CONNECTION_DOMAIN_SIGNAL
+
     def test_thermal_port_default_is_disabled(self):
         resistor = Component(type=ComponentType.RESISTOR)
         assert resistor.parameters[THERMAL_PORT_PARAMETER] is False
@@ -293,8 +300,11 @@ class TestComponent:
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")
         v_probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1")
         resistor = Component(type=ComponentType.RESISTOR, name="R1")
+        pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1")
 
         assert can_connect_measurement_pins(scope, 0, v_probe, 2)
+        assert can_connect_measurement_pins(scope, 0, pi, 1)
+        assert not can_connect_measurement_pins(scope, 0, pi, 0)
         assert not can_connect_measurement_pins(scope, 0, resistor, 0)
 
     def test_scope_connection_rules_for_thermal_outputs(self):
@@ -313,6 +323,8 @@ class TestComponent:
         assert scope.parameters["channel_count"] == 6
         assert len(scope.pins) == 6
         assert [pin.name for pin in scope.pins] == ["CH1", "CH2", "CH3", "CH4", "CH5", "CH6"]
+        constant = Component(type=ComponentType.CONSTANT, name="K1")
+        assert can_connect_measurement_pins(scope, 3, constant, 0)
 
     def test_scope_channel_count_allows_up_to_sixteen_channels(self):
         scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1")
@@ -322,3 +334,18 @@ class TestComponent:
         assert len(scope.pins) == 16
         assert scope.pins[0].name == "CH1"
         assert scope.pins[-1].name == "CH16"
+
+    def test_control_signal_links_are_not_limited_to_scope_only_routing(self):
+        constant = Component(type=ComponentType.CONSTANT, name="K1")
+        cblock = Component(type=ComponentType.C_BLOCK, name="CB1")
+        pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1")
+        pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1")
+        v_probe = Component(type=ComponentType.VOLTAGE_PROBE, name="VP1")
+        v_probe_gnd = Component(type=ComponentType.VOLTAGE_PROBE_GND, name="X1")
+        i_probe = Component(type=ComponentType.CURRENT_PROBE, name="IP1")
+
+        assert can_connect_measurement_pins(constant, 0, cblock, 0)
+        assert can_connect_measurement_pins(pi, 1, pwm, 1)
+        assert can_connect_measurement_pins(v_probe, 2, cblock, 0)
+        assert can_connect_measurement_pins(v_probe_gnd, 1, cblock, 0)
+        assert can_connect_measurement_pins(i_probe, 2, cblock, 0)

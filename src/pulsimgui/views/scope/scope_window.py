@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
@@ -820,18 +821,41 @@ class ScopeWindow(QWidget):
                 missing_channels.append(binding.display_name)
                 continue
 
+            binding_found = False
+            binding_missing: list[str] = []
             for idx, signal in enumerate(binding.signals):
                 base_label = self._format_signal_label(binding, signal, idx)
                 label = self._ensure_unique_label(base_label, subset.signals)
                 if not signal.signal_key:
-                    missing_channels.append(label)
+                    binding_missing.append(label)
                     continue
-                series = result.signals.get(signal.signal_key)
-                if series:
-                    subset.signals[label] = list(series)
+                resolved_series = self._resolve_signal_series(result, signal)
+                if resolved_series:
+                    subset.signals[label] = resolved_series
                     found_channels.append(label)
+                    binding_found = True
                 else:
-                    missing_channels.append(label)
+                    binding_missing.append(label)
+
+            if not binding_found and self._scope_type == ComponentType.ELECTRICAL_SCOPE:
+                node_series = self._resolve_binding_node_voltage_series(result, binding)
+                if node_series:
+                    node_ref = str(binding.node_label or binding.node_id or "").strip()
+                    node_label = f"V({node_ref})" if node_ref else "V(node)"
+                    fallback_name = self._ensure_unique_label(
+                        f"{binding.channel_label}: {node_label}",
+                        subset.signals,
+                    )
+                    subset.signals[fallback_name] = node_series
+                    found_channels.append(fallback_name)
+                    binding_found = True
+
+            if binding_found:
+                if len(binding_missing) < len(binding.signals):
+                    # Keep partial diagnostics when one of multiple mapped signals is absent.
+                    missing_channels.extend(binding_missing)
+            else:
+                missing_channels.extend(binding_missing)
 
         # Thermal scopes can still render backend-native thermal traces even when
         # users have not wired dedicated TH pins yet.
@@ -846,6 +870,284 @@ class ScopeWindow(QWidget):
         self._rebuild_stacked_plots(self._current_result)
 
         self._message_label.setText(self._format_status(found_channels, missing_channels))
+
+    def _resolve_signal_series(
+        self,
+        result: SimulationResult,
+        signal: ScopeSignal,
+    ) -> list[float] | None:
+        """Resolve a bound signal key against result channels with metadata fallback."""
+        key = str(signal.signal_key or "").strip()
+        if not key:
+            return None
+
+        series = result.signals.get(key)
+        if series is not None:
+            values = list(series)
+            return values if values else None
+
+        casefold_key = self._find_casefold_signal_key(result, key)
+        if casefold_key is not None:
+            values = list(result.signals.get(casefold_key, []))
+            return values if values else None
+
+        metadata_key = self._find_metadata_matched_signal_key(result, key)
+        if metadata_key is not None:
+            values = list(result.signals.get(metadata_key, []))
+            return values if values else None
+
+        fuzzy_key = self._find_fuzzy_signal_key(result, key)
+        if fuzzy_key is not None:
+            values = list(result.signals.get(fuzzy_key, []))
+            return values if values else None
+
+        return None
+
+    @staticmethod
+    def _find_casefold_signal_key(result: SimulationResult, expected_key: str) -> str | None:
+        """Find a result signal key by case-insensitive exact match."""
+        expected = str(expected_key or "").strip().casefold()
+        if not expected:
+            return None
+        for raw_name in result.signals.keys():
+            name = str(raw_name or "").strip()
+            if name.casefold() == expected:
+                return name
+        return None
+
+    @staticmethod
+    def _canonical_signal_token(value: str | None) -> str:
+        """Normalize a signal token for fuzzy matching."""
+        token = str(value or "").strip().lower()
+        if not token:
+            return ""
+        return "".join(ch for ch in token if ch.isalnum())
+
+    @staticmethod
+    def _split_signal_key(key: str) -> tuple[str, str]:
+        """Split `component.qualifier` signal keys into source and qualifier."""
+        text = str(key or "").strip()
+        if not text:
+            return "", ""
+        if "." in text:
+            source, qualifier = text.split(".", 1)
+            return source.strip(), qualifier.strip()
+        wrapped = re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*\(([^)]+)\)$", text)
+        if wrapped:
+            return wrapped.group(1).strip(), ""
+        return text, ""
+
+    @staticmethod
+    def _normalize_qualifier(value: str | None) -> str:
+        """Normalize output qualifiers for resilient C-Block/control matching."""
+        qualifier = "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum())
+        if qualifier == "out":
+            return "out0"
+        return qualifier
+
+    @classmethod
+    def _candidate_qualifier(cls, channel_name: str) -> str:
+        """Infer qualifier from backend virtual channel naming."""
+        _source, qualifier = cls._split_signal_key(channel_name)
+        if qualifier:
+            return qualifier
+        match = re.search(r"(out\d+|duty)$", str(channel_name or "").strip(), re.IGNORECASE)
+        return match.group(1) if match else ""
+
+    @classmethod
+    def _find_metadata_matched_signal_key(
+        cls,
+        result: SimulationResult,
+        expected_key: str,
+    ) -> str | None:
+        """Match channels by virtual metadata when backend key naming differs."""
+        stats = result.statistics if isinstance(result.statistics, dict) else {}
+        metadata = stats.get("virtual_channel_metadata")
+        if not isinstance(metadata, dict) or not metadata:
+            return None
+
+        expected_source, expected_qualifier = cls._split_signal_key(expected_key)
+        expected_source_token = cls._canonical_signal_token(expected_source)
+        expected_qualifier_token = cls._normalize_qualifier(expected_qualifier)
+        if not expected_source_token:
+            expected_source_token = cls._canonical_signal_token(expected_key)
+        if not expected_source_token:
+            return None
+
+        scored: list[tuple[int, int, str]] = []
+        for raw_name, metadata_entry in metadata.items():
+            channel_name = str(raw_name or "").strip()
+            if not channel_name or channel_name not in result.signals:
+                continue
+
+            source_component = cls._virtual_metadata_field(metadata_entry, "source_component")
+            source_token = cls._canonical_signal_token(source_component)
+            if not source_token:
+                source_guess, _ = cls._split_signal_key(channel_name)
+                source_token = cls._canonical_signal_token(source_guess)
+
+            if source_token and source_token != expected_source_token:
+                continue
+            if not source_token:
+                channel_token = cls._canonical_signal_token(channel_name)
+                if not channel_token.startswith(expected_source_token):
+                    continue
+
+            score = 0
+            if source_token == expected_source_token:
+                score += 30
+            domain = cls._virtual_metadata_field(metadata_entry, "domain").lower()
+            if domain == "control":
+                score += 3
+
+            candidate_qualifier = cls._normalize_qualifier(cls._candidate_qualifier(channel_name))
+            if expected_qualifier_token:
+                if candidate_qualifier == expected_qualifier_token:
+                    score += 20
+                elif (
+                    candidate_qualifier
+                    and (
+                        expected_qualifier_token in candidate_qualifier
+                        or candidate_qualifier in expected_qualifier_token
+                    )
+                ):
+                    score += 12
+            elif candidate_qualifier in {"", "out0"}:
+                score += 5
+
+            scored.append((score, -len(channel_name), channel_name))
+
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+        return scored[0][2]
+
+    @classmethod
+    def _find_fuzzy_signal_key(
+        cls,
+        result: SimulationResult,
+        expected_key: str,
+    ) -> str | None:
+        """Fallback matcher for control channels when metadata is unavailable."""
+        expected_source, expected_qualifier = cls._split_signal_key(expected_key)
+        expected_source_token = cls._canonical_signal_token(expected_source)
+        expected_qualifier_token = cls._normalize_qualifier(expected_qualifier)
+        if not expected_source_token:
+            expected_source_token = cls._canonical_signal_token(expected_key)
+        if not expected_source_token:
+            return None
+
+        scored: list[tuple[int, int, str]] = []
+        for raw_name in result.signals.keys():
+            channel_name = str(raw_name or "").strip()
+            if not channel_name:
+                continue
+
+            upper = channel_name.upper()
+            # Skip canonical electrical/thermal channels when matching control.
+            if upper.startswith(("V(", "I(", "VP(", "IP(", "PP(", "T(", "TJ(", "TEMP(")):
+                continue
+
+            source_guess, qualifier_guess = cls._split_signal_key(channel_name)
+            source_token = cls._canonical_signal_token(source_guess)
+            channel_token = cls._canonical_signal_token(channel_name)
+
+            source_match = False
+            if source_token:
+                if source_token == expected_source_token:
+                    source_match = True
+                elif (
+                    expected_source_token in source_token
+                    or source_token in expected_source_token
+                ):
+                    source_match = True
+            elif (
+                expected_source_token in channel_token
+                or channel_token in expected_source_token
+            ):
+                source_match = True
+
+            if not source_match:
+                continue
+
+            score = 0
+            if source_token == expected_source_token:
+                score += 24
+            else:
+                score += 10
+
+            candidate_qualifier = cls._normalize_qualifier(qualifier_guess)
+            if not candidate_qualifier:
+                candidate_qualifier = cls._normalize_qualifier(cls._candidate_qualifier(channel_name))
+
+            if expected_qualifier_token:
+                if candidate_qualifier == expected_qualifier_token:
+                    score += 16
+                elif (
+                    candidate_qualifier
+                    and (
+                        expected_qualifier_token in candidate_qualifier
+                        or candidate_qualifier in expected_qualifier_token
+                    )
+                ):
+                    score += 8
+                elif expected_qualifier_token == "out0" and candidate_qualifier in {"", "out"}:
+                    score += 6
+            elif candidate_qualifier in {"", "out0"}:
+                score += 4
+
+            scored.append((score, -len(channel_name), channel_name))
+
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+        return scored[0][2]
+
+    @classmethod
+    def _resolve_binding_node_voltage_series(
+        cls,
+        result: SimulationResult,
+        binding: ScopeChannelBinding,
+    ) -> list[float] | None:
+        """Resolve fallback V(node) series for scopes bound to control nets."""
+        candidates = cls._node_voltage_signal_candidates(binding)
+        if not candidates:
+            return None
+
+        for candidate in candidates:
+            series = result.signals.get(candidate)
+            if series is not None:
+                values = list(series)
+                if values:
+                    return values
+            matched = cls._find_casefold_signal_key(result, candidate)
+            if matched is None:
+                continue
+            values = list(result.signals.get(matched, []))
+            if values:
+                return values
+        return None
+
+    @staticmethod
+    def _node_voltage_signal_candidates(binding: ScopeChannelBinding) -> list[str]:
+        """Build candidate signal keys for node-voltage fallback lookup."""
+        tokens: list[str] = []
+        for raw in (binding.node_label, binding.node_id):
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            tokens.append(f"V({text})")
+            tokens.append(text)
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            key = token.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(token)
+        return out
 
     @staticmethod
     def _virtual_metadata_field(metadata_entry: object | None, field: str) -> str:

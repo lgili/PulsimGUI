@@ -360,12 +360,22 @@ def can_connect_measurement_pins(
 
     left_is_e_probe_out = is_electrical_probe_output_pin(left_component, left_pin_index)
     right_is_e_probe_out = is_electrical_probe_output_pin(right_component, right_pin_index)
+    left_is_signal_scope_source = is_signal_scope_source_pin(left_component, left_pin_index)
+    right_is_signal_scope_source = is_signal_scope_source_pin(right_component, right_pin_index)
     left_is_t_out = is_thermal_output_pin(left_component, left_pin_index)
     right_is_t_out = is_thermal_output_pin(right_component, right_pin_index)
 
-    electrical_group = left_is_e_scope or right_is_e_scope or left_is_e_probe_out or right_is_e_probe_out
-    if electrical_group:
-        return (left_is_e_scope and right_is_e_probe_out) or (right_is_e_scope and left_is_e_probe_out)
+    # Scope routing constraints apply only when an Electrical Scope is involved.
+    # Otherwise, direct signal-to-signal links (e.g. CONSTANT -> C_BLOCK,
+    # PI -> PWM DUTY_IN, probe OUT -> C_BLOCK) should be accepted.
+    if left_is_e_scope or right_is_e_scope:
+        return (
+            left_is_e_scope
+            and (right_is_e_probe_out or right_is_signal_scope_source)
+        ) or (
+            right_is_e_scope
+            and (left_is_e_probe_out or left_is_signal_scope_source)
+        )
 
     thermal_group = left_is_t_scope or right_is_t_scope or left_is_t_out or right_is_t_out
     if thermal_group:
@@ -444,10 +454,39 @@ def component_connection_domain(component_type: ComponentType) -> str:
     return CONNECTION_DOMAIN_CIRCUIT
 
 
+def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when the pin can feed an electrical scope with control-domain data."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return False
+    if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+        return False
+
+    pin_name = _pin_name(component, pin_index).strip().upper()
+    if not pin_name:
+        return False
+
+    if component.type == ComponentType.PWM_GENERATOR:
+        # OUT carries switched gate waveform; DUTY_IN maps to duty telemetry channel.
+        return pin_name in {"OUT", "DUTY_IN"}
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block control outputs follow OUT / OUTn ABI pin naming.
+        return pin_name == "OUT" or pin_name.startswith("OUT")
+
+    if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
+        return False
+
+    return pin_name.startswith("OUT")
+
+
 def pin_connection_domain(component: "Component", pin_index: int) -> str:
     """Return the effective connection domain for a specific pin."""
     if component.type in ANY_DOMAIN_COMPONENT_TYPES:
         return CONNECTION_DOMAIN_ANY
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block is pure control-domain: inputs and outputs must be signal wires.
+        return CONNECTION_DOMAIN_SIGNAL
 
     if component.type == ComponentType.THERMAL_SCOPE:
         return CONNECTION_DOMAIN_THERMAL

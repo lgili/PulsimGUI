@@ -37,6 +37,9 @@ from pulsimgui.commands.component_commands import (
 from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    CONNECTION_DOMAIN_SIGNAL,
+    CONNECTION_DOMAIN_THERMAL,
     CONNECTION_DOMAIN_ANY,
     THERMAL_PORT_PARAMETER,
     ComponentType,
@@ -2043,10 +2046,18 @@ class MainWindow(QMainWindow):
 
         start_ref = (start_pin[1].component, start_pin[2]) if start_pin is not None else None
         end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
-        if not self._is_valid_wire_measurement_connection(start_ref, end_ref):
+        start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
+        end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
+        if not self._is_valid_wire_measurement_connection(
+            start_ref,
+            end_ref,
+            start_pos=start_pos,
+            end_pos=end_pos,
+        ):
             self.statusBar().showMessage(
                 "Invalid connection: domains cannot mix (circuit/signal/thermal). "
-                "Electrical Scope only accepts V/I probe outputs; Thermal Scope only accepts TH outputs.",
+                "Electrical Scope accepts signal outputs (including control blocks and probe outputs); "
+                "Thermal Scope only accepts TH outputs.",
                 5000,
             )
             return
@@ -2075,7 +2086,14 @@ class MainWindow(QMainWindow):
             merge=False,
         )
 
-    def _is_valid_wire_measurement_connection(self, start_ref, end_ref) -> bool:
+    def _is_valid_wire_measurement_connection(
+        self,
+        start_ref,
+        end_ref,
+        *,
+        start_pos=None,
+        end_pos=None,
+    ) -> bool:
         """Validate dedicated scope/probe/thermal endpoint compatibility."""
         if start_ref is not None and end_ref is not None:
             left_component, left_pin = start_ref
@@ -2094,13 +2112,106 @@ class MainWindow(QMainWindow):
                 return True
             return CONNECTION_DOMAIN_ANY in {left_domain, right_domain}
 
-        for ref in (start_ref, end_ref):
+        endpoint_checks = (
+            (start_ref, end_pos),
+            (end_ref, start_pos),
+        )
+        for ref, opposite_pos in endpoint_checks:
             if ref is None:
                 continue
             component, pin_index = ref
             if is_restricted_measurement_pin(component, pin_index):
-                return False
+                if opposite_pos is None:
+                    return False
+                required_domain = pin_connection_domain(component, pin_index)
+                if not self._point_touches_wire_domain(opposite_pos, required_domain):
+                    return False
         return True
+
+    def _point_touches_wire_domain(self, point, required_domain: str) -> bool:
+        """Return True when a point lands on an existing wire of the given domain."""
+        circuit = self._current_circuit()
+        if circuit is None:
+            return False
+
+        expected = (
+            CONNECTION_DOMAIN_CIRCUIT
+            if required_domain == CONNECTION_DOMAIN_ANY
+            else required_domain
+        )
+        px = float(point.x())
+        py = float(point.y())
+        for wire in circuit.wires.values():
+            wire_domain = self._resolve_wire_domain(wire, circuit)
+            if wire_domain != expected and CONNECTION_DOMAIN_ANY not in {wire_domain, expected}:
+                continue
+            for segment in wire.segments:
+                if self._point_on_wire_segment(px, py, segment, tolerance=1.0):
+                    return True
+        return False
+
+    def _resolve_wire_domain(self, wire, circuit: Circuit) -> str:
+        """Resolve wire domain using endpoint metadata with geometry fallback."""
+        domains: set[str] = set()
+        for connection in (wire.start_connection, wire.end_connection):
+            if connection is None:
+                continue
+            component = circuit.components.get(connection.component_id)
+            if component is None:
+                continue
+            pin_index = connection.pin_index
+            if pin_index < 0 or pin_index >= len(component.pins):
+                continue
+            domains.add(pin_connection_domain(component, pin_index))
+
+        # Backward compatibility for wires without endpoint metadata.
+        if not domains:
+            points: list[tuple[float, float]] = []
+            for segment in wire.segments:
+                points.append((segment.x1, segment.y1))
+                points.append((segment.x2, segment.y2))
+            points.extend(wire.junctions or [])
+
+            for component in circuit.components.values():
+                for pin_index in range(len(component.pins)):
+                    pin_x, pin_y = component.get_pin_position(pin_index)
+                    for px, py in points:
+                        if abs(pin_x - px) < 5.0 and abs(pin_y - py) < 5.0:
+                            domains.add(pin_connection_domain(component, pin_index))
+                            break
+
+        effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+        if CONNECTION_DOMAIN_THERMAL in effective_domains:
+            return CONNECTION_DOMAIN_THERMAL
+        if CONNECTION_DOMAIN_SIGNAL in effective_domains:
+            return CONNECTION_DOMAIN_SIGNAL
+        return CONNECTION_DOMAIN_CIRCUIT
+
+    @staticmethod
+    def _point_on_wire_segment(px: float, py: float, segment, tolerance: float = 1.0) -> bool:
+        """Return True when a point lies on a wire segment within tolerance."""
+        x1, y1, x2, y2 = float(segment.x1), float(segment.y1), float(segment.x2), float(segment.y2)
+
+        if abs(y1 - y2) <= tolerance:
+            min_x, max_x = sorted((x1, x2))
+            return abs(py - y1) <= tolerance and (min_x - tolerance) <= px <= (max_x + tolerance)
+
+        if abs(x1 - x2) <= tolerance:
+            min_y, max_y = sorted((y1, y2))
+            return abs(px - x1) <= tolerance and (min_y - tolerance) <= py <= (max_y + tolerance)
+
+        seg_dx = x2 - x1
+        seg_dy = y2 - y1
+        seg_len_sq = (seg_dx * seg_dx) + (seg_dy * seg_dy)
+        if seg_len_sq <= 1e-12:
+            return abs(px - x1) <= tolerance and abs(py - y1) <= tolerance
+
+        t = ((px - x1) * seg_dx + (py - y1) * seg_dy) / seg_len_sq
+        if t < 0.0 or t > 1.0:
+            return False
+        closest_x = x1 + (t * seg_dx)
+        closest_y = y1 + (t * seg_dy)
+        return abs(px - closest_x) <= tolerance and abs(py - closest_y) <= tolerance
 
     def _on_wire_alias_changed(self, wire) -> None:
         """Update project state when a wire alias is renamed."""

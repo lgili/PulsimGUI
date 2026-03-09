@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -167,6 +169,54 @@ def test_transient_runs_without_linear_solver_stack() -> None:
     assert result.signals["V(OUT)"] == [0.0, 1.0]
     assert seen["arg_count"] == 5
     assert seen["dt"] == settings.t_step
+
+
+def test_transient_streaming_accepts_optional_virtual_channel_payload() -> None:
+    """Streaming adapter should merge optional virtual channel series when provided."""
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, dt, args)
+        return (
+            [t_start, t_stop],
+            [[0.0], [1.0]],
+            {"PI1": [0.2, 0.4]},
+            True,
+            "",
+        )
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        SimulationSettings(t_start=0.0, t_stop=1e-3, t_step=1e-6),
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert result.signals["V(OUT)"] == [0.0, 1.0]
+    assert result.signals["PI1"] == [0.2, 0.4]
+    assert "PI1" in result.statistics.get("virtual_channel_names", [])
 
 
 def test_transient_retries_convergence_failures_with_stronger_profile() -> None:
@@ -545,6 +595,646 @@ def test_transient_uses_simulation_options_without_modern_markers() -> None:
     assert result.error_message == ""
     assert seen["run_transient_calls"] == 0
     assert seen["simulator_calls"] == 1
+
+
+def test_transient_prefers_streaming_before_simulation_options_for_medium_runs() -> None:
+    """Medium-size runs should pick nonblocking streaming path to keep UI responsive."""
+    seen: dict[str, int] = {"streaming_calls": 0, "simulator_calls": 0}
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[0.0, 1e-3], states=[[0.0], [1.0]], success=True, message="")
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, dt)
+        seen["streaming_calls"] += 1
+        progress_callback = args[-3]
+        progress_callback(50.0, "Halfway")
+        return [t_start, t_stop], [[0.0], [1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert seen["streaming_calls"] == 1
+    assert seen["simulator_calls"] == 0
+
+
+def test_transient_medium_nonblocking_run_does_not_repeat_full_retry_profiles() -> None:
+    """Medium nonblocking runs should avoid expensive full-profile retry loops."""
+    seen = {"streaming_calls": 0}
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        seen["streaming_calls"] += 1
+        return [], [], False, "Transient failed at t=0.020000: Newton iteration diverging"
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message
+    assert seen["streaming_calls"] == 1
+
+
+def test_transient_streaming_failure_then_chunked_success_clears_error() -> None:
+    """Fallback success must not keep stale error text from prior transient path."""
+    seen = {"streaming_calls": 0, "chunked_calls": 0}
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        seen["streaming_calls"] += 1
+        return [], [], False, "Transient failed at t=0.000128: Max iterations reached"
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args, kwargs)
+        seen["chunked_calls"] += 1
+        return [t_start, t_stop], [[0.0], [1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuit,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+        run_transient=run_transient,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    result = backend.run_transient(
+        _simple_circuit_data(),
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert len(result.time) == 2
+    assert seen["streaming_calls"] == 1
+    assert seen["chunked_calls"] == 1
+
+
+def test_transient_with_cblock_legacy_backend_fails_with_upgrade_guidance() -> None:
+    """Legacy backends should fail fast for C-Block with clear upgrade guidance."""
+    seen = {"streaming_calls": 0, "simulator_calls": 0, "chunked_calls": 0}
+
+    class _FakeCircuitWithVirtual(_FakeCircuit):
+        def __init__(self) -> None:
+            super().__init__()
+            self._virtual_components: list[tuple[str, str, list[int], dict, dict]] = []
+
+        def add_virtual_component(
+            self,
+            comp_type: str,
+            name: str,
+            nodes: list[int],
+            numeric_params: dict,
+            metadata: dict,
+        ) -> None:
+            self._virtual_components.append((comp_type, name, nodes, numeric_params, metadata))
+
+        def num_virtual_components(self) -> int:
+            return len(self._virtual_components)
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[0.0, 1e-3], states=[[0.0], [1.0]], success=True, message="")
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        seen["streaming_calls"] += 1
+        return [t_start, t_stop], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args, kwargs)
+        seen["chunked_calls"] += 1
+        return [t_start, t_stop], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithVirtual,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="0.7.4",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    circuit_data = _simple_circuit_data()
+    circuit_data["components"].append(
+        {
+            "id": "cb1",
+            "type": "C_BLOCK",
+            "name": "CB1",
+            "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "cb1.c"},
+            "pin_nodes": ["1", "2"],
+        }
+    )
+    circuit_data["node_map"]["cb1"] = ["1", "2"]
+
+    result = backend.run_transient(
+        circuit_data,
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message
+    assert "requires backend >= 0.7.7" in result.error_message
+    assert result.statistics.get("cblock_strict_mode") is True
+    assert result.statistics.get("execution_note") == "cblock_blocked_legacy_backend"
+    assert seen["streaming_calls"] == 0
+    assert seen["simulator_calls"] == 0
+    assert seen["chunked_calls"] == 0
+
+
+def test_transient_with_cblock_modern_backend_uses_nonblocking_path() -> None:
+    """Modern backends should prioritize SimulationOptions path for C-Block strict runs."""
+    seen = {"streaming_calls": 0, "simulator_calls": 0, "chunked_calls": 0}
+
+    class _FakeCircuitWithVirtual(_FakeCircuit):
+        def __init__(self) -> None:
+            super().__init__()
+            self._virtual_components: list[tuple[str, str, list[int], dict, dict]] = []
+
+        def add_virtual_component(
+            self,
+            comp_type: str,
+            name: str,
+            nodes: list[int],
+            numeric_params: dict,
+            metadata: dict,
+        ) -> None:
+            self._virtual_components.append((comp_type, name, nodes, numeric_params, metadata))
+
+        def num_virtual_components(self) -> int:
+            return len(self._virtual_components)
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[0.0, 1e-3], states=[[0.0], [1.0]], success=True, message="")
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        seen["streaming_calls"] += 1
+        return [t_start, t_stop], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **kwargs):  # noqa: ANN001
+        _ = (circuit, dt, args, kwargs)
+        seen["chunked_calls"] += 1
+        return [t_start, t_stop], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithVirtual,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    circuit_data = _simple_circuit_data()
+    circuit_data["components"].append(
+        {
+            "id": "cb1",
+            "type": "C_BLOCK",
+            "name": "CB1",
+            "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "cb1.c"},
+            "pin_nodes": ["1", "2"],
+        }
+    )
+    circuit_data["node_map"]["cb1"] = ["1", "2"]
+
+    result = backend.run_transient(
+        circuit_data,
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message == ""
+    assert seen["streaming_calls"] == 0
+    assert seen["simulator_calls"] == 1
+    assert seen["chunked_calls"] == 0
+
+
+def test_transient_with_cblock_modern_path_failure_does_not_fallback() -> None:
+    """Modern C-Block runs should not fallback to secondary transient APIs."""
+    seen = {"streaming_calls": 0, "simulator_calls": 0, "chunked_calls": 0}
+
+    class _FakeCircuitWithVirtual(_FakeCircuit):
+        def __init__(self) -> None:
+            super().__init__()
+            self._virtual_components: list[tuple[str, str, list[int], dict, dict]] = []
+
+        def add_virtual_component(
+            self,
+            comp_type: str,
+            name: str,
+            nodes: list[int],
+            numeric_params: dict,
+            metadata: dict,
+        ) -> None:
+            self._virtual_components.append((comp_type, name, nodes, numeric_params, metadata))
+
+        def num_virtual_components(self) -> int:
+            return len(self._virtual_components)
+
+    class _SimulationOptions:
+        pass
+
+    class _Simulator:
+        def __init__(self, _circuit, _options):  # noqa: ANN001
+            pass
+
+        def run_transient(self, *_args):  # noqa: ANN002
+            seen["simulator_calls"] += 1
+            return SimpleNamespace(time=[], states=[], success=False, message="simulator failed")
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args)
+        seen["streaming_calls"] += 1
+        return [], [], False, "Transient failed at t=0.000128: Max iterations reached"
+
+    def run_transient(circuit, t_start, t_stop, dt, *args, **kwargs):  # noqa: ANN001
+        _ = (circuit, t_start, t_stop, dt, args, kwargs)
+        seen["chunked_calls"] += 1
+        return [0.0, 1e-3], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithVirtual,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        run_transient_streaming=run_transient_streaming,
+        run_transient=run_transient,
+        SimulationOptions=_SimulationOptions,
+        Simulator=_Simulator,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=0.02,
+        t_step=1e-6,
+    )
+
+    circuit_data = _simple_circuit_data()
+    circuit_data["components"].append(
+        {
+            "id": "cb1",
+            "type": "C_BLOCK",
+            "name": "CB1",
+            "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "cb1.c"},
+            "pin_nodes": ["1", "2"],
+        }
+    )
+    circuit_data["node_map"]["cb1"] = ["1", "2"]
+
+    result = backend.run_transient(
+        circuit_data,
+        settings,
+        BackendCallbacks(
+            progress=lambda *_: None,
+            data_point=lambda *_: None,
+            check_cancelled=lambda: False,
+            wait_if_paused=lambda: None,
+        ),
+    )
+
+    assert result.error_message
+    assert "C-Block transient failed (strict mode, fallback disabled)" in result.error_message
+    assert result.statistics.get("cblock_strict_mode") is True
+    assert result.statistics.get("execution_note") == "cblock_strict_simulator_options"
+    assert result.statistics.get("convergence_retries", 0) >= 1
+    assert seen["streaming_calls"] == 0
+    assert seen["simulator_calls"] >= 2
+    assert seen["chunked_calls"] == 0
+
+
+def test_transient_cblock_source_autocompiles_to_lib_path_when_compile_api_available() -> None:
+    """C-Block source mode should auto-compile to lib_path before transient run."""
+    seen = {"compile_calls": 0, "streaming_calls": 0}
+
+    class _FakeCircuitWithVirtual(_FakeCircuit):
+        def __init__(self) -> None:
+            super().__init__()
+            self._virtual_components: list[tuple[str, str, list[int], dict, dict]] = []
+
+        def add_virtual_component(
+            self,
+            comp_type: str,
+            name: str,
+            nodes: list[int],
+            numeric_params: dict,
+            metadata: dict,
+        ) -> None:
+            self._virtual_components.append((comp_type, name, nodes, numeric_params, metadata))
+
+        def num_virtual_components(self) -> int:
+            return len(self._virtual_components)
+
+    def compile_cblock(source, *, output_dir=None, name="cblock", extra_cflags=None, compiler=None):  # noqa: ANN001
+        _ = (extra_cflags, compiler)
+        seen["compile_calls"] += 1
+        assert Path(source).exists()
+        out_dir = Path(output_dir or tempfile.gettempdir())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{name}.so"
+        out_path.write_text("fake-lib", encoding="utf-8")
+        return out_path
+
+    def run_transient_streaming(circuit, t_start, t_stop, dt, *args):  # noqa: ANN001
+        _ = (dt, args)
+        seen["streaming_calls"] += 1
+        assert hasattr(circuit, "_virtual_components")
+        cblocks = [entry for entry in circuit._virtual_components if entry[0] == "c_block"]
+        assert cblocks, "Expected C_BLOCK virtual component metadata"
+        metadata = cblocks[0][4]
+        assert str(metadata.get("source", "") or "") == ""
+        assert str(metadata.get("lib_path", "") or "").strip()
+        return [t_start, t_stop], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithVirtual,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        compile_cblock=compile_cblock,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        source_path = Path(td) / "cb1.c"
+        source_path.write_text("int main(void){return 0;}\n", encoding="utf-8")
+
+        circuit_data = _simple_circuit_data()
+        circuit_data["components"].append(
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": source_path.as_posix()},
+                "pin_nodes": ["1", "2"],
+            }
+        )
+        circuit_data["node_map"]["cb1"] = ["1", "2"]
+
+        result = backend.run_transient(
+            circuit_data,
+            SimulationSettings(t_start=0.0, t_stop=0.02, t_step=1e-6),
+            BackendCallbacks(
+                progress=lambda *_: None,
+                data_point=lambda *_: None,
+                check_cancelled=lambda: False,
+                wait_if_paused=lambda: None,
+            ),
+        )
+
+    assert result.error_message == ""
+    assert seen["compile_calls"] == 1
+    assert seen["streaming_calls"] == 1
+
+
+def test_transient_cblock_source_autocompile_failure_surfaces_lib_path_guidance() -> None:
+    """Compiler discovery/build failures should clearly instruct lib_path fallback."""
+    seen = {"streaming_calls": 0}
+
+    class _FakeCircuitWithVirtual(_FakeCircuit):
+        def add_virtual_component(
+            self,
+            _comp_type: str,
+            _name: str,
+            _nodes: list[int],
+            _numeric_params: dict,
+            _metadata: dict,
+        ) -> None:
+            return
+
+    def compile_cblock(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("compiler not found")
+
+    def run_transient_streaming(*_args, **_kwargs):  # noqa: ANN001
+        seen["streaming_calls"] += 1
+        return [0.0, 1e-3], [[0.0, 0.0], [1.0, 1.0]], True, ""
+
+    fake_module = SimpleNamespace(
+        __version__="2.0.0",
+        Circuit=_FakeCircuitWithVirtual,
+        NewtonOptions=_FakeNewtonOptions,
+        Tolerances=_FakeTolerances,
+        compile_cblock=compile_cblock,
+        run_transient_streaming=run_transient_streaming,
+    )
+
+    backend = PulsimBackend(
+        fake_module,
+        BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="2.0.0",
+            status="available",
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        source_path = Path(td) / "cb1.c"
+        source_path.write_text("int main(void){return 0;}\n", encoding="utf-8")
+
+        circuit_data = _simple_circuit_data()
+        circuit_data["components"].append(
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": source_path.as_posix()},
+                "pin_nodes": ["1", "2"],
+            }
+        )
+        circuit_data["node_map"]["cb1"] = ["1", "2"]
+
+        result = backend.run_transient(
+            circuit_data,
+            SimulationSettings(t_start=0.0, t_stop=0.02, t_step=1e-6),
+            BackendCallbacks(
+                progress=lambda *_: None,
+                data_point=lambda *_: None,
+                check_cancelled=lambda: False,
+                wait_if_paused=lambda: None,
+            ),
+        )
+
+    assert result.error_message
+    assert "auto-compilation failed" in result.error_message
+    assert "lib_path" in result.error_message
+    assert seen["streaming_calls"] == 0
 
 
 def test_transient_keeps_simulation_options_failure_diagnostics_after_fallback() -> None:
