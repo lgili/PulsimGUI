@@ -169,6 +169,7 @@ def _resolve_node_signals(
     ignored = set(ignore_components) if ignore_components else set()
 
     signals: list[ScopeSignal] = []
+    deferred_control_signals: list[ScopeSignal] = []
     expanded = False
 
     for comp_id, pin_index in node_refs.get(node_id, []):
@@ -259,7 +260,16 @@ def _resolve_node_signals(
             control_signal = _resolve_control_signal(component, pin_index, node_id)
             if control_signal is not None:
                 expanded = True
-                signals.append(control_signal)
+                # DUTY_IN is a convenient alias for PWM command telemetry, but when
+                # the same net also exposes an upstream control output (e.g. PI OUT)
+                # showing both channels duplicates the same control signal in scope UI.
+                if component.type == ComponentType.PWM_GENERATOR and pin_name == "DUTY_IN":
+                    deferred_control_signals.append(control_signal)
+                else:
+                    signals.append(control_signal)
+
+    if not signals and deferred_control_signals:
+        signals.extend(deferred_control_signals)
 
     visited_nodes.discard(node_id)
 
