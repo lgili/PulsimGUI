@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "13 C-Block Multi-IO Playground (Goto/From)",
   "created": "2026-03-08T23:51:50.906394",
-  "modified": "2026-03-08T23:51:50.906512",
+  "modified": "2026-03-08T23:59:52.463765",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.04,
@@ -55,7 +55,7 @@
           "type": "VOLTAGE_SOURCE",
           "name": "Vin",
           "x": 120.0,
-          "y": 150.0,
+          "y": 160.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -88,8 +88,8 @@
           "id": "96af5e3b-c56c-4f29-ac66-5877028128f7",
           "type": "RESISTOR",
           "name": "R1",
-          "x": 280.0,
-          "y": 130.0,
+          "x": 240.0,
+          "y": 120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -116,9 +116,9 @@
           "id": "9b682d0a-1250-4d46-b5cd-2daa539120ab",
           "type": "CAPACITOR",
           "name": "C1",
-          "x": 430.0,
-          "y": 210.0,
-          "rotation": 0,
+          "x": 340.0,
+          "y": 220.0,
+          "rotation": 90,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
@@ -164,7 +164,7 @@
           "id": "66cfa227-ca4b-4e5d-a5c7-f18a518e7af6",
           "type": "VOLTAGE_PROBE_GND",
           "name": "Xsrc",
-          "x": 250.0,
+          "x": 200.0,
           "y": 40.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -193,7 +193,7 @@
           "type": "VOLTAGE_PROBE_GND",
           "name": "Xout",
           "x": 460.0,
-          "y": 70.0,
+          "y": 80.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -264,7 +264,7 @@
           "id": "b9dec3c5-8a47-4486-9c39-2b196fcf6401",
           "type": "GAIN",
           "name": "Gvout",
-          "x": 560.0,
+          "x": 540.0,
           "y": 140.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -293,7 +293,7 @@
           "type": "C_BLOCK",
           "name": "CB_PLAY",
           "x": 840.0,
-          "y": 190.0,
+          "y": 200.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -478,7 +478,7 @@
           "id": "fce861da-f2af-4c09-b70f-337e83630d85",
           "type": "GOTO_LABEL",
           "name": "G_XSRC",
-          "x": 350.0,
+          "x": 340.0,
           "y": 40.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -500,7 +500,7 @@
           "type": "GOTO_LABEL",
           "name": "G_XOUT",
           "x": 560.0,
-          "y": 70.0,
+          "y": 80.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -520,7 +520,7 @@
           "id": "8f739456-609e-4a70-b469-41182b3c4cf4",
           "type": "GOTO_LABEL",
           "name": "G_KBIAS",
-          "x": 670.0,
+          "x": 680.0,
           "y": 260.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -541,8 +541,8 @@
           "id": "973d62a9-4053-4bbe-8a96-51d3d5cc94b5",
           "type": "GOTO_LABEL",
           "name": "G_CB0",
-          "x": 930.0,
-          "y": 110.0,
+          "x": 920.0,
+          "y": 120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -562,8 +562,8 @@
           "id": "18b4aeac-0904-495b-ba1b-4029f5371782",
           "type": "GOTO_LABEL",
           "name": "G_CB1",
-          "x": 930.0,
-          "y": 150.0,
+          "x": 920.0,
+          "y": 160.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -583,8 +583,8 @@
           "id": "865d7fcf-02e2-46d9-ae58-e0e66fdf2c86",
           "type": "GOTO_LABEL",
           "name": "G_CB2",
-          "x": 930.0,
-          "y": 190.0,
+          "x": 920.0,
+          "y": 200.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -604,8 +604,8 @@
           "id": "2319c568-8979-44ef-9c6d-e5f443eb632f",
           "type": "GOTO_LABEL",
           "name": "G_CB3",
-          "x": 930.0,
-          "y": 230.0,
+          "x": 920.0,
+          "y": 240.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -625,8 +625,8 @@
           "id": "2d8c3817-75fd-4179-a827-1dce3523f630",
           "type": "GOTO_LABEL",
           "name": "G_CB4",
-          "x": 930.0,
-          "y": 270.0,
+          "x": 920.0,
+          "y": 280.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -647,7 +647,7 @@
           "type": "FROM_LABEL",
           "name": "F_XSRC",
           "x": 1080.0,
-          "y": 70.0,
+          "y": 80.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -689,7 +689,7 @@
           "type": "FROM_LABEL",
           "name": "F_KBIAS",
           "x": 1080.0,
-          "y": 130.0,
+          "y": 120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -710,7 +710,7 @@
           "type": "FROM_LABEL",
           "name": "F_CB0",
           "x": 1080.0,
-          "y": 170.0,
+          "y": 160.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -752,7 +752,7 @@
           "type": "FROM_LABEL",
           "name": "F_CB2",
           "x": 1080.0,
-          "y": 230.0,
+          "y": 240.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -794,7 +794,7 @@
           "type": "FROM_LABEL",
           "name": "F_CB4",
           "x": 1080.0,
-          "y": 290.0,
+          "y": 280.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -817,9 +817,15 @@
           "segments": [
             {
               "x1": 120.0,
-              "y1": 130.0,
-              "x2": 240.0,
-              "y2": 130.0
+              "y1": 140.0,
+              "x2": 120.0,
+              "y2": 120.0
+            },
+            {
+              "x1": 120.0,
+              "y1": 120.0,
+              "x2": 200.0,
+              "y2": 120.0
             }
           ],
           "start_connection": {
@@ -830,7 +836,12 @@
             "component_id": "96af5e3b-c56c-4f29-ac66-5877028128f7",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              120.0,
+              120.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         },
@@ -839,7 +850,7 @@
           "segments": [
             {
               "x1": 120.0,
-              "y1": 170.0,
+              "y1": 180.0,
               "x2": 120.0,
               "y2": 280.0
             }
@@ -860,10 +871,16 @@
           "id": "bd80c3ae-e9ed-4180-911a-018350de317c",
           "segments": [
             {
-              "x1": 320.0,
-              "y1": 130.0,
-              "x2": 410.0,
-              "y2": 210.0
+              "x1": 280.0,
+              "y1": 120.0,
+              "x2": 340.0,
+              "y2": 120.0
+            },
+            {
+              "x1": 340.0,
+              "y1": 120.0,
+              "x2": 340.0,
+              "y2": 200.0
             }
           ],
           "start_connection": {
@@ -874,7 +891,12 @@
             "component_id": "9b682d0a-1250-4d46-b5cd-2daa539120ab",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              340.0,
+              120.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         },
@@ -882,8 +904,14 @@
           "id": "30f4071c-bf87-44fb-b54f-a7dc5a92053d",
           "segments": [
             {
-              "x1": 450.0,
-              "y1": 210.0,
+              "x1": 340.0,
+              "y1": 240.0,
+              "x2": 340.0,
+              "y2": 280.0
+            },
+            {
+              "x1": 340.0,
+              "y1": 280.0,
               "x2": 120.0,
               "y2": 280.0
             }
@@ -904,10 +932,16 @@
           "id": "25423e3d-4583-441f-8c6e-d0aaa1db8365",
           "segments": [
             {
-              "x1": 230.0,
+              "x1": 180.0,
               "y1": 40.0,
               "x2": 120.0,
-              "y2": 130.0
+              "y2": 40.0
+            },
+            {
+              "x1": 120.0,
+              "y1": 40.0,
+              "x2": 120.0,
+              "y2": 140.0
             }
           ],
           "start_connection": {
@@ -918,7 +952,12 @@
             "component_id": "74e4f308-88cc-4a3b-9687-4fb0ae573a5d",
             "pin_index": 0
           },
-          "junctions": [],
+          "junctions": [
+            [
+              120.0,
+              120.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         },
@@ -927,9 +966,15 @@
           "segments": [
             {
               "x1": 440.0,
-              "y1": 70.0,
-              "x2": 320.0,
-              "y2": 130.0
+              "y1": 80.0,
+              "x2": 440.0,
+              "y2": 120.0
+            },
+            {
+              "x1": 440.0,
+              "y1": 120.0,
+              "x2": 280.0,
+              "y2": 120.0
             }
           ],
           "start_connection": {
@@ -940,7 +985,12 @@
             "component_id": "96af5e3b-c56c-4f29-ac66-5877028128f7",
             "pin_index": 1
           },
-          "junctions": [],
+          "junctions": [
+            [
+              340.0,
+              120.0
+            ]
+          ],
           "node_name": "",
           "alias": ""
         },
@@ -948,9 +998,9 @@
           "id": "6715aa2a-8de2-47f0-a3cc-ebdaf3e7ac2b",
           "segments": [
             {
-              "x1": 270.0,
+              "x1": 220.0,
               "y1": 40.0,
-              "x2": 350.0,
+              "x2": 340.0,
               "y2": 40.0
             }
           ],
@@ -971,9 +1021,9 @@
           "segments": [
             {
               "x1": 480.0,
-              "y1": 70.0,
+              "y1": 80.0,
               "x2": 560.0,
-              "y2": 70.0
+              "y2": 80.0
             }
           ],
           "start_connection": {
@@ -994,7 +1044,7 @@
             {
               "x1": 600.0,
               "y1": 260.0,
-              "x2": 670.0,
+              "x2": 680.0,
               "y2": 260.0
             }
           ],
@@ -1015,8 +1065,14 @@
           "segments": [
             {
               "x1": 480.0,
-              "y1": 70.0,
-              "x2": 520.0,
+              "y1": 80.0,
+              "x2": 480.0,
+              "y2": 140.0
+            },
+            {
+              "x1": 480.0,
+              "y1": 140.0,
+              "x2": 500.0,
               "y2": 140.0
             }
           ],
@@ -1037,9 +1093,9 @@
           "segments": [
             {
               "x1": 880.0,
-              "y1": 150.0,
-              "x2": 930.0,
-              "y2": 110.0
+              "y1": 160.0,
+              "x2": 920.0,
+              "y2": 120.0
             }
           ],
           "start_connection": {
@@ -1059,9 +1115,9 @@
           "segments": [
             {
               "x1": 880.0,
-              "y1": 170.0,
-              "x2": 930.0,
-              "y2": 150.0
+              "y1": 180.0,
+              "x2": 920.0,
+              "y2": 160.0
             }
           ],
           "start_connection": {
@@ -1081,9 +1137,9 @@
           "segments": [
             {
               "x1": 880.0,
-              "y1": 190.0,
-              "x2": 930.0,
-              "y2": 190.0
+              "y1": 200.0,
+              "x2": 920.0,
+              "y2": 200.0
             }
           ],
           "start_connection": {
@@ -1103,9 +1159,9 @@
           "segments": [
             {
               "x1": 880.0,
-              "y1": 210.0,
-              "x2": 930.0,
-              "y2": 230.0
+              "y1": 220.0,
+              "x2": 920.0,
+              "y2": 240.0
             }
           ],
           "start_connection": {
@@ -1125,9 +1181,9 @@
           "segments": [
             {
               "x1": 880.0,
-              "y1": 230.0,
-              "x2": 930.0,
-              "y2": 270.0
+              "y1": 240.0,
+              "x2": 920.0,
+              "y2": 280.0
             }
           ],
           "start_connection": {
@@ -1147,7 +1203,7 @@
           "segments": [
             {
               "x1": 1080.0,
-              "y1": 70.0,
+              "y1": 80.0,
               "x2": 1160.0,
               "y2": 140.0
             }
@@ -1191,7 +1247,7 @@
           "segments": [
             {
               "x1": 1080.0,
-              "y1": 130.0,
+              "y1": 120.0,
               "x2": 1160.0,
               "y2": 180.0
             }
@@ -1213,7 +1269,7 @@
           "segments": [
             {
               "x1": 1080.0,
-              "y1": 170.0,
+              "y1": 160.0,
               "x2": 1160.0,
               "y2": 200.0
             }
@@ -1257,7 +1313,7 @@
           "segments": [
             {
               "x1": 1080.0,
-              "y1": 230.0,
+              "y1": 240.0,
               "x2": 1160.0,
               "y2": 260.0
             }
@@ -1301,7 +1357,7 @@
           "segments": [
             {
               "x1": 1080.0,
-              "y1": 290.0,
+              "y1": 280.0,
               "x2": 1160.0,
               "y2": 300.0
             }
