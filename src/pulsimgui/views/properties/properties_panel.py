@@ -32,6 +32,7 @@ from pulsimgui.models.component import (
     C_BLOCK_IO_LIMITS,
     HIDDEN_PARAMS,
     MUX_CHANNEL_LIMITS,
+    PARAM_OPTIONS,
     SCOPE_CHANNEL_LIMITS,
     THERMAL_PORT_PARAMETER,
     Component,
@@ -965,6 +966,17 @@ class PropertiesPanel(QWidget):
             return widget
 
         elif isinstance(value, str):
+            options = PARAM_OPTIONS.get(name)
+            if options:
+                combo = QComboBox()
+                for opt in options:
+                    combo.addItem(opt)
+                current = value if value in options else options[0]
+                combo.setCurrentText(current)
+                combo.currentTextChanged.connect(
+                    lambda text, n=name: self._on_param_changed(n, text)
+                )
+                return combo
             edit = AutoSelectLineEdit(value)
             edit.returnPressed.connect(
                 lambda: self._on_param_changed(name, edit.text())

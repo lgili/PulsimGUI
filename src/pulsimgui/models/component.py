@@ -251,6 +251,9 @@ DUTY_INPUT_PARAMETER = "enable_duty_input"
 DUTY_INPUT_PIN_NAME = "DUTY_IN"
 VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
 CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.SATURABLE_INDUCTOR,
+}
 THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.RESISTOR,
     ComponentType.CAPACITOR,
@@ -1168,8 +1171,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: {
         "inductance": 1e-3,
+        # Saturation model
         "saturation_current": 10.0,
         "saturation_inductance": 1e-6,
+        "saturation_exponent": 2.0,
+        # Magnetic core config (pulsimcore v0.7.9+)
+        "magnetic_core_enabled": True,
+        "magnetic_core_model": "saturation",
+        "magnetic_core_loss_policy": "telemetry_only",
+        "core_loss_k": 0.0,
+        "core_loss_alpha": 2.0,
+        "core_loss_freq_coeff": 0.0,
+        "i_equiv_init": 0.0,
+        "hysteresis_band": 0.0,
+        "hysteresis_strength": 0.15,
+        "hysteresis_loss_coeff": 0.2,
+        "hysteresis_state_init": 1.0,
     },
     ComponentType.COUPLED_INDUCTOR: {
         "l1": 1e-3,
@@ -1193,6 +1210,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
 # simulation convergence without obvious explanation.
 HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
     ComponentType.PWM_GENERATOR: frozenset({"amplitude", "duty_from_channel", "target_component"}),
+}
+
+# Maps string parameter names to their allowed values.
+# The properties panel renders these as dropdowns instead of free-text fields.
+PARAM_OPTIONS: dict[str, list[str]] = {
+    # Magnetic core (SATURABLE_INDUCTOR)
+    "magnetic_core_model": ["saturation", "hysteresis"],
+    "magnetic_core_loss_policy": ["telemetry_only", "loss_summary"],
+    # PWM carrier waveform
+    "carrier": ["sawtooth", "triangle"],
+    # LED body color (drives schematic rendering)
+    "color": ["red", "green", "blue", "yellow", "white"],
+    # Electrothermal: RC network topology
+    "thermal_network": ["single_rc", "foster", "cauer"],
+    # Switching loss computation model
+    "switching_loss_model": ["scalar", "datasheet"],
 }
 
 

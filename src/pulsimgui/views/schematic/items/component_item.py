@@ -1950,14 +1950,33 @@ class PowerProbeItem(ComponentItem):
 
 
 class SaturableInductorItem(InductorItem):
-    """Graphics item for saturable inductor."""
+    """Graphics item for saturable inductor.
+
+    Saturation model  → one solid core bar below the coil.
+    Hysteresis model  → two parallel dashed bars (laminated-core convention).
+    """
 
     def _draw_symbol(self, painter: QPainter) -> None:
         super()._draw_symbol(painter)
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self._muted_color())
-        painter.drawRect(QRectF(-15, -3, 30, 6))
+        model = str(
+            self._component.parameters.get("magnetic_core_model", "saturation") or "saturation"
+        ).strip().lower()
+
+        core_color = self._muted_color()
+
+        if model == "hysteresis":
+            # Two thin dashed bars — standard symbol for hysteresis / laminated core.
+            pen = QPen(core_color, 1.5, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawLine(QPointF(-15, -5), QPointF(15, -5))
+            painter.drawLine(QPointF(-15,  5), QPointF(15,  5))
+        else:
+            # Single solid bar — saturation model.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(core_color)
+            painter.drawRect(QRectF(-15, -3, 30, 6))
 
 
 class CoupledInductorItem(TransformerItem):

@@ -1962,6 +1962,10 @@ class CircuitConverter:
                 normalized["v_high"] = normalized["amplitude"]
             normalized.setdefault("v_low", 0.0)
 
+        if comp_type == ComponentType.SATURABLE_INDUCTOR:
+            if "i_equiv_init" in normalized and "magnetic_i_equiv_init" not in normalized:
+                normalized["magnetic_i_equiv_init"] = normalized.pop("i_equiv_init")
+
         return normalized
 
     def _sanitize_virtual_pwm_timing(self, params: dict[str, Any]) -> None:
