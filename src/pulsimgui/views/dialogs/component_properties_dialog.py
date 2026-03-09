@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QWidget
 
 from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.services.theme_service import ThemeService
+from pulsimgui.views.dialogs.component_parameter_help_dialog import ComponentParameterHelpDialog
 from pulsimgui.views.properties import PropertiesPanel
 
 
@@ -45,6 +46,8 @@ class ComponentPropertiesDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        self._help_button = buttons.addButton("Help", QDialogButtonBox.ButtonRole.HelpRole)
+        self._help_button.clicked.connect(self._on_open_help)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -53,3 +56,8 @@ class ComponentPropertiesDialog(QDialog):
     def edited_component(self) -> Component:
         """Return edited component snapshot."""
         return self._editable_component
+
+    def _on_open_help(self) -> None:
+        """Open contextual parameter help for the current component type."""
+        dialog = ComponentParameterHelpDialog(self._editable_component, self)
+        dialog.exec()
