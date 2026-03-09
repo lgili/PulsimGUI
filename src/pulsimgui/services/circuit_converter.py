@@ -1306,7 +1306,16 @@ class CircuitConverter:
             fallback = node_map.get(comp_id, [])
             return [str(node or "").strip() for node in fallback]
 
+        def _router_label(component: dict[str, Any]) -> str:
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            label = str(params.get("net_label", "") or "").strip()
+            if label:
+                return label
+            return str(component.get("name") or "").strip()
+
         signal_driver_by_node: dict[str, str] = {}
+        goto_nodes_by_label: dict[str, list[str]] = {}
+        from_nodes_by_label: dict[str, list[str]] = {}
 
         for component in components:
             comp_id = str(component.get("id") or "").strip()
@@ -1322,6 +1331,20 @@ class CircuitConverter:
 
             pin_nodes = _raw_nodes(component)
             if not pin_nodes:
+                continue
+
+            if comp_type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+                label = _router_label(component)
+                pin_node = str(pin_nodes[0] or "").strip() if pin_nodes else ""
+                if label and pin_node and pin_node != "0":
+                    buckets = (
+                        goto_nodes_by_label
+                        if comp_type == ComponentType.GOTO_LABEL
+                        else from_nodes_by_label
+                    )
+                    nodes = buckets.setdefault(label, [])
+                    if pin_node not in nodes:
+                        nodes.append(pin_node)
                 continue
 
             pins = component.get("pins")
@@ -1392,6 +1415,24 @@ class CircuitConverter:
                 if not node_name or node_name == "0":
                     continue
                 signal_driver_by_node.setdefault(node_name, channel_name)
+
+        # Flatten Goto/From routers into direct node->channel bindings for control mapping.
+        for label, routed_from_nodes in from_nodes_by_label.items():
+            source_nodes = goto_nodes_by_label.get(label, [])
+            if not source_nodes or not routed_from_nodes:
+                continue
+
+            channel_name = ""
+            for source_node in source_nodes:
+                candidate = str(signal_driver_by_node.get(source_node, "") or "").strip()
+                if candidate:
+                    channel_name = candidate
+                    break
+            if not channel_name:
+                continue
+
+            for routed_node in routed_from_nodes:
+                signal_driver_by_node.setdefault(routed_node, channel_name)
 
         known_control_channels = {
             str(channel_name).strip()

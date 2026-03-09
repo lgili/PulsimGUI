@@ -1127,13 +1127,34 @@ class ScopeItemBase(ComponentItem):
     SCOPE_GRID_COLOR = QColor(49, 67, 64)
     SCOPE_SIGNAL_COLOR = QColor(72, 218, 131)
     SCOPE_BEZEL_COLOR = QColor(24, 31, 40)
+    BODY_LEFT = -24.0
+    BODY_WIDTH = 74.0
+    BODY_MIN_HEIGHT = 70.0
+    BODY_PIN_MARGIN = 15.0
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
-        return self._with_pin_bounds(QRectF(-50, -35, 100, 70))
+        body = self._scope_body_rect()
+        return self._with_pin_bounds(body.adjusted(-26, 0, 26, 0))
+
+    def _scope_body_rect(self) -> QRectF:
+        """Return scope body rect, expanding vertically as channel count grows."""
+        y_values = [float(pin.y) for pin in self._component.pins]
+        if not y_values:
+            return QRectF(self.BODY_LEFT, -self.BODY_MIN_HEIGHT / 2, self.BODY_WIDTH, self.BODY_MIN_HEIGHT)
+
+        top = min(y_values) - self.BODY_PIN_MARGIN
+        bottom = max(y_values) + self.BODY_PIN_MARGIN
+        height = bottom - top
+        if height < self.BODY_MIN_HEIGHT:
+            extra = (self.BODY_MIN_HEIGHT - height) / 2
+            top -= extra
+            bottom += extra
+
+        return QRectF(self.BODY_LEFT, top, self.BODY_WIDTH, bottom - top)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        body = QRectF(-24, -35, 74, 70)
+        body = self._scope_body_rect()
         painter.setPen(self._symbol_pen(2.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(body, 7, 7)
@@ -1733,6 +1754,7 @@ class _NetLabelItem(ComponentItem):
         super().__init__(component, parent)
         self._name_label.setVisible(False)
         self._value_label.setVisible(False)
+        self.setToolTip("")
 
     def _update_labels(self) -> None:
         # Net labels are rendered inside the symbol body.
@@ -1745,17 +1767,60 @@ class _NetLabelItem(ComponentItem):
             return text
         return self._component.name or "NET"
 
+    def _display_label_text(self) -> str:
+        text = self._label_text()
+        max_chars = 14
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 3]}..."
+
+    def _is_linked_pair(self) -> bool:
+        scene = self.scene()
+        circuit = getattr(scene, "circuit", None)
+        if circuit is None:
+            return False
+
+        if self._component.type == ComponentType.GOTO_LABEL:
+            target_type = ComponentType.FROM_LABEL
+        elif self._component.type == ComponentType.FROM_LABEL:
+            target_type = ComponentType.GOTO_LABEL
+        else:
+            return False
+
+        source_label = self._label_text().strip()
+        if not source_label:
+            return False
+
+        for candidate in circuit.components.values():
+            if candidate.id == self._component.id:
+                continue
+            if candidate.type != target_type:
+                continue
+            candidate_label = str(candidate.parameters.get("net_label", "") or "").strip()
+            if not candidate_label:
+                candidate_label = str(candidate.name or "").strip()
+            if candidate_label == source_label:
+                return True
+        return False
+
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
-        text = self._label_text()
-        width = max(72.0, min(220.0, 30.0 + float(len(text)) * 7.4))
+        text = self._display_label_text()
+        width = max(58.0, min(168.0, 24.0 + float(len(text)) * 6.0))
         x = -6.0 if self._ARROW_RIGHT else -width + 6.0
         return self._with_pin_bounds(QRectF(x, -13.0, width, 26.0))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         rect = self.boundingRect()
         pin_pos = self._pin_position_by_index(0, QPointF(0, 0))
-        text = self._label_text()
+        text = self._display_label_text()
+        linked = self._is_linked_pair()
+        self.setToolTip(f"Net label: {self._label_text()}")
+
+        edge_color = self._accent_green() if linked else self._line_color()
+        fill_color = self._surface_color().lighter(102)
+        if linked:
+            fill_color = self._blend_color(fill_color, self._accent_green(), 0.22 if self._dark_mode else 0.16)
 
         head_width = 14.0
         path = QPainterPath()
@@ -1793,22 +1858,22 @@ class _NetLabelItem(ComponentItem):
                 QPointF(rect.left() + 15.0, 5.0),
             )
 
-        painter.setPen(self._symbol_pen(1.8, self._line_color()))
-        painter.setBrush(self._surface_color().lighter(102))
+        painter.setPen(self._symbol_pen(1.8, edge_color))
+        painter.setBrush(fill_color)
         painter.drawPath(path)
 
-        painter.setPen(self._lead_pen(1.8))
+        painter.setPen(self._symbol_pen(1.8, edge_color))
         painter.drawLine(pin_pos, QPointF(lead_end_x, 0.0))
 
         # PLECS-like directional cue near the arrow head.
-        signal_color = self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
+        signal_color = self._accent_green() if linked else self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
         painter.setPen(self._symbol_pen(1.7, signal_color))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPolyline(QPolygonF(list(chevron)))
 
         painter.setPen(self._symbol_pen(1.0, self._muted_color()))
         font = QFont(painter.font())
-        font.setPointSize(8)
+        font.setPointSize(9)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter, text)

@@ -516,6 +516,7 @@ class PropertiesPanel(QWidget):
 
     property_changed = Signal(str, object)
     name_changed = Signal(str)
+    net_label_pair_requested = Signal(str, str)
 
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
@@ -550,6 +551,8 @@ class PropertiesPanel(QWidget):
         self._pin_count_badge: QLabel | None = None
         self._param_count_badge: QLabel | None = None
         self._params_count_label: QLabel | None = None
+        self._name_field_label: QLabel | None = None
+        self._net_label_pair_btn: QPushButton | None = None
 
         self._setup_ui()
         if self._theme_service is not None:
@@ -633,7 +636,19 @@ class PropertiesPanel(QWidget):
         self._name_edit.setPlaceholderText("Component name")
         self._name_edit.returnPressed.connect(self._on_name_changed)
         self._name_edit.editingFinished.connect(self._on_name_changed)
-        form_layout.addRow("Name:", self._name_edit)
+        name_row = QWidget()
+        name_row_layout = QHBoxLayout(name_row)
+        name_row_layout.setContentsMargins(0, 0, 0, 0)
+        name_row_layout.setSpacing(6)
+        name_row_layout.addWidget(self._name_edit, 1)
+        self._net_label_pair_btn = QPushButton("Go to Pair")
+        self._net_label_pair_btn.setObjectName("NetPairButton")
+        self._net_label_pair_btn.setToolTip("Jump to linked Goto/From with same label")
+        self._net_label_pair_btn.clicked.connect(self._on_net_label_pair_clicked)
+        self._net_label_pair_btn.hide()
+        name_row_layout.addWidget(self._net_label_pair_btn, 0)
+        self._name_field_label = QLabel("Name:")
+        form_layout.addRow(self._name_field_label, name_row)
 
         info_layout.addWidget(form)
 
@@ -760,20 +775,31 @@ class PropertiesPanel(QWidget):
                 self._summary_title.setText("No component selected")
             if self._summary_subtitle is not None:
                 self._summary_subtitle.setText("Select a component to edit parameters")
+            if self._name_field_label is not None:
+                self._name_field_label.setText("Name:")
+            self._update_net_label_pair_button()
             self._update_component_metrics()
             return
 
         self._no_selection_label.hide()
         self._info_container.show()
-        self._params_container.show()
         self._pos_container.setVisible(self._show_position_controls)
 
         # Update component info
         type_name = self._component.type.name.replace("_", " ").title()
         self._type_label.setText(type_name)
-        self._name_edit.setText(self._component.name)
+        is_net_label = self._is_net_label_component(self._component)
+        if self._name_field_label is not None:
+            self._name_field_label.setText("Net Label:" if is_net_label else "Name:")
+        if is_net_label:
+            self._name_edit.setPlaceholderText("NET1")
+            self._name_edit.setText(self._net_label_text(self._component))
+        else:
+            self._name_edit.setPlaceholderText("Component name")
+            self._name_edit.setText(self._component.name)
         if self._summary_title is not None:
-            self._summary_title.setText(self._component.name or type_name)
+            title = self._net_label_text(self._component) if is_net_label else self._component.name
+            self._summary_title.setText(title or type_name)
         if self._summary_subtitle is not None:
             if len(self._components) > 1:
                 self._summary_subtitle.setText(f"{len(self._components)} components selected")
@@ -803,10 +829,29 @@ class PropertiesPanel(QWidget):
 
         # Create parameter widgets
         self._create_param_widgets()
+        self._params_container.setVisible(self._should_show_params_container())
+        self._update_net_label_pair_button()
         self._update_component_metrics()
         self._apply_compact_scroll_limits_for_component()
         if self._theme is not None:
             self.apply_theme(self._theme)
+
+    def _should_show_params_container(self) -> bool:
+        """Return whether the parameters section should be visible."""
+        if self._component is None:
+            return False
+
+        comp_type = self._component.type
+        if comp_type in {
+            ComponentType.ELECTRICAL_SCOPE,
+            ComponentType.THERMAL_SCOPE,
+            ComponentType.SIGNAL_MUX,
+            ComponentType.SIGNAL_DEMUX,
+            ComponentType.C_BLOCK,
+        }:
+            return True
+
+        return self._editable_parameter_count() > 0
 
     def _clear_params(self) -> None:
         """Clear all parameter widgets."""
@@ -829,7 +874,15 @@ class PropertiesPanel(QWidget):
         if self._component is None:
             return 0
         hidden = HIDDEN_PARAMS.get(self._component.type, frozenset())
-        return sum(1 for key in self._component.parameters if key not in hidden)
+        return sum(
+            1
+            for key in self._component.parameters
+            if key not in hidden
+            and not (
+                self._component.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}
+                and key == "net_label"
+            )
+        )
 
     def _update_component_metrics(self) -> None:
         if self._component is None:
@@ -882,6 +935,9 @@ class PropertiesPanel(QWidget):
         _hidden = HIDDEN_PARAMS.get(comp_type, frozenset())
         for name, value in params.items():
             if name in _hidden:
+                continue
+            if comp_type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL} and name == "net_label":
+                # The top field already edits net_label for router labels.
                 continue
             widget = self._create_widget_for_value(name, value)
             if widget:
@@ -1702,9 +1758,63 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         """Handle component name change."""
         if self._component:
             new_name = self._name_edit.text()
-            if self._component.name != new_name:
+            if self._is_net_label_component(self._component):
+                old_label = self._net_label_text(self._component)
+                if old_label != new_name:
+                    self._component.parameters["net_label"] = new_name
+                    # Keep internal name aligned to avoid stale legacy fallbacks.
+                    self._component.name = new_name
+                    self.property_changed.emit("net_label", new_name)
+                    self.name_changed.emit(new_name)
+                    if self._summary_title is not None:
+                        self._summary_title.setText(new_name or self._component.type.name.replace("_", " ").title())
+            elif self._component.name != new_name:
                 self._component.name = new_name
                 self.name_changed.emit(new_name)
+            self._update_net_label_pair_button()
+
+    @staticmethod
+    def _is_net_label_component(component: Component | None) -> bool:
+        if component is None:
+            return False
+        return component.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}
+
+    @staticmethod
+    def _net_label_text(component: Component | None) -> str:
+        if component is None:
+            return ""
+        label = str(component.parameters.get("net_label", "") or "").strip()
+        if label:
+            return label
+        return str(component.name or "").strip()
+
+    def _update_net_label_pair_button(self) -> None:
+        if self._net_label_pair_btn is None:
+            return
+
+        if len(self._components) != 1 or not self._is_net_label_component(self._component):
+            self._net_label_pair_btn.hide()
+            return
+
+        label_text = self._net_label_text(self._component)
+        self._net_label_pair_btn.show()
+        self._net_label_pair_btn.setEnabled(bool(label_text))
+        if label_text:
+            self._net_label_pair_btn.setToolTip(
+                f"Jump to linked Goto/From for '{label_text}'"
+            )
+        else:
+            self._net_label_pair_btn.setToolTip(
+                "Set net_label or name to enable pair navigation"
+            )
+
+    def _on_net_label_pair_clicked(self) -> None:
+        if not self._is_net_label_component(self._component):
+            return
+        label_text = self._net_label_text(self._component)
+        if not label_text:
+            return
+        self.net_label_pair_requested.emit(str(self._component.id), label_text)
 
     def _on_param_changed(self, name: str, value: Any) -> None:
         """Handle parameter value change."""
@@ -1872,6 +1982,22 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             }}
             QPushButton#WaveformEditButton:pressed {{
                 background-color: {c.primary_pressed};
+            }}
+            QPushButton#NetPairButton {{
+                background-color: {c.info};
+                color: {c.primary_foreground};
+                border: none;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QPushButton#NetPairButton:hover {{
+                background-color: {c.primary_hover};
+            }}
+            QPushButton#NetPairButton:disabled {{
+                background-color: {c.tree_item_selected_inactive};
+                color: {c.foreground_muted};
             }}
             QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
                 background-color: {c.input_background};

@@ -92,7 +92,7 @@ def build_node_map(circuit: Circuit) -> dict[tuple[str, int], str]:
             if comp.type == ComponentType.GROUND:
                 ground_pin_refs.add(pin_ref)
             if comp.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
-                label = str(comp.parameters.get("net_label", "") or "").strip()
+                label = _net_label_text(comp)
                 if label:
                     label_pin_refs.append((label, pin_ref))
 
@@ -180,7 +180,7 @@ def build_node_alias_map(
             time.sleep(0)
         if component.type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
             continue
-        label = str(component.parameters.get("net_label", "") or "").strip()
+        label = _net_label_text(component)
         if not label:
             continue
         node_id = node_map.get((str(component.id), 0))
@@ -415,6 +415,21 @@ def _union_labelled_nets(
             head = wildcard_refs[0]
             for other in wildcard_refs[1:]:
                 uf.union(head, other)
+
+
+def _net_label_text(component: object) -> str:
+    """Return canonical router label text for Goto/From components.
+
+    Prefer explicit ``parameters['net_label']`` and fall back to component
+    name so legacy files and quick-renamed labels still bridge nets.
+    """
+
+    params = getattr(component, "parameters", None)
+    if isinstance(params, dict):
+        label = str(params.get("net_label", "") or "").strip()
+        if label:
+            return label
+    return str(getattr(component, "name", "") or "").strip()
 
 
 def _point_on_segment(point: tuple[float, float], segment: WireSegment) -> bool:

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QWidget
 
 from pulsimgui.models.component import Component, ComponentType
@@ -13,6 +14,8 @@ from pulsimgui.views.properties import PropertiesPanel
 class ComponentPropertiesDialog(QDialog):
     """Edit component properties in a modal flow with OK/Cancel."""
 
+    net_label_pair_requested = Signal(str, str)
+
     def __init__(
         self,
         component: Component,
@@ -23,6 +26,7 @@ class ComponentPropertiesDialog(QDialog):
         self._target_component = component
         self._editable_component = deepcopy(component)
         self._theme_service = theme_service
+        self._pair_navigation_request: tuple[str, str] | None = None
 
         self.setModal(True)
         self.setWindowTitle(f"Component Properties - {component.name}")
@@ -40,6 +44,7 @@ class ComponentPropertiesDialog(QDialog):
         self._panel = PropertiesPanel(theme_service=theme_service, parent=self)
         self._panel.set_show_position_controls(False)
         self._panel.set_compact_mode(True)
+        self._panel.net_label_pair_requested.connect(self._on_net_label_pair_requested)
         self._panel.set_component(self._editable_component)
         layout.addWidget(self._panel, 1)
 
@@ -57,7 +62,18 @@ class ComponentPropertiesDialog(QDialog):
         """Return edited component snapshot."""
         return self._editable_component
 
+    @property
+    def pair_navigation_request(self) -> tuple[str, str] | None:
+        """Return requested net-label pair navigation payload, if any."""
+        return self._pair_navigation_request
+
     def _on_open_help(self) -> None:
         """Open contextual parameter help for the current component type."""
         dialog = ComponentParameterHelpDialog(self._editable_component, self)
         dialog.exec()
+
+    def _on_net_label_pair_requested(self, component_id: str, net_label: str) -> None:
+        """Close modal editor and request pair navigation in schematic view."""
+        self._pair_navigation_request = (component_id, net_label)
+        self.net_label_pair_requested.emit(component_id, net_label)
+        self.accept()
