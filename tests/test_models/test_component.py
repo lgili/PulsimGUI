@@ -121,7 +121,8 @@ class TestComponent:
         assert math_block.parameters["sample_time"] == 0.0
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
-        assert len(pwm.pins) == 2
+        # DUTY_IN is hidden by default; only OUT is present until enable_duty_input=True
+        assert len(pwm.pins) == 1
         assert pwm.parameters["frequency"] == 10000.0
         assert pwm.parameters["sample_time"] == 0.0
 
@@ -140,9 +141,8 @@ class TestComponent:
         assert subtractor.parameters["signs"] == ["+", "-"]
         assert subtractor.parameters["sample_time"] == 0.0
 
-        # PWM exposes DUTY_IN for closed-loop signal control.
+        # Default pin layout: only OUT exposed (DUTY_IN requires enable_duty_input=True).
         assert pwm.pins[0].name == "OUT"
-        assert pwm.pins[1].name == "DUTY_IN"
 
     def test_scopes_and_probes_do_not_expose_control_sample_time(self):
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE)

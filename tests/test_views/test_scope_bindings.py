@@ -6,6 +6,7 @@ from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     Component,
     ComponentType,
+    set_pwm_duty_input_enabled,
     set_scope_channel_count,
     set_thermal_port_enabled,
 )
@@ -193,6 +194,7 @@ def test_electrical_scope_prefers_upstream_source_over_pwm_duty_alias() -> None:
     """When DUTY_IN shares a net with a controller OUT, scope should show only source channel."""
     circuit = Circuit(name="electrical-scope-pwm-duty-shared-net")
     pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=220.0, y=100.0)
+    set_pwm_duty_input_enabled(pwm, True)
     cblock = Component(type=ComponentType.C_BLOCK, name="CB1", x=120.0, y=100.0)
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=320.0, y=150.0)
     circuit.add_component(pwm)
@@ -212,6 +214,7 @@ def test_electrical_scope_resolves_pwm_duty_channel_when_duty_in_is_directly_tap
     """PWM DUTY_IN remains available when no upstream control output is on the same net."""
     circuit = Circuit(name="electrical-scope-pwm-duty-direct")
     pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=220.0, y=100.0)
+    set_pwm_duty_input_enabled(pwm, True)
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=320.0, y=150.0)
     circuit.add_component(pwm)
     circuit.add_component(scope)

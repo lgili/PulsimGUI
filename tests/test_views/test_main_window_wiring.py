@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF
 
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import Component, ComponentType, set_pwm_duty_input_enabled
 from pulsimgui.models.wire import Wire, WireConnection, WireSegment
 from pulsimgui.views.main_window import MainWindow
 
@@ -35,6 +35,7 @@ def test_scope_pin_can_tap_existing_control_wire(qapp) -> None:
         circuit = window._current_circuit()
         controller = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=100.0, y=100.0)
         pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=260.0, y=100.0)
+        set_pwm_duty_input_enabled(pwm, True)
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=260.0, y=160.0)
         circuit.add_component(controller)
         circuit.add_component(pwm)
