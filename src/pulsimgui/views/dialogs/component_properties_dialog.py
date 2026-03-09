@@ -27,11 +27,11 @@ class ComponentPropertiesDialog(QDialog):
         self.setModal(True)
         self.setWindowTitle(f"Component Properties - {component.name}")
         if component.type == ComponentType.C_BLOCK:
-            self.resize(900, 620)
-            self.setMinimumSize(840, 560)
+            self.resize(900, 700)
+            self.setMinimumSize(840, 620)
         else:
-            self.resize(450, 530)
-            self.setMinimumSize(420, 480)
+            self.resize(450, 600)
+            self.setMinimumSize(420, 560)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
