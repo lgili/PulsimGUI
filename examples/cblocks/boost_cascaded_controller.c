@@ -56,14 +56,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     double* out)
 {
     /* Tuned for this demo operating point:
-     * - fsw = 10 kHz
+     * - fsw = 100 kHz
      * - Vin = 5 V
      * - Vref = 10 V
      */
-    const double kp_v = 0.25;
-    const double ki_v = 140.0;
-    const double kp_i = 0.07;
-    const double ki_i = 20.0;
+    const double kp_v = 0.2;
+    const double ki_v = 120.0;
+    const double kp_i = 0.08;
+    const double ki_i = 350.0;
     const double ff_gain = 1.0;
 
     const double iref_min = 0.0;

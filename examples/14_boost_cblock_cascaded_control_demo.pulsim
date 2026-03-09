@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "14 Boost C-Block Cascaded Control Demo",
   "created": "2026-03-09T09:00:00",
-  "modified": "2026-03-09T10:07:17.990031",
+  "modified": "2026-03-09T11:19:39.239931",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.02,
@@ -62,7 +62,7 @@
           "parameters": {
             "waveform": {
               "type": "dc",
-              "value": 5.0
+              "value": 12.0
             },
             "enable_thermal_port": false
           },
@@ -91,7 +91,7 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "inductance": 4.7e-05,
+            "inductance": 9.999999999999999e-05,
             "initial_current": 0.0,
             "enable_thermal_port": false
           },
@@ -215,7 +215,7 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 112.0,
+            "resistance": 11.52,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1258,7 +1258,7 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "frequency": 10000.0,
+            "frequency": 100000.0,
             "duty_cycle": 0.9,
             "carrier": "sawtooth",
             "amplitude": 20.0,
