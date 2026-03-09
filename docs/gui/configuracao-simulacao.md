@@ -108,6 +108,62 @@ Loss model options:
 
 The GUI pre-validates these contracts before backend execution and reports deterministic diagnostics (`PULSIM_YAML_E_*`) for invalid combinations.
 
+### Magnetic Core Parameters (Saturable Inductor)
+
+Available when a **Sat. Inductor** component is selected.
+Requires `pulsim ≥ v0.7.9` and `magnetic_core_enabled = True`.
+
+**Core control:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `magnetic_core_enabled` | bool | Activates the nonlinear magnetic model. |
+| `magnetic_core_model` | dropdown | `saturation` (smooth curve) or `hysteresis` (bounded state). |
+| `magnetic_core_loss_policy` | dropdown | `telemetry_only` (virtual channel only) or `loss_summary` (also reports to loss/thermal tables). |
+
+**Base saturation curve:**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `saturation_current` | `10.0` A | Current at which inductance begins to saturate. |
+| `saturation_inductance` | `1 µH` | Minimum inductance at deep saturation. |
+| `saturation_exponent` | `2.0` | Sharpness of the saturation knee. |
+
+**Core loss (Steinmetz-style):**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `core_loss_k` | `0.0` | Loss coefficient *k* (W/unit). Set `0` to disable. |
+| `core_loss_alpha` | `2.0` | Flux-density exponent α. |
+| `core_loss_freq_coeff` | `0.0` | Frequency-dependent loss coefficient. |
+
+**Initial condition:**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `i_equiv_init` | `0.0` A | Initial equivalent magnetizing current. |
+
+**Hysteresis model** (`magnetic_core_model = hysteresis` only):
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `hysteresis_band` | `0.0` | Half-width of the hysteresis band (A). |
+| `hysteresis_strength` | `0.15` | Coupling strength of the hysteresis state (0–1). |
+| `hysteresis_loss_coeff` | `0.2` | Energy dissipated per cycle coefficient. |
+| `hysteresis_state_init` | `1.0` | Initial hysteresis state (−1 or 1). |
+
+**Virtual channels produced by the backend:**
+
+| Channel key | Unit | Condition |
+| --- | --- | --- |
+| `<component>.core_loss` | W | Always when `magnetic_core_enabled`. |
+| `<component>.h_state` | — | Only when `magnetic_core_model = hysteresis`. |
+| `T(<component>.core)` | °C | When `simulation.thermal.enabled = true`. |
+
+!!! note "Symbol hint"
+    The schematic symbol changes automatically: a **solid bar** indicates the `saturation`
+    model; **two dashed bars** indicate `hysteresis`.
+
 ## Backend Runtime (Preferences)
 
 ![Backend Runtime screen](../assets/images/backend-runtime.svg)
