@@ -442,6 +442,136 @@ ANY_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.FROM_LABEL,
 }
 
+CONTROL_SAMPLE_TIME_PARAM = "sample_time"
+LEGACY_CONTROL_SAMPLE_TIME_PARAM = "sample_period"
+CONTROL_SAMPLE_TIME_ALIASES: tuple[str, ...] = (
+    CONTROL_SAMPLE_TIME_PARAM,
+    LEGACY_CONTROL_SAMPLE_TIME_PARAM,
+)
+_MIN_CONTROL_SAMPLE_TIME = 1e-12
+
+# Components that support Simulink-style per-block sampling (Ts).
+# Scopes/probes are intentionally excluded.
+CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
+    {
+        ComponentType.SIGNAL_MUX,
+        ComponentType.SIGNAL_DEMUX,
+        ComponentType.PI_CONTROLLER,
+        ComponentType.PID_CONTROLLER,
+        ComponentType.MATH_BLOCK,
+        ComponentType.PWM_GENERATOR,
+        ComponentType.GAIN,
+        ComponentType.SUM,
+        ComponentType.SUBTRACTOR,
+        ComponentType.CONSTANT,
+        ComponentType.INTEGRATOR,
+        ComponentType.DIFFERENTIATOR,
+        ComponentType.LIMITER,
+        ComponentType.RATE_LIMITER,
+        ComponentType.HYSTERESIS,
+        ComponentType.LOOKUP_TABLE,
+        ComponentType.TRANSFER_FUNCTION,
+        ComponentType.DELAY_BLOCK,
+        ComponentType.SAMPLE_HOLD,
+        ComponentType.STATE_MACHINE,
+        ComponentType.C_BLOCK,
+    }
+)
+CONTROL_SAMPLE_TIME_COMPONENT_TYPE_NAMES: frozenset[str] = frozenset(
+    component_type.name for component_type in CONTROL_SAMPLE_TIME_COMPONENT_TYPES
+)
+
+
+def supports_control_sample_time(component_type: ComponentType) -> bool:
+    """Return True when a component type supports per-block sample time (Ts)."""
+    return component_type in CONTROL_SAMPLE_TIME_COMPONENT_TYPES
+
+
+def _normalize_control_mode_literal(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "sampled": "discrete",
+        "sample": "discrete",
+        "continuous_time": "continuous",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
+
+def _coerce_sample_time(value: Any, *, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        parsed = 0.0
+    return parsed
+
+
+def get_control_sample_time(parameters: dict[str, Any], *, default: float = 0.0) -> float:
+    """Read sample time from either canonical or legacy parameter names."""
+    if not isinstance(parameters, dict):
+        return _coerce_sample_time(default, default=0.0)
+
+    for key in CONTROL_SAMPLE_TIME_ALIASES:
+        if key not in parameters:
+            continue
+        return _coerce_sample_time(parameters.get(key), default=default)
+
+    return _coerce_sample_time(default, default=0.0)
+
+
+def set_control_sample_time(parameters: dict[str, Any], sample_time: Any) -> float:
+    """Store canonical sample time and drop legacy alias keys."""
+    normalized = _coerce_sample_time(sample_time, default=0.0)
+    parameters[CONTROL_SAMPLE_TIME_PARAM] = normalized
+    parameters.pop(LEGACY_CONTROL_SAMPLE_TIME_PARAM, None)
+    return normalized
+
+
+def derive_control_schedule_from_serialized_components(
+    components: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    fallback_mode: Any = "auto",
+    fallback_sample_time: Any = 0.0,
+) -> tuple[str, float | None]:
+    """Derive aggregate control scheduling from per-block Ts values.
+
+    If at least one eligible control block exists, per-block Ts is authoritative:
+    - any Ts > 0 => aggregate discrete mode using the smallest positive Ts
+    - all Ts <= 0 => aggregate auto mode
+
+    Fallback settings are used only when no Ts-capable block exists.
+    """
+    has_sampled_block = False
+    min_positive_sample_time: float | None = None
+
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        type_name = str(component.get("type") or "").strip().upper().replace("-", "_")
+        if type_name not in CONTROL_SAMPLE_TIME_COMPONENT_TYPE_NAMES:
+            continue
+        has_sampled_block = True
+        params = component.get("parameters")
+        sample_time = get_control_sample_time(params if isinstance(params, dict) else {}, default=0.0)
+        if sample_time > 0.0:
+            if min_positive_sample_time is None or sample_time < min_positive_sample_time:
+                min_positive_sample_time = sample_time
+
+    if has_sampled_block:
+        if min_positive_sample_time is not None:
+            return "discrete", max(min_positive_sample_time, _MIN_CONTROL_SAMPLE_TIME)
+        return "auto", None
+
+    mode = _normalize_control_mode_literal(fallback_mode)
+    sample_time = _coerce_sample_time(fallback_sample_time, default=0.0)
+    if mode == "discrete":
+        return mode, max(sample_time, _MIN_CONTROL_SAMPLE_TIME)
+    if sample_time > 0.0:
+        return mode, max(sample_time, _MIN_CONTROL_SAMPLE_TIME)
+    return mode, None
+
 
 def component_connection_domain(component_type: ComponentType) -> str:
     """Return the default wiring domain used by a component family."""
@@ -869,6 +999,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "output_min": -1.0,
         "output_max": 1.0,
         "anti_windup": True,
+        "sample_time": 0.0,
     },
     ComponentType.PID_CONTROLLER: {
         "kp": 1.0,
@@ -877,30 +1008,37 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "output_min": -1.0,
         "output_max": 1.0,
         "anti_windup": True,
+        "sample_time": 0.0,
     },
     ComponentType.MATH_BLOCK: {
         "operation": "sum",
         "gain": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.PWM_GENERATOR: {
         "frequency": 10000.0,
         "duty_cycle": 0.5,
         "carrier": "sawtooth",
         "amplitude": 20.0,
+        "sample_time": 0.0,
     },
     ComponentType.GAIN: {
         "gain": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.SUM: {
         "input_count": 2,
         "signs": ["+", "+"],
+        "sample_time": 0.0,
     },
     ComponentType.SUBTRACTOR: {
         "input_count": 2,
         "signs": ["+", "-"],
+        "sample_time": 0.0,
     },
     ComponentType.CONSTANT: {
         "value": 0.0,
+        "sample_time": 0.0,
     },
 
     # Control blocks - signal processing
@@ -909,24 +1047,29 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "initial_value": 0.0,
         "output_min": -1e6,
         "output_max": 1e6,
+        "sample_time": 0.0,
     },
     ComponentType.DIFFERENTIATOR: {
         "gain": 1.0,
         "alpha": 0.0,
+        "sample_time": 0.0,
     },
     ComponentType.LIMITER: {
         "output_min": -1.0,
         "output_max": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.RATE_LIMITER: {
         "rising_rate": 1e6,
         "falling_rate": -1e6,
+        "sample_time": 0.0,
     },
     ComponentType.HYSTERESIS: {
         "threshold": 0.0,
         "hysteresis": 1.0,
         "high": 1.0,
         "low": 0.0,
+        "sample_time": 0.0,
     },
 
     # Control blocks - advanced
@@ -934,21 +1077,25 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "table_x": [0.0, 0.5, 1.0],
         "table_y": [0.0, 0.25, 1.0],
         "interpolation": "linear",
+        "sample_time": 0.0,
     },
     ComponentType.TRANSFER_FUNCTION: {
         "numerator": [1.0],
         "denominator": [1.0, 1.0],
+        "sample_time": 0.0,
     },
     ComponentType.DELAY_BLOCK: {
         "delay_time": 1e-3,
+        "sample_time": 0.0,
     },
     ComponentType.SAMPLE_HOLD: {
-        "sample_period": 1e-4,
+        "sample_time": 0.0,
     },
     ComponentType.STATE_MACHINE: {
         "states": ["S0", "S1"],
         "initial_state": "S0",
         "transitions": [],
+        "sample_time": 0.0,
     },
     ComponentType.C_BLOCK: {
         "n_inputs": 1,
@@ -958,6 +1105,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "lib_path": "",
         "source_code": "",
         "extra_cflags": [],
+        "sample_time": 0.0,
     },
 
     # Measurement
@@ -999,11 +1147,13 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "input_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+        "sample_time": 0.0,
     },
     ComponentType.SIGNAL_DEMUX: {
         "output_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+        "sample_time": 0.0,
     },
     ComponentType.GOTO_LABEL: {
         "net_label": "NET1",
@@ -1138,6 +1288,17 @@ def _clamp(value: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
 
 
+def _synchronize_control_sample_time(component: "Component") -> None:
+    """Normalize Ts fields for components that support per-block sampling."""
+    if not supports_control_sample_time(component.type):
+        component.parameters.pop(CONTROL_SAMPLE_TIME_PARAM, None)
+        component.parameters.pop(LEGACY_CONTROL_SAMPLE_TIME_PARAM, None)
+        return
+
+    sample_time = get_control_sample_time(component.parameters, default=0.0)
+    set_control_sample_time(component.parameters, sample_time)
+
+
 def _synchronize_special_component(component: Component) -> None:
     if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
         _synchronize_scope(component)
@@ -1165,6 +1326,8 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_measurement_probe_pins(component)
     else:
         _synchronize_thermal_port(component)
+
+    _synchronize_control_sample_time(component)
 
 
 def _synchronize_default_pin_layout(component: Component) -> None:

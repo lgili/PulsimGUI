@@ -240,50 +240,19 @@ def test_install_backend_runtime_success_reloads_backends(monkeypatch) -> None:
     assert reloaded["called"] is True
 
 
-def test_prevalidate_blocks_discrete_control_without_sample_time(monkeypatch) -> None:
-    class _ReadyBackend:
-        def __init__(self) -> None:
-            self.info = BackendInfo(
-                identifier="pulsim",
-                name="Pulsim",
-                version="0.6.0",
-                status="available",
-            )
-            self.run_transient_calls = 0
-
-        def has_capability(self, _name: str) -> bool:
-            return True
-
-        def run_transient(self, *_args, **_kwargs):
-            self.run_transient_calls += 1
-            raise AssertionError("run_transient should not be called for invalid discrete control")
-
-    backend = _ReadyBackend()
-
-    class _ReadyLoader:
-        def __init__(self, preferred_backend_id: str | None = None) -> None:
-            _ = preferred_backend_id
-            self.backend = backend
-            self.available_backends = [backend.info]
-            self.active_backend_id = backend.info.identifier
-
-        def activate(self, identifier: str):
-            if identifier != backend.info.identifier:
-                raise ValueError(identifier)
-            return self.backend.info
-
-    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
+def test_prevalidate_uses_payload_control_contract(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()
     service.settings = SimulationSettings(control_mode="discrete", control_sample_time=0.0)
 
-    errors: list[str] = []
-    service.error.connect(errors.append)
-    service.run_transient({"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]})
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {"control": {"mode": "auto"}},
+            "components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}],
+        }
+    )
 
-    assert errors
-    assert "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED" in errors[-1]
-    assert service.state == SimulationState.IDLE
-    assert backend.run_transient_calls == 0
+    assert issue is None
 
 
 def test_prevalidate_blocks_invalid_pwm_target_component(monkeypatch) -> None:
@@ -494,6 +463,31 @@ def test_convert_gui_circuit_emits_pulsim_v1_simulation_contract(monkeypatch) ->
     assert sim["thermal"]["policy"] == "loss_only"
     assert "backend" not in sim
     assert "sundials" not in sim
+
+
+def test_convert_gui_circuit_derives_control_schedule_from_component_ts(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(
+        control_mode="continuous",
+        control_sample_time=0.0,
+    )
+
+    project = Project(name="ControlTs")
+    circuit = project.get_active_circuit()
+
+    pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1")
+    pi.parameters["sample_time"] = 20e-6
+    pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1")
+    pwm.parameters["sample_time"] = 5e-6
+    circuit.add_component(pi)
+    circuit.add_component(pwm)
+
+    data = service.convert_gui_circuit(project)
+    sim = data["simulation"]
+
+    assert sim["control"]["mode"] == "discrete"
+    assert sim["control"]["sample_time"] == 5e-6
 
 
 def test_convert_gui_circuit_returns_detached_cached_payload(monkeypatch) -> None:

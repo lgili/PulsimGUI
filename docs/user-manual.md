@@ -28,6 +28,13 @@ Operational guide for day-to-day PulsimGui usage.
 - Edit values in the **Properties Panel**.
 - Use SI prefixes when applicable (`k`, `m`, `u`, `n`).
 
+### Control blocks (`Ts`)
+
+- Control blocks use per-block `Ts` (`sample_time`) in the **Properties Panel**.
+- `Ts = 0`: auto/continuous update (runs every control evaluation step).
+- `Ts > 0`: discrete update with sampling period `Ts` (output is held between updates).
+- Scopes and probes do not expose `Ts`.
+
 ## 3. Run Simulation
 
 1. Open `Simulation Settings`.

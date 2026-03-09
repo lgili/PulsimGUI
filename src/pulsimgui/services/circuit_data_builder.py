@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pulsimgui.models.component import derive_control_schedule_from_serialized_components
 from pulsimgui.models.project import Project
 
 
@@ -163,11 +164,6 @@ class CircuitDataBuilder:
         normalize_thermal_policy: Any,
         normalize_control_mode: Any,
     ) -> tuple[Any, ...]:
-        control_mode = normalize_control_mode(getattr(settings, "control_mode", "auto"))
-        control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
-        if control_mode == "discrete":
-            control_sample_time = max(control_sample_time, 1e-12)
-
         return (
             float(getattr(settings, "t_start", 0.0)),
             float(getattr(settings, "t_stop", 1e-3)),
@@ -177,8 +173,6 @@ class CircuitDataBuilder:
             bool(getattr(settings, "direct_formulation_fallback", True)),
             bool(getattr(settings, "enable_events", True)),
             bool(getattr(settings, "enable_losses", True)),
-            control_mode,
-            control_sample_time,
             float(getattr(settings, "thermal_ambient", 25.0)),
             normalize_thermal_policy(getattr(settings, "thermal_policy", "loss_with_temperature_scaling")),
             max(0.0, float(getattr(settings, "thermal_default_rth", 1.0))),
@@ -258,6 +252,16 @@ class CircuitDataBuilder:
             if cooperative_yield and wire_index and wire_index % 128 == 0:
                 time.sleep(0)
             wires_out.append(wire.to_dict())
+
+        control_mode, control_sample_time = derive_control_schedule_from_serialized_components(
+            components_out,
+            fallback_mode=getattr(settings, "control_mode", "auto"),
+            fallback_sample_time=getattr(settings, "control_sample_time", 0.0),
+        )
+        control_cfg: dict[str, Any] = {"mode": control_mode}
+        if control_sample_time is not None:
+            control_cfg["sample_time"] = control_sample_time
+        payload["simulation"]["control"] = control_cfg
 
         return payload
 
@@ -530,11 +534,14 @@ class CircuitDataBuilder:
         normalize_thermal_policy: Any,
         normalize_control_mode: Any,
     ) -> dict[str, Any]:
-        control_mode = normalize_control_mode(getattr(settings, "control_mode", "auto"))
-        control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
+        control_mode, control_sample_time = derive_control_schedule_from_serialized_components(
+            [],
+            fallback_mode=getattr(settings, "control_mode", "auto"),
+            fallback_sample_time=getattr(settings, "control_sample_time", 0.0),
+        )
         control_cfg: dict[str, Any] = {"mode": control_mode}
-        if control_sample_time > 0.0 or control_mode == "discrete":
-            control_cfg["sample_time"] = max(control_sample_time, 1e-12)
+        if control_sample_time is not None:
+            control_cfg["sample_time"] = control_sample_time
 
         return {
             "schema": "pulsim-v1",

@@ -3,44 +3,9 @@
 ## Purpose
 
 Control interface for configuring and running simulations with real-time feedback and parameter sweeps.
-
 ## Requirements
-
 ### Requirement: Simulation Configuration Dialog
-
 The application SHALL provide a dialog for configuring simulation parameters.
-
-#### Scenario: Open simulation settings
-- **GIVEN** a circuit is loaded
-- **WHEN** the user selects Simulation > Settings or presses Ctrl+Shift+S
-- **THEN** the simulation settings dialog SHALL open
-
-#### Scenario: Transient simulation settings
-- **GIVEN** the simulation settings dialog is open
-- **THEN** the Transient tab SHALL include:
-  - Start time (default: 0)
-  - Stop time (required)
-  - Maximum timestep (dt)
-  - Minimum timestep (dtmin)
-  - Output signals selection
-  - Initial conditions option (use IC / calculate DC op point)
-
-#### Scenario: DC analysis settings
-- **GIVEN** the DC Analysis tab is selected
-- **THEN** options SHALL include:
-  - Enable/disable DC operating point calculation
-  - Maximum Newton iterations
-  - Tolerance settings
-
-#### Scenario: AC analysis settings
-- **GIVEN** the AC Analysis tab is selected
-- **THEN** options SHALL include:
-  - Start frequency
-  - Stop frequency
-  - Number of points
-  - Scale (linear/logarithmic/decade)
-  - Input source selection
-  - Output node selection
 
 #### Scenario: Solver settings
 - **GIVEN** the Solver tab is selected
@@ -52,6 +17,7 @@ The application SHALL provide a dialog for configuring simulation parameters.
   - Damping factor
   - Adaptive timestep enable/disable
   - LTE tolerances (for adaptive)
+- **AND** control scheduling SHALL NOT be configured globally in this dialog
 
 ### Requirement: Run Simulation
 
@@ -314,3 +280,22 @@ The application SHALL calculate converter efficiency.
   - Average efficiency over simulation
   - Instantaneous efficiency waveform
   - Loss breakdown
+
+### Requirement: Per-block control scheduling
+The application SHALL determine control-block scheduling from each block's `sample_time` (`Ts`) parameter instead of global control scheduling settings.
+
+#### Scenario: `Ts = 0` behaves as auto/continuous
+- **GIVEN** a control block with `sample_time = 0`
+- **WHEN** transient simulation runs
+- **THEN** the block SHALL run in auto/continuous mode (updated each control evaluation step)
+
+#### Scenario: `Ts > 0` behaves as discrete
+- **GIVEN** a control block with `sample_time = 50e-6`
+- **WHEN** transient simulation runs
+- **THEN** the block SHALL update every `50e-6 s` and hold its output between updates
+
+#### Scenario: Mixed-rate control blocks
+- **GIVEN** one control block with `sample_time = 10e-6` and another with `sample_time = 100e-6`
+- **WHEN** transient simulation runs
+- **THEN** each block SHALL be evaluated at its own sampling period
+

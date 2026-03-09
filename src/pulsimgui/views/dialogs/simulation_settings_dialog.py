@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationSettings,
-    normalize_control_mode,
     normalize_formulation_mode,
     normalize_frequency_anchor_mode,
     normalize_frequency_sweep_scale,
@@ -462,24 +461,6 @@ class SimulationSettingsDialog(QDialog):
         )
         self._direct_formulation_fallback_check.setChecked(True)
         form.addRow(self._direct_formulation_fallback_check)
-
-        self._control_mode_combo = QComboBox()
-        self._control_mode_combo.addItem("Auto (backend decides)", "auto")
-        self._control_mode_combo.addItem("Continuous (every solver step)", "continuous")
-        self._control_mode_combo.addItem("Discrete (sampled controller)", "discrete")
-        self._control_mode_combo.currentIndexChanged.connect(self._on_control_mode_changed)
-        form.addRow("Control update mode:", self._control_mode_combo)
-
-        self._control_sample_time_spin = QDoubleSpinBox()
-        self._control_sample_time_spin.setRange(0.0, 1e3)
-        self._control_sample_time_spin.setDecimals(12)
-        self._control_sample_time_spin.setSingleStep(1e-6)
-        self._control_sample_time_spin.setSuffix(" s")
-        self._control_sample_time_spin.setToolTip(
-            "Used when control update mode is Discrete."
-        )
-        self._control_sample_time_spin.setValue(0.0)
-        form.addRow("Control sample time:", self._control_sample_time_spin)
 
         self._averaged_enabled_check = QCheckBox("Enable averaged converter model")
         self._averaged_enabled_check.setChecked(False)
@@ -932,13 +913,6 @@ class SimulationSettingsDialog(QDialog):
             bool(getattr(source, "direct_formulation_fallback", True))
         )
         self._on_formulation_mode_changed(self._formulation_mode_combo.currentIndex())
-        control_mode = normalize_control_mode(getattr(source, "control_mode", "auto"))
-        control_mode_idx = self._control_mode_combo.findData(control_mode)
-        self._control_mode_combo.setCurrentIndex(control_mode_idx if control_mode_idx >= 0 else 0)
-        self._control_sample_time_spin.setValue(
-            max(0.0, float(getattr(source, "control_sample_time", 0.0)))
-        )
-        self._on_control_mode_changed(self._control_mode_combo.currentIndex())
         averaged_options = getattr(source, "averaged_options", None)
         averaged_enabled = isinstance(averaged_options, dict)
         self._averaged_enabled_check.setChecked(averaged_enabled)
@@ -1087,13 +1061,6 @@ class SimulationSettingsDialog(QDialog):
         self._settings.direct_formulation_fallback = (
             self._direct_formulation_fallback_check.isChecked()
         )
-        self._settings.control_mode = normalize_control_mode(
-            str(self._control_mode_combo.currentData() or "auto")
-        )
-        control_sample_time = max(0.0, float(self._control_sample_time_spin.value()))
-        if self._settings.control_mode == "discrete" and control_sample_time <= 0.0:
-            control_sample_time = max(float(self._settings.t_step), 1e-12)
-        self._settings.control_sample_time = control_sample_time
         if self._averaged_enabled_check.isChecked() and self._averaged_enabled_check.isEnabled():
             self._settings.averaged_options = {
                 "topology": str(self._averaged_topology_combo.currentData() or "buck"),
@@ -1212,13 +1179,6 @@ class SimulationSettingsDialog(QDialog):
         """Enable direct-mode fallback option only when direct mode is selected."""
         direct_mode = str(self._formulation_mode_combo.currentData() or "") == "direct"
         self._direct_formulation_fallback_check.setEnabled(direct_mode)
-
-    def _on_control_mode_changed(self, _index: int) -> None:
-        """Enable control sample time only for discrete control update mode."""
-        discrete_mode = str(self._control_mode_combo.currentData() or "") == "discrete"
-        self._control_sample_time_spin.setEnabled(discrete_mode)
-        if discrete_mode and self._control_sample_time_spin.value() <= 0.0:
-            self._control_sample_time_spin.setValue(max(float(self._t_step_edit.value), 1e-12))
 
     def _update_effective_step(self) -> None:
         """Update effective step display."""

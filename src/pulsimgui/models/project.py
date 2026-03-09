@@ -7,6 +7,11 @@ from pathlib import Path
 from uuid import UUID
 
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.component import (
+    get_control_sample_time,
+    set_control_sample_time,
+    supports_control_sample_time,
+)
 from pulsimgui.models.subcircuit import SubcircuitDefinition
 
 
@@ -205,6 +210,68 @@ class SimulationSettings:
         )
 
 
+def _legacy_project_control_sample_time(settings: SimulationSettings) -> float | None:
+    """Extract legacy global control sample time when available."""
+    mode = str(settings.control_mode or "auto").strip().lower()
+    sample_time = max(0.0, float(settings.control_sample_time))
+    if mode == "discrete":
+        return sample_time if sample_time > 0.0 else max(1e-12, float(settings.dt))
+    if sample_time > 0.0:
+        return sample_time
+    return None
+
+
+def _extract_explicit_component_sample_time_ids(data: dict) -> set[str]:
+    """Collect component IDs that already define sample-time parameters in payload."""
+    explicit_ids: set[str] = set()
+    circuits_data = data.get("circuits", {}) if isinstance(data, dict) else {}
+    if not isinstance(circuits_data, dict):
+        return explicit_ids
+
+    for circuit_payload in circuits_data.values():
+        if not isinstance(circuit_payload, dict):
+            continue
+        components = circuit_payload.get("components", [])
+        if not isinstance(components, list):
+            continue
+        for component_payload in components:
+            if not isinstance(component_payload, dict):
+                continue
+            params = component_payload.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            if "sample_time" not in params and "sample_period" not in params:
+                continue
+            component_id = str(component_payload.get("id") or "").strip()
+            if component_id:
+                explicit_ids.add(component_id)
+
+    return explicit_ids
+
+
+def _migrate_legacy_global_control_schedule(
+    *,
+    circuits: dict[str, Circuit],
+    settings: SimulationSettings,
+    explicit_sample_time_ids: set[str],
+) -> None:
+    """Backfill per-block Ts from legacy global control settings when needed."""
+    legacy_sample_time = _legacy_project_control_sample_time(settings)
+    if legacy_sample_time is None:
+        return
+
+    for circuit in circuits.values():
+        for component in circuit.components.values():
+            if not supports_control_sample_time(component.type):
+                continue
+            component_id = str(component.id)
+            if component_id in explicit_sample_time_ids:
+                continue
+            if get_control_sample_time(component.parameters, default=0.0) > 0.0:
+                continue
+            set_control_sample_time(component.parameters, legacy_sample_time)
+
+
 @dataclass
 class ScopeWindowState:
     """Persisted UI state for a per-scope window."""
@@ -311,9 +378,17 @@ class Project:
     @classmethod
     def from_dict(cls, data: dict, path: Path | None = None) -> "Project":
         """Deserialize project from dictionary."""
+        explicit_sample_time_ids = _extract_explicit_component_sample_time_ids(data)
         circuits = {}
         for name, circuit_data in data.get("circuits", {}).items():
             circuits[name] = Circuit.from_dict(circuit_data)
+        simulation_settings_payload = data.get("simulation_settings", {})
+        simulation_settings = SimulationSettings.from_dict(simulation_settings_payload)
+        _migrate_legacy_global_control_schedule(
+            circuits=circuits,
+            settings=simulation_settings,
+            explicit_sample_time_ids=explicit_sample_time_ids,
+        )
 
         subcircuits: dict[UUID, SubcircuitDefinition] = {}
         for definition_data in data.get("subcircuits", []):
@@ -331,9 +406,7 @@ class Project:
             path=path,
             circuits=circuits,
             active_circuit=data.get("active_circuit", "main"),
-            simulation_settings=SimulationSettings.from_dict(
-                data.get("simulation_settings", {})
-            ),
+            simulation_settings=simulation_settings,
             created=datetime.fromisoformat(data["created"]) if "created" in data else datetime.now(),
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
             subcircuits=subcircuits,
