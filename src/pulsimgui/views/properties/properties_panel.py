@@ -1744,8 +1744,8 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             return
 
         if compact:
-            self._scroll.setMinimumHeight(190)
-            self._scroll.setMaximumHeight(310)
+            self._scroll.setMinimumHeight(240)
+            self._scroll.setMaximumHeight(420)
             self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             self._params_container.setSizePolicy(
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
@@ -1769,8 +1769,8 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._component.type == ComponentType.C_BLOCK:
             # C_BLOCK typically has many fields; allow the parameters panel to
             # grow closer to the dialog action buttons.
-            self._scroll.setMinimumHeight(320)
-            self._scroll.setMaximumHeight(460)
+            self._scroll.setMinimumHeight(380)
+            self._scroll.setMaximumHeight(560)
 
     def _on_edit_waveform(self, param: str, waveform: dict) -> None:
         """Open waveform editor dialog."""

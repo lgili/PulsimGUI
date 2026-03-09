@@ -1048,7 +1048,7 @@ class MainWindow(QMainWindow):
             # Save to backup file (original.pulsim.bak)
             backup_path = Path(str(self._project.path) + ".bak")
             try:
-                self._project.save(str(backup_path))
+                self._project.save_copy(backup_path)
                 self.statusBar().showMessage("Auto-saved backup", 2000)
             except Exception:
                 pass  # Silently fail on backup
@@ -1057,9 +1057,9 @@ class MainWindow(QMainWindow):
             import tempfile
             temp_dir = Path(tempfile.gettempdir()) / "pulsimgui_autosave"
             temp_dir.mkdir(exist_ok=True)
-            backup_path = temp_dir / f"{self._project.name}.pulsim"
+            backup_path = temp_dir / f"{self._project.name}.pulsim.bak"
             try:
-                self._project.save(str(backup_path))
+                self._project.save_copy(backup_path)
                 self.statusBar().showMessage(f"Auto-saved to {backup_path}", 2000)
             except Exception:
                 pass  # Silently fail on backup
