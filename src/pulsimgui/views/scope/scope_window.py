@@ -21,11 +21,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -629,6 +631,14 @@ class ScopeWindow(QWidget):
         right_header_layout.setSpacing(8)
         self._right_header_label = QLabel("Measurements")
         right_header_layout.addWidget(self._right_header_label, stretch=1)
+        self._trace_style_menu_btn = QToolButton()
+        self._trace_style_menu_btn.setObjectName("scopeTraceMenuBtn")
+        self._trace_style_menu_btn.setText("Style")
+        self._trace_style_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._trace_style_menu = QMenu(self._trace_style_menu_btn)
+        self._trace_style_menu.aboutToShow.connect(self._populate_trace_style_menu)
+        self._trace_style_menu_btn.setMenu(self._trace_style_menu)
+        right_header_layout.addWidget(self._trace_style_menu_btn, stretch=0)
         self._right_panel_toggle_btn = QPushButton("▶")
         self._right_panel_toggle_btn.setObjectName("scopePanelToggleBtn")
         self._right_panel_toggle_btn.setCheckable(True)
@@ -720,11 +730,6 @@ class ScopeWindow(QWidget):
         self._timeline_range_label.setObjectName("scopeSliderInfoLabel")
         self._timeline_range_label.setMinimumWidth(145)
         bottom_layout.addWidget(self._timeline_range_label)
-
-        self._stacked_add_scope_btn = QPushButton("Add Scope")
-        self._stacked_add_scope_btn.setObjectName("scopeStackedAddScopeBtn")
-        self._stacked_add_scope_btn.clicked.connect(self._on_add_scope_clicked)
-        bottom_layout.addWidget(self._stacked_add_scope_btn)
 
         bottom_layout.addWidget(QLabel("Zoom"))
         self._zoom_dec_btn = QPushButton("−")
@@ -1344,15 +1349,30 @@ class ScopeWindow(QWidget):
                 background-color: {c.secondary_hover};
                 border-color: {c.input_focus_border};
             }}
-            QPushButton#scopeMathSignalBtn,
-            QPushButton#scopeStackedAddScopeBtn {{
+            QPushButton#scopeMathSignalBtn {{
                 background-color: {c.primary};
                 color: {c.primary_foreground};
                 border-color: {c.primary};
             }}
-            QPushButton#scopeMathSignalBtn:hover,
-            QPushButton#scopeStackedAddScopeBtn:hover {{
+            QPushButton#scopeMathSignalBtn:hover {{
                 background-color: {c.primary_hover};
+            }}
+            QToolButton#scopeTraceMenuBtn {{
+                background-color: {c.secondary};
+                color: {c.secondary_foreground};
+                border: 1px solid {c.border};
+                border-radius: 10px;
+                padding: 5px 12px;
+                min-height: 28px;
+                font-weight: 600;
+            }}
+            QToolButton#scopeTraceMenuBtn:hover {{
+                background-color: {c.secondary_hover};
+                border-color: {c.input_focus_border};
+            }}
+            QToolButton#scopeTraceMenuBtn::menu-indicator {{
+                image: none;
+                width: 0px;
             }}
             QWidget#scopeRightControlBar QCheckBox {{
                 spacing: 4px;
@@ -1557,7 +1577,100 @@ class ScopeWindow(QWidget):
         self._trace_width_spin.setEnabled(controls_enabled)
         self._trace_color_btn.setEnabled(controls_enabled)
         self._trace_reset_btn.setEnabled(controls_enabled)
+        self._trace_style_menu_btn.setEnabled(controls_enabled)
         self._set_trace_controls_for_signal(selected or None)
+
+    def _populate_trace_style_menu(self) -> None:
+        """Build the trace-style menu with per-signal actions."""
+        self._trace_style_menu.clear()
+        signal_names = self._trace_signal_names()
+        if not signal_names:
+            action = self._trace_style_menu.addAction("No signals available")
+            action.setEnabled(False)
+            return
+
+        selected_signal = self._selected_trace_signal() or self._stacked_active_signal or signal_names[0]
+        for signal_name in signal_names:
+            signal_menu = self._trace_style_menu.addMenu(signal_name)
+            if signal_name == selected_signal:
+                signal_menu.setTitle(f"{signal_name}  (active)")
+
+            color_action = signal_menu.addAction("Color...")
+            color_action.triggered.connect(
+                lambda _checked=False, name=signal_name: self._pick_trace_color_for_signal(name)
+            )
+
+            width_menu = signal_menu.addMenu("Thickness")
+            current_width = self._trace_style_width(signal_name)
+            for width in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0):
+                width_action = width_menu.addAction(f"{width:g}px")
+                width_action.setCheckable(True)
+                width_action.setChecked(abs(current_width - width) < 1e-9)
+                width_action.triggered.connect(
+                    lambda _checked=False, name=signal_name, value=width: self._set_trace_width_for_signal(name, value)
+                )
+
+            reset_action = signal_menu.addAction("Reset style")
+            reset_action.triggered.connect(
+                lambda _checked=False, name=signal_name: self._reset_trace_style_for_signal(name)
+            )
+
+        self._trace_style_menu.addSeparator()
+        reset_all = self._trace_style_menu.addAction("Reset all trace styles")
+        reset_all.triggered.connect(self._reset_all_trace_styles)
+
+    def _set_trace_width_for_signal(self, signal_name: str, width: float) -> None:
+        if signal_name not in self._trace_signal_names():
+            return
+        style = self._trace_styles.setdefault(signal_name, {})
+        style["width"] = max(0.5, float(width))
+        self._prune_trace_style(signal_name)
+        self._apply_trace_styles_to_viewer()
+        self._set_trace_controls_for_signal(signal_name)
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _pick_trace_color_for_signal(self, signal_name: str) -> None:
+        if signal_name not in self._trace_signal_names():
+            return
+        base_color = self._trace_style_color(signal_name)
+        if base_color is None:
+            base_color = self._stacked_signal_list.get_signal_color(signal_name)
+        if base_color is None:
+            base_color = self._default_trace_color(signal_name)
+
+        picked = QColorDialog.getColor(
+            QColor(*base_color),
+            self,
+            f"Trace color - {signal_name}",
+        )
+        if not picked.isValid():
+            return
+
+        style = self._trace_styles.setdefault(signal_name, {})
+        style["color"] = (picked.red(), picked.green(), picked.blue())
+        self._prune_trace_style(signal_name)
+        self._apply_trace_styles_to_viewer()
+        self._apply_stacked_trace_colors()
+        self._set_trace_controls_for_signal(signal_name)
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _reset_trace_style_for_signal(self, signal_name: str) -> None:
+        if signal_name not in self._trace_signal_names():
+            return
+        self._trace_styles.pop(signal_name, None)
+        self._apply_trace_styles_to_viewer()
+        self._apply_stacked_trace_colors()
+        self._set_trace_controls_for_signal(signal_name)
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _reset_all_trace_styles(self) -> None:
+        if not self._trace_styles:
+            return
+        self._trace_styles.clear()
+        self._apply_trace_styles_to_viewer()
+        self._apply_stacked_trace_colors()
+        self._sync_trace_style_controls()
+        self._rebuild_stacked_plots(self._current_result)
 
     def _prune_trace_style(self, signal_name: str) -> None:
         style = self._trace_styles.get(signal_name)
@@ -1586,80 +1699,19 @@ class ScopeWindow(QWidget):
         signal_name = self._selected_trace_signal()
         if signal_name is None:
             return
-
-        style = self._trace_styles.setdefault(signal_name, {})
-        style["width"] = max(0.5, float(value))
-        self._prune_trace_style(signal_name)
-        self._apply_trace_styles_to_viewer()
-        self._rebuild_stacked_plots(self._current_result)
+        self._set_trace_width_for_signal(signal_name, value)
 
     def _on_trace_color_clicked(self) -> None:
         signal_name = self._selected_trace_signal()
         if signal_name is None:
             return
-
-        base_color = self._trace_style_color(signal_name)
-        if base_color is None:
-            base_color = self._stacked_signal_list.get_signal_color(signal_name)
-        if base_color is None:
-            base_color = self._default_trace_color(signal_name)
-
-        picked = QColorDialog.getColor(
-            QColor(*base_color),
-            self,
-            f"Trace color - {signal_name}",
-        )
-        if not picked.isValid():
-            return
-
-        style = self._trace_styles.setdefault(signal_name, {})
-        style["color"] = (picked.red(), picked.green(), picked.blue())
-        self._prune_trace_style(signal_name)
-        self._apply_trace_styles_to_viewer()
-        self._apply_stacked_trace_colors()
-        self._set_trace_controls_for_signal(signal_name)
-        self._rebuild_stacked_plots(self._current_result)
+        self._pick_trace_color_for_signal(signal_name)
 
     def _on_trace_style_reset(self) -> None:
         signal_name = self._selected_trace_signal()
         if signal_name is None:
             return
-
-        self._trace_styles.pop(signal_name, None)
-        self._apply_trace_styles_to_viewer()
-        self._apply_stacked_trace_colors()
-        self._set_trace_controls_for_signal(signal_name)
-        self._rebuild_stacked_plots(self._current_result)
-
-    def _on_add_scope_clicked(self) -> None:
-        if not self._stacked_signals:
-            return
-
-        visible = set(self._stacked_signal_list.get_visible_signals())
-        available = [name for name in self._stacked_signals if name not in visible]
-        if not available:
-            QMessageBox.information(self, "Add Scope", "All available scopes are already added.")
-            return
-
-        if len(available) == 1:
-            next_signal = available[0]
-        else:
-            next_signal, ok = QInputDialog.getItem(
-                self,
-                "Add Scope",
-                "Select signal to add:",
-                available,
-                0,
-                False,
-            )
-            if not ok or not next_signal:
-                return
-
-        self._stacked_signal_list.set_signal_visible(next_signal, True)
-        self._stacked_active_signal = next_signal
-        self._sync_scope_selector()
-        self._rebuild_stacked_plots(self._current_result)
-        self._update_stacked_measurements()
+        self._reset_trace_style_for_signal(signal_name)
 
     def _on_toggle_left_panel_clicked(self, checked: bool) -> None:
         if not checked:
@@ -1710,6 +1762,7 @@ class ScopeWindow(QWidget):
 
         if self._right_panel_visible:
             self._right_header_label.setVisible(True)
+            self._trace_style_menu_btn.setVisible(True)
             self._stacked_right_controls.setVisible(True)
             self._stacked_measurements.setVisible(True)
             self._stacked_right_panel.setMinimumWidth(280)
@@ -1717,6 +1770,7 @@ class ScopeWindow(QWidget):
             right = self._right_panel_width
         else:
             self._right_header_label.setVisible(False)
+            self._trace_style_menu_btn.setVisible(False)
             self._stacked_right_controls.setVisible(False)
             self._stacked_measurements.setVisible(False)
             self._stacked_right_panel.setMinimumWidth(self._collapsed_panel_width)
