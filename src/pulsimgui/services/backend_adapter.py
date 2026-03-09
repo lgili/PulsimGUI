@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -27,21 +28,55 @@ from pulsimgui.services.backend_types import (
     DCResult,
     DCSettings,
     FosterStage,
+    FrequencyAnalysisResult,
+    HarmonicEntry,
     IterationRecord,
     LossBreakdown,
+    PostProcessingJobResult,
+    PostProcessingResult,
     ProblematicVariable,
+    ScalarMetric,
+    SpectralBin,
     ThermalDeviceResult,
     ThermalResult,
     ThermalSettings,
     TransientResult,
     TransientSettings,
+    UndefinedMetricEntry,
 )
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 
 log = logging.getLogger(__name__)
 
-_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 6, 0, api_version=1)
+_SIMULATION_OPTIONS_MIN_BACKEND = BackendVersion(0, 7, 0, api_version=1)
+_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND = BackendVersion(0, 7, 7, api_version=1)
 _PROBE_COMPONENT_TYPES = frozenset({"voltage_probe", "current_probe", "power_probe"})
+
+
+def _optional_float(value: Any) -> float | None:
+    """Convert a value to float, returning None if it is None or not numeric."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        return numeric
+    except (TypeError, ValueError):
+        return None
+
+
+def _enum_name_or_value(value: Any) -> str:
+    """Return a stable string from either plain values or Enum-like objects."""
+    if value is None:
+        return ""
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None and not isinstance(enum_value, type):
+        return str(enum_value)
+    enum_name = getattr(value, "name", None)
+    if enum_name is not None:
+        return str(enum_name)
+    return str(value)
 
 
 @dataclass
@@ -86,7 +121,7 @@ class BackendInfo:
             )
 
         # Determine unavailable features based on capabilities
-        all_features = {"dc", "ac", "thermal", "transient"}
+        all_features = {"dc", "ac", "thermal", "transient", "post_processing", "frequency_analysis", "averaged"}
         self.unavailable_features = sorted(all_features - self.capabilities)
 
 
@@ -186,6 +221,38 @@ class SimulationBackend(Protocol):
         """Request backend stop for the active simulation execution."""
         ...
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Run post-processing jobs on a transient result.
+
+        Args:
+            transient_result: Completed transient simulation result.
+            jobs: List of job specification dicts (job_id, kind, signals, ...).
+
+        Returns:
+            PostProcessingResult with per-job results.
+        """
+        ...
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Run frequency-domain (Bode sweep) analysis.
+
+        Args:
+            circuit_data: Serialised circuit definition.
+            settings: AC/frequency analysis settings.
+
+        Returns:
+            FrequencyAnalysisResult with Bode data and stability margins.
+        """
+        ...
+
 
 class PlaceholderBackend(SimulationBackend):
     """Fallback backend that generates synthetic data for demo mode."""
@@ -196,7 +263,7 @@ class PlaceholderBackend(SimulationBackend):
             name="Demo backend",
             version="0.0",
             status="placeholder",
-            capabilities={"transient", "dc", "ac", "thermal"},
+            capabilities={"transient", "dc", "ac", "thermal", "post_processing", "frequency_analysis", "averaged"},
             message="Running in demo mode; install pulsim backend to enable real simulations.",
         )
 
@@ -437,6 +504,110 @@ class PlaceholderBackend(SimulationBackend):
     def request_stop(self, run_id: int | None = None) -> None:  # pragma: no cover - trivial
         """Placeholder backend executes entirely within GUI thread control."""
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Return synthetic post-processing results for demo mode."""
+        import math
+
+        job_results: list[PostProcessingJobResult] = []
+        for job in jobs:
+            kind = job.get("kind", "time_domain")
+            job_id = job.get("job_id", "demo_job")
+            signals = job.get("signals", list(transient_result.signals.keys())[:1])
+
+            if kind == "spectral":
+                fundamental = job.get("fundamental_hz", 1000.0)
+                bins = [
+                    SpectralBin(frequency_hz=fundamental * i, amplitude=1.0 / i, phase_deg=0.0)
+                    for i in range(1, 6)
+                ]
+                harmonics = [
+                    HarmonicEntry(
+                        order=i,
+                        frequency_hz=fundamental * i,
+                        amplitude=1.0 / i,
+                        amplitude_db=-20 * math.log10(i),
+                    )
+                    for i in range(1, 4)
+                ]
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    spectrum_bins=bins,
+                    harmonics=harmonics,
+                    thd_pct=5.0,
+                    fundamental_hz=fundamental,
+                    signal_names=signals,
+                ))
+            elif kind == "power_efficiency":
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    average_input_power=10.0,
+                    average_output_power=9.3,
+                    efficiency=0.93,
+                    power_factor=0.98,
+                    signal_names=signals,
+                ))
+            else:
+                # time_domain: synthetic scalar metrics
+                metrics = {
+                    "mean": ScalarMetric(name="mean", value=1.0, unit="V", signal_name=signals[0] if signals else ""),
+                    "rms": ScalarMetric(name="rms", value=1.414, unit="V", signal_name=signals[0] if signals else ""),
+                    "peak": ScalarMetric(name="peak", value=2.0, unit="V", signal_name=signals[0] if signals else ""),
+                    "ripple": ScalarMetric(name="ripple", value=0.05, unit="V", signal_name=signals[0] if signals else ""),
+                }
+                job_results.append(PostProcessingJobResult(
+                    job_id=job_id,
+                    kind=kind,
+                    success=True,
+                    scalar_metrics=metrics,
+                    signal_names=signals,
+                ))
+
+        return PostProcessingResult(jobs=job_results, success=True)
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Return synthetic Bode plot data for demo mode."""
+        import numpy as np
+
+        num_decades = max(1, int(math.log10(settings.f_stop / max(settings.f_start, 1))))
+        num_points = max(20, num_decades * settings.points_per_decade)
+        freqs = list(np.logspace(
+            math.log10(settings.f_start),
+            math.log10(settings.f_stop),
+            num_points,
+        ))
+
+        fc = 1000.0
+        mag: list[float] = []
+        phase: list[float] = []
+        for f in freqs:
+            ratio = f / fc
+            mag.append(-10 * math.log10(1 + ratio**2))
+            phase.append(-math.degrees(math.atan(ratio)))
+
+        key = settings.output_nodes[0] if settings.output_nodes else "H(s)"
+        return FrequencyAnalysisResult(
+            frequencies=freqs,
+            magnitude_db={key: mag},
+            phase_deg={key: phase},
+            gain_margin_db=12.0,
+            phase_margin_deg=45.0,
+            gain_crossover_hz=fc * 10,
+            phase_crossover_hz=fc * 100,
+            success=True,
+        )
+
 
 class PulsimBackend(SimulationBackend):
     """Adapter that executes simulations via the native Pulsim backend."""
@@ -448,6 +619,7 @@ class PulsimBackend(SimulationBackend):
         self._controllers: dict[int, Any] = {}
         self._lock = threading.Lock()
         self._cached_capabilities: set[str] | None = None
+        self._cblock_autobuild_cache: dict[tuple[str, int, tuple[str, ...]], str] = {}
 
     @property
     def capabilities(self) -> set[str]:
@@ -468,6 +640,18 @@ class PulsimBackend(SimulationBackend):
         # Check for thermal simulation
         if self._supports_thermal_analysis(self._module):
             caps.add("thermal")
+
+        # Check for post-processing (pulsim >= 0.7.0)
+        if hasattr(self._module, "run_post_processing"):
+            caps.add("post_processing")
+
+        # Check for frequency analysis (pulsim >= 0.7.0)
+        if hasattr(self._module, "run_frequency_analysis"):
+            caps.add("frequency_analysis")
+
+        # Check for averaged converter options (pulsim >= 0.7.0)
+        if hasattr(self._module, "AveragedConverterOptions"):
+            caps.add("averaged")
 
         self._cached_capabilities = caps
         return caps
@@ -494,7 +678,46 @@ class PulsimBackend(SimulationBackend):
             result.error_message = str(exc)
             return result
 
-        retry_profiles = self._build_transient_retry_profiles(settings)
+        has_cblock = self._has_component_type(circuit_data, "C_BLOCK")
+        if has_cblock and not self._supports_modern_cblock_transient_path():
+            min_ver = (
+                f"{_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND.major}."
+                f"{_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND.minor}."
+                f"{_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND.patch}"
+            )
+            result.error_message = (
+                "C-Block control requires backend >= "
+                f"{min_ver}. Detected {self.info.version}. "
+                "Upgrade the backend and retry."
+            )
+            result.statistics["cblock_strict_mode"] = True
+            result.statistics["execution_note"] = "cblock_blocked_legacy_backend"
+            return result
+        if has_cblock:
+            prepared_data, prepare_error = self._prepare_cblock_runtime_payload(
+                circuit_data,
+                callbacks,
+            )
+            if prepare_error:
+                result.error_message = prepare_error
+                return result
+            circuit_data = prepared_data
+        prefer_nonblocking_run = self._should_prefer_nonblocking_transient(
+            settings,
+            base_dt,
+            circuit_data=circuit_data,
+        )
+        if has_cblock:
+            # C-Block execution remains strict (no API fallback), but we allow
+            # progressive numeric retuning retries for convergence robustness.
+            retry_profiles = self._build_cblock_strict_retry_profiles(settings)
+        elif prefer_nonblocking_run:
+            # Nonblocking transient paths already keep UI responsive and modern
+            # backends have internal convergence handling. Re-running full profiles
+            # here can create long visible restart cycles (95->100->restart).
+            retry_profiles = [_TransientRetryProfile(name="default")]
+        else:
+            retry_profiles = self._build_transient_retry_profiles(settings)
         retry_errors: list[str] = []
 
         for retry_index, profile in enumerate(retry_profiles):
@@ -545,6 +768,17 @@ class PulsimBackend(SimulationBackend):
             error_text = attempt_result.error_message
             if "cancel" in error_text.lower():
                 return attempt_result
+
+            if has_cblock:
+                retry_errors.append(error_text)
+                is_last_profile = retry_index >= len(retry_profiles) - 1
+                if is_last_profile or not self._is_transient_convergence_failure(error_text):
+                    if retry_index > 0:
+                        attempt_result.statistics["convergence_retry_profile"] = profile.name
+                        attempt_result.statistics["convergence_retries"] = retry_index
+                        attempt_result.statistics["convergence_retry_errors"] = retry_errors.copy()
+                    return attempt_result
+                continue
 
             retry_errors.append(error_text)
             is_last_profile = retry_index >= len(retry_profiles) - 1
@@ -731,26 +965,32 @@ class PulsimBackend(SimulationBackend):
         circuit: Any,
         result: BackendRunResult,
         signal_names: list[str],
+        *,
+        callbacks: BackendCallbacks | None = None,
+        progress_start: float = 92.0,
+        progress_span: float = 7.0,
     ) -> None:
-        """Fill missing probe channels by evaluating backend virtual probes."""
+        """Fill missing virtual channels by evaluating backend virtual channels."""
         if not result.time:
             return
 
-        probe_channels = self._probe_virtual_channels(circuit)
-        if not probe_channels:
+        sample_count = len(result.time)
+        channel_metadata = self._serialize_virtual_channel_metadata(circuit)
+        expected_channels = list(channel_metadata.keys())
+        if not expected_channels:
+            # Legacy backend: at least try known probe channels.
+            expected_channels = list(self._probe_virtual_channels(circuit).keys())
+        if not expected_channels:
             return
 
-        sample_count = len(result.time)
         missing_channels = [
             channel_name
-            for channel_name in probe_channels
+            for channel_name in expected_channels
             if len(result.signals.get(channel_name, [])) < sample_count
         ]
-        if not missing_channels:
-            return
 
         evaluate = getattr(circuit, "evaluate_virtual_signals", None)
-        if not callable(evaluate):
+        if missing_channels and not callable(evaluate):
             return
 
         ordered_signal_names = (
@@ -761,34 +1001,96 @@ class PulsimBackend(SimulationBackend):
         if not ordered_signal_names:
             return
 
-        ordered_series = [result.signals.get(name, []) for name in ordered_signal_names]
-        evaluated_channels: dict[str, list[float]] = {
-            channel_name: [] for channel_name in missing_channels
-        }
+        if missing_channels:
+            ordered_series = [result.signals.get(name, []) for name in ordered_signal_names]
+            evaluated_channels: dict[str, list[float]] = {
+                channel_name: [] for channel_name in missing_channels
+            }
+            if callbacks is not None:
+                callbacks.progress(progress_start, "Deriving virtual channels...")
 
-        for sample_index in range(sample_count):
-            state = [
-                float(series[sample_index]) if sample_index < len(series) else 0.0
-                for series in ordered_series
-            ]
-            try:
-                probe_values = evaluate(state)
-            except Exception as exc:
-                log.debug("Virtual probe evaluation skipped: %s", exc)
-                return
-
-            if not isinstance(probe_values, dict):
-                return
-
-            for channel_name in missing_channels:
+            for sample_index in range(sample_count):
+                state = [
+                    float(series[sample_index]) if sample_index < len(series) else 0.0
+                    for series in ordered_series
+                ]
                 try:
-                    value = float(probe_values.get(channel_name, 0.0))
-                except (TypeError, ValueError):
-                    value = 0.0
-                evaluated_channels[channel_name].append(value)
+                    virtual_values = evaluate(state)
+                except Exception as exc:
+                    log.debug("Virtual channel evaluation skipped: %s", exc)
+                    return
 
-        for channel_name, values in evaluated_channels.items():
-            result.signals[channel_name] = values
+                if not isinstance(virtual_values, dict):
+                    return
+
+                for channel_name in missing_channels:
+                    try:
+                        value = float(virtual_values.get(channel_name, 0.0))
+                    except (TypeError, ValueError):
+                        value = 0.0
+                    evaluated_channels[channel_name].append(value)
+
+                if sample_index and sample_index % 2048 == 0:
+                    if callbacks is not None:
+                        progress = progress_start + min(
+                            progress_span,
+                            (sample_index / sample_count) * progress_span,
+                        )
+                        callbacks.progress(progress, "Deriving virtual channels...")
+                    time.sleep(0)
+
+            for channel_name, values in evaluated_channels.items():
+                result.signals[channel_name] = values
+
+        existing_metadata = (
+            result.statistics.get("virtual_channel_metadata")
+            if isinstance(result.statistics.get("virtual_channel_metadata"), dict)
+            else {}
+        )
+        merged_metadata = dict(existing_metadata)
+        merged_metadata.update(channel_metadata)
+        if merged_metadata:
+            result.statistics["virtual_channel_metadata"] = merged_metadata
+
+        virtual_names = sorted(
+            {
+                channel_name
+                for channel_name in expected_channels
+                if len(result.signals.get(channel_name, [])) >= sample_count
+            }
+        )
+        if virtual_names:
+            result.statistics["virtual_channel_names"] = virtual_names
+
+        probe_channels = self._probe_virtual_channels(circuit)
+        probe_names = [name for name in virtual_names if name in probe_channels]
+        if probe_names:
+            result.statistics["virtual_probe_channels"] = sorted(set(probe_names))
+
+        control_names = [
+            name
+            for name in virtual_names
+            if str(merged_metadata.get(name, {}).get("domain", "")).strip().lower() == "control"
+        ]
+        if control_names:
+            result.statistics["virtual_control_channels"] = sorted(set(control_names))
+
+        thermal_names = [
+            name
+            for name in virtual_names
+            if (
+                str(merged_metadata.get(name, {}).get("domain", "")).strip().lower() == "thermal"
+                or str(
+                    merged_metadata.get(name, {}).get("component_type", "")
+                ).strip().lower()
+                == "thermal_trace"
+            )
+        ]
+        if thermal_names:
+            result.statistics["virtual_thermal_channels"] = sorted(set(thermal_names))
+
+        if callbacks is not None:
+            callbacks.progress(progress_start + progress_span, "Virtual channels ready")
 
     @staticmethod
     def _normalize_signal_name(raw_name: str) -> str:
@@ -1690,6 +1992,38 @@ class PulsimBackend(SimulationBackend):
         if hasattr(opts, "thermal_devices") and circuit_data is not None:
             opts.thermal_devices = self._build_thermal_device_map(circuit_data, settings)
 
+        # Averaged converter mode (pulsim >= 0.7.0)
+        averaged_options_dict = getattr(settings, "averaged_options", None)
+        if averaged_options_dict and hasattr(self._module, "AveragedConverterOptions"):
+            try:
+                AvgOpts = self._module.AveragedConverterOptions
+                AvgTopology = getattr(self._module, "AveragedConverterTopology", None)
+                AvgMode = getattr(self._module, "AveragedOperatingMode", None)
+                AvgEnvelope = getattr(self._module, "AveragedEnvelopePolicy", None)
+
+                avg_kwargs: dict[str, Any] = {}
+                if AvgTopology and "topology" in averaged_options_dict:
+                    try:
+                        avg_kwargs["topology"] = AvgTopology[averaged_options_dict["topology"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+                if AvgMode and "mode" in averaged_options_dict:
+                    try:
+                        avg_kwargs["mode"] = AvgMode[averaged_options_dict["mode"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+                if AvgEnvelope and "envelope" in averaged_options_dict:
+                    try:
+                        avg_kwargs["envelope"] = AvgEnvelope[averaged_options_dict["envelope"].lower()]
+                    except (KeyError, AttributeError):
+                        pass
+
+                avg_opts_obj = AvgOpts(**avg_kwargs)
+                if hasattr(opts, "averaged_converter"):
+                    opts.averaged_converter = avg_opts_obj
+            except Exception:
+                log.debug("Failed to apply averaged_options; skipping", exc_info=True)
+
         if not using_parser_defaults:
             # Fallback policy: enable transient gmin stepping for switching circuit convergence.
             if hasattr(opts, "fallback_policy"):
@@ -1725,7 +2059,7 @@ class PulsimBackend(SimulationBackend):
         for name in signal_names:
             result.signals[name] = []
 
-        callbacks.progress(5.0, "Running transient with SimulationOptions...")
+        callbacks.progress(8.0, "Running transient with SimulationOptions...")
         options = self._build_simulation_options(
             settings,
             dt,
@@ -1758,8 +2092,8 @@ class PulsimBackend(SimulationBackend):
         # see a frozen 5% status on long runs.
         start_time = time.monotonic()
         # Keep progress responsive for long-running simulations:
-        # - 0..20s: fast ramp from 5% to 94%
-        # - >20s: slow tail from 94% to 99% so UI never appears frozen
+        # - 0..20s: ramp from 8% to ~82%
+        # - >20s: slow tail from ~82% to 89%, leaving visible room for finalize
         primary_span_seconds = 20.0
         tail_span_seconds = 120.0
         while worker.is_alive():
@@ -1767,14 +2101,14 @@ class PulsimBackend(SimulationBackend):
             if worker.is_alive():
                 elapsed = time.monotonic() - start_time
                 if elapsed <= primary_span_seconds:
-                    progress = 5.0 + (elapsed / primary_span_seconds) * 89.0
+                    progress = 8.0 + (elapsed / primary_span_seconds) * 74.0
                 else:
                     tail_progress = min(
-                        5.0,
-                        ((elapsed - primary_span_seconds) / tail_span_seconds) * 5.0,
+                        7.0,
+                        ((elapsed - primary_span_seconds) / tail_span_seconds) * 7.0,
                     )
-                    progress = 94.0 + tail_progress
-                progress = min(99.0, progress)
+                    progress = 82.0 + tail_progress
+                progress = min(89.0, progress)
                 callbacks.progress(
                     progress,
                     f"Running transient with SimulationOptions... ({elapsed:.0f}s elapsed)",
@@ -1817,11 +2151,17 @@ class PulsimBackend(SimulationBackend):
                 for name in signal_names:
                     result.signals.setdefault(name, [])
 
-        for t, state in zip(times, states, strict=False):
-            result.time.append(float(t))
-            for idx, name in enumerate(signal_names):
-                if idx < len(state):
-                    result.signals.setdefault(name, []).append(float(state[idx]))
+        callbacks.progress(84.0, "Finalizing results...")
+        self._fill_result_from_samples(
+            result,
+            times,
+            states,
+            signal_names,
+            callbacks=callbacks,
+            progress_start=84.0,
+            progress_span=8.0,
+            progress_message="Finalizing results...",
+        )
 
         self._merge_native_virtual_probe_channels(circuit, native_result, result)
 
@@ -1873,8 +2213,88 @@ class PulsimBackend(SimulationBackend):
                 result.statistics["diagnostic"] = diagnostic_name
 
         self._append_electrothermal_statistics(result.statistics, native_result)
-        callbacks.progress(100.0, "Simulation complete")
         return result
+
+    def _fill_result_from_samples(
+        self,
+        result: BackendRunResult,
+        times: Any,
+        states: Any,
+        signal_names: list[str],
+        *,
+        callbacks: BackendCallbacks | None = None,
+        progress_start: float = 84.0,
+        progress_span: float = 8.0,
+        progress_message: str = "Finalizing results...",
+    ) -> None:
+        """Populate backend result vectors with fast-path NumPy conversion.
+
+        Falls back to a cooperative Python loop when input buffers are ragged.
+        """
+        time_values: np.ndarray | None = None
+        try:
+            time_values = np.asarray(times, dtype=np.float64).reshape(-1)
+        except Exception:
+            time_values = None
+
+        if time_values is not None:
+            result.time = time_values.tolist()
+        else:
+            result.time = [float(value) for value in list(times)]
+
+        sample_count = len(result.time)
+        if sample_count == 0:
+            return
+
+        try:
+            state_matrix = np.asarray(states, dtype=np.float64)
+        except Exception:
+            state_matrix = None
+
+        if state_matrix is not None:
+            if state_matrix.ndim == 1:
+                if sample_count == 1:
+                    state_matrix = state_matrix.reshape(1, -1)
+                elif len(signal_names) == 1 and state_matrix.size >= sample_count:
+                    state_matrix = state_matrix.reshape(-1, 1)
+            if state_matrix.ndim == 2 and state_matrix.shape[0] >= sample_count:
+                usable_cols = min(len(signal_names), int(state_matrix.shape[1]))
+                if usable_cols > 0:
+                    for idx, name in enumerate(signal_names[:usable_cols]):
+                        result.signals[name] = state_matrix[:sample_count, idx].astype(
+                            np.float64,
+                            copy=False,
+                        ).tolist()
+                        if callbacks is not None and idx and idx % 8 == 0:
+                            progress = progress_start + min(
+                                progress_span,
+                                (idx / max(usable_cols, 1)) * progress_span,
+                            )
+                            callbacks.progress(progress, progress_message)
+                    if callbacks is not None:
+                        callbacks.progress(progress_start + progress_span, progress_message)
+                return
+
+        # Ragged fallback with cooperative yields to keep UI responsive.
+        for name in signal_names:
+            result.signals.setdefault(name, [])
+        for sample_index, (t, state) in enumerate(zip(times, states, strict=False)):
+            if sample_index >= sample_count:
+                break
+            result.time[sample_index] = float(t)
+            for idx, name in enumerate(signal_names):
+                if idx < len(state):
+                    result.signals[name].append(float(state[idx]))
+            if sample_index and sample_index % 2048 == 0:
+                if callbacks is not None:
+                    progress = progress_start + min(
+                        progress_span,
+                        (sample_index / sample_count) * progress_span,
+                    )
+                    callbacks.progress(progress, progress_message)
+                time.sleep(0)
+        if callbacks is not None:
+            callbacks.progress(progress_start + progress_span, progress_message)
 
     def _run_transient_once(
         self,
@@ -1906,41 +2326,55 @@ class PulsimBackend(SimulationBackend):
                 )
             if run_result.error_message:
                 return run_result
-            self._ensure_virtual_probe_channels(circuit, run_result, signal_names)
+            self._ensure_virtual_probe_channels(
+                circuit,
+                run_result,
+                signal_names,
+                callbacks=callbacks,
+                progress_start=92.0,
+                progress_span=7.0,
+            )
+            callbacks.progress(100.0, "Simulation complete")
             return run_result
 
-        if self._should_use_simulation_options(settings):
-            try:
-                simulator_result = self._run_transient_via_simulator(
-                    circuit,
-                    circuit_data,
-                    settings,
-                    callbacks,
-                    signal_names,
-                    dt,
-                    x0,
-                    newton_opts,
-                    linear_solver,
-                )
-                if not simulator_result.error_message:
-                    return _finalize_attempt(simulator_result)
-                attempt_diagnostics["simulator_options_error"] = simulator_result.error_message
-                if "cancel" in simulator_result.error_message.lower():
-                    return _finalize_attempt(simulator_result)
-                callbacks.progress(
-                    5.0,
-                    "SimulationOptions path failed; retrying compatibility transient...",
-                )
-            except Exception as exc:
-                attempt_diagnostics["simulator_options_exception"] = str(exc)
-                callbacks.progress(
-                    5.0,
-                    "SimulationOptions unavailable; retrying compatibility transient...",
-                )
+        attempted_streaming = False
+        attempted_shared = False
+        has_cblock = self._has_component_type(circuit_data, "C_BLOCK")
+        if has_cblock:
+            strict_result = self._run_cblock_transient_strict(
+                circuit,
+                circuit_data,
+                settings,
+                callbacks,
+                result,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+            )
+            return _finalize_attempt(strict_result)
 
-        prefer_nonblocking = self._should_prefer_nonblocking_transient(settings, dt)
+        force_compatibility_path = has_cblock and not self._supports_modern_cblock_transient_path()
+
+        prefer_nonblocking = (
+            not force_compatibility_path
+            and self._should_prefer_nonblocking_transient(
+                settings,
+                dt,
+                circuit_data=circuit_data,
+            )
+        )
+        if force_compatibility_path:
+            callbacks.progress(
+                4.0,
+                "C-Block detected: using compatibility transient path...",
+            )
+            attempt_diagnostics["execution_note"] = "cblock_forced_compatibility_path"
+
         if prefer_nonblocking:
             if hasattr(self._module, "run_transient_streaming"):
+                attempted_streaming = True
                 streaming_result = self._run_transient_streaming(
                     circuit,
                     settings,
@@ -1959,6 +2393,7 @@ class PulsimBackend(SimulationBackend):
                     return streaming_result
 
             if hasattr(self._module, "run_transient_shared"):
+                attempted_shared = True
                 shared_result = self._run_transient_shared(
                     circuit,
                     settings,
@@ -1975,6 +2410,55 @@ class PulsimBackend(SimulationBackend):
                     return _finalize_attempt(shared_result)
                 if "cancel" in shared_result.error_message.lower():
                     return shared_result
+
+        if not force_compatibility_path and self._should_use_simulation_options(settings):
+            try:
+                simulator_result = self._run_transient_via_simulator(
+                    circuit,
+                    circuit_data,
+                    settings,
+                    callbacks,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                if not simulator_result.error_message:
+                    return _finalize_attempt(simulator_result)
+                attempt_diagnostics["simulator_options_error"] = simulator_result.error_message
+                if "cancel" in simulator_result.error_message.lower():
+                    return _finalize_attempt(simulator_result)
+                if has_cblock:
+                    # Modern C-Block control depends on native transient APIs.
+                    # Compatibility run_transient fallback can silently drop
+                    # virtual control behavior and yield misleading waveforms.
+                    simulator_result.error_message = (
+                        "C-Block transient failed on native backend path; "
+                        "compatibility fallback disabled for control safety. "
+                        f"Backend error: {simulator_result.error_message}"
+                    )
+                    simulator_result.statistics["cblock_native_path_required"] = True
+                    return _finalize_attempt(simulator_result)
+                callbacks.progress(
+                    5.0,
+                    "SimulationOptions path failed; retrying compatibility transient...",
+                )
+            except Exception as exc:
+                attempt_diagnostics["simulator_options_exception"] = str(exc)
+                if has_cblock:
+                    error_result = BackendRunResult(
+                        error_message=(
+                            "C-Block transient requires native backend execution path; "
+                            f"SimulationOptions raised: {exc}"
+                        ),
+                    )
+                    error_result.statistics["cblock_native_path_required"] = True
+                    return _finalize_attempt(error_result)
+                callbacks.progress(
+                    5.0,
+                    "SimulationOptions unavailable; retrying compatibility transient...",
+                )
 
         # Prefer robust run_transient path first to match notebook behavior.
         if hasattr(self._module, "run_transient"):
@@ -1993,11 +2477,12 @@ class PulsimBackend(SimulationBackend):
                 return _finalize_attempt(chunked_result)
             if "cancel" in chunked_result.error_message.lower():
                 return chunked_result
-            if hasattr(self._module, "run_transient_streaming"):
+            if hasattr(self._module, "run_transient_streaming") and not attempted_streaming:
                 callbacks.progress(
                     5.0,
                     "Compatibility transient failed; retrying in streaming mode...",
                 )
+                attempted_streaming = True
                 streaming_result = self._run_transient_streaming(
                     circuit,
                     settings,
@@ -2022,13 +2507,15 @@ class PulsimBackend(SimulationBackend):
                 return streaming_result
             return chunked_result
 
-        if hasattr(self._module, "run_transient_shared"):
+        if hasattr(self._module, "run_transient_shared") and not attempted_shared:
+            attempted_shared = True
             return _finalize_attempt(self._run_transient_shared(
                 circuit, settings, callbacks, result,
                 signal_names, dt, x0, newton_opts, linear_solver,
             ))
 
-        if hasattr(self._module, "run_transient_streaming"):
+        if hasattr(self._module, "run_transient_streaming") and not attempted_streaming:
+            attempted_streaming = True
             streaming_result = self._run_transient_streaming(
                 circuit, settings, callbacks, result,
                 signal_names, dt, x0, newton_opts, linear_solver,
@@ -2044,17 +2531,329 @@ class PulsimBackend(SimulationBackend):
             signal_names, dt, x0, newton_opts, linear_solver,
         ))
 
+    def _run_cblock_transient_strict(
+        self,
+        circuit: Any,
+        circuit_data: dict[str, Any],
+        settings: SimulationSettings,
+        callbacks: BackendCallbacks,
+        result: BackendRunResult,
+        signal_names: list[str],
+        dt: float,
+        x0: Any,
+        newton_opts: Any,
+        linear_solver: Any | None,
+    ) -> BackendRunResult:
+        """Run C-Block transient in strict mode without GUI fallback reruns."""
+        modern_backend = self._supports_modern_cblock_transient_path()
+        has_streaming = hasattr(self._module, "run_transient_streaming")
+        has_shared = hasattr(self._module, "run_transient_shared")
+        has_chunked = hasattr(self._module, "run_transient")
+        can_use_simulator = (
+            self._should_use_simulation_options(settings)
+            and hasattr(self._module, "SimulationOptions")
+            and hasattr(self._module, "Simulator")
+        )
+
+        def _tag_error(run_result: BackendRunResult, execution_note: str) -> BackendRunResult:
+            run_result.statistics.setdefault("execution_note", execution_note)
+            run_result.statistics["cblock_strict_mode"] = True
+            if run_result.error_message and "cancel" not in run_result.error_message.lower():
+                run_result.error_message = (
+                    "C-Block transient failed (strict mode, fallback disabled): "
+                    f"{run_result.error_message}"
+                )
+            return run_result
+
+        if modern_backend:
+            if can_use_simulator:
+                callbacks.progress(4.0, "C-Block strict mode: running SimulationOptions path...")
+                sim_result = self._run_transient_via_simulator(
+                    circuit,
+                    circuit_data,
+                    settings,
+                    callbacks,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                return _tag_error(sim_result, "cblock_strict_simulator_options")
+
+            if has_streaming:
+                callbacks.progress(4.0, "C-Block strict mode: running native streaming path...")
+                streaming_result = self._run_transient_streaming(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                return _tag_error(streaming_result, "cblock_strict_streaming")
+
+            if has_shared:
+                callbacks.progress(4.0, "C-Block strict mode: running native shared path...")
+                shared_result = self._run_transient_shared(
+                    circuit,
+                    settings,
+                    callbacks,
+                    result,
+                    signal_names,
+                    dt,
+                    x0,
+                    newton_opts,
+                    linear_solver,
+                )
+                return _tag_error(shared_result, "cblock_strict_shared")
+
+            unavailable = BackendRunResult(
+                error_message=(
+                    "C-Block strict mode requires native transient API "
+                    "(streaming/shared/SimulationOptions) on this backend."
+                ),
+            )
+            return _tag_error(unavailable, "cblock_strict_no_native_path")
+
+        callbacks.progress(4.0, "C-Block strict mode: running compatibility path...")
+        if has_chunked:
+            chunked_result = self._run_transient_chunked(
+                circuit,
+                settings,
+                callbacks,
+                result,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+            )
+            return _tag_error(chunked_result, "cblock_strict_chunked_legacy")
+
+        if has_streaming:
+            streaming_result = self._run_transient_streaming(
+                circuit,
+                settings,
+                callbacks,
+                result,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+            )
+            return _tag_error(streaming_result, "cblock_strict_streaming_legacy")
+
+        if has_shared:
+            shared_result = self._run_transient_shared(
+                circuit,
+                settings,
+                callbacks,
+                result,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+            )
+            return _tag_error(shared_result, "cblock_strict_shared_legacy")
+
+        if can_use_simulator:
+            sim_result = self._run_transient_via_simulator(
+                circuit,
+                circuit_data,
+                settings,
+                callbacks,
+                signal_names,
+                dt,
+                x0,
+                newton_opts,
+                linear_solver,
+            )
+            return _tag_error(sim_result, "cblock_strict_simulator_options_legacy")
+
+        unavailable = BackendRunResult(
+            error_message=(
+                "No transient API available for C-Block execution on this backend."
+            ),
+        )
+        return _tag_error(unavailable, "cblock_strict_no_path_legacy")
+
+    @staticmethod
+    def _has_component_type(circuit_data: dict[str, Any] | None, comp_type: str) -> bool:
+        if not isinstance(circuit_data, dict):
+            return False
+        components = circuit_data.get("components", [])
+        if not isinstance(components, list):
+            return False
+        target = str(comp_type or "").strip().upper()
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            current = str(component.get("type", "")).strip().upper()
+            if current == target:
+                return True
+        return False
+
+    def _supports_modern_cblock_transient_path(self) -> bool:
+        """Return whether this backend version can safely run C-Block on modern paths."""
+        parsed_version = self.info.parsed_version
+        if parsed_version is None:
+            try:
+                parsed_version = BackendVersion.from_string(str(self.info.version))
+                self.info.parsed_version = parsed_version
+            except ValueError:
+                return False
+        return parsed_version.is_compatible_with(_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND)
+
+    @staticmethod
+    def _safe_cblock_build_name(raw_name: str) -> str:
+        name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw_name.strip())
+        name = name.strip("_")
+        return name or "cblock"
+
+    def _prepare_cblock_runtime_payload(
+        self,
+        circuit_data: dict[str, Any],
+        callbacks: BackendCallbacks,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Auto-compile C-Block ``source`` into ``lib_path`` when compile API exists."""
+        compile_fn = getattr(self._module, "compile_cblock", None)
+        if compile_fn is None:
+            return circuit_data, None
+        if not isinstance(circuit_data, dict):
+            return circuit_data, None
+        components = circuit_data.get("components")
+        if not isinstance(components, list):
+            return circuit_data, None
+
+        prepared = copy.deepcopy(circuit_data)
+        prepared_components = prepared.get("components")
+        if not isinstance(prepared_components, list):
+            return circuit_data, None
+
+        compiled_any = False
+        cache_root = Path(tempfile.gettempdir()).resolve() / "pulsimgui-cblock-build-cache"
+
+        for comp in prepared_components:
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type", "")).strip().upper() != "C_BLOCK":
+                continue
+
+            params = comp.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            source = str(params.get("source", "") or "").strip()
+            lib_path = str(params.get("lib_path", "") or "").strip()
+            if not source or lib_path:
+                continue
+
+            source_path = Path(source).expanduser()
+            if not source_path.exists():
+                # Contract validator already raises a clear file-not-found error.
+                continue
+            try:
+                resolved_source = source_path.resolve()
+                source_mtime = resolved_source.stat().st_mtime_ns
+            except OSError:
+                continue
+
+            flags_raw = params.get("extra_cflags", [])
+            flags: list[str] = []
+            if isinstance(flags_raw, list):
+                flags = [str(item).strip() for item in flags_raw if str(item).strip()]
+            elif isinstance(flags_raw, str):
+                flags = [token for token in flags_raw.split() if token]
+            cache_key = (
+                resolved_source.as_posix(),
+                int(source_mtime),
+                tuple(flags),
+            )
+
+            cached_lib = self._cblock_autobuild_cache.get(cache_key, "")
+            built_lib_path: Path
+            if cached_lib and Path(cached_lib).exists():
+                built_lib_path = Path(cached_lib)
+            else:
+                try:
+                    cache_root.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+                try:
+                    built_lib = compile_fn(
+                        resolved_source,
+                        output_dir=cache_root,
+                        name=self._safe_cblock_build_name(str(comp.get("name") or "cblock")),
+                        extra_cflags=flags or None,
+                    )
+                    built_lib_path = Path(built_lib).expanduser().resolve()
+                except Exception as exc:
+                    details: list[str] = [str(exc)]
+                    compiler_path = str(getattr(exc, "compiler_path", "") or "").strip()
+                    stderr_output = str(getattr(exc, "stderr_output", "") or "").strip()
+                    if compiler_path:
+                        details.append(f"Compiler: {compiler_path}")
+                    if stderr_output:
+                        details.append(stderr_output)
+                    return prepared, (
+                        "C-Block auto-compilation failed; install a supported C compiler "
+                        "or provide 'lib_path'.\n"
+                        + "\n".join(details)
+                    )
+
+                self._cblock_autobuild_cache[cache_key] = built_lib_path.as_posix()
+
+            params["lib_path"] = built_lib_path.as_posix()
+            params["source"] = ""
+            params["implementation"] = "library"
+            compiled_any = True
+
+        if compiled_any:
+            callbacks.progress(
+                2.5,
+                "C-Block source detected: auto-compiling with host toolchain...",
+            )
+        return prepared, None
+
     def _should_prefer_nonblocking_transient(
         self,
         settings: SimulationSettings,
         dt: float,
+        *,
+        circuit_data: dict[str, Any] | None = None,
     ) -> bool:
-        """Prefer shared/streaming APIs for long runs to keep UI responsive."""
+        """Prefer shared/streaming APIs for runs that can stall UI responsiveness."""
         duration = max(0.0, float(getattr(settings, "t_stop", 0.0)) - float(getattr(settings, "t_start", 0.0)))
         if dt <= 0.0:
             return duration >= 0.5
         estimated_steps = int(duration / dt) if duration > 0.0 else 0
-        return duration >= 0.5 or estimated_steps >= 200_000
+        if duration >= 0.5 or estimated_steps >= 200_000:
+            return True
+
+        # Medium-size runs can still lock the UI when the backend path keeps the GIL
+        # (notably control + losses/thermal validation setups).
+        if estimated_steps >= 10_000:
+            return True
+
+        if circuit_data and estimated_steps >= 2_000:
+            components = (
+                circuit_data.get("components", [])
+                if isinstance(circuit_data, dict)
+                else []
+            )
+            has_cblock = any(
+                str(comp.get("type", "")).strip().upper() == "C_BLOCK"
+                for comp in components
+            )
+            if has_cblock:
+                return True
+
+        return False
 
     def _build_transient_retry_profiles(
         self,
@@ -2086,6 +2885,42 @@ class PulsimBackend(SimulationBackend):
                 min_newton_iterations=max(base_iterations, 220),
                 force_voltage_limiting=True,
                 max_voltage_step=min(safe_step, 2.0),
+                dt_scale=0.25,
+            ),
+        ]
+
+    def _build_cblock_strict_retry_profiles(
+        self,
+        settings: SimulationSettings,
+    ) -> list[_TransientRetryProfile]:
+        """Build strict-mode numeric retries for C-Block transient convergence."""
+        base_iterations = max(1, int(getattr(settings, "max_newton_iterations", 50)))
+        configured_step = float(getattr(settings, "max_voltage_step", 5.0))
+        safe_step = configured_step if configured_step > 0 else 5.0
+
+        return [
+            _TransientRetryProfile(name="default"),
+            _TransientRetryProfile(
+                name="cblock-gmin-seed",
+                dc_strategy="gmin",
+                min_newton_iterations=max(base_iterations, 160),
+                force_voltage_limiting=True,
+                max_voltage_step=min(safe_step, 3.0),
+            ),
+            _TransientRetryProfile(
+                name="cblock-source-half-step",
+                dc_strategy="source",
+                min_newton_iterations=max(base_iterations, 220),
+                force_voltage_limiting=True,
+                max_voltage_step=min(safe_step, 2.0),
+                dt_scale=0.5,
+            ),
+            _TransientRetryProfile(
+                name="cblock-pseudo-quarter-step",
+                dc_strategy="pseudo",
+                min_newton_iterations=max(base_iterations, 280),
+                force_voltage_limiting=True,
+                max_voltage_step=min(safe_step, 1.5),
                 dt_scale=0.25,
             ),
         ]
@@ -2133,6 +2968,69 @@ class PulsimBackend(SimulationBackend):
         )
         return any(indicator in lowered for indicator in indicators)
 
+    @staticmethod
+    def _unpack_streaming_transient_result(
+        raw_output: Any,
+    ) -> tuple[Any, Any, bool, str, dict[str, Any] | None]:
+        """Unpack streaming API output with backward/forward-compatible tuple parsing."""
+        if not isinstance(raw_output, (tuple, list)):
+            raise TypeError("run_transient_streaming returned a non-iterable payload")
+        if len(raw_output) < 4:
+            raise TypeError("run_transient_streaming returned an invalid tuple payload")
+
+        times = raw_output[0]
+        states = raw_output[1]
+        success = bool(raw_output[-2])
+        message = str(raw_output[-1] or "")
+
+        virtual_channels: dict[str, Any] | None = None
+        for extra in raw_output[2:-2]:
+            if not isinstance(extra, dict):
+                continue
+            if any(isinstance(value, (list, tuple, np.ndarray)) for value in extra.values()):
+                virtual_channels = dict(extra)
+                break
+
+        return times, states, success, message, virtual_channels
+
+    @staticmethod
+    def _merge_streaming_virtual_channels(
+        result: BackendRunResult,
+        virtual_channels: dict[str, Any],
+    ) -> None:
+        """Merge virtual channel series returned directly by streaming APIs."""
+        if not result.time or not isinstance(virtual_channels, dict):
+            return
+
+        sample_count = len(result.time)
+        merged_names: set[str] = set()
+        for raw_name, raw_series in virtual_channels.items():
+            channel_name = str(raw_name or "").strip()
+            if not channel_name or raw_series is None:
+                continue
+            if not isinstance(raw_series, (list, tuple, np.ndarray)):
+                continue
+
+            values: list[float] = []
+            for item in list(raw_series)[:sample_count]:
+                try:
+                    values.append(float(item))
+                except (TypeError, ValueError):
+                    values.append(0.0)
+            if not values:
+                continue
+            if len(values) < sample_count:
+                values.extend([values[-1]] * (sample_count - len(values)))
+            result.signals[channel_name] = values
+            merged_names.add(channel_name)
+
+        if not merged_names:
+            return
+        existing_names = result.statistics.get("virtual_channel_names")
+        names = set(existing_names) if isinstance(existing_names, list) else set()
+        names.update(merged_names)
+        result.statistics["virtual_channel_names"] = sorted(names)
+
     def _run_transient_streaming(
         self,
         circuit: Any,
@@ -2146,6 +3044,9 @@ class PulsimBackend(SimulationBackend):
         linear_solver: Any | None,
     ) -> BackendRunResult:
         """Run transient simulation using streaming API with real-time callbacks."""
+        last_progress_emit_ts = 0.0
+        last_progress_value = -1.0
+
         def data_callback(t: float, state_dict: dict) -> None:
             """Called by C++ backend for progress - we ignore the data here.
 
@@ -2156,15 +3057,26 @@ class PulsimBackend(SimulationBackend):
 
         def progress_callback(percent: float, message: str) -> None:
             """Called by C++ backend for progress updates."""
-            # Map backend progress (0-100) to our range (5-95)
-            mapped_progress = 5.0 + (percent / 100.0) * 90.0
-            callbacks.progress(mapped_progress, message)
+            nonlocal last_progress_emit_ts, last_progress_value
+            # Map backend progress (0-100) to solver stage range (8-80)
+            mapped_progress = 8.0 + (percent / 100.0) * 72.0
+            now = time.monotonic()
+            should_emit = (
+                last_progress_emit_ts <= 0.0
+                or (now - last_progress_emit_ts) >= 0.08
+                or abs(mapped_progress - last_progress_value) >= 0.75
+                or percent >= 99.0
+            )
+            if should_emit:
+                callbacks.progress(mapped_progress, message)
+                last_progress_emit_ts = now
+                last_progress_value = mapped_progress
 
         def cancel_check() -> bool:
             """Called by C++ backend to check cancellation."""
             return callbacks.check_cancelled()
 
-        callbacks.progress(5.0, "Running simulation...")
+        callbacks.progress(8.0, "Running simulation...")
 
         # Use fewer callbacks (50) to reduce GIL overhead
         # The returned data will have full resolution
@@ -2181,7 +3093,10 @@ class PulsimBackend(SimulationBackend):
         )
         transient_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
         try:
-            times, states, success, message = self._module.run_transient_streaming(*transient_args)
+            stream_output = self._module.run_transient_streaming(*transient_args)
+            times, states, success, message, virtual_channels = (
+                self._unpack_streaming_transient_result(stream_output)
+            )
         except TypeError as exc:
             # Some backend variants require explicit x0 in streaming API.
             # Retry once with a synthesized state vector for compatibility.
@@ -2197,28 +3112,37 @@ class PulsimBackend(SimulationBackend):
             )
             retry_args.extend([data_callback, progress_callback, cancel_check, emit_interval])
             try:
-                times, states, success, message = self._module.run_transient_streaming(*retry_args)
+                stream_output = self._module.run_transient_streaming(*retry_args)
+                times, states, success, message, virtual_channels = (
+                    self._unpack_streaming_transient_result(stream_output)
+                )
             except TypeError as err:
                 raise exc from err
 
         if not success:
             result.error_message = message
             return result
+        result.error_message = ""
 
-        # Build final result from complete simulation data
-        for t, state in zip(times, states, strict=False):
-            result.time.append(float(t))
-            for i, name in enumerate(signal_names):
-                result.signals[name].append(float(state[i]))
-
-        callbacks.progress(95.0, "Finalizing results...")
+        callbacks.progress(84.0, "Finalizing results...")
+        self._fill_result_from_samples(
+            result,
+            times,
+            states,
+            signal_names,
+            callbacks=callbacks,
+            progress_start=84.0,
+            progress_span=8.0,
+            progress_message="Finalizing results...",
+        )
+        if virtual_channels:
+            self._merge_streaming_virtual_channels(result, virtual_channels)
 
         # Final data point
         if result.time:
             final_sample = {name: values[-1] for name, values in result.signals.items()}
             callbacks.data_point(result.time[-1], final_sample)
 
-        callbacks.progress(100.0, "Simulation complete")
         return result
 
     def _run_transient_shared(
@@ -2240,7 +3164,7 @@ class PulsimBackend(SimulationBackend):
         - Python polls the status buffer at 60 FPS
         - No GIL contention during simulation
         """
-        callbacks.progress(5.0, "Preparing shared memory buffers...")
+        callbacks.progress(8.0, "Preparing shared memory buffers...")
 
         # Calculate buffer size (add 20% margin for safety)
         total_steps = int((settings.t_stop - settings.t_start) / dt)
@@ -2299,6 +3223,8 @@ class PulsimBackend(SimulationBackend):
         # Poll status buffer at 60 FPS and update UI
         poll_interval = 1.0 / 60.0  # 16.67ms
         last_index = 0
+        last_progress_emit_ts = 0.0
+        last_progress_value = 10.0
 
         while status_buffer[1] == 0:  # While running
             # Check for pause
@@ -2309,13 +3235,23 @@ class PulsimBackend(SimulationBackend):
 
             if current_index > last_index:
                 # Calculate progress percentage
-                progress = 10.0 + (current_index / total_steps) * 85.0
-                progress = min(95.0, progress)
+                progress = 12.0 + (current_index / total_steps) * 68.0
+                progress = min(80.0, progress)
 
                 # Get current time value for message
                 if current_index > 0 and current_index < buffer_size:
                     current_time = time_buffer[current_index - 1]
-                    callbacks.progress(progress, f"Simulating: t={current_time*1e6:.1f}µs")
+                    now = time.monotonic()
+                    should_emit = (
+                        last_progress_emit_ts <= 0.0
+                        or (now - last_progress_emit_ts) >= 0.08
+                        or abs(progress - last_progress_value) >= 0.75
+                        or current_index >= total_steps
+                    )
+                    if should_emit:
+                        callbacks.progress(progress, f"Simulating: t={current_time*1e6:.1f}µs")
+                        last_progress_emit_ts = now
+                        last_progress_value = progress
 
                 last_index = current_index
 
@@ -2335,23 +3271,28 @@ class PulsimBackend(SimulationBackend):
         if final_status == 2 or not sim_success[0]:  # Error
             result.error_message = sim_message[0] or "Simulation failed"
             return result
+        result.error_message = ""
 
         if final_index > last_index:
             last_index = final_index
 
-        callbacks.progress(95.0, "Finalizing results...")
-
-        # Copy final data to result (full resolution)
-        result.time = time_buffer[:final_index].tolist()
-        for i, name in enumerate(signal_names):
-            result.signals[name] = states_buffer[:final_index, i].tolist()
+        callbacks.progress(84.0, "Finalizing results...")
+        self._fill_result_from_samples(
+            result,
+            time_buffer[:final_index],
+            states_buffer[:final_index, :],
+            signal_names,
+            callbacks=callbacks,
+            progress_start=84.0,
+            progress_span=8.0,
+            progress_message="Finalizing results...",
+        )
 
         # Send final complete data
         if result.time:
             final_sample = {name: values[-1] for name, values in result.signals.items()}
             callbacks.data_point(result.time[-1], final_sample)
 
-        callbacks.progress(100.0, "Simulation complete")
         return result
 
     def _run_transient_chunked(
@@ -2383,6 +3324,7 @@ class PulsimBackend(SimulationBackend):
         if not success:
             result.error_message = message
             return result
+        result.error_message = ""
 
         callbacks.progress(60.0, "Processing results...")
 
@@ -2415,7 +3357,6 @@ class PulsimBackend(SimulationBackend):
             "_total_points": total_points,
         })
 
-        callbacks.progress(100.0, "Complete")
         return result
 
     def run_dc(
@@ -3393,6 +4334,431 @@ class PulsimBackend(SimulationBackend):
         if controller:
             controller.request_stop()
 
+    def run_post_processing(
+        self,
+        transient_result: TransientResult,
+        jobs: list[dict],
+    ) -> PostProcessingResult:
+        """Run post-processing jobs via pulsim.run_post_processing."""
+        if not self.has_capability("post_processing"):
+            return PostProcessingResult(
+                success=False,
+                error_message="Post-processing not supported by this backend version",
+            )
+
+        ps = self._module
+        try:
+            sim_result_cls = getattr(ps, "SimulationResult", None)
+            if sim_result_cls is None:
+                return PostProcessingResult(
+                    success=False,
+                    error_message="pulsim.SimulationResult not available",
+                )
+            ps_result = self._build_post_processing_input(sim_result_cls, transient_result)
+
+            parse_fn = getattr(ps, "parse_post_processing_yaml", None)
+            if callable(parse_fn):
+                pp_options = parse_fn({"jobs": jobs})
+            else:
+                opts_cls = getattr(ps, "PostProcessingOptions", None)
+                job_cls = getattr(ps, "PostProcessingJob", None)
+                if opts_cls is None or job_cls is None:
+                    return PostProcessingResult(
+                        success=False,
+                        error_message="pulsim.PostProcessingOptions not available",
+                    )
+                pp_options = opts_cls()
+                job_items: list[Any] = []
+                for raw_job in jobs:
+                    if not isinstance(raw_job, dict):
+                        continue
+                    job_items.append(self._build_post_processing_job(job_cls, raw_job))
+                if hasattr(pp_options, "jobs"):
+                    pp_options.jobs = job_items
+
+            ps_pp_result = ps.run_post_processing(ps_result, pp_options)
+            return self._map_pp_result(ps_pp_result)
+
+        except Exception as exc:
+            log.exception("run_post_processing failed")
+            return PostProcessingResult(success=False, error_message=str(exc))
+
+    @staticmethod
+    def _build_post_processing_input(sim_result_cls: Any, transient_result: TransientResult) -> Any:
+        """Create a backend-compatible SimulationResult-like object for post-processing."""
+        base_time = list(transient_result.time)
+        base_signals = {str(k): list(v) for k, v in transient_result.signals.items()}
+
+        # Newer Python wrappers often accept kwargs.
+        for kwargs in (
+            {"time": base_time, "virtual_channels": base_signals},
+            {"time": base_time, "signals": base_signals},
+            {"time": base_time},
+        ):
+            try:
+                candidate = sim_result_cls(**kwargs)
+                try:
+                    candidate.virtual_channels = base_signals
+                except Exception:
+                    pass
+                try:
+                    candidate.signals = base_signals
+                except Exception:
+                    pass
+                return candidate
+            except Exception:
+                continue
+
+        # Fallback for pybind classes that require empty init + attribute assignment.
+        candidate = sim_result_cls()
+        try:
+            candidate.time = base_time
+        except Exception:
+            pass
+        try:
+            candidate.virtual_channels = base_signals
+        except Exception:
+            pass
+        try:
+            candidate.signals = base_signals
+        except Exception:
+            pass
+        return candidate
+
+    @staticmethod
+    def _build_post_processing_job(job_cls: Any, payload: dict[str, Any]) -> Any:
+        """Create a backend PostProcessingJob handling dataclass/pybind variants."""
+        try:
+            return job_cls(**payload)
+        except Exception:
+            job = job_cls()
+            for key, value in payload.items():
+                if hasattr(job, key):
+                    setattr(job, key, value)
+            return job
+
+    @staticmethod
+    def _map_pp_result(ps_result: Any) -> PostProcessingResult:
+        """Map a pulsim PostProcessingResult to the GUI wrapper type."""
+        def _field(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        top_success = bool(_field(ps_result, "success", True))
+        top_error = str(
+            _field(ps_result, "error_message", "")
+            or _field(ps_result, "message", "")
+            or ""
+        ).strip()
+
+        job_results: list[PostProcessingJobResult] = []
+        for jr in list(_field(ps_result, "jobs", []) or []):
+            scalar_metrics: dict[str, ScalarMetric] = {}
+            raw_scalar = _field(jr, "scalar_metrics", {}) or {}
+            scalar_entries: list[tuple[str, Any]]
+            if isinstance(raw_scalar, dict):
+                scalar_entries = list(raw_scalar.items())
+            else:
+                scalar_entries = []
+                for raw_item in list(raw_scalar):
+                    metric_name = str(_field(raw_item, "name", "")).strip()
+                    scalar_entries.append((metric_name, raw_item))
+
+            for metric_key, raw_m in scalar_entries:
+                metric_name = str(_field(raw_m, "name", metric_key)).strip() or str(metric_key).strip()
+                metric_value = _optional_float(_field(raw_m, "value", None))
+                if not metric_name or metric_value is None:
+                    continue
+                sm = ScalarMetric(
+                    name=metric_name,
+                    value=metric_value,
+                    unit=str(_field(raw_m, "unit", "") or ""),
+                    domain=str(_field(raw_m, "domain", "") or ""),
+                    signal_name=str(_field(raw_m, "signal_name", "") or ""),
+                    source_signal=str(_field(raw_m, "source_signal", "") or ""),
+                )
+                scalar_metrics[sm.name] = sm
+
+            spectrum_bins = [
+                SpectralBin(
+                    frequency_hz=_optional_float(_field(b, "frequency_hz", 0.0)) or 0.0,
+                    amplitude=(
+                        _optional_float(_field(b, "amplitude", None))
+                        or _optional_float(_field(b, "magnitude", None))
+                        or 0.0
+                    ),
+                    phase_deg=_optional_float(_field(b, "phase_deg", 0.0)) or 0.0,
+                )
+                for b in list(_field(jr, "spectrum_bins", []) or [])
+            ]
+            harmonics = [
+                HarmonicEntry(
+                    order=int(
+                        _optional_float(_field(h, "order", None))
+                        or _optional_float(_field(h, "harmonic_number", None))
+                        or 0.0
+                    ),
+                    frequency_hz=_optional_float(_field(h, "frequency_hz", 0.0)) or 0.0,
+                    amplitude=(
+                        _optional_float(_field(h, "amplitude", None))
+                        or _optional_float(_field(h, "magnitude", None))
+                        or 0.0
+                    ),
+                    phase_deg=_optional_float(_field(h, "phase_deg", 0.0)) or 0.0,
+                    amplitude_db=_optional_float(_field(h, "amplitude_db", None)),
+                    magnitude_pct_fundamental=_optional_float(
+                        _field(h, "magnitude_pct_fundamental", None)
+                    ),
+                )
+                for h in list(_field(jr, "harmonics", []) or [])
+            ]
+            undefined_metrics = [
+                UndefinedMetricEntry(
+                    name=str(_field(entry, "name", "") or ""),
+                    reason=_enum_name_or_value(_field(entry, "reason", "")),
+                    reason_message=str(_field(entry, "reason_message", "") or ""),
+                )
+                for entry in list(_field(jr, "undefined_metrics", []) or [])
+            ]
+            job_results.append(PostProcessingJobResult(
+                job_id=str(_field(jr, "job_id", "") or ""),
+                kind=_enum_name_or_value(_field(jr, "kind", "")),
+                success=bool(_field(jr, "success", True)),
+                diagnostic=_enum_name_or_value(_field(jr, "diagnostic", "")),
+                diagnostic_message=str(_field(jr, "diagnostic_message", "") or ""),
+                scalar_metrics=scalar_metrics,
+                spectrum_bins=spectrum_bins,
+                harmonics=harmonics,
+                thd_pct=_optional_float(_field(jr, "thd_pct", None)),
+                fundamental_hz=_optional_float(_field(jr, "fundamental_hz", None)),
+                average_input_power=_optional_float(_field(jr, "average_input_power", None)),
+                average_output_power=_optional_float(_field(jr, "average_output_power", None)),
+                efficiency=_optional_float(_field(jr, "efficiency", None)),
+                power_factor=_optional_float(_field(jr, "power_factor", None)),
+                undefined_metrics=[entry for entry in undefined_metrics if entry.name],
+                signal_names=[str(name) for name in list(_field(jr, "signal_names", []) or [])],
+                sample_count=int(_optional_float(_field(jr, "sample_count", 0)) or 0),
+                runtime_seconds=_optional_float(_field(jr, "runtime_seconds", 0.0)) or 0.0,
+            ))
+
+        success = top_success and all(job.success for job in job_results)
+        return PostProcessingResult(
+            jobs=job_results,
+            success=success,
+            error_message=top_error,
+        )
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        settings: ACSettings,
+    ) -> FrequencyAnalysisResult:
+        """Run frequency-domain analysis via pulsim.run_frequency_analysis."""
+        if not self.has_capability("frequency_analysis"):
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="unsupported",
+                diagnostic_message="Frequency analysis not supported by this backend version",
+            )
+
+        ps = self._module
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="circuit_error",
+                diagnostic_message=str(exc),
+            )
+
+        try:
+            fa_opts_cls = getattr(ps, "FrequencyAnalysisOptions", None)
+            if fa_opts_cls is None:
+                return FrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="unsupported",
+                    diagnostic_message="pulsim.FrequencyAnalysisOptions not available",
+                )
+
+            fa_opts = fa_opts_cls()
+            if hasattr(fa_opts, "enabled"):
+                fa_opts.enabled = True
+            if hasattr(fa_opts, "f_start_hz"):
+                fa_opts.f_start_hz = max(float(settings.f_start), 1e-12)
+            if hasattr(fa_opts, "f_stop_hz"):
+                f_start = max(float(settings.f_start), 1e-12)
+                fa_opts.f_stop_hz = max(float(settings.f_stop), f_start * (1.0 + 1e-12))
+            if hasattr(fa_opts, "points"):
+                f_start = max(float(settings.f_start), 1e-12)
+                f_stop = max(float(settings.f_stop), f_start * (1.0 + 1e-12))
+                ppd = max(1, int(settings.points_per_decade))
+                decades = max(1.0, math.log10(f_stop / f_start))
+                fa_opts.points = max(2, int(math.ceil(decades * ppd)) + 1)
+            if hasattr(fa_opts, "injection_current_amplitude"):
+                amplitude = _optional_float(getattr(settings, "injection_current_amplitude", 1.0))
+                fa_opts.injection_current_amplitude = amplitude if amplitude is not None else 1.0
+
+            mode_raw = str(getattr(settings, "mode", "open_loop_transfer") or "open_loop_transfer").strip().lower()
+            mode_map = {
+                "open_loop_transfer": "OpenLoopTransfer",
+                "closed_loop_transfer": "ClosedLoopTransfer",
+                "input_impedance": "InputImpedance",
+                "output_impedance": "OutputImpedance",
+            }
+            mode_enum = getattr(ps, "FrequencyAnalysisMode", None)
+            mode_name = mode_map.get(mode_raw, "OpenLoopTransfer")
+            if mode_enum is not None and hasattr(mode_enum, mode_name) and hasattr(fa_opts, "mode"):
+                fa_opts.mode = getattr(mode_enum, mode_name)
+
+            anchor_raw = str(getattr(settings, "anchor_mode", "auto") or "auto").strip().lower()
+            anchor_map = {
+                "auto": "Auto",
+                "dc": "DC",
+                "periodic": "Periodic",
+                "averaged": "Averaged",
+            }
+            anchor_enum = getattr(ps, "FrequencyAnchorMode", None)
+            anchor_name = anchor_map.get(anchor_raw, "Auto")
+            if anchor_enum is not None and hasattr(anchor_enum, anchor_name) and hasattr(fa_opts, "anchor_mode"):
+                fa_opts.anchor_mode = getattr(anchor_enum, anchor_name)
+
+            scale_raw = str(getattr(settings, "sweep_scale", "decade") or "decade").strip().lower()
+            if scale_raw in {"decade", "log", "logarithmic"}:
+                scale_name = "Logarithmic"
+            else:
+                scale_name = "Linear"
+            scale_enum = getattr(ps, "FrequencySweepScale", None)
+            if scale_enum is not None and hasattr(scale_enum, scale_name) and hasattr(fa_opts, "sweep_scale"):
+                fa_opts.sweep_scale = getattr(scale_enum, scale_name)
+
+            input_hint = str(getattr(settings, "input_source", "") or "").strip()
+            output_hint = (
+                str(settings.output_nodes[0]).strip()
+                if getattr(settings, "output_nodes", None)
+                else ""
+            )
+            inj_positive, inj_negative = self._parse_port_nodes(
+                str(getattr(settings, "injection_node", "") or "").strip(),
+                default_positive=input_hint or "in",
+            )
+            out_positive, out_negative = self._parse_port_nodes(
+                str(getattr(settings, "measurement_node", "") or "").strip(),
+                default_positive=output_hint or "out",
+            )
+
+            if hasattr(fa_opts, "perturbation_port"):
+                fa_opts.perturbation_port = self._make_frequency_port(inj_positive, inj_negative)
+            if hasattr(fa_opts, "output_port"):
+                fa_opts.output_port = self._make_frequency_port(out_positive, out_negative)
+
+            run_frequency = ps.run_frequency_analysis
+            try:
+                ps_fa_result = run_frequency(circuit, fa_opts, raise_on_failure=False)
+            except TypeError:
+                ps_fa_result = run_frequency(circuit, fa_opts)
+            return self._map_fa_result(ps_fa_result)
+
+        except Exception as exc:
+            log.exception("run_frequency_analysis failed")
+            return FrequencyAnalysisResult(
+                success=False,
+                diagnostic_code="internal_error",
+                diagnostic_message=str(exc),
+            )
+
+    def _make_frequency_port(self, positive_node: str, negative_node: str) -> Any:
+        """Create FrequencyAnalysisPort for pybind/dataclass backends."""
+        port_cls = getattr(self._module, "FrequencyAnalysisPort", None)
+        if port_cls is None:
+            return {"positive_node": positive_node, "negative_node": negative_node}
+        try:
+            port = port_cls()
+        except Exception:
+            port = port_cls
+        if hasattr(port, "positive_node"):
+            port.positive_node = positive_node
+        if hasattr(port, "negative_node"):
+            port.negative_node = negative_node
+        return port
+
+    @staticmethod
+    def _parse_port_nodes(raw: str, *, default_positive: str) -> tuple[str, str]:
+        """Parse a node specification into (positive, negative)."""
+        text = str(raw or "").strip()
+        if not text:
+            return default_positive, "0"
+        for sep in (",", ";", ":", "/", "->"):
+            if sep in text:
+                left, right = text.split(sep, 1)
+                positive = left.strip() or default_positive
+                negative = right.strip() or "0"
+                return positive, negative
+        return text, "0"
+
+    @staticmethod
+    def _map_fa_result(ps_result: Any) -> FrequencyAnalysisResult:
+        """Map a pulsim FrequencyAnalysisResult to the GUI wrapper type."""
+        def _field(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        def _coerce_series(raw: Any) -> list[float]:
+            if raw is None:
+                return []
+            values = raw.tolist() if isinstance(raw, np.ndarray) else list(raw)
+            out: list[float] = []
+            for value in values:
+                numeric = _optional_float(value)
+                if numeric is None:
+                    continue
+                out.append(numeric)
+            return out
+
+        freqs = _coerce_series(_field(ps_result, "frequency_hz", None) or _field(ps_result, "frequencies", []))
+
+        raw_mag = _field(ps_result, "magnitude_db", None) or _field(ps_result, "magnitude", None)
+        raw_phase = _field(ps_result, "phase_deg", None) or _field(ps_result, "phase", None)
+        if isinstance(raw_mag, dict):
+            magnitude_db = {str(key): _coerce_series(values) for key, values in raw_mag.items()}
+        else:
+            magnitude_db = {"H(s)": _coerce_series(raw_mag)} if raw_mag is not None else {}
+        if isinstance(raw_phase, dict):
+            phase_deg = {str(key): _coerce_series(values) for key, values in raw_phase.items()}
+        else:
+            phase_deg = {"H(s)": _coerce_series(raw_phase)} if raw_phase is not None else {}
+
+        diagnostic = _field(ps_result, "diagnostic", None)
+        diagnostic_code = _enum_name_or_value(diagnostic)
+        diagnostic_message = str(
+            _field(ps_result, "message", "")
+            or _field(diagnostic, "message", "")
+            or _field(ps_result, "diagnostic_message", "")
+            or ""
+        ).strip()
+
+        return FrequencyAnalysisResult(
+            frequencies=freqs,
+            magnitude_db=magnitude_db,
+            phase_deg=phase_deg,
+            gain_margin_db=_optional_float(_field(ps_result, "gain_margin_db", None)),
+            phase_margin_deg=_optional_float(_field(ps_result, "phase_margin_deg", None)),
+            gain_crossover_hz=_optional_float(_field(ps_result, "gain_crossover_hz", None)),
+            phase_crossover_hz=_optional_float(_field(ps_result, "phase_crossover_hz", None)),
+            success=bool(_field(ps_result, "success", True)),
+            diagnostic_code=diagnostic_code,
+            diagnostic_message=diagnostic_message,
+            mode=_enum_name_or_value(_field(ps_result, "mode", "")),
+            anchor_mode_selected=_enum_name_or_value(_field(ps_result, "anchor_mode_selected", "")),
+            failed_point_index=int(_optional_float(_field(ps_result, "failed_point_index", -1)) or -1),
+            failed_frequency_hz=_optional_float(_field(ps_result, "failed_frequency_hz", None)),
+            gain_crossover_reason=_enum_name_or_value(_field(ps_result, "gain_crossover_reason", "")),
+            phase_crossover_reason=_enum_name_or_value(_field(ps_result, "phase_crossover_reason", "")),
+            phase_margin_reason=_enum_name_or_value(_field(ps_result, "phase_margin_reason", "")),
+            gain_margin_reason=_enum_name_or_value(_field(ps_result, "gain_margin_reason", "")),
+        )
+
     def _register_controller(self, run_id: int, controller: Any) -> None:
         with self._lock:
             self._controllers[run_id] = controller
@@ -4024,7 +5390,7 @@ class BackendLoader:
         self._candidates = self._discover_candidates()
         if not self._candidates:
             placeholder = self._create_placeholder_candidate(
-                message="Running in demo mode; install pulsit backend to enable real simulations.",
+                message="Running in demo mode; install pulsim backend to enable real simulations.",
             )
             self._candidates[placeholder.info.identifier] = placeholder
         self._active_id: str | None = None
@@ -4106,7 +5472,15 @@ class BackendLoader:
             name="Demo backend",
             version="0.0",
             status=status,
-            capabilities={"transient", "dc", "ac", "thermal"},
+            capabilities={
+                "transient",
+                "dc",
+                "ac",
+                "thermal",
+                "post_processing",
+                "frequency_analysis",
+                "averaged",
+            },
             message=message,
         )
         return BackendLoader._BackendCandidate(info=info, factory=lambda: PlaceholderBackend(info))
@@ -4133,6 +5507,15 @@ class BackendLoader:
 
         if PulsimBackend._supports_thermal_analysis(module):
             capabilities.add("thermal")
+
+        if hasattr(module, "run_post_processing"):
+            capabilities.add("post_processing")
+
+        if hasattr(module, "run_frequency_analysis"):
+            capabilities.add("frequency_analysis")
+
+        if hasattr(module, "AveragedConverterOptions"):
+            capabilities.add("averaged")
 
         # Parse version for compatibility checking
         parsed_version = None

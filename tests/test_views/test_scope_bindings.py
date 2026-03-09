@@ -6,6 +6,7 @@ from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     Component,
     ComponentType,
+    set_scope_channel_count,
     set_thermal_port_enabled,
 )
 from pulsimgui.models.wire import Wire, WireSegment
@@ -138,6 +139,97 @@ def test_electrical_scope_ignores_direct_non_probe_connections() -> None:
     bindings = build_scope_channel_bindings(scope, circuit)
     assert bindings
     assert bindings[0].signals == []
+
+
+def test_electrical_scope_resolves_pi_controller_output_signal() -> None:
+    """Electrical scope should resolve control-domain outputs connected directly."""
+    circuit = Circuit(name="electrical-scope-pi-output")
+    controller = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=220.0, y=109.0)
+    circuit.add_component(controller)
+    circuit.add_component(scope)
+    _connect_pins(circuit, controller, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "PI1"
+    assert bindings[0].signals[0].signal_key == "PI1"
+
+
+def test_electrical_scope_resolves_cblock_primary_output_signal() -> None:
+    """C-Block OUT should bind to canonical primary channel `<name>`."""
+    circuit = Circuit(name="electrical-scope-cblock-output")
+    cblock = Component(type=ComponentType.C_BLOCK, name="CB1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=260.0, y=109.0)
+    circuit.add_component(cblock)
+    circuit.add_component(scope)
+    _connect_pins(circuit, cblock, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "CB1"
+    assert bindings[0].signals[0].signal_key == "CB1"
+
+
+def test_electrical_scope_resolves_pwm_state_from_out_pin() -> None:
+    """PWM OUT should bind to state channel `<name>`, not duty."""
+    circuit = Circuit(name="electrical-scope-pwm-out")
+    pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=260.0, y=109.0)
+    circuit.add_component(pwm)
+    circuit.add_component(scope)
+    _connect_pins(circuit, pwm, 0, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "PWM1"
+    assert bindings[0].signals[0].signal_key == "PWM1"
+
+
+def test_electrical_scope_resolves_pwm_duty_channel_from_duty_in_pin() -> None:
+    """PWM DUTY_IN pin should bind to canonical duty channel `<name>.duty`."""
+    circuit = Circuit(name="electrical-scope-pwm-duty")
+    pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=220.0, y=100.0)
+    pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=120.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=320.0, y=150.0)
+    circuit.add_component(pwm)
+    circuit.add_component(pi)
+    circuit.add_component(scope)
+    _connect_pins(circuit, pi, 1, pwm, 1)
+    _connect_pins(circuit, pwm, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert bindings[0].signals
+    assert bindings[0].signals[0].label == "PWM1.duty"
+    assert bindings[0].signals[0].signal_key == "PWM1.duty"
+
+
+def test_electrical_scope_supports_more_than_two_channels_for_control_signals() -> None:
+    """Scope channels CH3+ should remain connectable and resolvable for control signals."""
+    circuit = Circuit(name="electrical-scope-multi-channel-control")
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=260.0, y=140.0)
+    set_scope_channel_count(scope, 4)
+    circuit.add_component(scope)
+
+    constants = [
+        Component(type=ComponentType.CONSTANT, name="K1", x=120.0, y=80.0),
+        Component(type=ComponentType.CONSTANT, name="K2", x=120.0, y=120.0),
+        Component(type=ComponentType.CONSTANT, name="K3", x=120.0, y=160.0),
+        Component(type=ComponentType.CONSTANT, name="K4", x=120.0, y=200.0),
+    ]
+    for constant in constants:
+        circuit.add_component(constant)
+
+    for channel_index, constant in enumerate(constants):
+        _connect_pins(circuit, constant, 0, scope, channel_index)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert len(bindings) == 4
+    assert [binding.signals[0].signal_key for binding in bindings] == ["K1", "K2", "K3", "K4"]
 
 
 def test_electrical_scope_resolves_current_probe_output_signal() -> None:

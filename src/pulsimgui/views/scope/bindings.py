@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
     THERMAL_PORT_PIN_NAME,
@@ -176,6 +177,8 @@ def _resolve_node_signals(
         component = component_lookup.get(comp_id)
         if component is None:
             continue
+        if comp_id == str(scope_component.id):
+            continue
         if pin_index >= len(component.pins):
             continue
         pin_name = component.pins[pin_index].name.upper()
@@ -252,6 +255,11 @@ def _resolve_node_signals(
                     node_label=probe_name,
                 )
             )
+        else:
+            control_signal = _resolve_control_signal(component, pin_index, node_id)
+            if control_signal is not None:
+                expanded = True
+                signals.append(control_signal)
 
     visited_nodes.discard(node_id)
 
@@ -303,6 +311,57 @@ def _resolve_thermal_node_signals(
         )
 
     return _dedupe_signals(signals)
+
+
+def _resolve_control_signal(
+    component: Component,
+    pin_index: int,
+    node_id: str,
+) -> ScopeSignal | None:
+    """Resolve control-domain outputs so scopes can bind directly without probes."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return None
+    if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+        return None
+    if pin_connection_domain(component, pin_index) != CONNECTION_DOMAIN_SIGNAL:
+        return None
+
+    pin_name = component.pins[pin_index].name.upper()
+    component_name = component.name or component.type.name.replace("_", " ").title()
+    if not component_name:
+        return None
+
+    if component.type == ComponentType.PWM_GENERATOR:
+        if pin_name == "OUT":
+            key = component_name
+            return ScopeSignal(label=key, signal_key=key, node_id=node_id, node_label=component_name)
+        if pin_name == "DUTY_IN":
+            key = f"{component_name}.duty"
+            return ScopeSignal(label=key, signal_key=key, node_id=node_id, node_label=component_name)
+        return None
+
+    if component.type == ComponentType.C_BLOCK:
+        if pin_name in {"OUT", "OUT0"}:
+            key = component_name
+            return ScopeSignal(label=key, signal_key=key, node_id=node_id, node_label=component_name)
+        if not pin_name.startswith("OUT"):
+            return None
+        try:
+            output_index = int(pin_name[3:])
+        except (TypeError, ValueError):
+            return None
+        key = f"{component_name}.out{output_index}"
+        return ScopeSignal(label=key, signal_key=key, node_id=node_id, node_label=component_name)
+
+    if not pin_name.startswith("OUT"):
+        return None
+
+    return ScopeSignal(
+        label=component_name,
+        signal_key=component_name,
+        node_id=node_id,
+        node_label=component_name,
+    )
 
 
 def _expand_mux_inputs(

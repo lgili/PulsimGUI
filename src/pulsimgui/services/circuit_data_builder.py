@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import threading
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pulsimgui.models.project import Project
@@ -222,6 +225,12 @@ class CircuitDataBuilder:
             comp_dict = component.to_dict()
             # Keep payload detached from mutable GUI model params.
             comp_dict["parameters"] = copy.deepcopy(component.parameters)
+            if str(comp_dict.get("type", "")).strip().upper() == "C_BLOCK":
+                comp_dict["parameters"] = self._normalize_cblock_component_parameters(
+                    project,
+                    comp_dict,
+                    comp_dict["parameters"],
+                )
             thermal_block = self._build_component_thermal_block(comp_dict["parameters"])
             if thermal_block is not None:
                 comp_dict["thermal"] = thermal_block
@@ -251,6 +260,99 @@ class CircuitDataBuilder:
             wires_out.append(wire.to_dict())
 
         return payload
+
+    @staticmethod
+    def _workspace_root(project: Project) -> Path:
+        raw_path = getattr(project, "path", None)
+        if raw_path:
+            try:
+                project_path = Path(raw_path).expanduser()
+                return project_path.resolve().parent
+            except OSError:
+                pass
+        return Path(tempfile.gettempdir()).resolve() / "pulsimgui-cblocks"
+
+    @staticmethod
+    def _safe_component_stem(component_data: dict[str, Any]) -> str:
+        candidate = str(component_data.get("name") or "cblock").strip().lower()
+        candidate = re.sub(r"[^a-z0-9_-]+", "_", candidate)
+        candidate = candidate.strip("_")
+        return candidate or "cblock"
+
+    @classmethod
+    def _normalize_cblock_component_parameters(
+        cls,
+        project: Project,
+        component_data: dict[str, Any],
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(params or {})
+        normalized.pop("compiler", None)
+
+        try:
+            n_inputs = int(normalized.get("n_inputs", 1) or 1)
+        except (TypeError, ValueError):
+            n_inputs = 1
+        try:
+            n_outputs = int(normalized.get("n_outputs", 1) or 1)
+        except (TypeError, ValueError):
+            n_outputs = 1
+        normalized["n_inputs"] = max(1, n_inputs)
+        normalized["n_outputs"] = max(1, n_outputs)
+
+        mode = str(normalized.get("implementation", "") or "").strip().lower()
+        if mode not in {"source", "library"}:
+            mode = "library" if str(normalized.get("lib_path", "") or "").strip() else "source"
+        normalized["implementation"] = mode
+
+        flags_raw = normalized.get("extra_cflags", [])
+        flags: list[str] = []
+        if isinstance(flags_raw, list):
+            flags = [str(item).strip() for item in flags_raw if str(item).strip()]
+        elif isinstance(flags_raw, str):
+            raw_text = flags_raw.strip()
+            tokens = [token.strip() for token in raw_text.split(",")] if "," in raw_text else raw_text.split()
+            flags = [token for token in tokens if token]
+        normalized["extra_cflags"] = flags
+
+        workspace_root = cls._workspace_root(project)
+        cblock_dir = workspace_root / ".pulsimgui" / "cblocks"
+        component_id = str(component_data.get("id") or "").strip()[:8]
+        stem = cls._safe_component_stem(component_data)
+        default_source_path = cblock_dir / f"{stem}_{component_id or 'blk'}.c"
+
+        if mode == "source":
+            source_raw = str(normalized.get("source", "") or "").strip()
+            source_code = str(normalized.get("source_code", "") or "")
+            source_path: Path | None = None
+            if source_raw:
+                source_path = Path(source_raw).expanduser()
+                if not source_path.is_absolute():
+                    source_path = workspace_root / source_path
+            elif source_code.strip():
+                source_path = default_source_path
+
+            if source_path is not None:
+                try:
+                    if source_code.strip():
+                        source_path.parent.mkdir(parents=True, exist_ok=True)
+                        source_path.write_text(source_code, encoding="utf-8")
+                except OSError:
+                    # Keep path untouched; preflight validation will surface a clear error.
+                    pass
+                normalized["source"] = source_path.as_posix()
+            else:
+                normalized["source"] = ""
+            normalized["lib_path"] = ""
+        else:
+            lib_raw = str(normalized.get("lib_path", "") or "").strip()
+            lib_path = Path(lib_raw).expanduser() if lib_raw else Path("")
+            if lib_raw and not lib_path.is_absolute():
+                lib_path = workspace_root / lib_path
+            normalized["lib_path"] = lib_path.as_posix() if lib_raw else ""
+            normalized["source"] = ""
+
+        return normalized
 
     @staticmethod
     def _to_finite_float(value: Any) -> float | None:

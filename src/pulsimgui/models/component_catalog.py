@@ -25,6 +25,7 @@ COMPONENT_LIBRARY = {
     "Signal & Control": [
         {"type": ComponentType.CONSTANT, "name": "Constant", "shortcut": "Ctrl+K"},
         {"type": ComponentType.PWM_GENERATOR, "name": "PWM", "shortcut": "Ctrl+W"},
+        {"type": ComponentType.C_BLOCK, "name": "C-Block", "shortcut": ""},
         {"type": ComponentType.GAIN, "name": "Gain", "shortcut": ""},
         {"type": ComponentType.PI_CONTROLLER, "name": "PI", "shortcut": "Ctrl+P"},
         {"type": ComponentType.SUM, "name": "Sum", "shortcut": ""},
@@ -62,6 +63,7 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.TRANSFORMER, "Transformer", ["xfmr", "transformer", "trafo"]),
     (ComponentType.SNUBBER_RC, "RC Snubber", ["snubber", "rc", "clamp"]),
     (ComponentType.PWM_GENERATOR, "PWM", ["pwm", "pulse", "modulator"]),
+    (ComponentType.C_BLOCK, "C-Block", ["c", "cblock", "c-block", "custom", "dll", "so", "dylib"]),
     (ComponentType.GAIN, "Gain", ["gain", "k"]),
     (ComponentType.PI_CONTROLLER, "PI Controller", ["pi", "controller"]),
     (ComponentType.SUM, "Sum", ["sum", "adder", "sigma"]),

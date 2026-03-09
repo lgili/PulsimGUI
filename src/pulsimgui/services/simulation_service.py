@@ -10,6 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QMutex, QObject, QThread, QTimer, QWaitCondition, Signal
@@ -35,7 +36,14 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
+from pulsimgui.services.backend_types import (
+    FrequencyAnalysisResult as BackendFrequencyAnalysisResult,
+)
+from pulsimgui.services.backend_types import (
+    TransientResult as BackendTransientResult,
+)
 from pulsimgui.services.circuit_data_builder import CircuitDataBuilder
+from pulsimgui.services.post_processing_service import PostProcessingService
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -113,6 +121,7 @@ _NON_ELECTRICAL_COMPONENT_TYPES = frozenset({
     "DELAY_BLOCK",
     "SAMPLE_HOLD",
     "STATE_MACHINE",
+    "C_BLOCK",
     "VOLTAGE_PROBE",
     "VOLTAGE_PROBE_GND",
     "CURRENT_PROBE",
@@ -192,6 +201,28 @@ def normalize_control_mode(value: str | None) -> str:
     return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
 
 
+def normalize_frequency_anchor_mode(value: str | None) -> str:
+    """Normalize frequency-analysis anchor mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "avg": "averaged",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "dc", "periodic", "averaged"} else "auto"
+
+
+def normalize_frequency_sweep_scale(value: str | None) -> str:
+    """Normalize frequency-analysis sweep scale setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "dec": "decade",
+        "logarithmic": "log",
+        "log10": "log",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"decade", "log", "linear"} else "decade"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -228,6 +259,7 @@ class SimulationSettings:
     # Output settings
     output_points: int = 10000
     enable_losses: bool = True
+    averaged_options: dict | None = None
 
     # Thermal/loss post-processing settings
     thermal_ambient: float = 25.0
@@ -243,6 +275,15 @@ class SimulationSettings:
     direct_formulation_fallback: bool = True
     control_mode: str = "auto"
     control_sample_time: float = 0.0
+
+    # Frequency-domain analysis defaults
+    ac_f_start: float = 1.0
+    ac_f_stop: float = 1e6
+    ac_points_per_decade: int = 10
+    ac_anchor_mode: str = "auto"
+    ac_sweep_scale: str = "decade"
+    ac_injection_node: str = ""
+    ac_measurement_node: str = ""
 
 
 @dataclass
@@ -851,7 +892,11 @@ class SimulationService(QObject):
     simulation_finished = Signal(SimulationResult)
     dc_finished = Signal(DCResult)
     ac_finished = Signal(ACResult)
+    frequency_analysis_finished = Signal(object)  # BackendFrequencyAnalysisResult
     parameter_sweep_finished = Signal(ParameterSweepResult)
+    post_processing_started = Signal()
+    post_processing_completed = Signal(object)  # BackendPostProcessingResult
+    post_processing_failed = Signal(str)
     error = Signal(str)
     backend_changed = Signal(BackendInfo)
 
@@ -895,6 +940,45 @@ class SimulationService(QObject):
             )
             self._settings.enable_losses = bool(
                 sim_settings.get("enable_losses", self._settings.enable_losses)
+            )
+            raw_averaged_options = sim_settings.get("averaged_options", self._settings.averaged_options)
+            self._settings.averaged_options = (
+                dict(raw_averaged_options)
+                if isinstance(raw_averaged_options, dict)
+                else None
+            )
+            self._settings.ac_f_start = max(
+                1e-12,
+                float(sim_settings.get("ac_f_start", self._settings.ac_f_start)),
+            )
+            self._settings.ac_f_stop = max(
+                self._settings.ac_f_start * (1.0 + 1e-12),
+                float(sim_settings.get("ac_f_stop", self._settings.ac_f_stop)),
+            )
+            self._settings.ac_points_per_decade = max(
+                1,
+                int(
+                    sim_settings.get(
+                        "ac_points_per_decade",
+                        self._settings.ac_points_per_decade,
+                    )
+                ),
+            )
+            self._settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+                sim_settings.get("ac_anchor_mode", self._settings.ac_anchor_mode)
+            )
+            self._settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+                sim_settings.get("ac_sweep_scale", self._settings.ac_sweep_scale)
+            )
+            self._settings.ac_injection_node = str(
+                sim_settings.get("ac_injection_node", self._settings.ac_injection_node) or ""
+            )
+            self._settings.ac_measurement_node = str(
+                sim_settings.get(
+                    "ac_measurement_node",
+                    self._settings.ac_measurement_node,
+                )
+                or ""
             )
 
             # Load persisted solver settings
@@ -1001,6 +1085,10 @@ class SimulationService(QObject):
 
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
+        self._post_processing_service = PostProcessingService(self._backend, self)
+        self._post_processing_service.analysis_started.connect(self.post_processing_started.emit)
+        self._post_processing_service.analysis_completed.connect(self.post_processing_completed.emit)
+        self._post_processing_service.analysis_failed.connect(self.post_processing_failed.emit)
 
     @property
     def state(self) -> SimulationState:
@@ -1027,6 +1115,25 @@ class SimulationService(QObject):
         )
         self._settings.control_mode = normalize_control_mode(self._settings.control_mode)
         self._settings.control_sample_time = max(0.0, float(self._settings.control_sample_time))
+        self._settings.ac_f_start = max(1e-12, float(self._settings.ac_f_start))
+        self._settings.ac_f_stop = max(
+            self._settings.ac_f_start * (1.0 + 1e-12),
+            float(self._settings.ac_f_stop),
+        )
+        self._settings.ac_points_per_decade = max(1, int(self._settings.ac_points_per_decade))
+        self._settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            self._settings.ac_anchor_mode
+        )
+        self._settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            self._settings.ac_sweep_scale
+        )
+        self._settings.ac_injection_node = str(self._settings.ac_injection_node or "")
+        self._settings.ac_measurement_node = str(self._settings.ac_measurement_node or "")
+        self._settings.averaged_options = (
+            dict(self._settings.averaged_options)
+            if isinstance(self._settings.averaged_options, dict)
+            else None
+        )
         self._circuit_data_builder.clear()
         self._persist_simulation_settings()
 
@@ -1206,6 +1313,54 @@ class SimulationService(QObject):
                 )
             ),
         )
+        runtime_settings.ac_f_start = max(
+            1e-12,
+            float(getattr(project_settings, "ac_f_start", runtime_settings.ac_f_start)),
+        )
+        runtime_settings.ac_f_stop = max(
+            runtime_settings.ac_f_start * (1.0 + 1e-12),
+            float(getattr(project_settings, "ac_f_stop", runtime_settings.ac_f_stop)),
+        )
+        runtime_settings.ac_points_per_decade = max(
+            1,
+            int(
+                getattr(
+                    project_settings,
+                    "ac_points_per_decade",
+                    runtime_settings.ac_points_per_decade,
+                )
+            ),
+        )
+        runtime_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            getattr(project_settings, "ac_anchor_mode", runtime_settings.ac_anchor_mode)
+        )
+        runtime_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            getattr(project_settings, "ac_sweep_scale", runtime_settings.ac_sweep_scale)
+        )
+        runtime_settings.ac_injection_node = str(
+            getattr(
+                project_settings,
+                "ac_injection_node",
+                runtime_settings.ac_injection_node,
+            )
+            or ""
+        )
+        runtime_settings.ac_measurement_node = str(
+            getattr(
+                project_settings,
+                "ac_measurement_node",
+                runtime_settings.ac_measurement_node,
+            )
+            or ""
+        )
+        raw_averaged_options = getattr(
+            project_settings,
+            "averaged_options",
+            runtime_settings.averaged_options,
+        )
+        runtime_settings.averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
         self._circuit_data_builder.clear()
         if persist:
             self._persist_simulation_settings()
@@ -1246,6 +1401,7 @@ class SimulationService(QObject):
             raise RuntimeError("Cannot change backend while a simulation is running")
         info = self._backend_loader.activate(identifier)
         self._backend = self._backend_loader.backend
+        self._post_processing_service.set_backend(self._backend)
         if self._settings_service is not None:
             self._settings_service.set_backend_preference(identifier)
         self.backend_changed.emit(info)
@@ -1295,6 +1451,7 @@ class SimulationService(QObject):
 
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
+        self._post_processing_service.set_backend(self._backend)
         if emit_signal:
             self.backend_changed.emit(self._backend.info)
 
@@ -1315,6 +1472,17 @@ class SimulationService(QObject):
                 "enable_events": self._settings.enable_events,
                 "max_step_retries": self._settings.max_step_retries,
                 "enable_losses": self._settings.enable_losses,
+                "averaged_options": copy.deepcopy(self._settings.averaged_options),
+                "ac_f_start": max(1e-12, float(self._settings.ac_f_start)),
+                "ac_f_stop": max(
+                    max(1e-12, float(self._settings.ac_f_start)) * (1.0 + 1e-12),
+                    float(self._settings.ac_f_stop),
+                ),
+                "ac_points_per_decade": max(1, int(self._settings.ac_points_per_decade)),
+                "ac_anchor_mode": normalize_frequency_anchor_mode(self._settings.ac_anchor_mode),
+                "ac_sweep_scale": normalize_frequency_sweep_scale(self._settings.ac_sweep_scale),
+                "ac_injection_node": str(self._settings.ac_injection_node or ""),
+                "ac_measurement_node": str(self._settings.ac_measurement_node or ""),
             }
         )
         self._settings_service.set_solver_settings(
@@ -1404,6 +1572,21 @@ class SimulationService(QObject):
                 out.append(parsed)
             return out
         return []
+
+    @staticmethod
+    def _to_string_sequence(value: Any) -> list[str] | None:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            out: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    return None
+                token = item.strip()
+                if token:
+                    out.append(token)
+            return out
+        return None
 
     @staticmethod
     def _normalize_component_thermal_network(
@@ -1544,10 +1727,58 @@ class SimulationService(QObject):
             if component_index and component_index % 128 == 0:
                 time.sleep(0)
             comp_type = self._normalize_component_type(component.get("type", ""))
-            comp_name = str(component.get("name") or component.get("id") or "").strip()
+            comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
             params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
             if comp_name:
                 by_name[comp_name] = comp_type
+
+            if comp_type == "C_BLOCK":
+                try:
+                    n_inputs = int(params.get("n_inputs", 0))
+                    n_outputs = int(params.get("n_outputs", 0))
+                except (TypeError, ValueError):
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires integer n_inputs and n_outputs >= 1."
+                    )
+                if n_inputs < 1 or n_outputs < 1:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires n_inputs and n_outputs >= 1."
+                    )
+
+                mode = str(params.get("implementation", "") or "").strip().lower()
+                source = str(params.get("source") or "").strip()
+                lib_path = str(params.get("lib_path") or "").strip()
+                if mode not in {"source", "library"}:
+                    mode = "library" if lib_path and not source else "source"
+
+                selected_source = source if mode == "source" else ""
+                selected_lib = lib_path if mode == "library" else ""
+                if not selected_source and not selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' requires source or lib_path."
+                    )
+                if selected_source and selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' must use only one implementation (source or lib_path)."
+                    )
+
+                selected_path = selected_source or selected_lib
+                if selected_path and not Path(selected_path).expanduser().exists():
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_FILE_NOT_FOUND: "
+                        f"component '{comp_name}' path not found: {selected_path}"
+                    )
+
+                flags = self._to_string_sequence(params.get("extra_cflags", []))
+                if flags is None:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' extra_cflags must be a list[str]."
+                    )
 
             if comp_type != "PWM_GENERATOR":
                 continue
@@ -2199,6 +2430,98 @@ class SimulationService(QObject):
             self._set_state(SimulationState.ERROR)
             self.error.emit(str(e))
             self.ac_finished.emit(result)
+
+    def run_post_processing(
+        self,
+        jobs: list[dict],
+        source_result: SimulationResult | None = None,
+    ) -> None:
+        """Run backend post-processing jobs using the latest transient result."""
+        result = source_result or self._last_result
+        if result is None or not result.is_valid:
+            self.post_processing_failed.emit(
+                "No valid transient result available for post-processing."
+            )
+            return
+        if not jobs:
+            self.post_processing_failed.emit("No post-processing jobs were provided.")
+            return
+
+        transient = BackendTransientResult(
+            time=list(result.time),
+            signals={name: list(values) for name, values in result.signals.items()},
+            statistics=dict(result.statistics),
+            error_message=result.error_message,
+        )
+        self._post_processing_service.run_jobs(transient, list(jobs))
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        ac_settings: ACSettings | None = None,
+    ) -> None:
+        """Run backend-owned frequency-domain analysis (pulsim >= 0.7.0)."""
+        if not self._ensure_backend_ready():
+            return
+        if self.is_running:
+            self.error.emit("Simulation already running")
+            return
+
+        self._set_state(SimulationState.RUNNING)
+        self.progress.emit(0, "Running frequency analysis...")
+
+        if ac_settings is None:
+            ac_settings = ACSettings(
+                f_start=max(1e-12, float(self._settings.ac_f_start)),
+                f_stop=max(
+                    max(1e-12, float(self._settings.ac_f_start)) * (1.0 + 1e-12),
+                    float(self._settings.ac_f_stop),
+                ),
+                points_per_decade=max(1, int(self._settings.ac_points_per_decade)),
+                anchor_mode=normalize_frequency_anchor_mode(self._settings.ac_anchor_mode),
+                sweep_scale=normalize_frequency_sweep_scale(self._settings.ac_sweep_scale),
+                injection_node=str(self._settings.ac_injection_node or ""),
+                measurement_node=str(self._settings.ac_measurement_node or ""),
+            )
+
+        try:
+            if not self._backend.has_capability("frequency_analysis"):
+                result = BackendFrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="unsupported",
+                    diagnostic_message=(
+                        "Frequency analysis is not available in backend "
+                        f"{self._backend.info.label()}."
+                    ),
+                )
+                self._set_state(SimulationState.ERROR)
+                self.error.emit(result.diagnostic_message)
+                self.frequency_analysis_finished.emit(result)
+                return
+
+            result: BackendFrequencyAnalysisResult = self._backend.run_frequency_analysis(
+                circuit_data,
+                ac_settings,
+            )
+
+            if result.success:
+                self.progress.emit(100, "Frequency analysis complete")
+                self._set_state(SimulationState.COMPLETED)
+            else:
+                self._set_state(SimulationState.ERROR)
+                diagnostic = result.diagnostic_message or result.diagnostic_code or "Unknown error"
+                self.error.emit(diagnostic)
+            self.frequency_analysis_finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self._set_state(SimulationState.ERROR)
+            self.error.emit(str(exc))
+            self.frequency_analysis_finished.emit(
+                BackendFrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="internal_error",
+                    diagnostic_message=str(exc),
+                )
+            )
 
     def run_parameter_sweep(
         self, circuit_data: dict, sweep_settings: ParameterSweepSettings

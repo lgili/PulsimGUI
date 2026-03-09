@@ -1,5 +1,7 @@
 """Bode plot dialog for AC analysis results."""
 
+from __future__ import annotations
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
@@ -21,24 +23,48 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pulsimgui.services.backend_types import FrequencyAnalysisResult
 from pulsimgui.services.simulation_service import ACResult
 from pulsimgui.views.widgets import StatusBanner
 
 
+def _fa_result_from_ac_result(ac: ACResult) -> FrequencyAnalysisResult:
+    """Convert a legacy ACResult into a FrequencyAnalysisResult shim."""
+    return FrequencyAnalysisResult(
+        frequencies=list(ac.frequencies),
+        magnitude_db=dict(ac.magnitude),
+        phase_deg=dict(ac.phase),
+        success=ac.is_valid,
+        diagnostic_code="" if ac.is_valid else "legacy_error",
+        diagnostic_message="" if ac.is_valid else ac.error_message,
+    )
+
+
 class BodePlotDialog(QDialog):
-    """Dialog for displaying Bode plots from AC analysis."""
+    """Dialog for displaying Bode plots from AC analysis.
 
-    def __init__(self, result: ACResult, parent=None):
+    Accepts either a :class:`FrequencyAnalysisResult` (preferred, pulsim ≥ 0.7.0)
+    or a legacy :class:`ACResult` which is automatically converted.
+    """
+
+    def __init__(self, result: FrequencyAnalysisResult | ACResult, parent=None):
         super().__init__(parent)
-        self._result = result
+        # Normalise to FrequencyAnalysisResult
+        if isinstance(result, ACResult):
+            self._result = _fa_result_from_ac_result(result)
+        else:
+            self._result = result
 
-        # Stability margins
-        self._gain_margin: float | None = None
-        self._phase_margin: float | None = None
-        self._gain_crossover_freq: float | None = None
-        self._phase_crossover_freq: float | None = None
+        # Stability margins (read from result; calculated locally only for legacy data)
+        self._gain_margin: float | None = self._result.gain_margin_db
+        self._phase_margin: float | None = self._result.phase_margin_deg
+        self._gain_crossover_freq: float | None = self._result.gain_crossover_hz
+        self._phase_crossover_freq: float | None = self._result.phase_crossover_hz
 
-        self.setWindowTitle("AC Analysis - Bode Plot")
+        title = "AC Analysis - Bode Plot"
+        if not self._result.success:
+            title += " [Analysis Failed]"
+        self.setWindowTitle(title)
         self.setMinimumSize(900, 700)
 
         # Configure pyqtgraph for dark/light theme compatibility
@@ -53,13 +79,26 @@ class BodePlotDialog(QDialog):
         layout.setSpacing(12)
 
         # Status banner
-        if self._result.is_valid:
+        if not self._result.success:
+            msg = self._result.diagnostic_message or self._result.diagnostic_code or "Analysis failed"
+            if self._result.diagnostic_code:
+                msg = f"[{self._result.diagnostic_code}] {msg}"
+            status = StatusBanner.error(msg)
+        elif self._result.is_valid:
             status = StatusBanner.success(
                 f"AC analysis completed: {len(self._result.frequencies)} frequency points"
             )
         else:
-            status = StatusBanner.error(f"Error: {self._result.error_message}")
+            status = StatusBanner.warning("No frequency data available")
         layout.addWidget(status)
+
+        # If analysis failed, hide plots and stop here
+        if not self._result.success:
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.accept)
+            layout.addStretch()
+            layout.addWidget(close_btn)
+            return
 
         # Tab widget for plots and data
         self._tabs = QTabWidget()
@@ -84,7 +123,7 @@ class BodePlotDialog(QDialog):
         signal_group = QGroupBox("Signal")
         signal_layout = QHBoxLayout(signal_group)
         self._signal_combo = QComboBox()
-        self._signal_combo.addItems(list(self._result.magnitude.keys()))
+        self._signal_combo.addItems(list(self._result.magnitude_db.keys()))
         self._signal_combo.currentTextChanged.connect(self._on_signal_changed)
         signal_layout.addWidget(self._signal_combo)
         controls_layout.addWidget(signal_group)
@@ -259,7 +298,17 @@ class BodePlotDialog(QDialog):
     def _calculate_stability_margins(
         self, frequencies: np.ndarray, magnitude: np.ndarray, phase: np.ndarray
     ) -> None:
-        """Calculate gain and phase margins from Bode data."""
+        """Use backend-provided stability margins; fall back to local calculation for legacy data."""
+        # Use backend margins when available (pulsim >= 0.7.0)
+        if self._result.gain_margin_db is not None or self._result.phase_margin_deg is not None:
+            self._gain_margin = self._result.gain_margin_db
+            self._phase_margin = self._result.phase_margin_deg
+            self._gain_crossover_freq = self._result.gain_crossover_hz
+            self._phase_crossover_freq = self._result.phase_crossover_hz
+            self._update_margin_labels()
+            return
+
+        # Legacy fallback: calculate from data
         self._gain_margin = None
         self._phase_margin = None
         self._gain_crossover_freq = None
@@ -271,16 +320,12 @@ class BodePlotDialog(QDialog):
         # Find gain crossover frequency (where magnitude crosses 0 dB)
         for i in range(len(magnitude) - 1):
             if magnitude[i] >= 0 > magnitude[i + 1]:
-                # Linear interpolation to find exact crossing
                 t = (0 - magnitude[i]) / (magnitude[i + 1] - magnitude[i])
                 self._gain_crossover_freq = frequencies[i] + t * (frequencies[i + 1] - frequencies[i])
-                # Interpolate phase at this frequency
                 phase_at_gc = phase[i] + t * (phase[i + 1] - phase[i])
-                # Phase margin = phase + 180° (should be positive for stability)
                 self._phase_margin = phase_at_gc + 180.0
                 break
             elif magnitude[i] < 0 <= magnitude[i + 1]:
-                # Crossing from below (rising gain)
                 t = (0 - magnitude[i]) / (magnitude[i + 1] - magnitude[i])
                 self._gain_crossover_freq = frequencies[i] + t * (frequencies[i + 1] - frequencies[i])
                 phase_at_gc = phase[i] + t * (phase[i + 1] - phase[i])
@@ -290,16 +335,12 @@ class BodePlotDialog(QDialog):
         # Find phase crossover frequency (where phase crosses -180°)
         for i in range(len(phase) - 1):
             if phase[i] >= -180 > phase[i + 1]:
-                # Linear interpolation
                 t = (-180 - phase[i]) / (phase[i + 1] - phase[i])
                 self._phase_crossover_freq = frequencies[i] + t * (frequencies[i + 1] - frequencies[i])
-                # Interpolate magnitude at this frequency
                 mag_at_pc = magnitude[i] + t * (magnitude[i + 1] - magnitude[i])
-                # Gain margin = -magnitude at phase crossover (positive for stability)
                 self._gain_margin = -mag_at_pc
                 break
 
-        # Update margin labels
         self._update_margin_labels()
 
     def _update_margin_labels(self) -> None:
@@ -347,19 +388,18 @@ class BodePlotDialog(QDialog):
         if not self._result.is_valid:
             return
 
-        # Get first signal
-        if self._result.magnitude:
-            signal_name = list(self._result.magnitude.keys())[0]
+        if self._result.magnitude_db:
+            signal_name = list(self._result.magnitude_db.keys())[0]
             self._plot_signal(signal_name)
 
     def _plot_signal(self, signal_name: str) -> None:
         """Plot a specific signal's Bode data."""
-        if signal_name not in self._result.magnitude:
+        if signal_name not in self._result.magnitude_db:
             return
 
         frequencies = np.array(self._result.frequencies)
-        magnitude = np.array(self._result.magnitude[signal_name])
-        phase = np.array(self._result.phase[signal_name])
+        magnitude = np.array(self._result.magnitude_db[signal_name])
+        phase = np.array(self._result.phase_deg[signal_name])
 
         # Clear existing plots
         self._mag_plot.clear()
@@ -439,11 +479,42 @@ class BodePlotDialog(QDialog):
             )
             self._phase_plot.addItem(phase_line)
 
+        # Add crossover frequency lines from backend margins
+        if self._gain_crossover_freq is not None:
+            gc_pen = pg.mkPen(color=(80, 200, 120), style=Qt.PenStyle.DashLine, width=1)
+            gc_opts = {"position": 0.95, "color": (80, 200, 120)}
+            gc_label = f"fgc={self._gain_crossover_freq:.2f}Hz"
+            for plot in (self._mag_plot, self._phase_plot):
+                plot.addItem(
+                    pg.InfiniteLine(
+                        pos=self._gain_crossover_freq,
+                        angle=90,
+                        pen=gc_pen,
+                        label=gc_label,
+                        labelOpts=gc_opts,
+                    )
+                )
+
+        if self._phase_crossover_freq is not None:
+            pc_pen = pg.mkPen(color=(220, 120, 80), style=Qt.PenStyle.DashLine, width=1)
+            pc_opts = {"position": 0.85, "color": (220, 120, 80)}
+            pc_label = f"fpc={self._phase_crossover_freq:.2f}Hz"
+            for plot in (self._mag_plot, self._phase_plot):
+                plot.addItem(
+                    pg.InfiniteLine(
+                        pos=self._phase_crossover_freq,
+                        angle=90,
+                        pen=pc_pen,
+                        label=pc_label,
+                        labelOpts=pc_opts,
+                    )
+                )
+
     def _update_data_table(self, signal_name: str) -> None:
         """Update the data table with current signal data."""
         frequencies = self._result.frequencies
-        magnitude = self._result.magnitude[signal_name]
-        phase = self._result.phase[signal_name]
+        magnitude = self._result.magnitude_db[signal_name]
+        phase = self._result.phase_deg[signal_name]
 
         self._data_table.setRowCount(len(frequencies))
 
@@ -485,13 +556,13 @@ class BodePlotDialog(QDialog):
                 f.write(f"Frequency Points: {len(self._result.frequencies)}\n\n")
 
                 # Write data for each signal
-                for signal_name in self._result.magnitude:
+                for signal_name in self._result.magnitude_db:
                     f.write(f"Signal: {signal_name}\n")
                     f.write("Frequency (Hz),Magnitude (dB),Phase (deg)\n")
 
                     frequencies = self._result.frequencies
-                    magnitude = self._result.magnitude[signal_name]
-                    phase = self._result.phase[signal_name]
+                    magnitude = self._result.magnitude_db[signal_name]
+                    phase = self._result.phase_deg[signal_name]
 
                     for freq, mag, ph in zip(frequencies, magnitude, phase, strict=False):
                         f.write(f"{freq},{mag},{ph}\n")

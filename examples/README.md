@@ -23,6 +23,7 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 | `08_probe_scope_thermal_demo.pulsim` | Probe + electrical/thermal scope routing |
 | `09_buck_closed_loop_loss_thermal_validation.pulsim` | Closed-loop buck with losses + thermal scope validation |
 | `09_buck_closed_loop_loss_thermal_validation_expected.md` | Theoretical targets and pass criteria for example 09 |
+| `11_buck_closed_loop_cblock_thermal_validation.pulsim` | Closed-loop buck thermal validation using `C_BLOCK` controller |
 | `PulsimProjects.pulsim` | Minimal starter project |
 | `simple_rc.pulsim` | Legacy simple RC example |
 | `rc_circuit.pulsim` | RC example variant |
@@ -50,3 +51,4 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 - Each project includes at least one scope block for quick waveform inspection.
 - In `08_probe_scope_thermal_demo.pulsim`, connect electrical probe outputs to electrical scopes and the `TH` pin to thermal scope channels.
 - In `09_buck_closed_loop_loss_thermal_validation.pulsim`, compare results against `09_buck_closed_loop_loss_thermal_validation_expected.md`.
+- `11_buck_closed_loop_cblock_thermal_validation.pulsim` loads the controller from `examples/cblocks/buck_pi_controller.c`.

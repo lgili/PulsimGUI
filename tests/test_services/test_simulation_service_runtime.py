@@ -1041,3 +1041,137 @@ def test_worker_stops_before_backend_when_contract_validator_fails() -> None:
     assert errors == ["PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"]
     assert results
     assert results[0].error_message == "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"
+
+
+def test_prevalidate_blocks_cblock_without_source_or_library(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "extra_cflags": [],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED" in issue
+
+
+def test_prevalidate_blocks_cblock_invalid_extra_cflags_type(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb1.c"
+    source.write_text("/* test */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 1,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": "-O2",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_RANGE_INVALID" in issue
+
+
+def test_prevalidate_accepts_valid_cblock_source_configuration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb_ok.c"
+    source.write_text("/* valid */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": ["-O3"],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
+def test_run_post_processing_forwards_transient_payload_to_service(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+        statistics={"steps": 2},
+    )
+
+    seen: dict[str, object] = {}
+
+    class _PPService:
+        def run_jobs(self, transient_result, jobs):  # noqa: ANN001
+            seen["transient"] = transient_result
+            seen["jobs"] = jobs
+
+    service._post_processing_service = _PPService()  # type: ignore[assignment]
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert "transient" in seen
+    transient = seen["transient"]
+    assert transient.time == [0.0, 1e-6]
+    assert transient.signals["V(out)"] == [0.0, 1.0]
+    assert seen["jobs"] == [{"kind": "time_domain", "signals": ["V(out)"]}]
+
+
+def test_run_post_processing_fails_when_result_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert failures
+    assert "No valid transient result" in failures[-1]
+
+
+def test_run_post_processing_fails_when_jobs_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+    )
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([])
+
+    assert failures == ["No post-processing jobs were provided."]

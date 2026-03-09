@@ -104,6 +104,14 @@ class CircuitConverter:
             synthetic_setpoint_sources,
             suppressed_control_component_ids,
         ) = self._infer_native_buck_control_overrides(components, node_map, alias_map)
+        cblock_param_overrides = self._infer_cblock_input_channel_overrides(
+            components,
+            node_map,
+        )
+        cblock_input_channel_names = self._constant_names_used_as_cblock_inputs(
+            components,
+            cblock_param_overrides,
+        )
         control_override_ids = set(pi_node_overrides) | set(pwm_param_overrides)
 
         circuit = self._sl.Circuit()
@@ -176,6 +184,10 @@ class CircuitConverter:
             if pwm_override:
                 params_override = dict(params_override or component.get("parameters", {}) or {})
                 params_override.update(pwm_override)
+            cblock_override = cblock_param_overrides.get(comp_id)
+            if cblock_override:
+                params_override = dict(params_override or component.get("parameters", {}) or {})
+                params_override.update(cblock_override)
 
             self._add_component(
                 circuit,
@@ -185,6 +197,7 @@ class CircuitConverter:
                 nodes,
                 node_cache,
                 params_override=params_override,
+                cblock_input_channel_names=cblock_input_channel_names,
             )
 
             if name and (component.get("x") is not None or component.get("y") is not None):
@@ -237,6 +250,8 @@ class CircuitConverter:
 
     @staticmethod
     def _allows_unmapped_pin(comp_type: ComponentType, pin_index: int) -> bool:
+        if comp_type == ComponentType.C_BLOCK:
+            return True
         if comp_type == ComponentType.VOLTAGE_PROBE:
             return pin_index == 2
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
@@ -330,6 +345,11 @@ class CircuitConverter:
         if comp_type == ComponentType.POWER_PROBE:
             return nodes[:2]
 
+        if comp_type == ComponentType.C_BLOCK:
+            # C-Block inputs are control-channel bindings and should not stamp
+            # electrical nodes in the MNA graph.
+            return []
+
         if comp_type in {ComponentType.MOSFET_N, ComponentType.MOSFET_P, ComponentType.IGBT}:
             return nodes[:3]
 
@@ -368,8 +388,26 @@ class CircuitConverter:
         node_cache: dict[str, int],
         *,
         params_override: dict[str, Any] | None = None,
+        cblock_input_channel_names: set[str] | None = None,
     ) -> None:
         params = params_override if params_override is not None else (component.get("parameters", {}) or {})
+
+        if (
+            comp_type == ComponentType.CONSTANT
+            and name
+            and cblock_input_channel_names
+            and name in cblock_input_channel_names
+            and hasattr(circuit, "add_virtual_component")
+            and hasattr(circuit, "add_voltage_source")
+        ):
+            self._add_constant_as_probe_channel(
+                circuit,
+                name,
+                nodes,
+                params,
+                node_cache,
+            )
+            return
 
         if comp_type == ComponentType.RESISTOR:
             n1, n2 = self._require_nodes(name, nodes, 2)
@@ -568,6 +606,43 @@ class CircuitConverter:
 
         raise CircuitConversionError(
             f"Backend converter does not yet support component '{comp_type.name}'"
+        )
+
+    def _add_constant_as_probe_channel(
+        self,
+        circuit: Any,
+        name: str,
+        nodes: list[str],
+        params: dict[str, Any],
+        node_cache: dict[str, int],
+    ) -> None:
+        """Emit CONSTANT as a backend-compatible control channel for C-Block inputs.
+
+        Some backend builds do not expose CONSTANT outputs as resolvable C-Block
+        control channels. For those cases, synthesize an isolated DC source plus
+        a voltage_probe channel with the same component name.
+        """
+        try:
+            value = float(params.get("value", 0.0))
+        except (TypeError, ValueError):
+            value = 0.0
+
+        node_name = str(nodes[0] or "").strip() if nodes else ""
+        if not node_name or node_name == "0":
+            node_name = f"__CONST_CH_{name}"
+
+        source_name = f"__CONST_SRC_{name}"
+        npos = self._node_index(circuit, node_name, node_cache)
+        nneg = self._node_index(circuit, "0", node_cache)
+        circuit.add_voltage_source(source_name, npos, nneg, value)
+
+        self._add_virtual_component(
+            circuit,
+            ComponentType.VOLTAGE_PROBE_GND,
+            name,
+            [node_name, "0"],
+            {"display_name": name, "scale": 1.0},
+            node_cache,
         )
 
     def _add_voltage_source(
@@ -769,6 +844,10 @@ class CircuitConverter:
 
     def _virtual_component_nodes(self, comp_type: ComponentType, nodes: list[str]) -> list[str]:
         """Return node subset/normalization used for backend virtual components."""
+        if comp_type == ComponentType.C_BLOCK:
+            # C-Block wiring is resolved via metadata inputs; keep one benign
+            # placeholder node for broad backend compatibility.
+            return ["0"]
         if comp_type == ComponentType.VOLTAGE_PROBE:
             return nodes[:2]
         if comp_type == ComponentType.VOLTAGE_PROBE_GND:
@@ -807,6 +886,7 @@ class CircuitConverter:
         - PI nodes => [vref, vout, 0]
         - PWM nodes => [0]
         - PWM metadata => duty_from_channel + target_component
+        - C_BLOCK/PID duty wiring to PWM DUTY_IN => duty_from_channel
         """
         try:
             supports_virtual = hasattr(self._sl.Circuit(), "add_virtual_component")
@@ -990,6 +1070,166 @@ class CircuitConverter:
             if setpoint_constant_id:
                 suppressed_component_ids.add(setpoint_constant_id)
 
+        # Generic wiring-based duty inference:
+        # If PWM DUTY_IN is driven by a known virtual control block output, convert PWM
+        # to backend-native channel-driven mode even without explicit GUI metadata.
+        signal_driver_by_node: dict[str, str] = {}
+        cblock_channel_aliases: dict[str, str] = {}
+
+        def _register_driver(component: dict[str, Any], output_indices: list[int]) -> None:
+            nodes = _raw_nodes(component)
+            if not nodes:
+                return
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                return
+            driver_name = self._component_name(component, comp_type)
+            if not driver_name:
+                return
+            for index in output_indices:
+                if index < 0 or index >= len(nodes):
+                    continue
+                node = str(nodes[index] or "").strip()
+                if node and node not in signal_driver_by_node:
+                    signal_driver_by_node[node] = driver_name
+
+        for cblock in by_type.get(ComponentType.C_BLOCK, []):
+            params = cblock.get("parameters") if isinstance(cblock.get("parameters"), dict) else {}
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+            try:
+                n_outputs = max(1, int(params.get("n_outputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_outputs = 1
+            nodes = _raw_nodes(cblock)
+            if not nodes:
+                continue
+            cblock_name = self._component_name(cblock, ComponentType.C_BLOCK)
+            if not cblock_name:
+                continue
+            for output_index in range(n_outputs):
+                pin_index = n_inputs + output_index
+                if pin_index < 0 or pin_index >= len(nodes):
+                    continue
+                node = str(nodes[pin_index] or "").strip()
+                if not node:
+                    continue
+                # Runtime canonical names:
+                # - first output: "<name>"
+                # - extra outputs: "<name>.outN"
+                output_channel = (
+                    cblock_name if output_index == 0 else f"{cblock_name}.out{output_index}"
+                )
+                if node not in signal_driver_by_node:
+                    signal_driver_by_node[node] = output_channel
+                # Accept common frontend aliases from older projects.
+                alias_tokens = {
+                    cblock_name if output_index == 0 else "",
+                    f"{cblock_name}.OUT{output_index}",
+                    f"{cblock_name}.out{output_index}",
+                }
+                if output_index == 0:
+                    alias_tokens.add(f"{cblock_name}.OUT")
+                    alias_tokens.add(f"{cblock_name}.out")
+                for alias in alias_tokens:
+                    if alias:
+                        cblock_channel_aliases[alias] = output_channel
+                        cblock_channel_aliases[alias.lower()] = output_channel
+
+        for pi in by_type.get(ComponentType.PI_CONTROLLER, []):
+            _register_driver(pi, [1])
+        for pid in by_type.get(ComponentType.PID_CONTROLLER, []):
+            _register_driver(pid, [1])
+
+        for pwm_component in by_type.get(ComponentType.PWM_GENERATOR, []):
+            pwm_id = str(pwm_component.get("id") or "").strip()
+            if not pwm_id or pwm_id in pwm_param_overrides:
+                continue
+
+            params = (
+                pwm_component.get("parameters")
+                if isinstance(pwm_component.get("parameters"), dict)
+                else {}
+            )
+            explicit_duty_channel = str(params.get("duty_from_channel") or "").strip()
+            if explicit_duty_channel:
+                normalized_channel = cblock_channel_aliases.get(
+                    explicit_duty_channel
+                    if explicit_duty_channel in cblock_channel_aliases
+                    else explicit_duty_channel.lower(),
+                    explicit_duty_channel,
+                )
+                if normalized_channel != explicit_duty_channel:
+                    pwm_param_overrides[pwm_id] = {"duty_from_channel": normalized_channel}
+                continue
+
+            pwm_nodes = _raw_nodes(pwm_component)
+            if len(pwm_nodes) < 2:
+                continue
+            duty_input_node = str(pwm_nodes[1] or "").strip()
+            if not duty_input_node:
+                continue
+
+            driver_name = signal_driver_by_node.get(duty_input_node)
+            if not driver_name:
+                continue
+
+            pwm_out_node = str(pwm_nodes[0] or "").strip()
+            target_name = str(params.get("target_component") or "").strip()
+            if not target_name:
+                target_name = self._infer_pwm_target_component_name(
+                    components,
+                    node_map,
+                    pwm_out_node,
+                ) or ""
+
+            try:
+                duty_default = float(params.get("duty", params.get("duty_cycle", 0.5)))
+            except (TypeError, ValueError):
+                duty_default = 0.5
+
+            override: dict[str, Any] = {
+                "duty_from_channel": driver_name,
+                "duty": duty_default,
+            }
+            if target_name:
+                override["target_component"] = target_name
+            pwm_param_overrides[pwm_id] = override
+
+            if target_name:
+                target_component_id = ""
+                target_component_type: ComponentType | None = None
+                target_component_nodes: list[str] = []
+                for candidate in components:
+                    try:
+                        candidate_type = self._component_type(candidate.get("type"))
+                    except CircuitConversionError:
+                        continue
+                    if candidate_type not in self._PWM_SWITCH_TARGET_PIN:
+                        continue
+                    if self._component_name(candidate, candidate_type) != target_name:
+                        continue
+                    candidate_id = str(candidate.get("id") or "").strip()
+                    if not candidate_id:
+                        continue
+                    target_component_id = candidate_id
+                    target_component_type = candidate_type
+                    target_component_nodes = _raw_nodes(candidate)
+                    break
+
+                if target_component_type is not None and target_component_id:
+                    control_pin = self._PWM_SWITCH_TARGET_PIN.get(target_component_type)
+                    if control_pin is not None and len(target_component_nodes) > control_pin:
+                        grounded_target_nodes = list(target_component_nodes)
+                        grounded_target_nodes[control_pin] = "0"
+                        controlled_target_node_overrides[target_component_id] = [
+                            self._node_label(node, alias_map) if node else node
+                            for node in grounded_target_nodes
+                        ]
+
         return (
             pi_node_overrides,
             pwm_node_overrides,
@@ -998,6 +1238,313 @@ class CircuitConverter:
             synthetic_sources,
             suppressed_component_ids,
         )
+
+    def _infer_cblock_input_channel_overrides(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+    ) -> dict[str, dict[str, Any]]:
+        """Infer C-Block control-channel input mapping from signal-domain wiring."""
+
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            fallback = node_map.get(comp_id, [])
+            return [str(node or "").strip() for node in fallback]
+
+        signal_driver_by_node: dict[str, str] = {}
+
+        for component in components:
+            comp_id = str(component.get("id") or "").strip()
+            if not comp_id:
+                continue
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            component_name = self._component_name(component, comp_type)
+            if not component_name:
+                continue
+
+            pin_nodes = _raw_nodes(component)
+            if not pin_nodes:
+                continue
+
+            pins = component.get("pins")
+            if not isinstance(pins, list) or not pins:
+                for pin_index, channel_name in self._fallback_signal_output_channels(
+                    comp_type,
+                    component_name,
+                    params=(
+                        component.get("parameters")
+                        if isinstance(component.get("parameters"), dict)
+                        else {}
+                    ),
+                    node_count=len(pin_nodes),
+                ):
+                    if pin_index < 0 or pin_index >= len(pin_nodes):
+                        continue
+                    node_name = str(pin_nodes[pin_index] or "").strip()
+                    if not node_name or node_name == "0":
+                        continue
+                    signal_driver_by_node.setdefault(node_name, channel_name)
+                continue
+
+            for pin in pins:
+                if not isinstance(pin, dict):
+                    continue
+                try:
+                    pin_index = int(pin.get("index", -1))
+                except (TypeError, ValueError):
+                    continue
+                if pin_index < 0 or pin_index >= len(pin_nodes):
+                    continue
+
+                pin_name = str(pin.get("name") or "").strip().upper()
+                if not pin_name:
+                    continue
+
+                channel_name = ""
+                if comp_type == ComponentType.C_BLOCK:
+                    if pin_name in {"OUT", "OUT0"}:
+                        channel_name = component_name
+                    elif pin_name.startswith("OUT"):
+                        try:
+                            output_index = int(pin_name[3:])
+                        except (TypeError, ValueError):
+                            continue
+                        channel_name = (
+                            component_name
+                            if output_index == 0
+                            else f"{component_name}.out{output_index}"
+                        )
+                elif comp_type == ComponentType.PWM_GENERATOR:
+                    if pin_name == "OUT":
+                        channel_name = component_name
+                elif comp_type in (
+                    ComponentType.VOLTAGE_PROBE,
+                    ComponentType.VOLTAGE_PROBE_GND,
+                    ComponentType.CURRENT_PROBE,
+                ):
+                    if pin_name in {"OUT", "MEAS"}:
+                        channel_name = component_name
+                else:
+                    if pin_name == "OUT":
+                        channel_name = component_name
+
+                if not channel_name:
+                    continue
+                node_name = str(pin_nodes[pin_index] or "").strip()
+                if not node_name or node_name == "0":
+                    continue
+                signal_driver_by_node.setdefault(node_name, channel_name)
+
+        overrides: dict[str, dict[str, Any]] = {}
+        for component in components:
+            comp_id = str(component.get("id") or "").strip()
+            if not comp_id:
+                continue
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            if comp_type != ComponentType.C_BLOCK:
+                continue
+
+            component_name = self._component_name(component, comp_type)
+            pins = component.get("pins")
+            if not isinstance(pins, list) or not pins:
+                # Legacy/minimal payload without pin schema: keep compatibility.
+                continue
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            pin_nodes = _raw_nodes(component)
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+
+            explicit_inputs = self._parse_cblock_input_channel_list(
+                params.get("inputs", params.get("input_channels"))
+            )
+            if explicit_inputs:
+                if len(explicit_inputs) != n_inputs:
+                    raise CircuitConversionError(
+                        "C-Block "
+                        f"'{component_name}' expects n_inputs={n_inputs}, "
+                        f"but metadata declares {len(explicit_inputs)} channels."
+                    )
+                mapped_inputs = explicit_inputs
+            else:
+                mapped_inputs: list[str] = []
+                for input_index in range(n_inputs):
+                    node_name = (
+                        str(pin_nodes[input_index] or "").strip()
+                        if input_index < len(pin_nodes)
+                        else ""
+                    )
+                    if not node_name:
+                        raise CircuitConversionError(
+                            "C-Block "
+                            f"'{component_name}' input IN{input_index} is unconnected. "
+                            "Connect it to a control signal source "
+                            "(for example probe OUT, PI/PID OUT, SUM/SUB OUT, CONSTANT OUT) "
+                            "or set metadata 'inputs'."
+                        )
+                    channel_name = signal_driver_by_node.get(node_name, "")
+                    if not channel_name:
+                        raise CircuitConversionError(
+                            "C-Block "
+                            f"'{component_name}' input IN{input_index} must be driven by a "
+                            "control signal output. "
+                            f"No channel mapping was found for node '{node_name}'."
+                        )
+                    mapped_inputs.append(channel_name)
+
+            cblock_override: dict[str, Any] = {
+                "inputs": list(mapped_inputs),
+            }
+            overrides[comp_id] = cblock_override
+
+        return overrides
+
+    def _constant_names_used_as_cblock_inputs(
+        self,
+        components: list[dict[str, Any]],
+        cblock_param_overrides: dict[str, dict[str, Any]],
+    ) -> set[str]:
+        """Return CONSTANT component names referenced by C-Block input channels."""
+        constant_names: set[str] = set()
+        for component in components:
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            if comp_type != ComponentType.CONSTANT:
+                continue
+            name = self._component_name(component, comp_type)
+            if name:
+                constant_names.add(name)
+
+        if not constant_names:
+            return set()
+
+        referenced: set[str] = set()
+        for override in cblock_param_overrides.values():
+            inputs = override.get("inputs")
+            if not isinstance(inputs, list):
+                continue
+            for channel in inputs:
+                channel_name = str(channel or "").strip()
+                if channel_name and channel_name in constant_names:
+                    referenced.add(channel_name)
+        return referenced
+
+    @staticmethod
+    def _parse_cblock_input_channel_list(raw_value: Any) -> list[str]:
+        """Parse C-Block input-channel metadata from list/scalar forms."""
+        if raw_value is None:
+            return []
+
+        if isinstance(raw_value, list):
+            channels = [str(item or "").strip() for item in raw_value]
+            return [channel for channel in channels if channel]
+
+        if isinstance(raw_value, tuple):
+            channels = [str(item or "").strip() for item in raw_value]
+            return [channel for channel in channels if channel]
+
+        text = str(raw_value).strip()
+        if not text:
+            return []
+
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            channels = [str(item or "").strip() for item in parsed]
+            return [channel for channel in channels if channel]
+
+        if "," in text:
+            channels = [token.strip() for token in text.split(",")]
+            return [channel for channel in channels if channel]
+
+        return [text]
+
+    @staticmethod
+    def _fallback_signal_output_channels(
+        comp_type: ComponentType,
+        component_name: str,
+        *,
+        params: dict[str, Any],
+        node_count: int,
+    ) -> list[tuple[int, str]]:
+        """Best-effort output channel mapping when serialized pin metadata is missing."""
+        if node_count <= 0:
+            return []
+
+        if comp_type == ComponentType.C_BLOCK:
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+            try:
+                n_outputs = max(1, int(params.get("n_outputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_outputs = 1
+            outputs: list[tuple[int, str]] = []
+            for output_index in range(n_outputs):
+                pin_index = n_inputs + output_index
+                if pin_index >= node_count:
+                    break
+                channel_name = (
+                    component_name
+                    if output_index == 0
+                    else f"{component_name}.out{output_index}"
+                )
+                outputs.append((pin_index, channel_name))
+            return outputs
+
+        if comp_type == ComponentType.PWM_GENERATOR:
+            return [(0, component_name)] if node_count >= 1 else []
+        if comp_type in (ComponentType.VOLTAGE_PROBE,):
+            return [(2, component_name)] if node_count >= 3 else []
+        if comp_type == ComponentType.VOLTAGE_PROBE_GND:
+            return [(1, component_name)] if node_count >= 2 else []
+        if comp_type == ComponentType.CURRENT_PROBE:
+            return [(2, component_name)] if node_count >= 3 else []
+        if comp_type == ComponentType.CONSTANT:
+            return [(0, component_name)] if node_count >= 1 else []
+        if comp_type == ComponentType.PI_CONTROLLER:
+            return [(1, component_name)] if node_count >= 2 else []
+        if comp_type == ComponentType.PID_CONTROLLER:
+            return [(2, component_name)] if node_count >= 3 else []
+        if comp_type in {
+            ComponentType.GAIN,
+            ComponentType.INTEGRATOR,
+            ComponentType.DIFFERENTIATOR,
+            ComponentType.LIMITER,
+            ComponentType.RATE_LIMITER,
+            ComponentType.HYSTERESIS,
+            ComponentType.LOOKUP_TABLE,
+            ComponentType.TRANSFER_FUNCTION,
+            ComponentType.DELAY_BLOCK,
+        }:
+            return [(1, component_name)] if node_count >= 2 else []
+        if comp_type in {ComponentType.SUM, ComponentType.SUBTRACTOR}:
+            try:
+                output_pin = int(params.get("input_count", 2) or 2)
+            except (TypeError, ValueError):
+                output_pin = 2
+            output_pin = max(0, min(node_count - 1, output_pin))
+            return [(output_pin, component_name)]
+        if comp_type in {ComponentType.MATH_BLOCK, ComponentType.SAMPLE_HOLD, ComponentType.STATE_MACHINE}:
+            output_pin = min(node_count - 1, 2)
+            return [(output_pin, component_name)]
+
+        return []
 
     def _find_reference_voltage_node(
         self,
@@ -1177,6 +1724,42 @@ class CircuitConverter:
         params: dict[str, Any],
     ) -> dict[str, Any]:
         normalized = dict(params)
+
+        if comp_type == ComponentType.C_BLOCK:
+            normalized.pop("compiler", None)
+            implementation = str(normalized.get("implementation", "") or "").strip().lower()
+            source = str(normalized.get("source", "") or "").strip()
+            lib_path = str(normalized.get("lib_path", "") or "").strip()
+            if implementation == "library":
+                source = ""
+            elif implementation == "source":
+                lib_path = ""
+            elif source and lib_path:
+                lib_path = ""
+
+            try:
+                normalized["n_inputs"] = max(1, int(normalized.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                normalized["n_inputs"] = 1
+            try:
+                normalized["n_outputs"] = max(1, int(normalized.get("n_outputs", 1) or 1))
+            except (TypeError, ValueError):
+                normalized["n_outputs"] = 1
+
+            flags = normalized.get("extra_cflags", [])
+            if isinstance(flags, list):
+                normalized["extra_cflags"] = [str(item).strip() for item in flags if str(item).strip()]
+            elif isinstance(flags, str):
+                text = flags.strip()
+                tokens = [part.strip() for part in text.split(",")] if "," in text else text.split()
+                normalized["extra_cflags"] = [token for token in tokens if token]
+            else:
+                normalized["extra_cflags"] = []
+
+            normalized["source"] = source.replace("\\", "/")
+            normalized["lib_path"] = lib_path.replace("\\", "/")
+            normalized.pop("implementation", None)
+            normalized.pop("source_code", None)
 
         if "lower_limit" in normalized and "output_min" not in normalized:
             normalized["output_min"] = normalized["lower_limit"]

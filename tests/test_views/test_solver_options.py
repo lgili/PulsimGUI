@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from PySide6.QtCore import Qt
 
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.backend_types import DCSettings
@@ -568,3 +569,80 @@ class TestEffectiveStepCalculation:
 
         # Label should have changed (smaller step)
         assert dialog._effective_step_label.text() != initial_text
+
+
+class TestAdvancedAnalysisSettings:
+    """Tests for averaged and frequency-analysis controls."""
+
+    def test_advanced_section_uses_tabs_to_avoid_horizontal_overflow(self, qapp) -> None:
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+
+        dialog._advanced_toggle.setChecked(True)
+
+        assert hasattr(dialog, "_advanced_tabs")
+        assert dialog._advanced_tabs.count() == 4
+        assert dialog._advanced_tabs.tabText(0) == "Transient"
+        assert dialog._advanced_tabs.tabText(1) == "DC Setup"
+        assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
+        assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
+        assert dialog._advanced_tabs.elideMode() == Qt.TextElideMode.ElideNone
+        assert dialog._advanced_tabs.tabBar().expanding()
+
+    def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+
+        dialog._averaged_enabled_check.setChecked(True)
+        dialog._averaged_topology_combo.setCurrentIndex(
+            dialog._averaged_topology_combo.findData("flyback")
+        )
+        dialog._averaged_mode_combo.setCurrentIndex(
+            dialog._averaged_mode_combo.findData("auto")
+        )
+        dialog._averaged_envelope_combo.setCurrentIndex(
+            dialog._averaged_envelope_combo.findData("lenient")
+        )
+        dialog._ac_start_freq_spin.setValue(10.0)
+        dialog._ac_stop_freq_spin.setValue(250_000.0)
+        dialog._ac_points_spin.setValue(25)
+        dialog._ac_anchor_mode_combo.setCurrentIndex(
+            dialog._ac_anchor_mode_combo.findData("dc")
+        )
+        dialog._ac_sweep_scale_combo.setCurrentIndex(
+            dialog._ac_sweep_scale_combo.findData("log")
+        )
+        dialog._ac_injection_node_edit.setText("vin,0")
+        dialog._ac_measurement_node_edit.setText("vout,0")
+
+        dialog._on_accept()
+
+        assert settings.averaged_options == {
+            "topology": "flyback",
+            "mode": "auto",
+            "envelope": "lenient",
+        }
+        assert settings.ac_f_start == pytest.approx(10.0)
+        assert settings.ac_f_stop == pytest.approx(250_000.0)
+        assert settings.ac_points_per_decade == 25
+        assert settings.ac_anchor_mode == "dc"
+        assert settings.ac_sweep_scale == "log"
+        assert settings.ac_injection_node == "vin,0"
+        assert settings.ac_measurement_node == "vout,0"
+
+    def test_dialog_disables_averaged_when_backend_capability_missing(self, qapp) -> None:
+        settings = SimulationSettings(
+            averaged_options={"topology": "buck", "mode": "ccm", "envelope": "strict"}
+        )
+        backend_info = BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="0.6.9",
+            status="available",
+            capabilities={"transient", "ac"},
+        )
+        dialog = SimulationSettingsDialog(settings, backend_info=backend_info)
+
+        assert not dialog._averaged_enabled_check.isEnabled()
+        assert not dialog._averaged_topology_combo.isEnabled()
+        assert not dialog._ac_start_freq_spin.isEnabled()

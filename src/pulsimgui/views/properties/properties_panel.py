@@ -1,21 +1,27 @@
 """Properties panel for editing component parameters."""
 
+import shutil
+import tempfile
 from functools import partial
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QUrl, Qt, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -26,12 +32,15 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import (
+    C_BLOCK_IO_LIMITS,
     HIDDEN_PARAMS,
     MUX_CHANNEL_LIMITS,
     SCOPE_CHANNEL_LIMITS,
     THERMAL_PORT_PARAMETER,
     Component,
     ComponentType,
+    set_cblock_input_count,
+    set_cblock_output_count,
     set_demux_output_count,
     set_mux_input_count,
     set_scope_channel_count,
@@ -100,6 +109,17 @@ class AutoSelectLineEdit(QLineEdit):
         # Use timer to select after focus is fully set
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self.selectAll)
+
+
+class CommitPlainTextEdit(QPlainTextEdit):
+    """Plain text editor that emits content when focus leaves the widget."""
+
+    editing_finished = Signal(str)
+
+    def focusOutEvent(self, event) -> None:
+        """Emit final text when editing focus is lost."""
+        super().focusOutEvent(event)
+        self.editing_finished.emit(self.toPlainText())
 
 
 class SIValueWidget(QWidget):
@@ -514,6 +534,17 @@ class PropertiesPanel(QWidget):
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
+        self._cblock_source_editor: CommitPlainTextEdit | None = None
+        self._cblock_mode_combo: QComboBox | None = None
+        self._cblock_path_edit: AutoSelectLineEdit | None = None
+        self._cblock_extra_cflags_edit: AutoSelectLineEdit | None = None
+        self._cblock_source_row: QWidget | None = None
+        self._cblock_template_row: QWidget | None = None
+        self._cblock_template_combo: QComboBox | None = None
+        self._cblock_create_btn: QPushButton | None = None
+        self._cblock_open_btn: QPushButton | None = None
+        self._cblock_compile_btn: QPushButton | None = None
+        self._cblock_last_committed_source = ""
         self._main_layout: QVBoxLayout | None = None
         self._show_position_controls = False
         self._compact_mode = False
@@ -790,6 +821,17 @@ class PropertiesPanel(QWidget):
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
+        self._cblock_source_editor = None
+        self._cblock_mode_combo = None
+        self._cblock_path_edit = None
+        self._cblock_extra_cflags_edit = None
+        self._cblock_source_row = None
+        self._cblock_template_row = None
+        self._cblock_template_combo = None
+        self._cblock_create_btn = None
+        self._cblock_open_btn = None
+        self._cblock_compile_btn = None
+        self._cblock_last_committed_source = ""
 
     def _create_param_widgets(self) -> None:
         """Create widgets for component parameters."""
@@ -805,6 +847,9 @@ class PropertiesPanel(QWidget):
             return
         if comp_type == ComponentType.SIGNAL_DEMUX:
             self._create_demux_param_widgets()
+            return
+        if comp_type == ComponentType.C_BLOCK:
+            self._create_cblock_param_widgets()
             return
 
         params = self._component.parameters
@@ -1107,6 +1152,769 @@ class PropertiesPanel(QWidget):
             labels[index] = text
             self.property_changed.emit("channel_labels", labels)
 
+    # --- C-Block parameter editors -----------------------------------------------
+
+    @staticmethod
+    def _cblock_templates() -> dict[str, tuple[str, str]]:
+        return {
+            "gain": (
+                "Gain (1 input)",
+                """#include "pulsim/v1/cblock_abi.h"
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
+    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
+{
+    (void)ctx; (void)t; (void)dt;
+    out[0] = 2.0 * in[0];
+    return 0;
+}
+""",
+            ),
+            "pi_discrete": (
+                "PI discrete",
+                """#include "pulsim/v1/cblock_abi.h"
+#include <stdlib.h>
+
+typedef struct {
+    double integ;
+    double kp;
+    double ki;
+} PIState;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_init(void** ctx_out, const PulsimCBlockInfo* info)
+{
+    (void)info;
+    PIState* s = (PIState*)malloc(sizeof(PIState));
+    if (!s) return -1;
+    s->integ = 0.0;
+    s->kp = 0.08;
+    s->ki = 120.0;
+    *ctx_out = s;
+    return 0;
+}
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
+    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
+{
+    (void)t;
+    PIState* s = (PIState*)ctx;
+    double err = in[0];
+    s->integ += err * dt;
+    out[0] = (s->kp * err) + (s->ki * s->integ);
+    return 0;
+}
+
+PULSIM_CBLOCK_EXPORT void pulsim_cblock_destroy(PulsimCBlockCtx* ctx)
+{
+    free(ctx);
+}
+""",
+            ),
+            "low_pass": (
+                "1st-order LPF",
+                """#include "pulsim/v1/cblock_abi.h"
+#include <math.h>
+#include <stdlib.h>
+
+typedef struct {
+    double y_prev;
+} LPState;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_init(void** ctx_out, const PulsimCBlockInfo* info)
+{
+    (void)info;
+    LPState* s = (LPState*)malloc(sizeof(LPState));
+    if (!s) return -1;
+    s->y_prev = 0.0;
+    *ctx_out = s;
+    return 0;
+}
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
+    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
+{
+    (void)t;
+    LPState* s = (LPState*)ctx;
+    const double fc = 100.0;
+    const double tau = 1.0 / (2.0 * 3.14159265358979323846 * fc);
+    const double alpha = dt / (tau + dt);
+    s->y_prev = alpha * in[0] + (1.0 - alpha) * s->y_prev;
+    out[0] = s->y_prev;
+    return 0;
+}
+
+PULSIM_CBLOCK_EXPORT void pulsim_cblock_destroy(PulsimCBlockCtx* ctx)
+{
+    free(ctx);
+}
+""",
+            ),
+            "multi_out": (
+                "Multi-output",
+                """#include "pulsim/v1/cblock_abi.h"
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
+    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
+{
+    (void)ctx; (void)t; (void)dt;
+    out[0] = 2.0 * in[0];
+    out[1] = 3.0 * in[0];
+    return 0;
+}
+""",
+            ),
+        }
+
+    @staticmethod
+    def _normalize_cblock_mode(raw_mode: Any, params: dict[str, Any]) -> str:
+        mode = str(raw_mode or "").strip().lower()
+        if mode in {"source", "library"}:
+            return mode
+        if str(params.get("lib_path", "") or "").strip():
+            return "library"
+        return "source"
+
+    def _create_cblock_param_widgets(self) -> None:
+        if not self._component:
+            return
+
+        params = self._component.parameters
+        mode = self._normalize_cblock_mode(params.get("implementation"), params)
+        params["implementation"] = mode
+
+        n_inputs_spin = QSpinBox()
+        n_inputs_spin.setRange(*C_BLOCK_IO_LIMITS)
+        try:
+            input_count = int(params.get("n_inputs", 1) or 1)
+        except (TypeError, ValueError):
+            input_count = 1
+        n_inputs_spin.setValue(max(C_BLOCK_IO_LIMITS[0], input_count))
+        n_inputs_spin.valueChanged.connect(lambda value: self._on_cblock_io_changed("n_inputs", value))
+        self._params_layout.addRow("Inputs:", n_inputs_spin)
+
+        n_outputs_spin = QSpinBox()
+        n_outputs_spin.setRange(*C_BLOCK_IO_LIMITS)
+        try:
+            output_count = int(params.get("n_outputs", 1) or 1)
+        except (TypeError, ValueError):
+            output_count = 1
+        n_outputs_spin.setValue(max(C_BLOCK_IO_LIMITS[0], output_count))
+        n_outputs_spin.valueChanged.connect(lambda value: self._on_cblock_io_changed("n_outputs", value))
+        self._params_layout.addRow("Outputs:", n_outputs_spin)
+
+        demux_hint = QLabel("Tip: for n_outputs > 1, use SIGNAL_DEMUX to route each output channel.")
+        demux_hint.setWordWrap(True)
+        demux_hint.setObjectName("CBlockHintLabel")
+        self._params_layout.addRow("", demux_hint)
+
+        mode_combo = QComboBox()
+        mode_combo.addItem("Source (.c)", "source")
+        mode_combo.addItem("Library (.dll/.so/.dylib)", "library")
+        mode_combo.setCurrentIndex(0 if mode == "source" else 1)
+        mode_combo.currentIndexChanged.connect(self._on_cblock_mode_changed)
+        self._cblock_mode_combo = mode_combo
+        self._params_layout.addRow("Mode:", mode_combo)
+
+        path_row = QWidget()
+        path_layout = QHBoxLayout(path_row)
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.setSpacing(6)
+        path_edit = AutoSelectLineEdit(str(params.get("source" if mode == "source" else "lib_path", "") or ""))
+        path_edit.setPlaceholderText("Select a source file" if mode == "source" else "Select a shared library")
+        path_edit.returnPressed.connect(self._on_cblock_path_changed)
+        path_edit.editingFinished.connect(self._on_cblock_path_changed)
+        path_layout.addWidget(path_edit, 1)
+        browse_btn = QPushButton("Browse")
+        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse_btn.clicked.connect(self._on_browse_cblock_path)
+        path_layout.addWidget(browse_btn)
+        create_btn = QPushButton("Create Base File...")
+        create_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        create_btn.clicked.connect(self._on_create_cblock_base_file)
+        self._cblock_create_btn = create_btn
+        path_layout.addWidget(create_btn)
+        open_btn = QPushButton("Open in Editor")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._on_open_cblock_source_external)
+        self._cblock_open_btn = open_btn
+        path_layout.addWidget(open_btn)
+        self._cblock_path_edit = path_edit
+        self._params_layout.addRow("Path:", path_row)
+
+        flags = params.get("extra_cflags", [])
+        if isinstance(flags, list):
+            flags_text = ", ".join(str(item) for item in flags if str(item).strip())
+        else:
+            flags_text = ""
+        flags_edit = AutoSelectLineEdit(flags_text)
+        flags_edit.setPlaceholderText("-O3, -Wall")
+        flags_edit.returnPressed.connect(self._on_cblock_extra_cflags_changed)
+        flags_edit.editingFinished.connect(self._on_cblock_extra_cflags_changed)
+        self._cblock_extra_cflags_edit = flags_edit
+        self._params_layout.addRow("Extra cflags:", flags_edit)
+
+        template_row = QWidget()
+        template_layout = QHBoxLayout(template_row)
+        template_layout.setContentsMargins(0, 0, 0, 0)
+        template_layout.setSpacing(6)
+        template_combo = QComboBox()
+        for key, (label, _source) in self._cblock_templates().items():
+            template_combo.addItem(label, key)
+        self._cblock_template_combo = template_combo
+        template_layout.addWidget(template_combo, 1)
+        insert_btn = QPushButton("Insert template")
+        insert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        insert_btn.clicked.connect(self._on_insert_cblock_template)
+        template_layout.addWidget(insert_btn)
+        self._cblock_template_row = template_row
+        self._params_layout.addRow("Templates:", template_row)
+
+        source_editor = CommitPlainTextEdit()
+        source_editor.setPlaceholderText("Paste or write C source code for this C-Block...")
+        source_editor.setMinimumHeight(210)
+        source_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        source_text = str(params.get("source_code", "") or "")
+        source_editor.setPlainText(source_text)
+        source_editor.textChanged.connect(self._on_cblock_source_editor_live_changed)
+        source_editor.editing_finished.connect(self._on_cblock_source_code_changed)
+        self._cblock_last_committed_source = source_text
+        self._cblock_source_editor = source_editor
+        self._cblock_source_row = source_editor
+        self._params_layout.addRow("Source code:", source_editor)
+
+        compile_btn = QPushButton("Test Compilation")
+        compile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        compile_btn.clicked.connect(self._on_test_cblock_compilation)
+        self._cblock_compile_btn = compile_btn
+        self._params_layout.addRow("Build:", compile_btn)
+
+        abi_hint = QLabel(
+            "ABI contract: pulsim_cblock_abi_version and pulsim_cblock_step are required."
+        )
+        abi_hint.setWordWrap(True)
+        abi_hint.setObjectName("CBlockHintLabel")
+        self._params_layout.addRow("", abi_hint)
+
+        trust_warning = QLabel(
+            "Security warning: C libraries run in-process without sandbox. Use trusted code only."
+        )
+        trust_warning.setWordWrap(True)
+        trust_warning.setObjectName("CBlockHintLabel")
+        self._params_layout.addRow("", trust_warning)
+        self._refresh_cblock_visibility()
+
+    def _current_cblock_mode(self) -> str:
+        if self._cblock_mode_combo is None:
+            return "source"
+        mode = self._cblock_mode_combo.currentData()
+        if mode in {"source", "library"}:
+            return str(mode)
+        return "source"
+
+    def _on_cblock_io_changed(self, field: str, value: int) -> None:
+        if not self._component:
+            return
+        if field == "n_inputs":
+            set_cblock_input_count(self._component, int(value))
+        else:
+            set_cblock_output_count(self._component, int(value))
+        self.property_changed.emit(field, int(value))
+
+    def _on_cblock_mode_changed(self, _index: int) -> None:
+        if not self._component:
+            return
+        mode = self._current_cblock_mode()
+        self._component.parameters["implementation"] = mode
+        self.property_changed.emit("implementation", mode)
+        self._refresh_cblock_visibility()
+
+    def _on_cblock_path_changed(self) -> None:
+        if not self._component or self._cblock_path_edit is None:
+            return
+        path = self._cblock_path_edit.text().strip().replace("\\", "/")
+        self._cblock_path_edit.setText(path)
+        mode = self._current_cblock_mode()
+        if mode == "source":
+            self._component.parameters["source"] = path
+            self.property_changed.emit("source", path)
+        else:
+            self._component.parameters["lib_path"] = path
+            self.property_changed.emit("lib_path", path)
+
+    def _on_browse_cblock_path(self) -> None:
+        mode = self._current_cblock_mode()
+        start = self._cblock_path_edit.text().strip() if self._cblock_path_edit else ""
+        if mode == "source":
+            selected, _ = QFileDialog.getSaveFileName(
+                self,
+                "Select C source file",
+                start,
+                "C source (*.c);;All files (*)",
+            )
+        else:
+            selected, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select shared library",
+                start,
+                "Shared libraries (*.dll *.so *.dylib);;All files (*)",
+            )
+        if not selected or self._cblock_path_edit is None:
+            return
+        self._cblock_path_edit.setText(selected)
+        self._on_cblock_path_changed()
+
+    def _on_cblock_extra_cflags_changed(self) -> None:
+        if not self._component or self._cblock_extra_cflags_edit is None:
+            return
+        raw = self._cblock_extra_cflags_edit.text().strip()
+        tokens = [part.strip() for part in raw.split(",")] if "," in raw else raw.split()
+        flags = [token for token in tokens if token]
+        self._component.parameters["extra_cflags"] = flags
+        self.property_changed.emit("extra_cflags", flags)
+
+    def _on_cblock_source_editor_live_changed(self) -> None:
+        if not self._component or self._cblock_source_editor is None:
+            return
+        self._component.parameters["source_code"] = self._cblock_source_editor.toPlainText()
+
+    def _on_cblock_source_code_changed(self, text: str) -> None:
+        if not self._component:
+            return
+        self._component.parameters["source_code"] = text
+        if self._cblock_last_committed_source == text:
+            return
+        self._cblock_last_committed_source = text
+        self.property_changed.emit("source_code", text)
+
+    def _on_insert_cblock_template(self) -> None:
+        if self._cblock_template_combo is None or self._cblock_source_editor is None:
+            return
+        template_key = str(self._cblock_template_combo.currentData() or "").strip()
+        template = self._cblock_templates().get(template_key)
+        if template is None:
+            return
+        _label, source_code = template
+        current = self._cblock_source_editor.toPlainText().strip()
+        if current and current != source_code.strip():
+            choice = QMessageBox.question(
+                self,
+                "Replace Source",
+                "Replace current C source with selected template?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+        self._cblock_source_editor.setPlainText(source_code)
+        self._on_cblock_source_code_changed(source_code)
+
+    @staticmethod
+    def _default_cblock_filename(component_name: str) -> str:
+        stem = "".join(ch.lower() if ch.isalnum() else "_" for ch in component_name.strip())
+        stem = stem.strip("_")
+        return f"{(stem or 'cblock')}.c"
+
+    def _build_cblock_base_source(self) -> str:
+        if self._component is None:
+            return ""
+        try:
+            n_inputs = max(1, int(self._component.parameters.get("n_inputs", 1) or 1))
+        except (TypeError, ValueError):
+            n_inputs = 1
+        try:
+            n_outputs = max(1, int(self._component.parameters.get("n_outputs", 1) or 1))
+        except (TypeError, ValueError):
+            n_outputs = 1
+
+        output_lines = [
+            "    /* Map your control law here. This starter forwards IN0 to all outputs. */",
+            "    const double base = in[0];",
+            "    out[0] = base;",
+        ]
+        for out_index in range(1, n_outputs):
+            output_lines.append(f"    out[{out_index}] = base;")
+
+        output_block = "\n".join(output_lines)
+
+        return f"""#include "pulsim/v1/cblock_abi.h"
+
+/*
+ * Pulsim C-Block starter template.
+ *
+ * Quick guide:
+ * 1) Keep `pulsim_cblock_abi_version` exactly as declared below.
+ * 2) Implement your algorithm inside `pulsim_cblock_step`.
+ * 3) Return 0 on success. Return non-zero to signal runtime error.
+ * 4) Optional: implement `pulsim_cblock_init` / `pulsim_cblock_destroy`
+ *    if you need persistent state between simulation steps.
+ *
+ * This block is configured for:
+ * - n_inputs  = {n_inputs}
+ * - n_outputs = {n_outputs}
+ *
+ * Input mapping:
+ * - in[0] ... in[{n_inputs - 1}]
+ *
+ * Output mapping:
+ * - out[0] ... out[{n_outputs - 1}]
+ */
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
+
+PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
+    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
+{{
+    (void)ctx;
+    (void)t;
+    (void)dt;
+{output_block}
+    return 0;
+}}
+"""
+
+    def _on_create_cblock_base_file(self) -> None:
+        if self._component is None:
+            return
+        if self._current_cblock_mode() != "source":
+            self._show_cblock_build_message(
+                title="C-Block Mode",
+                message="Switch to Source mode to create a C template file.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        start = ""
+        if self._cblock_path_edit is not None:
+            start = self._cblock_path_edit.text().strip()
+        if not start:
+            start = self._default_cblock_filename(self._component.name)
+
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Create C-Block source file",
+            start,
+            "C source (*.c);;All files (*)",
+        )
+        if not selected:
+            return
+
+        source_path = Path(selected).expanduser()
+        if source_path.suffix.lower() != ".c":
+            source_path = source_path.with_suffix(".c")
+
+        normalized_path = source_path.as_posix()
+        if source_path.exists():
+            overwrite = QMessageBox.question(
+                self,
+                "Overwrite File",
+                "Selected file already exists. Overwrite it with the starter template?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if overwrite != QMessageBox.StandardButton.Yes:
+                return
+
+        source_code = self._build_cblock_base_source()
+        try:
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(source_code, encoding="utf-8")
+        except OSError as exc:
+            self._show_cblock_build_message(
+                title="C-Block File Error",
+                message="Failed to create C-Block source file.",
+                details=str(exc),
+                icon=QMessageBox.Icon.Critical,
+            )
+            return
+
+        if self._cblock_path_edit is not None:
+            self._cblock_path_edit.setText(normalized_path)
+        self._component.parameters["source"] = normalized_path
+        self.property_changed.emit("source", normalized_path)
+
+        self._component.parameters["source_code"] = source_code
+        if self._cblock_source_editor is not None:
+            self._cblock_source_editor.setPlainText(source_code)
+        self._cblock_last_committed_source = source_code
+        self.property_changed.emit("source_code", source_code)
+
+        self._show_cblock_build_message(
+            title="C-Block File Created",
+            message="Starter C-Block file was created and loaded.",
+            details=normalized_path,
+            icon=QMessageBox.Icon.Information,
+        )
+
+    def _on_open_cblock_source_external(self) -> None:
+        if self._component is None:
+            return
+        if self._current_cblock_mode() != "source":
+            self._show_cblock_build_message(
+                title="C-Block Mode",
+                message="Open in Editor is available only in Source mode.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        source_raw = str(self._component.parameters.get("source", "") or "").strip()
+        if not source_raw and self._cblock_path_edit is not None:
+            source_raw = self._cblock_path_edit.text().strip()
+
+        if not source_raw:
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="Select or create a source file before opening in external editor.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        source_path = Path(source_raw).expanduser()
+        if not source_path.exists():
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="Source file not found. Create the file first.",
+                details=source_path.as_posix(),
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(source_path)))
+        if not opened:
+            self._show_cblock_build_message(
+                title="C-Block Editor",
+                message="Could not open external editor for this file.",
+                details=source_path.as_posix(),
+                icon=QMessageBox.Icon.Critical,
+            )
+
+    @staticmethod
+    def _safe_cblock_stem(name: str) -> str:
+        stem = "".join(ch.lower() if ch.isalnum() else "_" for ch in name.strip())
+        stem = stem.strip("_")
+        return stem or "cblock"
+
+    @staticmethod
+    def _coerce_cblock_flags(value: Any) -> list[str] | None:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            tokens = [part.strip() for part in text.split(",")] if "," in text else text.split()
+            return [token for token in tokens if token]
+        return None
+
+    def _show_cblock_build_message(
+        self,
+        *,
+        title: str,
+        message: str,
+        details: str = "",
+        icon: QMessageBox.Icon = QMessageBox.Icon.Information,
+    ) -> None:
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(message)
+        if details:
+            box.setDetailedText(details)
+        box.exec()
+
+    def _on_test_cblock_compilation(self) -> None:
+        if self._component is None:
+            return
+
+        params = self._component.parameters
+        try:
+            n_inputs = int(params.get("n_inputs", 1) or 1)
+            n_outputs = int(params.get("n_outputs", 1) or 1)
+        except (TypeError, ValueError):
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="n_inputs and n_outputs must be integers >= 1.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+        if n_inputs < 1 or n_outputs < 1:
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="n_inputs and n_outputs must be >= 1.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        flags = self._coerce_cblock_flags(params.get("extra_cflags", []))
+        if flags is None:
+            self._show_cblock_build_message(
+                title="C-Block Validation Error",
+                message="extra_cflags must be list[str].",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        mode = self._current_cblock_mode()
+        if mode == "library":
+            lib_path = str(params.get("lib_path", "") or "").strip()
+            if not lib_path and self._cblock_path_edit is not None:
+                lib_path = self._cblock_path_edit.text().strip()
+            if not lib_path:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Select a shared library path before validating.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            lib_candidate = Path(lib_path).expanduser()
+            if not lib_candidate.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Shared library path was not found.",
+                    details=lib_candidate.as_posix(),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            self._show_cblock_build_message(
+                title="C-Block Validation",
+                message="Shared library path is valid.",
+                details=lib_candidate.as_posix(),
+                icon=QMessageBox.Icon.Information,
+            )
+            return
+
+        source_text = ""
+        if self._cblock_source_editor is not None:
+            source_text = self._cblock_source_editor.toPlainText()
+        elif "source_code" in params:
+            source_text = str(params.get("source_code", "") or "")
+
+        source_raw = str(params.get("source", "") or "").strip()
+        if not source_raw and self._cblock_path_edit is not None:
+            source_raw = self._cblock_path_edit.text().strip()
+
+        temp_dir: Path | None = None
+        source_path: Path | None = None
+        try:
+            if source_raw:
+                source_path = Path(source_raw).expanduser()
+                if source_text.strip():
+                    try:
+                        source_path.parent.mkdir(parents=True, exist_ok=True)
+                        source_path.write_text(source_text, encoding="utf-8")
+                    except OSError as exc:
+                        self._show_cblock_build_message(
+                            title="C-Block Validation Error",
+                            message="Failed to write C source file.",
+                            details=str(exc),
+                            icon=QMessageBox.Icon.Warning,
+                        )
+                        return
+            elif source_text.strip():
+                temp_dir = Path(tempfile.mkdtemp(prefix="pulsimgui-cblock-test-"))
+                source_path = temp_dir / f"{self._safe_cblock_stem(self._component.name)}.c"
+                source_path.write_text(source_text, encoding="utf-8")
+            else:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Provide source code or select a source file path.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+
+            if source_path is None or not source_path.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="C source file was not found.",
+                    details=(source_path.as_posix() if source_path is not None else ""),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+
+            try:
+                from pulsim.cblock import CBlockCompileError, compile_cblock
+            except Exception as exc:  # pragma: no cover - depends on backend install
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="Unable to import pulsim.cblock compile API.",
+                    details=str(exc),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+
+            try:
+                built_lib = compile_cblock(
+                    source_path,
+                    name=self._safe_cblock_stem(self._component.name),
+                    extra_cflags=flags,
+                )
+            except CBlockCompileError as exc:
+                details: list[str] = [str(exc)]
+                compiler_path = str(getattr(exc, "compiler_path", "") or "").strip()
+                stderr_output = str(getattr(exc, "stderr_output", "") or "").strip()
+                source_hint = str(getattr(exc, "source", "") or source_path.as_posix()).strip()
+                if compiler_path:
+                    details.append(f"\nCompiler: {compiler_path}")
+                if source_hint:
+                    details.append(f"\nSource: {source_hint}")
+                if stderr_output:
+                    details.append(f"\nStderr:\n{stderr_output}")
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="C-Block compilation failed.",
+                    details="".join(details),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+            except Exception as exc:  # pragma: no cover - defensive guard
+                self._show_cblock_build_message(
+                    title="C-Block Build Error",
+                    message="Unexpected error while compiling C-Block.",
+                    details=str(exc),
+                    icon=QMessageBox.Icon.Critical,
+                )
+                return
+
+            self._show_cblock_build_message(
+                title="C-Block Build",
+                message="C-Block compiled successfully.",
+                details=str(built_lib),
+                icon=QMessageBox.Icon.Information,
+            )
+        finally:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _refresh_cblock_visibility(self) -> None:
+        mode = self._current_cblock_mode()
+        source_mode = mode == "source"
+        if self._cblock_path_edit is not None and self._component is not None:
+            self._cblock_path_edit.blockSignals(True)
+            key = "source" if source_mode else "lib_path"
+            self._cblock_path_edit.setText(str(self._component.parameters.get(key, "") or ""))
+            self._cblock_path_edit.setPlaceholderText(
+                "Select a source file" if source_mode else "Select a shared library"
+            )
+            self._cblock_path_edit.blockSignals(False)
+        if self._cblock_source_row is not None:
+            self._cblock_source_row.setVisible(source_mode)
+        if self._cblock_template_row is not None:
+            self._cblock_template_row.setVisible(source_mode)
+        if self._cblock_create_btn is not None:
+            self._cblock_create_btn.setVisible(source_mode)
+        if self._cblock_open_btn is not None:
+            self._cblock_open_btn.setVisible(source_mode)
+        if self._cblock_compile_btn is not None:
+            self._cblock_compile_btn.setText(
+                "Test Compilation" if source_mode else "Validate Library Path"
+            )
+
     # --- Utilities ----------------------------------------------------------------
 
     @staticmethod
@@ -1290,6 +2098,10 @@ class PropertiesPanel(QWidget):
             QLabel#WaveformPreviewLabel {{
                 color: {c.foreground_muted};
             }}
+            QLabel#CBlockHintLabel {{
+                color: {c.foreground_muted};
+                font-size: 11px;
+            }}
             QPushButton#WaveformEditButton {{
                 background-color: {c.primary};
                 color: {c.primary_foreground};
@@ -1305,7 +2117,7 @@ class PropertiesPanel(QWidget):
             QPushButton#WaveformEditButton:pressed {{
                 background-color: {c.primary_pressed};
             }}
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit {{
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 4px;
@@ -1314,7 +2126,7 @@ class PropertiesPanel(QWidget):
                 selection-background-color: {c.primary};
                 selection-color: {c.primary_foreground};
             }}
-            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus {{
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
                 border: 1px solid {c.input_focus_border};
             }}
             QCheckBox {{

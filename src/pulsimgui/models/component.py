@@ -73,6 +73,7 @@ class ComponentType(Enum):
     DELAY_BLOCK = auto()
     SAMPLE_HOLD = auto()
     STATE_MACHINE = auto()
+    C_BLOCK = auto()
 
     # Measurement
     VOLTAGE_PROBE = auto()
@@ -204,6 +205,25 @@ def _default_demux_pins(output_count: int) -> list[Pin]:
     pins.extend(
         _generate_stacked_pins(output_count, 20, "OUT", start_index=1)
     )
+    return pins
+
+
+def _default_c_block_pins(input_count: int, output_count: int) -> list[Pin]:
+    """Create IN/OUT pins for C-Block with canonical ABI naming."""
+    pins: list[Pin] = []
+    for index, pin in enumerate(_generate_stacked_pins(input_count, -35, "IN", start_index=0)):
+        pin.index = index
+        pin.name = f"IN{index}"
+        pins.append(pin)
+
+    if output_count == 1:
+        pins.append(Pin(len(pins), "OUT", 35, 0))
+    else:
+        out_pins = _generate_stacked_pins(output_count, 35, "OUT", start_index=len(pins))
+        for out_index, pin in enumerate(out_pins):
+            pin.name = f"OUT{out_index}"
+            pins.append(pin)
+
     return pins
 
 
@@ -340,12 +360,22 @@ def can_connect_measurement_pins(
 
     left_is_e_probe_out = is_electrical_probe_output_pin(left_component, left_pin_index)
     right_is_e_probe_out = is_electrical_probe_output_pin(right_component, right_pin_index)
+    left_is_signal_scope_source = is_signal_scope_source_pin(left_component, left_pin_index)
+    right_is_signal_scope_source = is_signal_scope_source_pin(right_component, right_pin_index)
     left_is_t_out = is_thermal_output_pin(left_component, left_pin_index)
     right_is_t_out = is_thermal_output_pin(right_component, right_pin_index)
 
-    electrical_group = left_is_e_scope or right_is_e_scope or left_is_e_probe_out or right_is_e_probe_out
-    if electrical_group:
-        return (left_is_e_scope and right_is_e_probe_out) or (right_is_e_scope and left_is_e_probe_out)
+    # Scope routing constraints apply only when an Electrical Scope is involved.
+    # Otherwise, direct signal-to-signal links (e.g. CONSTANT -> C_BLOCK,
+    # PI -> PWM DUTY_IN, probe OUT -> C_BLOCK) should be accepted.
+    if left_is_e_scope or right_is_e_scope:
+        return (
+            left_is_e_scope
+            and (right_is_e_probe_out or right_is_signal_scope_source)
+        ) or (
+            right_is_e_scope
+            and (left_is_e_probe_out or left_is_signal_scope_source)
+        )
 
     thermal_group = left_is_t_scope or right_is_t_scope or left_is_t_out or right_is_t_out
     if thermal_group:
@@ -398,6 +428,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.DELAY_BLOCK,
     ComponentType.SAMPLE_HOLD,
     ComponentType.STATE_MACHINE,
+    ComponentType.C_BLOCK,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
 }
@@ -423,10 +454,39 @@ def component_connection_domain(component_type: ComponentType) -> str:
     return CONNECTION_DOMAIN_CIRCUIT
 
 
+def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when the pin can feed an electrical scope with control-domain data."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return False
+    if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+        return False
+
+    pin_name = _pin_name(component, pin_index).strip().upper()
+    if not pin_name:
+        return False
+
+    if component.type == ComponentType.PWM_GENERATOR:
+        # OUT carries switched gate waveform; DUTY_IN maps to duty telemetry channel.
+        return pin_name in {"OUT", "DUTY_IN"}
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block control outputs follow OUT / OUTn ABI pin naming.
+        return pin_name == "OUT" or pin_name.startswith("OUT")
+
+    if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
+        return False
+
+    return pin_name.startswith("OUT")
+
+
 def pin_connection_domain(component: "Component", pin_index: int) -> str:
     """Return the effective connection domain for a specific pin."""
     if component.type in ANY_DOMAIN_COMPONENT_TYPES:
         return CONNECTION_DOMAIN_ANY
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block is pure control-domain: inputs and outputs must be signal wires.
+        return CONNECTION_DOMAIN_SIGNAL
 
     if component.type == ComponentType.THERMAL_SCOPE:
         return CONNECTION_DOMAIN_THERMAL
@@ -575,6 +635,7 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "IN2", -35, 12),
         Pin(2, "OUT", 35, 0),
     ],
+    ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: [
@@ -889,6 +950,15 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "initial_state": "S0",
         "transitions": [],
     },
+    ComponentType.C_BLOCK: {
+        "n_inputs": 1,
+        "n_outputs": 1,
+        "implementation": "source",
+        "source": "",
+        "lib_path": "",
+        "source_code": "",
+        "extra_cflags": [],
+    },
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: {
@@ -1061,6 +1131,7 @@ class Component:
 SCOPE_CHANNEL_LIMITS = (1, 16)
 MUX_CHANNEL_LIMITS = (2, 16)
 SUM_INPUT_LIMITS = (2, 16)
+C_BLOCK_IO_LIMITS = (1, 32)
 
 
 def _clamp(value: int, min_value: int, max_value: int) -> int:
@@ -1076,6 +1147,8 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_demux(component)
     elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         _synchronize_sum_like_block(component)
+    elif component.type == ComponentType.C_BLOCK:
+        _synchronize_c_block(component)
     elif component.type in (
         ComponentType.PI_CONTROLLER,
         ComponentType.PWM_GENERATOR,
@@ -1150,6 +1223,42 @@ def _synchronize_sum_like_block(component: Component, force_count: int | None = 
     params["signs"] = signs
 
     component.pins = _snap_pin_layout(_default_sum_pins(input_count))
+
+
+def _synchronize_c_block(
+    component: Component,
+    force_n_inputs: int | None = None,
+    force_n_outputs: int | None = None,
+) -> None:
+    """Synchronize C-Block pin layout and ABI parameter defaults."""
+    params = component.parameters
+    requested_inputs = force_n_inputs if force_n_inputs is not None else params.get("n_inputs", 1)
+    requested_outputs = (
+        force_n_outputs if force_n_outputs is not None else params.get("n_outputs", 1)
+    )
+    try:
+        n_inputs = _clamp(int(requested_inputs), *C_BLOCK_IO_LIMITS)
+    except (TypeError, ValueError):
+        n_inputs = 1
+    try:
+        n_outputs = _clamp(int(requested_outputs), *C_BLOCK_IO_LIMITS)
+    except (TypeError, ValueError):
+        n_outputs = 1
+
+    params["n_inputs"] = n_inputs
+    params["n_outputs"] = n_outputs
+    params.setdefault("implementation", "source")
+    params.setdefault("source", "")
+    params.setdefault("lib_path", "")
+    params.setdefault("source_code", "")
+
+    raw_flags = params.get("extra_cflags", [])
+    if isinstance(raw_flags, list):
+        params["extra_cflags"] = [str(flag) for flag in raw_flags if str(flag).strip()]
+    else:
+        params["extra_cflags"] = []
+
+    component.pins = _snap_pin_layout(_default_c_block_pins(n_inputs, n_outputs))
 
 
 def _synchronize_thermal_port(component: Component) -> None:
@@ -1280,6 +1389,28 @@ def set_sum_input_count(component: Component, count: int) -> None:
     if component.type not in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         return
     _synchronize_sum_like_block(component, force_count=count)
+
+
+def set_cblock_io_counts(
+    component: Component,
+    *,
+    n_inputs: int | None = None,
+    n_outputs: int | None = None,
+) -> None:
+    """Update C-Block input/output counts and pin layout."""
+    if component.type != ComponentType.C_BLOCK:
+        return
+    _synchronize_c_block(component, force_n_inputs=n_inputs, force_n_outputs=n_outputs)
+
+
+def set_cblock_input_count(component: Component, count: int) -> None:
+    """Update only C-Block input count."""
+    set_cblock_io_counts(component, n_inputs=count)
+
+
+def set_cblock_output_count(component: Component, count: int) -> None:
+    """Update only C-Block output count."""
+    set_cblock_io_counts(component, n_outputs=count)
 
 
 def set_thermal_port_enabled(component: Component, enabled: bool) -> None:

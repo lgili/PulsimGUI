@@ -37,6 +37,9 @@ from pulsimgui.commands.component_commands import (
 from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_CIRCUIT,
+    CONNECTION_DOMAIN_SIGNAL,
+    CONNECTION_DOMAIN_THERMAL,
     CONNECTION_DOMAIN_ANY,
     THERMAL_PORT_PARAMETER,
     ComponentType,
@@ -52,6 +55,7 @@ from pulsimgui.models.subcircuit import (
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_adapter import BackendInfo
+from pulsimgui.services.backend_types import ACSettings
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.hierarchy_service import HierarchyService
 from pulsimgui.services.settings_service import SettingsService
@@ -63,6 +67,8 @@ from pulsimgui.services.simulation_service import (
     SimulationState,
     normalize_control_mode,
     normalize_formulation_mode,
+    normalize_frequency_anchor_mode,
+    normalize_frequency_sweep_scale,
     normalize_integration_method,
     normalize_step_mode,
     normalize_thermal_policy,
@@ -454,7 +460,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_toggle_minimap)
         view_menu.addSeparator()
         self.panels_menu = view_menu.addMenu("&Panels")
-        self.panels_menu.setEnabled(False)
+        # Keep panel toggles always accessible so users can reveal hidden docks.
+        self.panels_menu.setEnabled(True)
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("&Theme")
         theme_menu.addAction(self.action_theme_light)
@@ -671,11 +678,26 @@ class MainWindow(QMainWindow):
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
+        self._simulation_service.frequency_analysis_finished.connect(
+            self._on_frequency_analysis_finished
+        )
         self._simulation_service.parameter_sweep_finished.connect(
             self._on_parameter_sweep_finished
         )
+        self._simulation_service.post_processing_started.connect(
+            self._waveform_viewer.on_post_processing_started
+        )
+        self._simulation_service.post_processing_completed.connect(
+            self._waveform_viewer.on_post_processing_completed
+        )
+        self._simulation_service.post_processing_failed.connect(
+            self._waveform_viewer.on_post_processing_failed
+        )
         self._simulation_service.error.connect(self._on_simulation_error)
         self._simulation_service.backend_changed.connect(self._on_backend_changed)
+        self._waveform_viewer.post_processing_requested.connect(
+            self._on_post_processing_requested
+        )
         self._schematic_view.tool_changed.connect(self._sync_toolbar_tool_actions)
         self._sync_toolbar_tool_actions(self._schematic_view.current_tool)
 
@@ -691,11 +713,12 @@ class MainWindow(QMainWindow):
         is_running = self._simulation_service.is_running
         has_dc = self._simulation_service.has_capability("dc")
         has_ac = self._simulation_service.has_capability("ac")
+        has_frequency = self._simulation_service.has_capability("frequency_analysis")
         self.action_run.setEnabled(backend_ready and not is_running)
         self.action_stop.setEnabled(backend_ready and is_running)
         self.action_pause.setEnabled(backend_ready and is_running)
         self.action_dc_op.setEnabled(backend_ready and has_dc and not is_running)
-        self.action_ac.setEnabled(backend_ready and has_ac and not is_running)
+        self.action_ac.setEnabled(backend_ready and (has_ac or has_frequency) and not is_running)
         self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
 
     def _update_backend_status(self, info: BackendInfo | None = None) -> None:
@@ -734,6 +757,9 @@ class MainWindow(QMainWindow):
     def _handle_backend_changed(self, info: BackendInfo, notify: bool) -> None:
         """Apply backend changes and optionally notify the user."""
         self._sync_thermal_service_context()
+        self._waveform_viewer.set_post_processing_capability(
+            self._simulation_service.has_capability("post_processing")
+        )
         self._update_backend_status(info)
         if not notify:
             return
@@ -1345,6 +1371,49 @@ class MainWindow(QMainWindow):
                 )
             ),
         )
+        runtime_settings.ac_f_start = max(
+            1e-12,
+            float(getattr(project_settings, "ac_f_start", runtime_settings.ac_f_start)),
+        )
+        runtime_settings.ac_f_stop = max(
+            runtime_settings.ac_f_start * (1.0 + 1e-12),
+            float(getattr(project_settings, "ac_f_stop", runtime_settings.ac_f_stop)),
+        )
+        runtime_settings.ac_points_per_decade = max(
+            1,
+            int(
+                getattr(
+                    project_settings,
+                    "ac_points_per_decade",
+                    runtime_settings.ac_points_per_decade,
+                )
+            ),
+        )
+        runtime_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            getattr(project_settings, "ac_anchor_mode", runtime_settings.ac_anchor_mode)
+        )
+        runtime_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            getattr(project_settings, "ac_sweep_scale", runtime_settings.ac_sweep_scale)
+        )
+        runtime_settings.ac_injection_node = str(
+            getattr(project_settings, "ac_injection_node", runtime_settings.ac_injection_node) or ""
+        )
+        runtime_settings.ac_measurement_node = str(
+            getattr(
+                project_settings,
+                "ac_measurement_node",
+                runtime_settings.ac_measurement_node,
+            )
+            or ""
+        )
+        raw_averaged_options = getattr(
+            project_settings,
+            "averaged_options",
+            runtime_settings.averaged_options,
+        )
+        runtime_settings.averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
         self._sync_thermal_service_context()
 
     def _apply_simulation_service_settings_to_project(self) -> None:
@@ -1401,6 +1470,25 @@ class MainWindow(QMainWindow):
         project_settings.control_sample_time = max(
             0.0,
             float(runtime_settings.control_sample_time),
+        )
+        project_settings.ac_f_start = max(1e-12, float(runtime_settings.ac_f_start))
+        project_settings.ac_f_stop = max(
+            project_settings.ac_f_start * (1.0 + 1e-12),
+            float(runtime_settings.ac_f_stop),
+        )
+        project_settings.ac_points_per_decade = max(1, int(runtime_settings.ac_points_per_decade))
+        project_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            runtime_settings.ac_anchor_mode
+        )
+        project_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            runtime_settings.ac_sweep_scale
+        )
+        project_settings.ac_injection_node = str(runtime_settings.ac_injection_node or "")
+        project_settings.ac_measurement_node = str(runtime_settings.ac_measurement_node or "")
+        project_settings.averaged_options = (
+            dict(runtime_settings.averaged_options)
+            if isinstance(runtime_settings.averaged_options, dict)
+            else None
         )
 
     # Slots
@@ -1958,10 +2046,18 @@ class MainWindow(QMainWindow):
 
         start_ref = (start_pin[1].component, start_pin[2]) if start_pin is not None else None
         end_ref = (end_pin[1].component, end_pin[2]) if end_pin is not None else None
-        if not self._is_valid_wire_measurement_connection(start_ref, end_ref):
+        start_pos = QPointF(wire_segments[0].x1, wire_segments[0].y1)
+        end_pos = QPointF(wire_segments[-1].x2, wire_segments[-1].y2)
+        if not self._is_valid_wire_measurement_connection(
+            start_ref,
+            end_ref,
+            start_pos=start_pos,
+            end_pos=end_pos,
+        ):
             self.statusBar().showMessage(
                 "Invalid connection: domains cannot mix (circuit/signal/thermal). "
-                "Electrical Scope only accepts V/I probe outputs; Thermal Scope only accepts TH outputs.",
+                "Electrical Scope accepts signal outputs (including control blocks and probe outputs); "
+                "Thermal Scope only accepts TH outputs.",
                 5000,
             )
             return
@@ -1990,7 +2086,14 @@ class MainWindow(QMainWindow):
             merge=False,
         )
 
-    def _is_valid_wire_measurement_connection(self, start_ref, end_ref) -> bool:
+    def _is_valid_wire_measurement_connection(
+        self,
+        start_ref,
+        end_ref,
+        *,
+        start_pos=None,
+        end_pos=None,
+    ) -> bool:
         """Validate dedicated scope/probe/thermal endpoint compatibility."""
         if start_ref is not None and end_ref is not None:
             left_component, left_pin = start_ref
@@ -2009,13 +2112,106 @@ class MainWindow(QMainWindow):
                 return True
             return CONNECTION_DOMAIN_ANY in {left_domain, right_domain}
 
-        for ref in (start_ref, end_ref):
+        endpoint_checks = (
+            (start_ref, end_pos),
+            (end_ref, start_pos),
+        )
+        for ref, opposite_pos in endpoint_checks:
             if ref is None:
                 continue
             component, pin_index = ref
             if is_restricted_measurement_pin(component, pin_index):
-                return False
+                if opposite_pos is None:
+                    return False
+                required_domain = pin_connection_domain(component, pin_index)
+                if not self._point_touches_wire_domain(opposite_pos, required_domain):
+                    return False
         return True
+
+    def _point_touches_wire_domain(self, point, required_domain: str) -> bool:
+        """Return True when a point lands on an existing wire of the given domain."""
+        circuit = self._current_circuit()
+        if circuit is None:
+            return False
+
+        expected = (
+            CONNECTION_DOMAIN_CIRCUIT
+            if required_domain == CONNECTION_DOMAIN_ANY
+            else required_domain
+        )
+        px = float(point.x())
+        py = float(point.y())
+        for wire in circuit.wires.values():
+            wire_domain = self._resolve_wire_domain(wire, circuit)
+            if wire_domain != expected and CONNECTION_DOMAIN_ANY not in {wire_domain, expected}:
+                continue
+            for segment in wire.segments:
+                if self._point_on_wire_segment(px, py, segment, tolerance=1.0):
+                    return True
+        return False
+
+    def _resolve_wire_domain(self, wire, circuit: Circuit) -> str:
+        """Resolve wire domain using endpoint metadata with geometry fallback."""
+        domains: set[str] = set()
+        for connection in (wire.start_connection, wire.end_connection):
+            if connection is None:
+                continue
+            component = circuit.components.get(connection.component_id)
+            if component is None:
+                continue
+            pin_index = connection.pin_index
+            if pin_index < 0 or pin_index >= len(component.pins):
+                continue
+            domains.add(pin_connection_domain(component, pin_index))
+
+        # Backward compatibility for wires without endpoint metadata.
+        if not domains:
+            points: list[tuple[float, float]] = []
+            for segment in wire.segments:
+                points.append((segment.x1, segment.y1))
+                points.append((segment.x2, segment.y2))
+            points.extend(wire.junctions or [])
+
+            for component in circuit.components.values():
+                for pin_index in range(len(component.pins)):
+                    pin_x, pin_y = component.get_pin_position(pin_index)
+                    for px, py in points:
+                        if abs(pin_x - px) < 5.0 and abs(pin_y - py) < 5.0:
+                            domains.add(pin_connection_domain(component, pin_index))
+                            break
+
+        effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+        if CONNECTION_DOMAIN_THERMAL in effective_domains:
+            return CONNECTION_DOMAIN_THERMAL
+        if CONNECTION_DOMAIN_SIGNAL in effective_domains:
+            return CONNECTION_DOMAIN_SIGNAL
+        return CONNECTION_DOMAIN_CIRCUIT
+
+    @staticmethod
+    def _point_on_wire_segment(px: float, py: float, segment, tolerance: float = 1.0) -> bool:
+        """Return True when a point lies on a wire segment within tolerance."""
+        x1, y1, x2, y2 = float(segment.x1), float(segment.y1), float(segment.x2), float(segment.y2)
+
+        if abs(y1 - y2) <= tolerance:
+            min_x, max_x = sorted((x1, x2))
+            return abs(py - y1) <= tolerance and (min_x - tolerance) <= px <= (max_x + tolerance)
+
+        if abs(x1 - x2) <= tolerance:
+            min_y, max_y = sorted((y1, y2))
+            return abs(px - x1) <= tolerance and (min_y - tolerance) <= py <= (max_y + tolerance)
+
+        seg_dx = x2 - x1
+        seg_dy = y2 - y1
+        seg_len_sq = (seg_dx * seg_dx) + (seg_dy * seg_dy)
+        if seg_len_sq <= 1e-12:
+            return abs(px - x1) <= tolerance and abs(py - y1) <= tolerance
+
+        t = ((px - x1) * seg_dx + (py - y1) * seg_dy) / seg_len_sq
+        if t < 0.0 or t > 1.0:
+            return False
+        closest_x = x1 + (t * seg_dx)
+        closest_y = y1 + (t * seg_dy)
+        return abs(px - closest_x) <= tolerance and abs(py - closest_y) <= tolerance
 
     def _on_wire_alias_changed(self, wire) -> None:
         """Update project state when a wire alias is renamed."""
@@ -2095,6 +2291,7 @@ class MainWindow(QMainWindow):
             ComponentType.SWITCH: "S",
             ComponentType.TRANSFORMER: "T",
             ComponentType.PWM_GENERATOR: "PWM",
+            ComponentType.C_BLOCK: "CB",
             ComponentType.PI_CONTROLLER: "PI",
             ComponentType.GAIN: "K",
             ComponentType.SUM: "SUM",
@@ -2148,6 +2345,8 @@ class MainWindow(QMainWindow):
                     "channel_count",
                     "input_count",
                     "output_count",
+                    "n_inputs",
+                    "n_outputs",
                     "signs",
                 }
                 if pin_layout_changed:
@@ -2659,7 +2858,9 @@ class MainWindow(QMainWindow):
 
     def _on_ac_analysis(self) -> None:
         """Run AC analysis."""
-        if not self._simulation_service.has_capability("ac"):
+        has_frequency = self._simulation_service.has_capability("frequency_analysis")
+        has_ac = self._simulation_service.has_capability("ac")
+        if not has_frequency and not has_ac:
             QMessageBox.warning(
                 self,
                 "AC Analysis Unavailable",
@@ -2669,10 +2870,37 @@ class MainWindow(QMainWindow):
                 ),
             )
             return
-        # TODO: Show AC settings dialog first
         self._apply_project_simulation_settings_to_service()
         circuit_data = self._simulation_service.convert_gui_circuit(self._project)
-        self._simulation_service.run_ac_analysis(circuit_data, 1, 1e6, 10)
+
+        ac_settings = ACSettings(
+            f_start=max(1e-12, float(self._simulation_service.settings.ac_f_start)),
+            f_stop=max(
+                max(1e-12, float(self._simulation_service.settings.ac_f_start)) * (1.0 + 1e-12),
+                float(self._simulation_service.settings.ac_f_stop),
+            ),
+            points_per_decade=max(1, int(self._simulation_service.settings.ac_points_per_decade)),
+            anchor_mode=normalize_frequency_anchor_mode(
+                self._simulation_service.settings.ac_anchor_mode
+            ),
+            sweep_scale=normalize_frequency_sweep_scale(
+                self._simulation_service.settings.ac_sweep_scale
+            ),
+            injection_node=str(self._simulation_service.settings.ac_injection_node or ""),
+            measurement_node=str(self._simulation_service.settings.ac_measurement_node or ""),
+        )
+
+        if has_frequency:
+            self._simulation_service.run_frequency_analysis(circuit_data, ac_settings)
+            return
+
+        self._simulation_service.run_ac_analysis(
+            circuit_data,
+            ac_settings.f_start,
+            ac_settings.f_stop,
+            ac_settings.points_per_decade,
+            ac_settings=ac_settings,
+        )
 
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
@@ -2833,10 +3061,15 @@ class MainWindow(QMainWindow):
         # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
+    def _on_post_processing_requested(self, jobs: list[dict]) -> None:
+        """Run waveform post-processing for the latest electrical result."""
+        source = self._latest_electrical_result or self._simulation_service.last_result
+        self._simulation_service.run_post_processing(jobs, source_result=source)
+
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         if result.is_valid:
-            # Finalize streaming in the dock viewer without forcing it open.
+            # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
 
             self.statusBar().showMessage(
@@ -2973,6 +3206,19 @@ class MainWindow(QMainWindow):
                 self, "AC Analysis Error", f"AC analysis failed:\n{result.error_message}"
             )
 
+    def _on_frequency_analysis_finished(self, result) -> None:
+        """Handle frequency-domain analysis completion."""
+        if result.success and result.is_valid:
+            dialog = BodePlotDialog(result, self)
+            dialog.exec()
+            return
+        message = getattr(result, "diagnostic_message", "") or getattr(
+            result,
+            "diagnostic_code",
+            "Frequency analysis failed.",
+        )
+        QMessageBox.warning(self, "Frequency Analysis Error", f"Analysis failed:\n{message}")
+
     def _on_parameter_sweep_finished(self, result: ParameterSweepResult) -> None:
         """Handle parameter sweep completion."""
         if not result.runs:
@@ -2988,7 +3234,37 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_error(self, message: str) -> None:
         """Handle simulation error."""
-        QMessageBox.critical(self, "Simulation Error", message)
+        normalized = (message or "").strip()
+        lowered = normalized.lower()
+
+        if "cblockcompileerror" in lowered or "c-block compile" in lowered:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block Build Error")
+            box.setText("C-Block compilation failed. Review compiler output in details.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        if "cblockabierror" in lowered or ("abi" in lowered and "c-block" in lowered):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block ABI Error")
+            box.setText("C-Block ABI is incompatible or required symbols are missing.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        if "cblockruntimeerror" in lowered or "c-block runtime" in lowered:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("C-Block Runtime Error")
+            box.setText("C-Block execution returned an error during transient simulation.")
+            box.setDetailedText(normalized)
+            box.exec()
+            return
+
+        QMessageBox.critical(self, "Simulation Error", normalized or "Unknown simulation error.")
 
     # Export handlers
     def _on_export_spice(self) -> None:
