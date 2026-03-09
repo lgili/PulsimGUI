@@ -110,32 +110,52 @@ class TestComponent:
         pi = Component(type=ComponentType.PI_CONTROLLER)
         assert len(pi.pins) == 2
         assert "kp" in pi.parameters and "ki" in pi.parameters
+        assert pi.parameters["sample_time"] == 0.0
 
         pid = Component(type=ComponentType.PID_CONTROLLER)
         assert "kd" in pid.parameters
+        assert pid.parameters["sample_time"] == 0.0
 
         math_block = Component(type=ComponentType.MATH_BLOCK)
         assert math_block.parameters["operation"] == "sum"
+        assert math_block.parameters["sample_time"] == 0.0
 
         pwm = Component(type=ComponentType.PWM_GENERATOR)
         assert len(pwm.pins) == 2
         assert pwm.parameters["frequency"] == 10000.0
+        assert pwm.parameters["sample_time"] == 0.0
 
         gain = Component(type=ComponentType.GAIN)
         assert len(gain.pins) == 2
         assert gain.parameters["gain"] == 1.0
+        assert gain.parameters["sample_time"] == 0.0
 
         summing = Component(type=ComponentType.SUM)
         assert len(summing.pins) == 3
         assert summing.parameters["input_count"] == 2
+        assert summing.parameters["sample_time"] == 0.0
 
         subtractor = Component(type=ComponentType.SUBTRACTOR)
         assert len(subtractor.pins) == 3
         assert subtractor.parameters["signs"] == ["+", "-"]
+        assert subtractor.parameters["sample_time"] == 0.0
 
         # PWM exposes DUTY_IN for closed-loop signal control.
         assert pwm.pins[0].name == "OUT"
         assert pwm.pins[1].name == "DUTY_IN"
+
+    def test_scopes_and_probes_do_not_expose_control_sample_time(self):
+        scope = Component(type=ComponentType.ELECTRICAL_SCOPE)
+        thermal_scope = Component(type=ComponentType.THERMAL_SCOPE)
+        v_probe = Component(type=ComponentType.VOLTAGE_PROBE)
+        i_probe = Component(type=ComponentType.CURRENT_PROBE)
+        p_probe = Component(type=ComponentType.POWER_PROBE)
+
+        assert "sample_time" not in scope.parameters
+        assert "sample_time" not in thermal_scope.parameters
+        assert "sample_time" not in v_probe.parameters
+        assert "sample_time" not in i_probe.parameters
+        assert "sample_time" not in p_probe.parameters
 
     def test_cblock_defaults_and_pin_names(self):
         cblock = Component(type=ComponentType.C_BLOCK, name="CB1")

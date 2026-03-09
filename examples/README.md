@@ -24,6 +24,8 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 | `09_buck_closed_loop_loss_thermal_validation.pulsim` | Closed-loop buck with losses + thermal scope validation |
 | `09_buck_closed_loop_loss_thermal_validation_expected.md` | Theoretical targets and pass criteria for example 09 |
 | `11_buck_closed_loop_cblock_thermal_validation.pulsim` | Closed-loop buck thermal validation using `C_BLOCK` controller |
+| `12_cblock_multi_io_scope_demo.pulsim` | Multi-input/multi-output `C_BLOCK` demo with mixed signal channels on scope |
+| `13_cblock_multi_io_scope_playground.pulsim` | `C_BLOCK` playground (5 inputs/5 outputs) using `Goto/From` labels to keep control wiring clean |
 | `PulsimProjects.pulsim` | Minimal starter project |
 | `simple_rc.pulsim` | Legacy simple RC example |
 | `rc_circuit.pulsim` | RC example variant |
@@ -52,3 +54,5 @@ This directory contains runnable `.pulsim` examples for PulsimGui.
 - In `08_probe_scope_thermal_demo.pulsim`, connect electrical probe outputs to electrical scopes and the `TH` pin to thermal scope channels.
 - In `09_buck_closed_loop_loss_thermal_validation.pulsim`, compare results against `09_buck_closed_loop_loss_thermal_validation_expected.md`.
 - `11_buck_closed_loop_cblock_thermal_validation.pulsim` loads the controller from `examples/cblocks/buck_pi_controller.c`.
+- `12_cblock_multi_io_scope_demo.pulsim` loads `examples/cblocks/multi_io_signal_demo.c` and exposes `CB_MIMO`, `CB_MIMO.out1`, `CB_MIMO.out2`, and `CB_MIMO.out3` on the scope.
+- `13_cblock_multi_io_scope_playground.pulsim` loads `examples/cblocks/cblock_multi_signal_playground.c`, uses `Goto/From` labels for control routing, and exposes `CB_PLAY`, `CB_PLAY.out1`, `CB_PLAY.out2`, `CB_PLAY.out3`, and `CB_PLAY.out4`.

@@ -269,3 +269,22 @@ def test_open_in_editor_warns_when_source_is_missing(qapp, monkeypatch) -> None:
     assert messages
     assert messages[-1]["title"] == "C-Block Validation Error"
     assert "source file" in str(messages[-1]["message"]).lower()
+
+
+def test_cblock_exposes_and_updates_sample_time_field(qapp) -> None:
+    comp = Component(type=ComponentType.C_BLOCK, name="CB_TS")
+    panel = PropertiesPanel()
+    panel.set_component(comp)
+
+    assert panel._cblock_sample_time_edit is not None
+    assert panel._cblock_sample_time_edit.value == 0.0
+
+    changed: list[tuple[str, object]] = []
+    panel.property_changed.connect(lambda name, value: changed.append((name, value)))
+
+    panel._cblock_sample_time_edit.value = 25e-6
+    panel._on_cblock_sample_time_changed(25e-6)
+
+    assert comp.parameters["sample_time"] == 25e-6
+    assert "sample_period" not in comp.parameters
+    assert ("sample_time", 25e-6) in changed

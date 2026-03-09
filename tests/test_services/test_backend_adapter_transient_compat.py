@@ -48,6 +48,9 @@ class _FakeCircuit:
     def set_timestep(self, dt: float) -> None:
         self._timestep = dt
 
+    def add_virtual_component(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+
 
 class _FakeCircuitWithSignals(_FakeCircuit):
     def signal_names(self) -> list[str]:
@@ -1610,14 +1613,28 @@ def test_transient_uses_simulation_options_for_new_backend_controls() -> None:
         thermal_default_cth=0.33,
         formulation_mode="direct",
         direct_formulation_fallback=False,
-        control_mode="discrete",
-        control_sample_time=5e-6,
+        control_mode="continuous",
+        control_sample_time=0.0,
         t_start=0.0,
         t_stop=1e-3,
         t_step=1e-6,
     )
 
     circuit_data = _simple_circuit_data()
+    circuit_data["components"].append(
+        {
+            "id": "pi1",
+            "type": "PI_CONTROLLER",
+            "name": "PI1",
+            "parameters": {
+                "kp": 0.2,
+                "ki": 10.0,
+                "sample_time": 5e-6,
+            },
+            "pin_nodes": ["1", "0"],
+        }
+    )
+    circuit_data["node_map"]["pi1"] = ["1", "0"]
     circuit_data["components"][1]["parameters"].update(
         {
             "switching_eon_j": 1.2e-6,

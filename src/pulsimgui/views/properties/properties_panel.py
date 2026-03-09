@@ -39,8 +39,10 @@ from pulsimgui.models.component import (
     THERMAL_PORT_PARAMETER,
     Component,
     ComponentType,
+    get_control_sample_time,
     set_cblock_input_count,
     set_cblock_output_count,
+    set_control_sample_time,
     set_demux_output_count,
     set_mux_input_count,
     set_scope_channel_count,
@@ -544,6 +546,7 @@ class PropertiesPanel(QWidget):
         self._cblock_create_btn: QPushButton | None = None
         self._cblock_open_btn: QPushButton | None = None
         self._cblock_compile_btn: QPushButton | None = None
+        self._cblock_sample_time_edit: SIValueWidget | None = None
         self._cblock_last_committed_source = ""
         self._main_layout: QVBoxLayout | None = None
         self._show_position_controls = False
@@ -831,6 +834,7 @@ class PropertiesPanel(QWidget):
         self._cblock_create_btn = None
         self._cblock_open_btn = None
         self._cblock_compile_btn = None
+        self._cblock_sample_time_edit = None
         self._cblock_last_committed_source = ""
 
     def _create_param_widgets(self) -> None:
@@ -1310,6 +1314,16 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         n_outputs_spin.valueChanged.connect(lambda value: self._on_cblock_io_changed("n_outputs", value))
         self._params_layout.addRow("Outputs:", n_outputs_spin)
 
+        sample_time_widget = SIValueWidget("s")
+        sample_time = get_control_sample_time(params, default=0.0)
+        set_control_sample_time(params, sample_time)
+        sample_time_widget.value = sample_time
+        if self._theme is not None:
+            sample_time_widget.apply_theme(self._theme)
+        sample_time_widget.value_changed.connect(self._on_cblock_sample_time_changed)
+        self._cblock_sample_time_edit = sample_time_widget
+        self._params_layout.addRow("Ts:", sample_time_widget)
+
         demux_hint = QLabel("Tip: for n_outputs > 1, use SIGNAL_DEMUX to route each output channel.")
         demux_hint.setWordWrap(True)
         demux_hint.setObjectName("CBlockHintLabel")
@@ -1427,6 +1441,12 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         else:
             set_cblock_output_count(self._component, int(value))
         self.property_changed.emit(field, int(value))
+
+    def _on_cblock_sample_time_changed(self, value: float) -> None:
+        if not self._component:
+            return
+        normalized = set_control_sample_time(self._component.parameters, value)
+        self.property_changed.emit("sample_time", normalized)
 
     def _on_cblock_mode_changed(self, _index: int) -> None:
         if not self._component:

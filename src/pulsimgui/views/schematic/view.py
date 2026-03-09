@@ -812,6 +812,11 @@ class SchematicView(QGraphicsView):
                 preview = self._get_wire_preview()
                 if preview is not None:
                     preview.toggle_direction()
+                    return
+
+                # Rotate selected component(s) clockwise for faster editing.
+                if self._rotate_selected_components(90):
+                    return
                 return
             # Component shortcuts
             elif key == Qt.Key.Key_R:
@@ -1027,6 +1032,21 @@ class SchematicView(QGraphicsView):
         if not isinstance(comp_item, ComponentItem):
             return
         self.component_rotate_requested.emit(str(comp_item.component.id), int(angle))
+
+    def _rotate_selected_components(self, angle: int) -> bool:
+        """Rotate currently selected component items by the provided angle."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None:
+            return False
+
+        rotated = False
+        for item in scene.selectedItems():
+            if isinstance(item, ComponentItem):
+                self._rotate_component(item, angle)
+                rotated = True
+        return rotated
 
     def _flip_component(self, comp_item, horizontal: bool = True) -> None:
         """Request component flip from owning controller."""

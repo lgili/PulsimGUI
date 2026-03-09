@@ -1708,8 +1708,15 @@ class SimulationService(QObject):
 
     def _prevalidate_runtime_contract(self, circuit_data: dict[str, Any]) -> str | None:
         """Validate control and electrothermal constraints before backend execution."""
-        control_mode = normalize_control_mode(self._settings.control_mode)
-        sample_time = float(self._settings.control_sample_time)
+        simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
+        control_cfg = simulation_cfg.get("control", {}) if isinstance(simulation_cfg, dict) else {}
+        if not isinstance(control_cfg, dict):
+            control_cfg = {}
+        control_mode = normalize_control_mode(str(control_cfg.get("mode", "auto") or "auto"))
+        try:
+            sample_time = max(0.0, float(control_cfg.get("sample_time", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            sample_time = 0.0
         if control_mode == "discrete" and sample_time <= 0.0:
             return (
                 "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED: "
@@ -1720,7 +1727,6 @@ class SimulationService(QObject):
         by_name: dict[str, str] = {}
         thermal_enabled_components = 0
         shared_sink_defs: dict[str, tuple[float, float]] = {}
-        simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
         thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
 
         for component_index, component in enumerate(components):

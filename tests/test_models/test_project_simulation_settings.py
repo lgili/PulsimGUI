@@ -1,6 +1,7 @@
 """Tests for project-level simulation settings serialization."""
 
-from pulsimgui.models.project import SimulationSettings
+from pulsimgui.models.component import ComponentType
+from pulsimgui.models.project import Project, SimulationSettings
 
 
 def test_project_simulation_settings_roundtrip_control_fields() -> None:
@@ -83,3 +84,76 @@ def test_project_simulation_settings_roundtrip_frequency_and_averaged_fields() -
         "mode": "auto",
         "envelope": "lenient",
     }
+
+
+def test_project_load_migrates_legacy_global_control_sample_time_to_control_blocks() -> None:
+    payload = {
+        "name": "LegacyControl",
+        "active_circuit": "main",
+        "simulation_settings": {
+            "control_mode": "discrete",
+            "control_sample_time": 12e-6,
+        },
+        "circuits": {
+            "main": {
+                "name": "main",
+                "components": [
+                    {
+                        "id": "3d9518e1-c7b2-4d73-ae2a-adfbf601e4bb",
+                        "type": "PI_CONTROLLER",
+                        "name": "PI1",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "rotation": 0,
+                        "mirrored_h": False,
+                        "mirrored_v": False,
+                        "parameters": {"kp": 0.2, "ki": 10.0},
+                        "pins": [],
+                    }
+                ],
+                "wires": [],
+            }
+        },
+    }
+
+    project = Project.from_dict(payload)
+    component = next(iter(project.get_active_circuit().components.values()))
+
+    assert component.type == ComponentType.PI_CONTROLLER
+    assert component.parameters["sample_time"] == 12e-6
+
+
+def test_project_load_keeps_explicit_component_sample_time() -> None:
+    payload = {
+        "name": "ExplicitTs",
+        "active_circuit": "main",
+        "simulation_settings": {
+            "control_mode": "discrete",
+            "control_sample_time": 20e-6,
+        },
+        "circuits": {
+            "main": {
+                "name": "main",
+                "components": [
+                    {
+                        "id": "12d6d8ff-2eab-41ea-ab31-3c1da9f7dd96",
+                        "type": "PI_CONTROLLER",
+                        "name": "PI1",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "rotation": 0,
+                        "mirrored_h": False,
+                        "mirrored_v": False,
+                        "parameters": {"kp": 0.2, "ki": 10.0, "sample_time": 7e-6},
+                        "pins": [],
+                    }
+                ],
+                "wires": [],
+            }
+        },
+    }
+
+    project = Project.from_dict(payload)
+    component = next(iter(project.get_active_circuit().components.values()))
+
+    assert component.parameters["sample_time"] == 7e-6

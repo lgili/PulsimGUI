@@ -50,19 +50,22 @@ Core transient analysis parameters:
 - `GMIN initial` / `GMIN final` (when using `GMIN Stepping`)
 - `Source steps` (when using `Source Stepping`)
 
-### Formulation & Control
+### Formulation
 
 - `Formulation mode`:
   - `Projected wrapper`
   - `Direct DAE formulation`
 - `Enable projected fallback when direct fails`
-- `Control mode`:
-  - `Auto`
-  - `Continuous`
-  - `Discrete`
-- `Control sample time`:
-  - Required (`> 0`) when `Control mode = Discrete`
-  - Ignored for `Auto` and `Continuous`
+
+### Control block sampling (`Ts`)
+
+Global control scheduling is no longer configured in **Simulation Settings**.
+Control scheduling is configured per control block in the **Properties Panel**:
+
+- `Ts` (`sample_time`) = `0`: auto/continuous behavior.
+- `Ts` (`sample_time`) > `0`: discrete update at that sampling period.
+- Mixed-rate control is supported by setting different `Ts` values on different blocks.
+- Scopes and probes do not expose `Ts`.
 
 ### Thermal & Losses
 

@@ -189,16 +189,32 @@ def test_electrical_scope_resolves_pwm_state_from_out_pin() -> None:
     assert bindings[0].signals[0].signal_key == "PWM1"
 
 
-def test_electrical_scope_resolves_pwm_duty_channel_from_duty_in_pin() -> None:
-    """PWM DUTY_IN pin should bind to canonical duty channel `<name>.duty`."""
-    circuit = Circuit(name="electrical-scope-pwm-duty")
+def test_electrical_scope_prefers_upstream_source_over_pwm_duty_alias() -> None:
+    """When DUTY_IN shares a net with a controller OUT, scope should show only source channel."""
+    circuit = Circuit(name="electrical-scope-pwm-duty-shared-net")
     pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=220.0, y=100.0)
-    pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=120.0, y=100.0)
+    cblock = Component(type=ComponentType.C_BLOCK, name="CB1", x=120.0, y=100.0)
     scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=320.0, y=150.0)
     circuit.add_component(pwm)
-    circuit.add_component(pi)
+    circuit.add_component(cblock)
     circuit.add_component(scope)
-    _connect_pins(circuit, pi, 1, pwm, 1)
+    _connect_pins(circuit, cblock, 1, pwm, 1)
+    _connect_pins(circuit, pwm, 1, scope, 0)
+
+    bindings = build_scope_channel_bindings(scope, circuit)
+    assert bindings
+    assert len(bindings[0].signals) == 1
+    assert bindings[0].signals[0].label == "CB1"
+    assert bindings[0].signals[0].signal_key == "CB1"
+
+
+def test_electrical_scope_resolves_pwm_duty_channel_when_duty_in_is_directly_tapped() -> None:
+    """PWM DUTY_IN remains available when no upstream control output is on the same net."""
+    circuit = Circuit(name="electrical-scope-pwm-duty-direct")
+    pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1", x=220.0, y=100.0)
+    scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1", x=320.0, y=150.0)
+    circuit.add_component(pwm)
+    circuit.add_component(scope)
     _connect_pins(circuit, pwm, 1, scope, 0)
 
     bindings = build_scope_channel_bindings(scope, circuit)

@@ -44,6 +44,7 @@ from pulsimgui.services.backend_types import (
     TransientSettings,
     UndefinedMetricEntry,
 )
+from pulsimgui.models.component import derive_control_schedule_from_serialized_components
 from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 
 log = logging.getLogger(__name__)
@@ -1688,9 +1689,28 @@ class PulsimBackend(SimulationBackend):
                 config.source_config.max_steps = source_steps
         return config
 
+    def _resolve_control_schedule(
+        self,
+        *,
+        settings: SimulationSettings,
+        circuit_data: dict[str, Any] | None,
+    ) -> tuple[str, float | None]:
+        components: list[dict[str, Any]] = []
+        if isinstance(circuit_data, dict):
+            raw_components = circuit_data.get("components")
+            if isinstance(raw_components, list):
+                components = [item for item in raw_components if isinstance(item, dict)]
+        return derive_control_schedule_from_serialized_components(
+            components,
+            fallback_mode=getattr(settings, "control_mode", "auto"),
+            fallback_sample_time=getattr(settings, "control_sample_time", 0.0),
+        )
+
     def _build_simulation_options_from_yaml_parser(
         self,
         settings: SimulationSettings,
+        *,
+        circuit_data: dict[str, Any] | None = None,
     ) -> Any | None:
         """Build SimulationOptions via backend YamlParser defaults.
 
@@ -1714,7 +1734,10 @@ class PulsimBackend(SimulationBackend):
 
         method = self._normalize_integration_method(getattr(settings, "solver", "auto"))
         step_mode = self._normalize_step_mode(getattr(settings, "step_mode", "fixed"))
-        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        control_mode, control_sample_time = self._resolve_control_schedule(
+            settings=settings,
+            circuit_data=circuit_data,
+        )
         thermal_policy = self._normalize_thermal_policy(
             getattr(settings, "thermal_policy", "loss_with_temperature_scaling")
         )
@@ -1775,10 +1798,7 @@ class PulsimBackend(SimulationBackend):
             if token:
                 simulation_section["integrator"] = token
 
-        control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
-        if control_mode == "discrete" and control_sample_time <= 0.0:
-            control_sample_time = max(dt, 1e-12)
-        if control_mode == "discrete" or control_sample_time > 0.0:
+        if control_sample_time is not None:
             simulation_section["control"]["sample_time"] = float(max(control_sample_time, 1e-12))
 
         def _fmt_real(value: Any) -> str:
@@ -1865,7 +1885,10 @@ class PulsimBackend(SimulationBackend):
         linear_solver: Any | None,
         circuit_data: dict[str, Any] | None = None,
     ) -> Any:
-        opts = self._build_simulation_options_from_yaml_parser(settings)
+        opts = self._build_simulation_options_from_yaml_parser(
+            settings,
+            circuit_data=circuit_data,
+        )
         using_parser_defaults = opts is not None
         if opts is None:
             opts = self._module.SimulationOptions()
@@ -1937,7 +1960,10 @@ class PulsimBackend(SimulationBackend):
             opts.direct_formulation_fallback = bool(
                 getattr(settings, "direct_formulation_fallback", True)
             )
-        control_mode = self._normalize_control_mode(getattr(settings, "control_mode", "auto"))
+        control_mode, control_sample_time = self._resolve_control_schedule(
+            settings=settings,
+            circuit_data=circuit_data,
+        )
         if hasattr(opts, "control_mode") and hasattr(self._module, "ControlUpdateMode"):
             enum_map = {
                 "auto": "Auto",
@@ -1948,10 +1974,9 @@ class PulsimBackend(SimulationBackend):
             if hasattr(self._module.ControlUpdateMode, enum_name):
                 opts.control_mode = getattr(self._module.ControlUpdateMode, enum_name)
         if hasattr(opts, "control_sample_time"):
-            control_sample_time = max(0.0, float(getattr(settings, "control_sample_time", 0.0)))
-            if control_mode == "discrete" and control_sample_time <= 0.0:
-                control_sample_time = max(float(getattr(settings, "t_step", dt)), 1e-12)
-            opts.control_sample_time = control_sample_time
+            opts.control_sample_time = (
+                float(control_sample_time) if control_sample_time is not None else 0.0
+            )
 
         if hasattr(opts, "enable_events"):
             opts.enable_events = bool(getattr(settings, "enable_events", True))
