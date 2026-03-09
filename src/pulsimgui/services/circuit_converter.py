@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import ComponentType, DUTY_INPUT_PARAMETER
 
 
 class CircuitConversionError(RuntimeError):
@@ -1202,14 +1202,31 @@ class CircuitConverter:
                 continue
 
             pwm_nodes = _raw_nodes(pwm_component)
+            duty_input_enabled = bool(params.get(DUTY_INPUT_PARAMETER, False))
+
             if len(pwm_nodes) < 2:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas não está conectada a nenhum sinal de controle."
+                    )
                 continue
             duty_input_node = str(pwm_nodes[1] or "").strip()
             if not duty_input_node:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas não está conectada a nenhum sinal de controle."
+                    )
                 continue
 
             driver_name = signal_driver_by_node.get(duty_input_node)
             if not driver_name:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas nenhum bloco de controle reconhecido está conectado a ela."
+                    )
                 continue
 
             pwm_out_node = str(pwm_nodes[0] or "").strip()
@@ -1289,7 +1306,16 @@ class CircuitConverter:
             fallback = node_map.get(comp_id, [])
             return [str(node or "").strip() for node in fallback]
 
+        def _router_label(component: dict[str, Any]) -> str:
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            label = str(params.get("net_label", "") or "").strip()
+            if label:
+                return label
+            return str(component.get("name") or "").strip()
+
         signal_driver_by_node: dict[str, str] = {}
+        goto_nodes_by_label: dict[str, list[str]] = {}
+        from_nodes_by_label: dict[str, list[str]] = {}
 
         for component in components:
             comp_id = str(component.get("id") or "").strip()
@@ -1305,6 +1331,20 @@ class CircuitConverter:
 
             pin_nodes = _raw_nodes(component)
             if not pin_nodes:
+                continue
+
+            if comp_type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+                label = _router_label(component)
+                pin_node = str(pin_nodes[0] or "").strip() if pin_nodes else ""
+                if label and pin_node and pin_node != "0":
+                    buckets = (
+                        goto_nodes_by_label
+                        if comp_type == ComponentType.GOTO_LABEL
+                        else from_nodes_by_label
+                    )
+                    nodes = buckets.setdefault(label, [])
+                    if pin_node not in nodes:
+                        nodes.append(pin_node)
                 continue
 
             pins = component.get("pins")
@@ -1375,6 +1415,24 @@ class CircuitConverter:
                 if not node_name or node_name == "0":
                     continue
                 signal_driver_by_node.setdefault(node_name, channel_name)
+
+        # Flatten Goto/From routers into direct node->channel bindings for control mapping.
+        for label, routed_from_nodes in from_nodes_by_label.items():
+            source_nodes = goto_nodes_by_label.get(label, [])
+            if not source_nodes or not routed_from_nodes:
+                continue
+
+            channel_name = ""
+            for source_node in source_nodes:
+                candidate = str(signal_driver_by_node.get(source_node, "") or "").strip()
+                if candidate:
+                    channel_name = candidate
+                    break
+            if not channel_name:
+                continue
+
+            for routed_node in routed_from_nodes:
+                signal_driver_by_node.setdefault(routed_node, channel_name)
 
         known_control_channels = {
             str(channel_name).strip()
@@ -1903,6 +1961,10 @@ class CircuitConverter:
             if "amplitude" in normalized and "v_high" not in normalized:
                 normalized["v_high"] = normalized["amplitude"]
             normalized.setdefault("v_low", 0.0)
+
+        if comp_type == ComponentType.SATURABLE_INDUCTOR:
+            if "i_equiv_init" in normalized and "magnetic_i_equiv_init" not in normalized:
+                normalized["magnetic_i_equiv_init"] = normalized.pop("i_equiv_init")
 
         return normalized
 

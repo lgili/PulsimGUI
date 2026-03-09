@@ -195,6 +195,9 @@ class MainWindow(QMainWindow):
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
         self._schematic_scene.component_moved.connect(self._on_component_moved)
+        self._schematic_scene.net_label_navigation_requested.connect(
+            self._on_net_label_navigation_requested
+        )
         # Throttle minimap updates to avoid performance issues during rapid changes
         self._minimap_update_timer = QTimer(self)
         self._minimap_update_timer.setSingleShot(True)
@@ -642,6 +645,9 @@ class MainWindow(QMainWindow):
         )
         self._properties_panel = PropertiesPanel(theme_service=self._theme_service)
         self._properties_panel.property_changed.connect(self._on_property_changed)
+        self._properties_panel.net_label_pair_requested.connect(
+            self._on_properties_net_label_pair_requested
+        )
         self.properties_dock.setWidget(self._properties_panel)
         self.properties_dock.setMinimumWidth(310)
         self.properties_dock.setFeatures(
@@ -1115,6 +1121,55 @@ class MainWindow(QMainWindow):
         else:
             # No components selected - clear panel
             self._properties_panel.set_component(None)
+
+    def _on_net_label_navigation_requested(
+        self,
+        source_component_id: str,
+        target_component_id: str,
+        net_label: str,
+    ) -> None:
+        """Select and center the linked Goto/From tag requested by the scene."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        label_text = net_label.strip() or "(unnamed)"
+        if not target_component_id:
+            self.statusBar().showMessage(
+                f"No linked Goto/From found for tag '{label_text}'.",
+                3000,
+            )
+            return
+
+        source_item = None
+        target_item = None
+        for item in self._schematic_scene.items():
+            if not isinstance(item, ComponentItem):
+                continue
+            comp_id = str(item.component.id)
+            if comp_id == source_component_id:
+                source_item = item
+            if comp_id == target_component_id:
+                target_item = item
+
+        if target_item is None:
+            self.statusBar().showMessage(
+                f"Linked tag '{label_text}' exists but is not visible in this scene.",
+                3000,
+            )
+            return
+
+        self._schematic_scene.clearSelection()
+        if source_item is not None:
+            source_item.setSelected(True)
+        target_item.setSelected(True)
+        target_rect = target_item.sceneBoundingRect()
+        target_center = target_rect.center()
+        self._schematic_view.centerOn(target_center)
+        self._schematic_view.ensureVisible(target_rect, 80, 80)
+
+        self.statusBar().showMessage(
+            f"Jumped to linked tag '{label_text}'.",
+            2000,
+        )
 
     def _has_properties_focus(self) -> bool:
         """Check if any widget in properties panel or its dock has focus."""
@@ -2309,26 +2364,54 @@ class MainWindow(QMainWindow):
             theme_service=self._theme_service,
             parent=self,
         )
-        if not dialog.exec():
+        accepted = bool(dialog.exec())
+        pair_request = dialog.pair_navigation_request
+
+        if not accepted:
+            if pair_request is not None:
+                self._on_properties_net_label_pair_requested(*pair_request)
             return
 
         old_state = self._component_state_snapshot(component)
         new_state = self._component_state_snapshot(dialog.edited_component)
-        if old_state == new_state:
+        if old_state != new_state:
+            self._execute_schematic_command(
+                UpdateComponentStateCommand(
+                    self._current_circuit(),
+                    component.id,
+                    new_state,
+                    old_state=old_state,
+                ),
+                refresh_scene=True,
+                merge=False,
+            )
+            self._refresh_scope_window_bindings()
+            self.statusBar().showMessage("Component properties updated", 2000)
+
+        if pair_request is not None:
+            self._on_properties_net_label_pair_requested(*pair_request)
+
+    def _on_properties_net_label_pair_requested(
+        self,
+        source_component_id: str,
+        net_label: str,
+    ) -> None:
+        """Resolve a source label and trigger scene-level pair navigation."""
+        try:
+            source_uuid = UUID(source_component_id)
+        except ValueError:
             return
 
-        self._execute_schematic_command(
-            UpdateComponentStateCommand(
-                self._current_circuit(),
-                component.id,
-                new_state,
-                old_state=old_state,
-            ),
-            refresh_scene=True,
-            merge=False,
-        )
-        self._refresh_scope_window_bindings()
-        self.statusBar().showMessage("Component properties updated", 2000)
+        source_component = self._current_circuit().get_component(source_uuid)
+        if source_component is None:
+            label_text = net_label.strip() or "(unnamed)"
+            self.statusBar().showMessage(
+                f"Cannot locate source tag '{label_text}' in current circuit.",
+                3000,
+            )
+            return
+
+        self._schematic_scene.request_net_label_navigation(source_component)
 
     def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
         """Persist window state whenever a scope window closes."""

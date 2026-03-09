@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "Buck Closed-Loop Loss + Thermal Validation",
   "created": "2024-01-01T00:00:00",
-  "modified": "2026-03-07T17:52:18.114326",
+  "modified": "2026-03-09T12:30:35.261365",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.02,
@@ -36,7 +36,15 @@
     "formulation_mode": "projected_wrapper",
     "direct_formulation_fallback": true,
     "control_mode": "auto",
-    "control_sample_time": 0.0
+    "control_sample_time": 0.0,
+    "ac_f_start": 1.0,
+    "ac_f_stop": 1000000.0,
+    "ac_points_per_decade": 10,
+    "ac_anchor_mode": "auto",
+    "ac_sweep_scale": "decade",
+    "ac_injection_node": "",
+    "ac_measurement_node": "",
+    "averaged_options": null
   },
   "circuits": {
     "main": {
@@ -385,7 +393,8 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "value": 6.0
+            "value": 7.0,
+            "sample_time": 0.0
           },
           "pins": [
             {
@@ -410,7 +419,8 @@
             "signs": [
               "+",
               "-"
-            ]
+            ],
+            "sample_time": 0.0
           },
           "pins": [
             {
@@ -575,7 +585,8 @@
             "ki": 100.0,
             "output_min": 0.0,
             "output_max": 0.95,
-            "anti_windup": true
+            "anti_windup": true,
+            "sample_time": 0.0
           },
           "pins": [
             {
@@ -607,7 +618,9 @@
             "duty_min": 0.0,
             "duty_max": 0.95,
             "carrier": "sawtooth",
-            "amplitude": 20.0
+            "amplitude": 20.0,
+            "sample_time": 0.0,
+            "enable_duty_input": true
           },
           "pins": [
             {

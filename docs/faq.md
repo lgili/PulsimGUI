@@ -9,7 +9,7 @@
 python3 -c "import pulsim; print(pulsim.__version__)"
 ```
 
-3. Reinstall/update backend to `v0.7.8` from runtime settings.
+3. Reinstall/update backend to `v0.7.9` from runtime settings.
 
 ## Transient convergence error
 

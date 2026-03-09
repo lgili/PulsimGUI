@@ -247,8 +247,13 @@ def _scope_label_prefix(comp_type: ComponentType) -> str:
 
 THERMAL_PORT_PARAMETER = "enable_thermal_port"
 THERMAL_PORT_PIN_NAME = "TH"
+DUTY_INPUT_PARAMETER = "enable_duty_input"
+DUTY_INPUT_PIN_NAME = "DUTY_IN"
 VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
 CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.SATURABLE_INDUCTOR,
+}
 THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.RESISTOR,
     ComponentType.CAPACITOR,
@@ -1021,6 +1026,7 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "carrier": "sawtooth",
         "amplitude": 20.0,
         "sample_time": 0.0,
+        DUTY_INPUT_PARAMETER: False,
     },
     ComponentType.GAIN: {
         "gain": 1.0,
@@ -1165,8 +1171,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: {
         "inductance": 1e-3,
+        # Saturation model
         "saturation_current": 10.0,
         "saturation_inductance": 1e-6,
+        "saturation_exponent": 2.0,
+        # Magnetic core config (pulsimcore v0.7.9+)
+        "magnetic_core_enabled": True,
+        "magnetic_core_model": "saturation",
+        "magnetic_core_loss_policy": "telemetry_only",
+        "core_loss_k": 0.0,
+        "core_loss_alpha": 2.0,
+        "core_loss_freq_coeff": 0.0,
+        "i_equiv_init": 0.0,
+        "hysteresis_band": 0.0,
+        "hysteresis_strength": 0.15,
+        "hysteresis_loss_coeff": 0.2,
+        "hysteresis_state_init": 1.0,
     },
     ComponentType.COUPLED_INDUCTOR: {
         "l1": 1e-3,
@@ -1189,7 +1209,23 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
 # the amplitude invites users to lower it below the device threshold, breaking
 # simulation convergence without obvious explanation.
 HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
-    ComponentType.PWM_GENERATOR: frozenset({"amplitude"}),
+    ComponentType.PWM_GENERATOR: frozenset({"amplitude", "duty_from_channel", "target_component"}),
+}
+
+# Maps string parameter names to their allowed values.
+# The properties panel renders these as dropdowns instead of free-text fields.
+PARAM_OPTIONS: dict[str, list[str]] = {
+    # Magnetic core (SATURABLE_INDUCTOR)
+    "magnetic_core_model": ["saturation", "hysteresis"],
+    "magnetic_core_loss_policy": ["telemetry_only", "loss_summary"],
+    # PWM carrier waveform
+    "carrier": ["sawtooth", "triangle"],
+    # LED body color (drives schematic rendering)
+    "color": ["red", "green", "blue", "yellow", "white"],
+    # Electrothermal: RC network topology
+    "thermal_network": ["single_rc", "foster", "cauer"],
+    # Switching loss computation model
+    "switching_loss_model": ["scalar", "datasheet"],
 }
 
 
@@ -1310,9 +1346,10 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_sum_like_block(component)
     elif component.type == ComponentType.C_BLOCK:
         _synchronize_c_block(component)
+    elif component.type == ComponentType.PWM_GENERATOR:
+        _synchronize_pwm_duty_pin(component)
     elif component.type in (
         ComponentType.PI_CONTROLLER,
-        ComponentType.PWM_GENERATOR,
         ComponentType.GAIN,
         ComponentType.GOTO_LABEL,
         ComponentType.FROM_LABEL,
@@ -1422,6 +1459,43 @@ def _synchronize_c_block(
         params["extra_cflags"] = []
 
     component.pins = _snap_pin_layout(_default_c_block_pins(n_inputs, n_outputs))
+
+
+def _synchronize_pwm_duty_pin(component: Component) -> None:
+    """Synchronize the optional DUTY_IN pin on PWM_GENERATOR.
+
+    When *enable_duty_input* is False (default) the DUTY_IN pin is hidden and
+    the fixed *duty_cycle* parameter is used by the simulator.  When True the
+    pin is visible and the converter wires the connected signal as the duty
+    source; leaving it unconnected will raise a validation error at simulation
+    time.
+    """
+    if component.type != ComponentType.PWM_GENERATOR:
+        return
+
+    # Backward-compat: infer enabled state from serialised pin list when the
+    # parameter is absent (e.g. files saved before this feature existed).
+    serialized_has_duty_pin = any(pin.name == DUTY_INPUT_PIN_NAME for pin in component.pins)
+    raw_enabled = component.parameters.get(DUTY_INPUT_PARAMETER, None)
+    if raw_enabled is None and serialized_has_duty_pin:
+        enabled = True
+    else:
+        enabled = bool(raw_enabled)
+    component.parameters[DUTY_INPUT_PARAMETER] = enabled
+
+    # Rebuild pin list: always keep OUT, conditionally keep DUTY_IN.
+    pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in component.pins if pin.name != DUTY_INPUT_PIN_NAME]
+    if not pins:
+        # Fallback: restore OUT from defaults if lost somehow.
+        base = DEFAULT_PINS.get(ComponentType.PWM_GENERATOR, [])
+        pins = [Pin(p.index, p.name, p.x, p.y) for p in base if p.name != DUTY_INPUT_PIN_NAME]
+
+    if enabled:
+        pins.append(Pin(index=len(pins), name=DUTY_INPUT_PIN_NAME, x=-35.0, y=20.0))
+
+    for index, pin in enumerate(pins):
+        pin.index = index
+    component.pins = _snap_pin_layout(pins)
 
 
 def _synchronize_thermal_port(component: Component) -> None:
@@ -1580,4 +1654,17 @@ def set_thermal_port_enabled(component: Component, enabled: bool) -> None:
     """Enable or disable thermal measurement pin for compatible components."""
 
     component.parameters[THERMAL_PORT_PARAMETER] = bool(enabled)
+    _synchronize_special_component(component)
+
+
+def set_pwm_duty_input_enabled(component: Component, enabled: bool) -> None:
+    """Enable or disable the DUTY_IN port on a PWM_GENERATOR component.
+
+    When disabled (default) the block uses the fixed *duty_cycle* parameter.
+    When enabled the DUTY_IN pin appears on the schematic and the connected
+    signal is used as the duty command; the simulation will reject the circuit
+    if the pin is left unconnected.
+    """
+
+    component.parameters[DUTY_INPUT_PARAMETER] = bool(enabled)
     _synchronize_special_component(component)

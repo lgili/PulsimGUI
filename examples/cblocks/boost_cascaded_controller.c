@@ -55,20 +55,20 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     const double* in,
     double* out)
 {
-    /* Tuned for this demo operating point:
+    /* Gains aligned with cascaded design notebook:
      * - fsw = 100 kHz
-     * - Vin = 5 V
-     * - Vref = 10 V
+     * - inner loop crossover ~= 10 kHz
+     * - outer loop crossover ~= 1 kHz
      */
-    const double kp_v = 0.2;
-    const double ki_v = 120.0;
-    const double kp_i = 0.08;
-    const double ki_i = 350.0;
+    const double kp_v = 1.27;
+    const double ki_v = 797.0;
+    const double kp_i = 0.26;
+    const double ki_i = 0.0;
     const double ff_gain = 1.0;
 
     const double iref_min = 0.0;
-    const double duty_min = 0.02;
-    const double duty_max = 0.92;
+    const double duty_ctrl_min = 0.02;
+    const double duty_ctrl_max = 0.62;
 
     BoostCtrlState* st = (BoostCtrlState*)ctx;
     if (!st) return -2;
@@ -89,7 +89,7 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     const double ilim_in = read_input(st, in, 4);
     const double slew_in = read_input(st, in, 5);
 
-    const double ilim = (ilim_in > 0.2) ? ilim_in : 4.0;
+    const double ilim = (ilim_in > 0.2) ? ilim_in : 8.0;
     const double slew = (slew_in > 1.0) ? slew_in : 4000.0;
 
     const double dt_eff = (st->t_prev < 0.0 || dt <= 0.0) ? 0.0 : dt;
@@ -128,10 +128,12 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     duty_ff = clamp_double(duty_ff, -0.20, 0.85);
 
     double duty_lin = (ff_gain * duty_ff) + (kp_i * ei) + (ki_i * integ_i);
-    double duty = clamp_double(duty_lin, duty_min, duty_max);
-    if (dt_eff > 0.0 && ki_i != 0.0 && duty != duty_lin) {
-        integ_i = (duty - (ff_gain * duty_ff) - (kp_i * ei)) / ki_i;
+    double duty_ctrl = clamp_double(duty_lin, duty_ctrl_min, duty_ctrl_max);
+    if (dt_eff > 0.0 && ki_i != 0.0 && duty_ctrl != duty_lin) {
+        integ_i = (duty_ctrl - (ff_gain * duty_ff) - (kp_i * ei)) / ki_i;
     }
+
+    double duty_pwm = duty_ctrl;
 
     if (!st->fault_latched) {
         const double trip_current = 1.15 * ilim;
@@ -141,7 +143,8 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         }
     } else {
         if (dt_eff > 0.0) st->fault_hold += dt_eff;
-        duty = 0.0;
+        duty_ctrl = 0.0;
+        duty_pwm = 0.0;
         st->integ_i = 0.0;
         if (i_l < (0.75 * ilim) && st->fault_hold > 0.0015) {
             st->fault_latched = 0;
@@ -151,7 +154,7 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
 
     st->integ_i = st->fault_latched ? 0.0 : integ_i;
 
-    if (st->n_outputs >= 1) out[0] = duty;
+    if (st->n_outputs >= 1) out[0] = duty_pwm;
     if (st->n_outputs >= 2) out[1] = iref;
     if (st->n_outputs >= 3) out[2] = ev;
     if (st->n_outputs >= 4) out[3] = ei;

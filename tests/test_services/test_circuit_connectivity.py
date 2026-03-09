@@ -444,6 +444,74 @@ def test_converter_falls_back_to_wired_cblock_inputs_when_metadata_is_stale() ->
     assert metadata["inputs"] == "[\"K1\", \"Xout\"]"
 
 
+def test_converter_derives_cblock_inputs_through_goto_from_router() -> None:
+    """C-Block channel mapping should resolve Goto->From label routers."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 2.0},
+                "pin_nodes": ["10"],
+                "pins": [{"index": 0, "name": "OUT"}],
+            },
+            {
+                "id": "g1",
+                "type": "GOTO_LABEL",
+                "name": "G1",
+                "parameters": {"net_label": "BUS_CTRL"},
+                "pin_nodes": ["10"],
+                "pins": [{"index": 0, "name": "NET"}],
+            },
+            {
+                "id": "f1",
+                "type": "FROM_LABEL",
+                "name": "F1",
+                "parameters": {"net_label": "BUS_CTRL"},
+                "pin_nodes": ["20"],
+                "pins": [{"index": 0, "name": "NET"}],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["20", "30"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "g1": ["10"],
+            "f1": ["20"],
+            "cb1": ["20", "30"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    _comp_type, nodes, _numeric, metadata = by_name["CB1"]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"K1\"]"
+
+
 def test_converter_emits_constant_cblock_input_as_probe_channel_when_supported() -> None:
     """Backends that support sources should get CONSTANT->C_BLOCK channels as probe channels."""
     fake_module = SimpleNamespace(Circuit=_CircuitWithVirtualAndSource)
@@ -1271,6 +1339,32 @@ def test_build_node_map_merges_goto_from_with_same_label() -> None:
     from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=240.0, y=100.0)
     goto.parameters["net_label"] = "BUS_A"
     from_label.parameters["net_label"] = "BUS_A"
+
+    circuit.add_component(r1)
+    circuit.add_component(r2)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    x1, y1 = r1.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    x2, y2 = r2.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, x2, y2)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(r1.id), 1)] == node_map[(str(r2.id), 0)]
+
+
+def test_build_node_map_merges_goto_from_by_name_when_label_missing() -> None:
+    """Goto/From should bridge nets by component name when net_label is empty."""
+    circuit = Circuit(name="goto-from-name-fallback")
+    r1 = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    r2 = Component(type=ComponentType.RESISTOR, name="R2", x=320.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="BUS_A", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="BUS_A", x=240.0, y=100.0)
+    goto.parameters["net_label"] = ""
+    from_label.parameters["net_label"] = ""
 
     circuit.add_component(r1)
     circuit.add_component(r2)

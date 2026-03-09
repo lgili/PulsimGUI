@@ -12,6 +12,7 @@ No additional installation is required on the target machine.
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,7 @@ def get_version() -> str:
         for line in f:
             if line.startswith("version"):
                 return line.split("=")[1].strip().strip('"')
-    return "0.7.2"
+    return "0.7.3"
 
 
 def clean() -> None:
@@ -55,6 +56,7 @@ def install_dependencies() -> None:
     # Build tools
     build_deps = [
         "pyinstaller>=6.0",
+        "pillow>=10.0.0",
     ]
 
     # Platform-specific build tools
@@ -73,7 +75,7 @@ def install_dependencies() -> None:
         "pyqtgraph>=0.13.0",
         "numpy>=1.24.0",
         "qtawesome>=1.3.0",
-        "pulsim>=0.7.8",
+        "pulsim>=0.7.9",
     ], check=True)
 
 
@@ -82,47 +84,60 @@ def ensure_windows_icon() -> None:
     if platform.system() != "Windows":
         return
 
-    ico_path = PACKAGING_DIR / "icons" / "pulsimgui.ico"
-    if ico_path.exists():
-        return
+    helper = PROJECT_ROOT / "scripts" / "ensure_windows_icon.py"
+    if not helper.exists():
+        raise RuntimeError(f"Missing helper script: {helper}")
+    subprocess.run([sys.executable, str(helper), "--strict"], check=True)
 
+
+def ensure_macos_icon() -> None:
+    """Ensure .icns exists so macOS app bundles get branded icon."""
+    icns_path = PACKAGING_DIR / "icons" / "pulsimgui.icns"
+    if not icns_path.exists():
+        raise FileNotFoundError(
+            f"Missing macOS icon: {icns_path}. "
+            "Add packaging/icons/pulsimgui.icns before building."
+        )
+
+
+def ensure_linux_icon_assets() -> None:
+    """Ensure Linux icon assets exist and desktop file references the icon name."""
     png_path = PACKAGING_DIR / "icons" / "pulsimgui.png"
+    desktop_path = PACKAGING_DIR / "linux" / "pulsimgui.desktop"
+
     if not png_path.exists():
-        print(f"  Warning: missing icon source {png_path}; building without .ico")
-        return
+        raise FileNotFoundError(
+            f"Missing Linux icon: {png_path}. "
+            "Add packaging/icons/pulsimgui.png before building."
+        )
+    if not desktop_path.exists():
+        raise FileNotFoundError(
+            f"Missing desktop entry: {desktop_path}. "
+            "Add packaging/linux/pulsimgui.desktop before building."
+        )
 
-    script = rf"""
-Add-Type -AssemblyName System.Drawing
-$bitmap = [System.Drawing.Bitmap]::FromFile('{png_path}')
-try {{
-  $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-  try {{
-    $stream = [System.IO.File]::Create('{ico_path}')
-    try {{
-      $icon.Save($stream)
-    }} finally {{
-      $stream.Dispose()
-    }}
-  }} finally {{
-    $icon.Dispose()
-  }}
-}} finally {{
-  $bitmap.Dispose()
-}}
-"""
-    try:
-        subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
-        if ico_path.exists():
-            print(f"Generated Windows icon: {ico_path}")
-    except Exception as exc:
-        print(f"  Warning: failed to generate .ico from PNG ({exc})")
+    desktop_text = desktop_path.read_text(encoding="utf-8")
+    if not re.search(r"^Icon=pulsimgui\s*$", desktop_text, flags=re.MULTILINE):
+        raise RuntimeError(
+            f"{desktop_path} must contain `Icon=pulsimgui` so launchers resolve the packaged icon."
+        )
 
 
-def build_pyinstaller() -> Path:
+def ensure_platform_icon_assets(target: str) -> None:
+    """Validate required icon assets for the target platform build."""
+    if target == "windows":
+        ensure_windows_icon()
+    elif target == "macos":
+        ensure_macos_icon()
+    elif target == "linux":
+        ensure_linux_icon_assets()
+
+
+def build_pyinstaller(target: str) -> Path:
     """Build with PyInstaller."""
     print("Building with PyInstaller...")
 
-    ensure_windows_icon()
+    ensure_platform_icon_assets(target)
 
     # Install the package first
     subprocess.run([
@@ -138,10 +153,9 @@ def build_pyinstaller() -> Path:
     ], cwd=PROJECT_ROOT, check=True)
 
     # Return path to built application
-    system = platform.system()
-    if system == "Darwin":
+    if target == "macos":
         return DIST_DIR / "PulsimGui.app"
-    elif system == "Windows":
+    elif target == "windows":
         return DIST_DIR / "PulsimGui.exe"
     else:
         return DIST_DIR / "pulsimgui"
@@ -231,15 +245,23 @@ def build_linux_appimage(exe_path: Path) -> Path:
 
     # Copy desktop file
     desktop_src = PACKAGING_DIR / "linux" / "pulsimgui.desktop"
-    if desktop_src.exists():
-        shutil.copy2(desktop_src, appdir / "usr" / "share" / "applications" / "pulsimgui.desktop")
-        shutil.copy2(desktop_src, appdir / "pulsimgui.desktop")
+    if not desktop_src.exists():
+        raise FileNotFoundError(
+            f"Missing Linux desktop entry: {desktop_src}. "
+            "Cannot build AppImage without launcher metadata."
+        )
+    shutil.copy2(desktop_src, appdir / "usr" / "share" / "applications" / "pulsimgui.desktop")
+    shutil.copy2(desktop_src, appdir / "pulsimgui.desktop")
 
     # Copy icon
     icon_src = PACKAGING_DIR / "icons" / "pulsimgui.png"
-    if icon_src.exists():
-        shutil.copy2(icon_src, appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "pulsimgui.png")
-        shutil.copy2(icon_src, appdir / "pulsimgui.png")
+    if not icon_src.exists():
+        raise FileNotFoundError(
+            f"Missing Linux icon: {icon_src}. "
+            "Cannot build AppImage without launcher icon."
+        )
+    shutil.copy2(icon_src, appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "pulsimgui.png")
+    shutil.copy2(icon_src, appdir / "pulsimgui.png")
 
     # Create AppRun
     apprun = appdir / "AppRun"
@@ -364,7 +386,7 @@ def main():
     install_dependencies()
 
     # Build with PyInstaller
-    app_path = build_pyinstaller()
+    app_path = build_pyinstaller(target)
     print(f"Built: {app_path}")
 
     # Create platform-specific installer

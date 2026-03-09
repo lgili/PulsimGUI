@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -32,6 +33,7 @@ from pulsimgui.models.component import (
     C_BLOCK_IO_LIMITS,
     HIDDEN_PARAMS,
     MUX_CHANNEL_LIMITS,
+    PARAM_OPTIONS,
     SCOPE_CHANNEL_LIMITS,
     THERMAL_PORT_PARAMETER,
     Component,
@@ -44,8 +46,10 @@ from pulsimgui.models.component import (
     set_mux_input_count,
     set_scope_channel_count,
     set_sum_input_count,
+    set_pwm_duty_input_enabled,
     set_thermal_port_enabled,
     supports_electrothermal_parameters,
+    DUTY_INPUT_PARAMETER,
 )
 from pulsimgui.services.theme_service import (
     DARK_THEME,
@@ -514,6 +518,7 @@ class PropertiesPanel(QWidget):
 
     property_changed = Signal(str, object)
     name_changed = Signal(str)
+    net_label_pair_requested = Signal(str, str)
 
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
@@ -529,6 +534,8 @@ class PropertiesPanel(QWidget):
         self._mux_channel_layout = None
         self._demux_channel_layout = None
         self._cblock_path_edit: AutoSelectLineEdit | None = None
+        self._cblock_mode_combo: QComboBox | None = None
+        self._cblock_source_editor: QPlainTextEdit | None = None
         self._cblock_extra_cflags_edit: AutoSelectLineEdit | None = None
         self._cblock_create_btn: QPushButton | None = None
         self._cblock_open_btn: QPushButton | None = None
@@ -548,6 +555,8 @@ class PropertiesPanel(QWidget):
         self._pin_count_badge: QLabel | None = None
         self._param_count_badge: QLabel | None = None
         self._params_count_label: QLabel | None = None
+        self._name_field_label: QLabel | None = None
+        self._net_label_pair_btn: QPushButton | None = None
 
         self._setup_ui()
         if self._theme_service is not None:
@@ -631,7 +640,19 @@ class PropertiesPanel(QWidget):
         self._name_edit.setPlaceholderText("Component name")
         self._name_edit.returnPressed.connect(self._on_name_changed)
         self._name_edit.editingFinished.connect(self._on_name_changed)
-        form_layout.addRow("Name:", self._name_edit)
+        name_row = QWidget()
+        name_row_layout = QHBoxLayout(name_row)
+        name_row_layout.setContentsMargins(0, 0, 0, 0)
+        name_row_layout.setSpacing(6)
+        name_row_layout.addWidget(self._name_edit, 1)
+        self._net_label_pair_btn = QPushButton("Go to Pair")
+        self._net_label_pair_btn.setObjectName("NetPairButton")
+        self._net_label_pair_btn.setToolTip("Jump to linked Goto/From with same label")
+        self._net_label_pair_btn.clicked.connect(self._on_net_label_pair_clicked)
+        self._net_label_pair_btn.hide()
+        name_row_layout.addWidget(self._net_label_pair_btn, 0)
+        self._name_field_label = QLabel("Name:")
+        form_layout.addRow(self._name_field_label, name_row)
 
         info_layout.addWidget(form)
 
@@ -758,20 +779,31 @@ class PropertiesPanel(QWidget):
                 self._summary_title.setText("No component selected")
             if self._summary_subtitle is not None:
                 self._summary_subtitle.setText("Select a component to edit parameters")
+            if self._name_field_label is not None:
+                self._name_field_label.setText("Name:")
+            self._update_net_label_pair_button()
             self._update_component_metrics()
             return
 
         self._no_selection_label.hide()
         self._info_container.show()
-        self._params_container.show()
         self._pos_container.setVisible(self._show_position_controls)
 
         # Update component info
         type_name = self._component.type.name.replace("_", " ").title()
         self._type_label.setText(type_name)
-        self._name_edit.setText(self._component.name)
+        is_net_label = self._is_net_label_component(self._component)
+        if self._name_field_label is not None:
+            self._name_field_label.setText("Net Label:" if is_net_label else "Name:")
+        if is_net_label:
+            self._name_edit.setPlaceholderText("NET1")
+            self._name_edit.setText(self._net_label_text(self._component))
+        else:
+            self._name_edit.setPlaceholderText("Component name")
+            self._name_edit.setText(self._component.name)
         if self._summary_title is not None:
-            self._summary_title.setText(self._component.name or type_name)
+            title = self._net_label_text(self._component) if is_net_label else self._component.name
+            self._summary_title.setText(title or type_name)
         if self._summary_subtitle is not None:
             if len(self._components) > 1:
                 self._summary_subtitle.setText(f"{len(self._components)} components selected")
@@ -801,10 +833,29 @@ class PropertiesPanel(QWidget):
 
         # Create parameter widgets
         self._create_param_widgets()
+        self._params_container.setVisible(self._should_show_params_container())
+        self._update_net_label_pair_button()
         self._update_component_metrics()
         self._apply_compact_scroll_limits_for_component()
         if self._theme is not None:
             self.apply_theme(self._theme)
+
+    def _should_show_params_container(self) -> bool:
+        """Return whether the parameters section should be visible."""
+        if self._component is None:
+            return False
+
+        comp_type = self._component.type
+        if comp_type in {
+            ComponentType.ELECTRICAL_SCOPE,
+            ComponentType.THERMAL_SCOPE,
+            ComponentType.SIGNAL_MUX,
+            ComponentType.SIGNAL_DEMUX,
+            ComponentType.C_BLOCK,
+        }:
+            return True
+
+        return self._editable_parameter_count() > 0
 
     def _clear_params(self) -> None:
         """Clear all parameter widgets."""
@@ -817,6 +868,8 @@ class PropertiesPanel(QWidget):
         self._mux_channel_layout = None
         self._demux_channel_layout = None
         self._cblock_path_edit = None
+        self._cblock_mode_combo = None
+        self._cblock_source_editor = None
         self._cblock_extra_cflags_edit = None
         self._cblock_create_btn = None
         self._cblock_open_btn = None
@@ -827,7 +880,15 @@ class PropertiesPanel(QWidget):
         if self._component is None:
             return 0
         hidden = HIDDEN_PARAMS.get(self._component.type, frozenset())
-        return sum(1 for key in self._component.parameters if key not in hidden)
+        return sum(
+            1
+            for key in self._component.parameters
+            if key not in hidden
+            and not (
+                self._component.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}
+                and key == "net_label"
+            )
+        )
 
     def _update_component_metrics(self) -> None:
         if self._component is None:
@@ -881,6 +942,9 @@ class PropertiesPanel(QWidget):
         for name, value in params.items():
             if name in _hidden:
                 continue
+            if comp_type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL} and name == "net_label":
+                # The top field already edits net_label for router labels.
+                continue
             widget = self._create_widget_for_value(name, value)
             if widget:
                 label = name.replace("_", " ").title()
@@ -907,6 +971,17 @@ class PropertiesPanel(QWidget):
             return widget
 
         elif isinstance(value, str):
+            options = PARAM_OPTIONS.get(name)
+            if options:
+                combo = QComboBox()
+                for opt in options:
+                    combo.addItem(opt)
+                current = value if value in options else options[0]
+                combo.setCurrentText(current)
+                combo.currentTextChanged.connect(
+                    lambda text, n=name: self._on_param_changed(n, text)
+                )
+                return combo
             edit = AutoSelectLineEdit(value)
             edit.returnPressed.connect(
                 lambda: self._on_param_changed(name, edit.text())
@@ -1182,7 +1257,20 @@ class PropertiesPanel(QWidget):
             return
 
         params = self._component.parameters
-        params["implementation"] = "source"
+        implementation = str(params.get("implementation", "source") or "source").strip().lower()
+        if implementation not in {"source", "library"}:
+            implementation = "source"
+        params["implementation"] = implementation
+        params.setdefault("lib_path", "")
+        params.setdefault("source_code", "")
+
+        mode_combo = QComboBox()
+        mode_combo.addItem("Source (.c)", "source")
+        mode_combo.addItem("Library (.so/.dylib/.dll)", "library")
+        mode_combo.setCurrentIndex(1 if implementation == "library" else 0)
+        mode_combo.currentIndexChanged.connect(self._on_cblock_mode_changed)
+        self._cblock_mode_combo = mode_combo
+        self._params_layout.addRow("Mode:", mode_combo)
 
         n_inputs_spin = QSpinBox()
         n_inputs_spin.setRange(*C_BLOCK_IO_LIMITS)
@@ -1259,6 +1347,13 @@ class PropertiesPanel(QWidget):
         self._cblock_path_edit = path_edit
         self._params_layout.addRow("Path:", path_row)
 
+        source_editor = QPlainTextEdit(str(params.get("source_code", "") or ""))
+        source_editor.setPlaceholderText("Optional source snippet for quick editing/notes")
+        source_editor.setMinimumHeight(90)
+        source_editor.textChanged.connect(self._on_cblock_source_editor_changed)
+        self._cblock_source_editor = source_editor
+        self._params_layout.addRow("Source:", source_editor)
+
         flags = params.get("extra_cflags", [])
         if isinstance(flags, list):
             flags_text = ", ".join(str(item) for item in flags if str(item).strip())
@@ -1312,21 +1407,56 @@ class PropertiesPanel(QWidget):
             return
         path = self._cblock_path_edit.text().strip().replace("\\", "/")
         self._cblock_path_edit.setText(path)
-        self._component.parameters["source"] = path
-        self.property_changed.emit("source", path)
+        mode = self._active_cblock_mode()
+        if mode == "library":
+            self._component.parameters["lib_path"] = path
+            self.property_changed.emit("lib_path", path)
+        else:
+            self._component.parameters["source"] = path
+            self.property_changed.emit("source", path)
 
     def _on_browse_cblock_path(self) -> None:
         start = self._cblock_path_edit.text().strip() if self._cblock_path_edit else ""
+        mode = self._active_cblock_mode()
+        title = "Import C source file" if mode == "source" else "Import compiled C-Block library"
+        file_filter = (
+            "C source (*.c);;All files (*)"
+            if mode == "source"
+            else "Shared library (*.so *.dylib *.dll);;All files (*)"
+        )
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Import C source file",
+            title,
             start,
-            "C source (*.c);;All files (*)",
+            file_filter,
         )
         if not selected or self._cblock_path_edit is None:
             return
         self._cblock_path_edit.setText(selected)
         self._on_cblock_path_changed()
+
+    def _on_cblock_mode_changed(self) -> None:
+        if not self._component:
+            return
+        mode = self._active_cblock_mode()
+        self._component.parameters["implementation"] = mode
+        self.property_changed.emit("implementation", mode)
+        self._refresh_cblock_visibility()
+
+    def _on_cblock_source_editor_changed(self) -> None:
+        if not self._component or self._cblock_source_editor is None:
+            return
+        text = self._cblock_source_editor.toPlainText()
+        self._component.parameters["source_code"] = text
+        self.property_changed.emit("source_code", text)
+
+    def _active_cblock_mode(self) -> str:
+        if self._cblock_mode_combo is None:
+            return "source"
+        mode = self._cblock_mode_combo.currentData()
+        if mode in {"source", "library"}:
+            return str(mode)
+        return "source"
 
     def _on_cblock_extra_cflags_changed(self) -> None:
         if not self._component or self._cblock_extra_cflags_edit is None:
@@ -1404,6 +1534,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._component is None:
             return
 
+        if self._active_cblock_mode() == "library":
+            self._show_cblock_build_message(
+                title="C-Block Mode",
+                message="Switch to Source mode to create a starter C file.",
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
         start = ""
         if self._cblock_path_edit is not None:
             start = self._cblock_path_edit.text().strip()
@@ -1451,7 +1589,9 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._cblock_path_edit is not None:
             self._cblock_path_edit.setText(normalized_path)
         self._component.parameters["source"] = normalized_path
+        self._component.parameters["source_code"] = source_code
         self.property_changed.emit("source", normalized_path)
+        self.property_changed.emit("source_code", source_code)
 
         self._show_cblock_build_message(
             title="C-Block File Created",
@@ -1534,6 +1674,36 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             return
 
         params = self._component.parameters
+        mode = self._active_cblock_mode()
+
+        if mode == "library":
+            lib_raw = str(params.get("lib_path", "") or "").strip()
+            if not lib_raw and self._cblock_path_edit is not None:
+                lib_raw = self._cblock_path_edit.text().strip()
+            if not lib_raw:
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="Import a compiled library before validating.",
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            lib_path = Path(lib_raw).expanduser()
+            if not lib_path.exists():
+                self._show_cblock_build_message(
+                    title="C-Block Validation Error",
+                    message="C-Block library not found.",
+                    details=lib_path.as_posix(),
+                    icon=QMessageBox.Icon.Warning,
+                )
+                return
+            self._show_cblock_build_message(
+                title="C-Block Build",
+                message="C-Block library path is valid.",
+                details=lib_path.as_posix(),
+                icon=QMessageBox.Icon.Information,
+            )
+            return
+
         try:
             n_inputs = int(params.get("n_inputs", 1) or 1)
             n_outputs = int(params.get("n_outputs", 1) or 1)
@@ -1564,6 +1734,11 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         source_raw = str(params.get("source", "") or "").strip()
         if not source_raw and self._cblock_path_edit is not None:
             source_raw = self._cblock_path_edit.text().strip()
+        source_text = ""
+        if self._cblock_source_editor is not None:
+            source_text = self._cblock_source_editor.toPlainText()
+        elif isinstance(params.get("source_code"), str):
+            source_text = str(params.get("source_code", ""))
 
         source_path: Path | None = None
         try:
@@ -1577,7 +1752,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
 
             source_path = Path(source_raw).expanduser()
 
-            if source_path is None or not source_path.exists():
+            # Keep compatibility with panel tests and UX: text in editor is
+            # treated as source-of-truth and is flushed to disk before compile.
+            if source_text.strip():
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(source_text, encoding="utf-8")
+                params["source_code"] = source_text
+                self.property_changed.emit("source_code", source_text)
+            elif source_path is None or not source_path.exists():
                 self._show_cblock_build_message(
                     title="C-Block Validation Error",
                     message="C source file was not found.",
@@ -1640,17 +1822,32 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             pass
 
     def _refresh_cblock_visibility(self) -> None:
+        mode = self._active_cblock_mode()
+        if self._component is not None:
+            self._component.parameters["implementation"] = mode
+
         if self._cblock_path_edit is not None and self._component is not None:
             self._cblock_path_edit.blockSignals(True)
-            self._cblock_path_edit.setText(str(self._component.parameters.get("source", "") or ""))
-            self._cblock_path_edit.setPlaceholderText("Select a source file")
+            param_name = "source" if mode == "source" else "lib_path"
+            placeholder = "Select a source file" if mode == "source" else "Select a compiled library"
+            self._cblock_path_edit.setText(str(self._component.parameters.get(param_name, "") or ""))
+            self._cblock_path_edit.setPlaceholderText(placeholder)
             self._cblock_path_edit.blockSignals(False)
+        if self._cblock_source_editor is not None and self._component is not None:
+            self._cblock_source_editor.setVisible(mode == "source")
+            self._cblock_source_editor.blockSignals(True)
+            self._cblock_source_editor.setPlainText(
+                str(self._component.parameters.get("source_code", "") or "")
+            )
+            self._cblock_source_editor.blockSignals(False)
         if self._cblock_create_btn is not None:
-            self._cblock_create_btn.setVisible(True)
+            self._cblock_create_btn.setVisible(mode == "source")
         if self._cblock_open_btn is not None:
-            self._cblock_open_btn.setVisible(True)
+            self._cblock_open_btn.setVisible(mode == "source")
         if self._cblock_compile_btn is not None:
-            self._cblock_compile_btn.setText("Test Compilation")
+            self._cblock_compile_btn.setText(
+                "Test Compilation" if mode == "source" else "Validate Library"
+            )
 
     # --- Utilities ----------------------------------------------------------------
 
@@ -1700,14 +1897,72 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         """Handle component name change."""
         if self._component:
             new_name = self._name_edit.text()
-            if self._component.name != new_name:
+            if self._is_net_label_component(self._component):
+                old_label = self._net_label_text(self._component)
+                if old_label != new_name:
+                    self._component.parameters["net_label"] = new_name
+                    # Keep internal name aligned to avoid stale legacy fallbacks.
+                    self._component.name = new_name
+                    self.property_changed.emit("net_label", new_name)
+                    self.name_changed.emit(new_name)
+                    if self._summary_title is not None:
+                        self._summary_title.setText(new_name or self._component.type.name.replace("_", " ").title())
+            elif self._component.name != new_name:
                 self._component.name = new_name
                 self.name_changed.emit(new_name)
+            self._update_net_label_pair_button()
+
+    @staticmethod
+    def _is_net_label_component(component: Component | None) -> bool:
+        if component is None:
+            return False
+        return component.type in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}
+
+    @staticmethod
+    def _net_label_text(component: Component | None) -> str:
+        if component is None:
+            return ""
+        label = str(component.parameters.get("net_label", "") or "").strip()
+        if label:
+            return label
+        return str(component.name or "").strip()
+
+    def _update_net_label_pair_button(self) -> None:
+        if self._net_label_pair_btn is None:
+            return
+
+        if len(self._components) != 1 or not self._is_net_label_component(self._component):
+            self._net_label_pair_btn.hide()
+            return
+
+        label_text = self._net_label_text(self._component)
+        self._net_label_pair_btn.show()
+        self._net_label_pair_btn.setEnabled(bool(label_text))
+        if label_text:
+            self._net_label_pair_btn.setToolTip(
+                f"Jump to linked Goto/From for '{label_text}'"
+            )
+        else:
+            self._net_label_pair_btn.setToolTip(
+                "Set net_label or name to enable pair navigation"
+            )
+
+    def _on_net_label_pair_clicked(self) -> None:
+        if not self._is_net_label_component(self._component):
+            return
+        label_text = self._net_label_text(self._component)
+        if not label_text:
+            return
+        self.net_label_pair_requested.emit(str(self._component.id), label_text)
 
     def _on_param_changed(self, name: str, value: Any) -> None:
         """Handle parameter value change."""
         if self._component:
-            if name == THERMAL_PORT_PARAMETER:
+            if name == DUTY_INPUT_PARAMETER:
+                set_pwm_duty_input_enabled(self._component, bool(value))
+                value = bool(self._component.parameters.get(DUTY_INPUT_PARAMETER, False))
+                self._update_display()
+            elif name == THERMAL_PORT_PARAMETER:
                 set_thermal_port_enabled(self._component, bool(value))
                 value = bool(self._component.parameters.get(THERMAL_PORT_PARAMETER, False))
                 # Legacy projects may gain new thermal fields when toggling thermal.
@@ -1866,6 +2121,22 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             }}
             QPushButton#WaveformEditButton:pressed {{
                 background-color: {c.primary_pressed};
+            }}
+            QPushButton#NetPairButton {{
+                background-color: {c.info};
+                color: {c.primary_foreground};
+                border: none;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QPushButton#NetPairButton:hover {{
+                background-color: {c.primary_hover};
+            }}
+            QPushButton#NetPairButton:disabled {{
+                background-color: {c.tree_item_selected_inactive};
+                color: {c.foreground_muted};
             }}
             QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
                 background-color: {c.input_background};

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional version override (e.g. 0.7.2)"
+        description: "Optional version override (e.g. 0.7.3)"
         required: false
         default: ""
 
@@ -56,36 +56,7 @@ jobs:
       - name: Ensure Windows app icon (.ico) for executable build
         shell: pwsh
         run: |
-          $icoPath = Join-Path $PWD "packaging/icons/pulsimgui.ico"
-          if (Test-Path -LiteralPath $icoPath) {
-            Write-Host "Windows icon already exists: $icoPath"
-            exit 0
-          }
-          $pngPath = Join-Path $PWD "packaging/icons/pulsimgui.png"
-          if (-not (Test-Path -LiteralPath $pngPath)) {
-            throw "Missing source icon at $pngPath"
-          }
-          Add-Type -AssemblyName System.Drawing
-          $bitmap = [System.Drawing.Bitmap]::FromFile($pngPath)
-          try {
-            $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-            try {
-              $stream = [System.IO.File]::Create($icoPath)
-              try {
-                $icon.Save($stream)
-              } finally {
-                $stream.Dispose()
-              }
-            } finally {
-              $icon.Dispose()
-            }
-          } finally {
-            $bitmap.Dispose()
-          }
-          if (-not (Test-Path -LiteralPath $icoPath)) {
-            throw "Failed to generate icon at $icoPath"
-          }
-          Write-Host "Generated Windows icon: $icoPath"
+          python scripts/ensure_windows_icon.py --strict
 
       - name: Verify backend dependency
         shell: pwsh
@@ -143,6 +114,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install icon build dependency
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pillow>=10.0.0"
+
       - name: Download Windows build
         uses: actions/download-artifact@v4
         with:
@@ -179,36 +156,7 @@ jobs:
       - name: Ensure Windows installer icon
         shell: pwsh
         run: |
-          $icoPath = Join-Path $PWD "packaging/icons/pulsimgui.ico"
-          if (Test-Path -LiteralPath $icoPath) {
-            Write-Host "Installer icon already exists: $icoPath"
-            exit 0
-          }
-          $pngPath = Join-Path $PWD "packaging/icons/pulsimgui.png"
-          if (-not (Test-Path -LiteralPath $pngPath)) {
-            throw "Missing source icon at $pngPath"
-          }
-          Add-Type -AssemblyName System.Drawing
-          $bitmap = [System.Drawing.Bitmap]::FromFile($pngPath)
-          try {
-            $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-            try {
-              $stream = [System.IO.File]::Create($icoPath)
-              try {
-                $icon.Save($stream)
-              } finally {
-                $stream.Dispose()
-              }
-            } finally {
-              $icon.Dispose()
-            }
-          } finally {
-            $bitmap.Dispose()
-          }
-          if (-not (Test-Path -LiteralPath $icoPath)) {
-            throw "Failed to generate installer icon at $icoPath"
-          }
-          Write-Host "Generated installer icon: $icoPath"
+          python scripts/ensure_windows_icon.py --strict
 
       - name: Install NSIS
         shell: pwsh
@@ -335,6 +283,11 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Validate macOS icon assets
+        shell: bash
+        run: |
+          test -f packaging/icons/pulsimgui.icns
+
       - name: Smoke test built-in templates
         shell: bash
         run: |
@@ -351,6 +304,7 @@ jobs:
           test -f "dist/PulsimGui-${PULSIMGUI_VERSION}-macos.dmg"
           find "dist/PulsimGui.app" -name '_pulsim*' | grep -q .
           find "dist/PulsimGui.app" -path '*platforms/libqcocoa*' | grep -q .
+          find "dist/PulsimGui.app/Contents/Resources" -name '*.icns' | grep -q .
           if otool -L "dist/PulsimGui.app/Contents/MacOS/PulsimGui" | grep -E '/opt/homebrew|/usr/local'; then
             echo "Found non-system linkage to host-specific paths in app bundle"
             exit 1
@@ -442,6 +396,13 @@ jobs:
           print("pulsim backend available:", pulsim.__version__)
           PY
 
+      - name: Validate Linux icon assets
+        shell: bash
+        run: |
+          test -f packaging/icons/pulsimgui.png
+          test -f packaging/linux/pulsimgui.desktop
+          grep -q '^Icon=pulsimgui$' packaging/linux/pulsimgui.desktop
+
       - name: Smoke test built-in templates
         shell: bash
         run: |
@@ -464,6 +425,15 @@ jobs:
           test -n "$APPIMAGE"
           chmod +x "$APPIMAGE"
           "$APPIMAGE" --appimage-version
+          rm -rf squashfs-root
+          "$APPIMAGE" --appimage-extract > /dev/null
+          test -f squashfs-root/usr/share/icons/hicolor/256x256/apps/pulsimgui.png
+          if [ -f squashfs-root/pulsimgui.desktop ]; then
+            grep -q '^Icon=pulsimgui$' squashfs-root/pulsimgui.desktop
+          else
+            grep -q '^Icon=pulsimgui$' squashfs-root/usr/share/applications/pulsimgui.desktop
+          fi
+          rm -rf squashfs-root
 
       - name: Create portable tarball
         shell: bash
