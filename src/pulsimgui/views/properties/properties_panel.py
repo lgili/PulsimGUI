@@ -1734,6 +1734,11 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         source_raw = str(params.get("source", "") or "").strip()
         if not source_raw and self._cblock_path_edit is not None:
             source_raw = self._cblock_path_edit.text().strip()
+        source_text = ""
+        if self._cblock_source_editor is not None:
+            source_text = self._cblock_source_editor.toPlainText()
+        elif isinstance(params.get("source_code"), str):
+            source_text = str(params.get("source_code", ""))
 
         source_path: Path | None = None
         try:
@@ -1747,7 +1752,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
 
             source_path = Path(source_raw).expanduser()
 
-            if source_path is None or not source_path.exists():
+            # Keep compatibility with panel tests and UX: text in editor is
+            # treated as source-of-truth and is flushed to disk before compile.
+            if source_text.strip():
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(source_text, encoding="utf-8")
+                params["source_code"] = source_text
+                self.property_changed.emit("source_code", source_text)
+            elif source_path is None or not source_path.exists():
                 self._show_cblock_build_message(
                     title="C-Block Validation Error",
                     message="C source file was not found.",
