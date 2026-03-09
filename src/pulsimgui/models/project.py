@@ -420,13 +420,18 @@ class Project:
             raise ValueError("No path specified for saving")
 
         save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        self.save_copy(save_path)
 
         self.path = save_path
         self.mark_clean()
+
+    def save_copy(self, path: Path) -> None:
+        """Write a project copy to disk without changing active project state."""
+        copy_path = Path(path)
+        copy_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(copy_path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load(cls, path: Path) -> "Project":

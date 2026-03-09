@@ -1093,6 +1093,104 @@ class PulsimBackend(SimulationBackend):
         if callbacks is not None:
             callbacks.progress(progress_start + progress_span, "Virtual channels ready")
 
+    def _repair_current_probe_channels_from_bypass(
+        self,
+        circuit: Any,
+        result: BackendRunResult,
+    ) -> None:
+        """Repair flatlined current-probe channels using the stamped bypass branch.
+
+        Some backend builds expose current-probe channels but return all-zero values
+        even when branch current is flowing. Current probes are stamped with a tiny
+        bypass resistor by the converter; reconstruct probe current from node voltages
+        when the reported probe channel is effectively zero.
+        """
+        sample_count = len(result.time)
+        if sample_count <= 0:
+            return
+
+        virtual_components_attr = getattr(circuit, "virtual_components", None)
+        if not callable(virtual_components_attr):
+            return
+        node_name_attr = getattr(circuit, "node_name", None)
+        if not callable(node_name_attr):
+            return
+
+        try:
+            virtual_components = virtual_components_attr()
+        except Exception:
+            return
+        try:
+            components_iter = list(virtual_components)
+        except Exception:
+            return
+
+        repaired_channels: list[str] = []
+
+        for entry in components_iter:
+            comp_type = str(getattr(entry, "type", "") or "").strip().lower()
+            if comp_type != "current_probe":
+                continue
+
+            channel_name = str(getattr(entry, "name", "") or "").strip()
+            if not channel_name:
+                continue
+
+            existing = result.signals.get(channel_name)
+            if not isinstance(existing, list) or len(existing) < sample_count:
+                continue
+
+            try:
+                peak_existing = max(abs(float(value)) for value in existing[:sample_count])
+            except Exception:
+                continue
+            if peak_existing > 1e-12:
+                # Backend already produced a meaningful current-probe channel.
+                continue
+
+            raw_nodes = getattr(entry, "nodes", None)
+            if not isinstance(raw_nodes, list) or len(raw_nodes) < 2:
+                continue
+            try:
+                node_in = int(raw_nodes[0])
+                node_out = int(raw_nodes[1])
+            except (TypeError, ValueError):
+                continue
+            if node_in < 0 or node_out < 0:
+                continue
+
+            node_in_name = str(node_name_attr(node_in) or "").strip()
+            node_out_name = str(node_name_attr(node_out) or "").strip()
+            if not node_in_name or not node_out_name:
+                continue
+
+            vin = result.signals.get(f"V({node_in_name})") or result.signals.get(node_in_name)
+            vout = result.signals.get(f"V({node_out_name})") or result.signals.get(node_out_name)
+            if not isinstance(vin, list) or not isinstance(vout, list):
+                continue
+            if len(vin) < sample_count or len(vout) < sample_count:
+                continue
+
+            numeric_params = getattr(entry, "numeric_params", None)
+            series_r = 1e-4
+            if isinstance(numeric_params, dict):
+                try:
+                    series_r = float(numeric_params.get("series_resistance", series_r))
+                except (TypeError, ValueError):
+                    series_r = 1e-4
+            if abs(series_r) < 1e-15:
+                continue
+
+            repaired = [
+                (float(vin[idx]) - float(vout[idx])) / series_r
+                for idx in range(sample_count)
+            ]
+            result.signals[channel_name] = repaired
+            repaired_channels.append(channel_name)
+
+        if repaired_channels:
+            result.statistics["virtual_probe_repaired_channels"] = sorted(set(repaired_channels))
+
     @staticmethod
     def _normalize_signal_name(raw_name: str) -> str:
         """Normalize backend signal names for waveform display."""
@@ -2359,6 +2457,7 @@ class PulsimBackend(SimulationBackend):
                 progress_start=92.0,
                 progress_span=7.0,
             )
+            self._repair_current_probe_channels_from_bypass(circuit, run_result)
             callbacks.progress(100.0, "Simulation complete")
             return run_result
 

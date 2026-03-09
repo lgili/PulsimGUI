@@ -315,6 +315,8 @@ class TestComponent:
 
         assert pin_connection_domain(goto, 0) == CONNECTION_DOMAIN_ANY
         assert pin_connection_domain(from_label, 0) == CONNECTION_DOMAIN_ANY
+        assert goto.pins[0].x < 0
+        assert from_label.pins[0].x > 0
 
     def test_scope_connection_rules_for_electrical_probes(self):
         scope = Component(type=ComponentType.ELECTRICAL_SCOPE, name="ES1")

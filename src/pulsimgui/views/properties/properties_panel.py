@@ -1,7 +1,5 @@
 """Properties panel for editing component parameters."""
 
-import shutil
-import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -21,7 +19,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -50,13 +47,13 @@ from pulsimgui.models.component import (
     set_thermal_port_enabled,
     supports_electrothermal_parameters,
 )
-from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import (
     DARK_THEME,
     LIGHT_THEME,
     Theme,
     ThemeService,
 )
+from pulsimgui.resources.icons import IconService
 from pulsimgui.utils.si_prefix import parse_si_value
 from pulsimgui.views.library.library_panel import create_component_icon
 
@@ -69,15 +66,20 @@ class SectionHeader(QWidget):
         self._icon_name = icon_name
         self._icon_color = icon_color
         self._color_bar: QFrame | None = None
+        self._icon_label: QLabel | None = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 8, 0, 4)
+        layout.setContentsMargins(0, 6, 0, 4)
         layout.setSpacing(8)
 
         # Color bar
         self._color_bar = QFrame()
         self._color_bar.setFixedSize(3, 18)
         layout.addWidget(self._color_bar)
+
+        self._icon_label = QLabel()
+        self._icon_label.setFixedSize(16, 16)
+        layout.addWidget(self._icon_label)
 
         # Title
         self._title_label = QLabel(title)
@@ -94,11 +96,14 @@ class SectionHeader(QWidget):
             self._color_bar.setStyleSheet(
                 f"background-color: {self._icon_color}; border-radius: 1px;"
             )
+        if self._icon_label is not None:
+            icon = IconService.get_icon(self._icon_name, self._icon_color, 14)
+            self._icon_label.setPixmap(icon.pixmap(14, 14))
         if theme is None:
             self._title_label.setStyleSheet("font-weight: 600; font-size: 12px;")
             return
         self._title_label.setStyleSheet(
-            f"font-weight: 600; font-size: 12px; color: {theme.colors.foreground};"
+            f"font-weight: 600; font-size: 12px; letter-spacing: 0.2px; color: {theme.colors.foreground};"
         )
 
 
@@ -111,17 +116,6 @@ class AutoSelectLineEdit(QLineEdit):
         # Use timer to select after focus is fully set
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self.selectAll)
-
-
-class CommitPlainTextEdit(QPlainTextEdit):
-    """Plain text editor that emits content when focus leaves the widget."""
-
-    editing_finished = Signal(str)
-
-    def focusOutEvent(self, event) -> None:
-        """Emit final text when editing focus is lost."""
-        super().focusOutEvent(event)
-        self.editing_finished.emit(self.toPlainText())
 
 
 class SIValueWidget(QWidget):
@@ -520,8 +514,6 @@ class PropertiesPanel(QWidget):
 
     property_changed = Signal(str, object)
     name_changed = Signal(str)
-    flip_requested = Signal(str)  # "h" or "v"
-    rotate_requested = Signal(int)  # degrees
 
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
@@ -536,18 +528,12 @@ class PropertiesPanel(QWidget):
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
-        self._cblock_source_editor: CommitPlainTextEdit | None = None
-        self._cblock_mode_combo: QComboBox | None = None
         self._cblock_path_edit: AutoSelectLineEdit | None = None
         self._cblock_extra_cflags_edit: AutoSelectLineEdit | None = None
-        self._cblock_source_row: QWidget | None = None
-        self._cblock_template_row: QWidget | None = None
-        self._cblock_template_combo: QComboBox | None = None
         self._cblock_create_btn: QPushButton | None = None
         self._cblock_open_btn: QPushButton | None = None
         self._cblock_compile_btn: QPushButton | None = None
         self._cblock_sample_time_edit: SIValueWidget | None = None
-        self._cblock_last_committed_source = ""
         self._main_layout: QVBoxLayout | None = None
         self._show_position_controls = False
         self._compact_mode = False
@@ -555,10 +541,13 @@ class PropertiesPanel(QWidget):
         self._info_header: SectionHeader | None = None
         self._params_header: SectionHeader | None = None
         self._pos_header: SectionHeader | None = None
-        self._transform_label: QLabel | None = None
         self._summary_icon: QLabel | None = None
         self._summary_title: QLabel | None = None
         self._summary_subtitle: QLabel | None = None
+        self._type_badge: QLabel | None = None
+        self._pin_count_badge: QLabel | None = None
+        self._param_count_badge: QLabel | None = None
+        self._params_count_label: QLabel | None = None
 
         self._setup_ui()
         if self._theme_service is not None:
@@ -571,14 +560,14 @@ class PropertiesPanel(QWidget):
         """Set up the panel UI."""
         layout = QVBoxLayout(self)
         self._main_layout = layout
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
 
         # Component info section
         self._info_container = QWidget()
         self._info_container.setObjectName("PropertiesSectionCard")
         info_layout = QVBoxLayout(self._info_container)
-        info_layout.setContentsMargins(8, 6, 8, 8)
+        info_layout.setContentsMargins(12, 10, 12, 12)
         info_layout.setSpacing(8)
 
         self._info_header = SectionHeader("info", "Component", "#3b82f6")
@@ -587,9 +576,9 @@ class PropertiesPanel(QWidget):
         summary = QWidget()
         summary_layout = QHBoxLayout(summary)
         summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setSpacing(10)
+        summary_layout.setSpacing(12)
         self._summary_icon = QLabel()
-        self._summary_icon.setFixedSize(38, 38)
+        self._summary_icon.setFixedSize(44, 44)
         self._summary_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         summary_layout.addWidget(self._summary_icon)
 
@@ -606,6 +595,22 @@ class PropertiesPanel(QWidget):
         summary_layout.addWidget(summary_text, 1)
         info_layout.addWidget(summary)
 
+        badges = QWidget()
+        badges_layout = QHBoxLayout(badges)
+        badges_layout.setContentsMargins(0, 0, 0, 0)
+        badges_layout.setSpacing(6)
+        self._type_badge = QLabel("Type")
+        self._type_badge.setObjectName("PropertiesInfoBadge")
+        badges_layout.addWidget(self._type_badge)
+        self._pin_count_badge = QLabel("Pins: 0")
+        self._pin_count_badge.setObjectName("PropertiesInfoBadge")
+        badges_layout.addWidget(self._pin_count_badge)
+        self._param_count_badge = QLabel("Params: 0")
+        self._param_count_badge.setObjectName("PropertiesInfoBadge")
+        badges_layout.addWidget(self._param_count_badge)
+        badges_layout.addStretch(1)
+        info_layout.addWidget(badges)
+
         # Type and name
         form = QWidget()
         form_layout = QFormLayout(form)
@@ -613,8 +618,13 @@ class PropertiesPanel(QWidget):
         form_layout.setHorizontalSpacing(10)
         form_layout.setVerticalSpacing(8)
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        form_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self._type_label = QLabel("-")
+        self._type_label.setObjectName("PropertiesTypeValue")
         form_layout.addRow("Type:", self._type_label)
 
         self._name_edit = AutoSelectLineEdit()
@@ -625,45 +635,27 @@ class PropertiesPanel(QWidget):
 
         info_layout.addWidget(form)
 
-        # Transform buttons (rotate, flip)
-        transform_widget = QWidget()
-        transform_layout = QHBoxLayout(transform_widget)
-        transform_layout.setContentsMargins(0, 4, 0, 0)
-        transform_layout.setSpacing(6)
-
-        self._transform_label = QLabel("Transform:")
-        transform_layout.addWidget(self._transform_label)
-
-        self._rotate_ccw_btn = IconButton("rotate-ccw", "Rotate Left (R)")
-        self._rotate_ccw_btn.clicked.connect(lambda: self._on_rotate(-90))
-        transform_layout.addWidget(self._rotate_ccw_btn)
-
-        self._rotate_cw_btn = IconButton("rotate-cw", "Rotate Right (Shift+R)")
-        self._rotate_cw_btn.clicked.connect(lambda: self._on_rotate(90))
-        transform_layout.addWidget(self._rotate_cw_btn)
-
-        self._flip_h_btn = IconButton("flip-horizontal", "Flip Horizontal (H)")
-        self._flip_h_btn.clicked.connect(lambda: self._on_flip("h"))
-        transform_layout.addWidget(self._flip_h_btn)
-
-        self._flip_v_btn = IconButton("flip-vertical", "Flip Vertical (V)")
-        self._flip_v_btn.clicked.connect(lambda: self._on_flip("v"))
-        transform_layout.addWidget(self._flip_v_btn)
-
-        transform_layout.addStretch()
-        info_layout.addWidget(transform_widget)
-
         layout.addWidget(self._info_container)
 
         # Parameters section
         self._params_container = QWidget()
         self._params_container.setObjectName("PropertiesSectionCard")
         params_container_layout = QVBoxLayout(self._params_container)
-        params_container_layout.setContentsMargins(8, 6, 8, 8)
+        params_container_layout.setContentsMargins(12, 10, 12, 12)
         params_container_layout.setSpacing(8)
 
         self._params_header = SectionHeader("sliders", "Parameters", "#10b981")
         params_container_layout.addWidget(self._params_header)
+
+        params_meta = QWidget()
+        params_meta_layout = QHBoxLayout(params_meta)
+        params_meta_layout.setContentsMargins(0, 0, 0, 0)
+        params_meta_layout.setSpacing(8)
+        self._params_count_label = QLabel("0 editable parameters")
+        self._params_count_label.setObjectName("PropertiesParamsCount")
+        params_meta_layout.addWidget(self._params_count_label)
+        params_meta_layout.addStretch(1)
+        params_container_layout.addWidget(params_meta)
 
         # Parameters scroll area
         scroll = QScrollArea()
@@ -676,8 +668,8 @@ class PropertiesPanel(QWidget):
         self._params_widget = QWidget()
         self._params_layout = QFormLayout(self._params_widget)
         self._params_layout.setContentsMargins(0, 0, 0, 0)
-        self._params_layout.setHorizontalSpacing(10)
-        self._params_layout.setVerticalSpacing(8)
+        self._params_layout.setHorizontalSpacing(12)
+        self._params_layout.setVerticalSpacing(9)
         self._params_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._params_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
@@ -696,7 +688,7 @@ class PropertiesPanel(QWidget):
         self._pos_container = QWidget()
         self._pos_container.setObjectName("PropertiesSectionCard")
         pos_layout = QVBoxLayout(self._pos_container)
-        pos_layout.setContentsMargins(8, 6, 8, 8)
+        pos_layout.setContentsMargins(12, 10, 12, 12)
         pos_layout.setSpacing(8)
 
         self._pos_header = SectionHeader("move", "Position", "#f59e0b")
@@ -730,6 +722,7 @@ class PropertiesPanel(QWidget):
 
         # No selection label
         self._no_selection_label = QLabel("No component selected")
+        self._no_selection_label.setObjectName("PropertiesEmptyState")
         self._no_selection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._no_selection_label)
 
@@ -765,6 +758,7 @@ class PropertiesPanel(QWidget):
                 self._summary_title.setText("No component selected")
             if self._summary_subtitle is not None:
                 self._summary_subtitle.setText("Select a component to edit parameters")
+            self._update_component_metrics()
             return
 
         self._no_selection_label.hide()
@@ -795,10 +789,6 @@ class PropertiesPanel(QWidget):
                 )
             )
 
-        # Update flip button states
-        self._flip_h_btn.set_active(self._component.mirrored_h)
-        self._flip_v_btn.set_active(self._component.mirrored_v)
-
         # Update position
         self._x_spin.blockSignals(True)
         self._y_spin.blockSignals(True)
@@ -811,6 +801,8 @@ class PropertiesPanel(QWidget):
 
         # Create parameter widgets
         self._create_param_widgets()
+        self._update_component_metrics()
+        self._apply_compact_scroll_limits_for_component()
         if self._theme is not None:
             self.apply_theme(self._theme)
 
@@ -824,18 +816,45 @@ class PropertiesPanel(QWidget):
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
-        self._cblock_source_editor = None
-        self._cblock_mode_combo = None
         self._cblock_path_edit = None
         self._cblock_extra_cflags_edit = None
-        self._cblock_source_row = None
-        self._cblock_template_row = None
-        self._cblock_template_combo = None
         self._cblock_create_btn = None
         self._cblock_open_btn = None
         self._cblock_compile_btn = None
         self._cblock_sample_time_edit = None
-        self._cblock_last_committed_source = ""
+
+    def _editable_parameter_count(self) -> int:
+        if self._component is None:
+            return 0
+        hidden = HIDDEN_PARAMS.get(self._component.type, frozenset())
+        return sum(1 for key in self._component.parameters if key not in hidden)
+
+    def _update_component_metrics(self) -> None:
+        if self._component is None:
+            if self._type_badge is not None:
+                self._type_badge.setText("Type")
+            if self._pin_count_badge is not None:
+                self._pin_count_badge.setText("Pins: 0")
+            if self._param_count_badge is not None:
+                self._param_count_badge.setText("Params: 0")
+            if self._params_count_label is not None:
+                self._params_count_label.setText("0 editable parameters")
+            return
+
+        type_name = self._component.type.name.replace("_", " ").title()
+        pin_count = len(self._component.pins)
+        param_count = self._editable_parameter_count()
+
+        if self._type_badge is not None:
+            self._type_badge.setText(type_name)
+        if self._pin_count_badge is not None:
+            self._pin_count_badge.setText(f"Pins: {pin_count}")
+        if self._param_count_badge is not None:
+            self._param_count_badge.setText(f"Params: {param_count}")
+        if self._params_count_label is not None:
+            self._params_count_label.setText(
+                f"{param_count} editable parameter{'s' if param_count != 1 else ''}"
+            )
 
     def _create_param_widgets(self) -> None:
         """Create widgets for component parameters."""
@@ -1158,163 +1177,48 @@ class PropertiesPanel(QWidget):
 
     # --- C-Block parameter editors -----------------------------------------------
 
-    @staticmethod
-    def _cblock_templates() -> dict[str, tuple[str, str]]:
-        return {
-            "gain": (
-                "Gain (1 input)",
-                """#include "pulsim/v1/cblock_abi.h"
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
-    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
-{
-    (void)ctx; (void)t; (void)dt;
-    out[0] = 2.0 * in[0];
-    return 0;
-}
-""",
-            ),
-            "pi_discrete": (
-                "PI discrete",
-                """#include "pulsim/v1/cblock_abi.h"
-#include <stdlib.h>
-
-typedef struct {
-    double integ;
-    double kp;
-    double ki;
-} PIState;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_init(void** ctx_out, const PulsimCBlockInfo* info)
-{
-    (void)info;
-    PIState* s = (PIState*)malloc(sizeof(PIState));
-    if (!s) return -1;
-    s->integ = 0.0;
-    s->kp = 0.08;
-    s->ki = 120.0;
-    *ctx_out = s;
-    return 0;
-}
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
-    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
-{
-    (void)t;
-    PIState* s = (PIState*)ctx;
-    double err = in[0];
-    s->integ += err * dt;
-    out[0] = (s->kp * err) + (s->ki * s->integ);
-    return 0;
-}
-
-PULSIM_CBLOCK_EXPORT void pulsim_cblock_destroy(PulsimCBlockCtx* ctx)
-{
-    free(ctx);
-}
-""",
-            ),
-            "low_pass": (
-                "1st-order LPF",
-                """#include "pulsim/v1/cblock_abi.h"
-#include <math.h>
-#include <stdlib.h>
-
-typedef struct {
-    double y_prev;
-} LPState;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_init(void** ctx_out, const PulsimCBlockInfo* info)
-{
-    (void)info;
-    LPState* s = (LPState*)malloc(sizeof(LPState));
-    if (!s) return -1;
-    s->y_prev = 0.0;
-    *ctx_out = s;
-    return 0;
-}
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
-    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
-{
-    (void)t;
-    LPState* s = (LPState*)ctx;
-    const double fc = 100.0;
-    const double tau = 1.0 / (2.0 * 3.14159265358979323846 * fc);
-    const double alpha = dt / (tau + dt);
-    s->y_prev = alpha * in[0] + (1.0 - alpha) * s->y_prev;
-    out[0] = s->y_prev;
-    return 0;
-}
-
-PULSIM_CBLOCK_EXPORT void pulsim_cblock_destroy(PulsimCBlockCtx* ctx)
-{
-    free(ctx);
-}
-""",
-            ),
-            "multi_out": (
-                "Multi-output",
-                """#include "pulsim/v1/cblock_abi.h"
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_abi_version = PULSIM_CBLOCK_ABI_VERSION;
-
-PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
-    PulsimCBlockCtx* ctx, double t, double dt, const double* in, double* out)
-{
-    (void)ctx; (void)t; (void)dt;
-    out[0] = 2.0 * in[0];
-    out[1] = 3.0 * in[0];
-    return 0;
-}
-""",
-            ),
-        }
-
-    @staticmethod
-    def _normalize_cblock_mode(raw_mode: Any, params: dict[str, Any]) -> str:
-        mode = str(raw_mode or "").strip().lower()
-        if mode in {"source", "library"}:
-            return mode
-        if str(params.get("lib_path", "") or "").strip():
-            return "library"
-        return "source"
-
     def _create_cblock_param_widgets(self) -> None:
         if not self._component:
             return
 
         params = self._component.parameters
-        mode = self._normalize_cblock_mode(params.get("implementation"), params)
-        params["implementation"] = mode
+        params["implementation"] = "source"
 
         n_inputs_spin = QSpinBox()
         n_inputs_spin.setRange(*C_BLOCK_IO_LIMITS)
+        n_inputs_spin.setFixedWidth(84)
         try:
             input_count = int(params.get("n_inputs", 1) or 1)
         except (TypeError, ValueError):
             input_count = 1
         n_inputs_spin.setValue(max(C_BLOCK_IO_LIMITS[0], input_count))
         n_inputs_spin.valueChanged.connect(lambda value: self._on_cblock_io_changed("n_inputs", value))
-        self._params_layout.addRow("Inputs:", n_inputs_spin)
 
         n_outputs_spin = QSpinBox()
         n_outputs_spin.setRange(*C_BLOCK_IO_LIMITS)
+        n_outputs_spin.setFixedWidth(84)
         try:
             output_count = int(params.get("n_outputs", 1) or 1)
         except (TypeError, ValueError):
             output_count = 1
         n_outputs_spin.setValue(max(C_BLOCK_IO_LIMITS[0], output_count))
         n_outputs_spin.valueChanged.connect(lambda value: self._on_cblock_io_changed("n_outputs", value))
-        self._params_layout.addRow("Outputs:", n_outputs_spin)
+
+        io_row = QWidget()
+        io_layout = QHBoxLayout(io_row)
+        io_layout.setContentsMargins(0, 0, 0, 0)
+        io_layout.setSpacing(8)
+        io_layout.addWidget(QLabel("Inputs:"))
+        io_layout.addWidget(n_inputs_spin)
+        io_layout.addSpacing(12)
+        io_layout.addWidget(QLabel("Outputs:"))
+        io_layout.addWidget(n_outputs_spin)
+        io_layout.addStretch()
+        self._params_layout.addRow("I/O:", io_row)
 
         sample_time_widget = SIValueWidget("s")
+        sample_time_widget.setFixedWidth(170)
+        sample_time_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         sample_time = get_control_sample_time(params, default=0.0)
         set_control_sample_time(params, sample_time)
         sample_time_widget.value = sample_time
@@ -1329,20 +1233,12 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         demux_hint.setObjectName("CBlockHintLabel")
         self._params_layout.addRow("", demux_hint)
 
-        mode_combo = QComboBox()
-        mode_combo.addItem("Source (.c)", "source")
-        mode_combo.addItem("Library (.dll/.so/.dylib)", "library")
-        mode_combo.setCurrentIndex(0 if mode == "source" else 1)
-        mode_combo.currentIndexChanged.connect(self._on_cblock_mode_changed)
-        self._cblock_mode_combo = mode_combo
-        self._params_layout.addRow("Mode:", mode_combo)
-
         path_row = QWidget()
         path_layout = QHBoxLayout(path_row)
         path_layout.setContentsMargins(0, 0, 0, 0)
         path_layout.setSpacing(6)
-        path_edit = AutoSelectLineEdit(str(params.get("source" if mode == "source" else "lib_path", "") or ""))
-        path_edit.setPlaceholderText("Select a source file" if mode == "source" else "Select a shared library")
+        path_edit = AutoSelectLineEdit(str(params.get("source", "") or ""))
+        path_edit.setPlaceholderText("Select a source file")
         path_edit.returnPressed.connect(self._on_cblock_path_changed)
         path_edit.editingFinished.connect(self._on_cblock_path_changed)
         path_layout.addWidget(path_edit, 1)
@@ -1375,35 +1271,6 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         self._cblock_extra_cflags_edit = flags_edit
         self._params_layout.addRow("Extra cflags:", flags_edit)
 
-        template_row = QWidget()
-        template_layout = QHBoxLayout(template_row)
-        template_layout.setContentsMargins(0, 0, 0, 0)
-        template_layout.setSpacing(6)
-        template_combo = QComboBox()
-        for key, (label, _source) in self._cblock_templates().items():
-            template_combo.addItem(label, key)
-        self._cblock_template_combo = template_combo
-        template_layout.addWidget(template_combo, 1)
-        insert_btn = QPushButton("Insert template")
-        insert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        insert_btn.clicked.connect(self._on_insert_cblock_template)
-        template_layout.addWidget(insert_btn)
-        self._cblock_template_row = template_row
-        self._params_layout.addRow("Templates:", template_row)
-
-        source_editor = CommitPlainTextEdit()
-        source_editor.setPlaceholderText("Paste or write C source code for this C-Block...")
-        source_editor.setMinimumHeight(210)
-        source_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        source_text = str(params.get("source_code", "") or "")
-        source_editor.setPlainText(source_text)
-        source_editor.textChanged.connect(self._on_cblock_source_editor_live_changed)
-        source_editor.editing_finished.connect(self._on_cblock_source_code_changed)
-        self._cblock_last_committed_source = source_text
-        self._cblock_source_editor = source_editor
-        self._cblock_source_row = source_editor
-        self._params_layout.addRow("Source code:", source_editor)
-
         compile_btn = QPushButton("Test Compilation")
         compile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         compile_btn.clicked.connect(self._on_test_cblock_compilation)
@@ -1425,14 +1292,6 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         self._params_layout.addRow("", trust_warning)
         self._refresh_cblock_visibility()
 
-    def _current_cblock_mode(self) -> str:
-        if self._cblock_mode_combo is None:
-            return "source"
-        mode = self._cblock_mode_combo.currentData()
-        if mode in {"source", "library"}:
-            return str(mode)
-        return "source"
-
     def _on_cblock_io_changed(self, field: str, value: int) -> None:
         if not self._component:
             return
@@ -1448,44 +1307,22 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         normalized = set_control_sample_time(self._component.parameters, value)
         self.property_changed.emit("sample_time", normalized)
 
-    def _on_cblock_mode_changed(self, _index: int) -> None:
-        if not self._component:
-            return
-        mode = self._current_cblock_mode()
-        self._component.parameters["implementation"] = mode
-        self.property_changed.emit("implementation", mode)
-        self._refresh_cblock_visibility()
-
     def _on_cblock_path_changed(self) -> None:
         if not self._component or self._cblock_path_edit is None:
             return
         path = self._cblock_path_edit.text().strip().replace("\\", "/")
         self._cblock_path_edit.setText(path)
-        mode = self._current_cblock_mode()
-        if mode == "source":
-            self._component.parameters["source"] = path
-            self.property_changed.emit("source", path)
-        else:
-            self._component.parameters["lib_path"] = path
-            self.property_changed.emit("lib_path", path)
+        self._component.parameters["source"] = path
+        self.property_changed.emit("source", path)
 
     def _on_browse_cblock_path(self) -> None:
-        mode = self._current_cblock_mode()
         start = self._cblock_path_edit.text().strip() if self._cblock_path_edit else ""
-        if mode == "source":
-            selected, _ = QFileDialog.getSaveFileName(
-                self,
-                "Select C source file",
-                start,
-                "C source (*.c);;All files (*)",
-            )
-        else:
-            selected, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select shared library",
-                start,
-                "Shared libraries (*.dll *.so *.dylib);;All files (*)",
-            )
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import C source file",
+            start,
+            "C source (*.c);;All files (*)",
+        )
         if not selected or self._cblock_path_edit is None:
             return
         self._cblock_path_edit.setText(selected)
@@ -1499,42 +1336,6 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         flags = [token for token in tokens if token]
         self._component.parameters["extra_cflags"] = flags
         self.property_changed.emit("extra_cflags", flags)
-
-    def _on_cblock_source_editor_live_changed(self) -> None:
-        if not self._component or self._cblock_source_editor is None:
-            return
-        self._component.parameters["source_code"] = self._cblock_source_editor.toPlainText()
-
-    def _on_cblock_source_code_changed(self, text: str) -> None:
-        if not self._component:
-            return
-        self._component.parameters["source_code"] = text
-        if self._cblock_last_committed_source == text:
-            return
-        self._cblock_last_committed_source = text
-        self.property_changed.emit("source_code", text)
-
-    def _on_insert_cblock_template(self) -> None:
-        if self._cblock_template_combo is None or self._cblock_source_editor is None:
-            return
-        template_key = str(self._cblock_template_combo.currentData() or "").strip()
-        template = self._cblock_templates().get(template_key)
-        if template is None:
-            return
-        _label, source_code = template
-        current = self._cblock_source_editor.toPlainText().strip()
-        if current and current != source_code.strip():
-            choice = QMessageBox.question(
-                self,
-                "Replace Source",
-                "Replace current C source with selected template?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if choice != QMessageBox.StandardButton.Yes:
-                return
-        self._cblock_source_editor.setPlainText(source_code)
-        self._on_cblock_source_code_changed(source_code)
 
     @staticmethod
     def _default_cblock_filename(component_name: str) -> str:
@@ -1602,13 +1403,6 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     def _on_create_cblock_base_file(self) -> None:
         if self._component is None:
             return
-        if self._current_cblock_mode() != "source":
-            self._show_cblock_build_message(
-                title="C-Block Mode",
-                message="Switch to Source mode to create a C template file.",
-                icon=QMessageBox.Icon.Warning,
-            )
-            return
 
         start = ""
         if self._cblock_path_edit is not None:
@@ -1659,28 +1453,15 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         self._component.parameters["source"] = normalized_path
         self.property_changed.emit("source", normalized_path)
 
-        self._component.parameters["source_code"] = source_code
-        if self._cblock_source_editor is not None:
-            self._cblock_source_editor.setPlainText(source_code)
-        self._cblock_last_committed_source = source_code
-        self.property_changed.emit("source_code", source_code)
-
         self._show_cblock_build_message(
             title="C-Block File Created",
-            message="Starter C-Block file was created and loaded.",
+            message="Starter C-Block file was created and imported.",
             details=normalized_path,
             icon=QMessageBox.Icon.Information,
         )
 
     def _on_open_cblock_source_external(self) -> None:
         if self._component is None:
-            return
-        if self._current_cblock_mode() != "source":
-            self._show_cblock_build_message(
-                title="C-Block Mode",
-                message="Open in Editor is available only in Source mode.",
-                icon=QMessageBox.Icon.Warning,
-            )
             return
 
         source_raw = str(self._component.parameters.get("source", "") or "").strip()
@@ -1780,73 +1561,21 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             )
             return
 
-        mode = self._current_cblock_mode()
-        if mode == "library":
-            lib_path = str(params.get("lib_path", "") or "").strip()
-            if not lib_path and self._cblock_path_edit is not None:
-                lib_path = self._cblock_path_edit.text().strip()
-            if not lib_path:
-                self._show_cblock_build_message(
-                    title="C-Block Validation Error",
-                    message="Select a shared library path before validating.",
-                    icon=QMessageBox.Icon.Warning,
-                )
-                return
-            lib_candidate = Path(lib_path).expanduser()
-            if not lib_candidate.exists():
-                self._show_cblock_build_message(
-                    title="C-Block Validation Error",
-                    message="Shared library path was not found.",
-                    details=lib_candidate.as_posix(),
-                    icon=QMessageBox.Icon.Warning,
-                )
-                return
-            self._show_cblock_build_message(
-                title="C-Block Validation",
-                message="Shared library path is valid.",
-                details=lib_candidate.as_posix(),
-                icon=QMessageBox.Icon.Information,
-            )
-            return
-
-        source_text = ""
-        if self._cblock_source_editor is not None:
-            source_text = self._cblock_source_editor.toPlainText()
-        elif "source_code" in params:
-            source_text = str(params.get("source_code", "") or "")
-
         source_raw = str(params.get("source", "") or "").strip()
         if not source_raw and self._cblock_path_edit is not None:
             source_raw = self._cblock_path_edit.text().strip()
 
-        temp_dir: Path | None = None
         source_path: Path | None = None
         try:
-            if source_raw:
-                source_path = Path(source_raw).expanduser()
-                if source_text.strip():
-                    try:
-                        source_path.parent.mkdir(parents=True, exist_ok=True)
-                        source_path.write_text(source_text, encoding="utf-8")
-                    except OSError as exc:
-                        self._show_cblock_build_message(
-                            title="C-Block Validation Error",
-                            message="Failed to write C source file.",
-                            details=str(exc),
-                            icon=QMessageBox.Icon.Warning,
-                        )
-                        return
-            elif source_text.strip():
-                temp_dir = Path(tempfile.mkdtemp(prefix="pulsimgui-cblock-test-"))
-                source_path = temp_dir / f"{self._safe_cblock_stem(self._component.name)}.c"
-                source_path.write_text(source_text, encoding="utf-8")
-            else:
+            if not source_raw:
                 self._show_cblock_build_message(
                     title="C-Block Validation Error",
-                    message="Provide source code or select a source file path.",
+                    message="Import a C source file before validating.",
                     icon=QMessageBox.Icon.Warning,
                 )
                 return
+
+            source_path = Path(source_raw).expanduser()
 
             if source_path is None or not source_path.exists():
                 self._show_cblock_build_message(
@@ -1908,32 +1637,20 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
                 icon=QMessageBox.Icon.Information,
             )
         finally:
-            if temp_dir is not None:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            pass
 
     def _refresh_cblock_visibility(self) -> None:
-        mode = self._current_cblock_mode()
-        source_mode = mode == "source"
         if self._cblock_path_edit is not None and self._component is not None:
             self._cblock_path_edit.blockSignals(True)
-            key = "source" if source_mode else "lib_path"
-            self._cblock_path_edit.setText(str(self._component.parameters.get(key, "") or ""))
-            self._cblock_path_edit.setPlaceholderText(
-                "Select a source file" if source_mode else "Select a shared library"
-            )
+            self._cblock_path_edit.setText(str(self._component.parameters.get("source", "") or ""))
+            self._cblock_path_edit.setPlaceholderText("Select a source file")
             self._cblock_path_edit.blockSignals(False)
-        if self._cblock_source_row is not None:
-            self._cblock_source_row.setVisible(source_mode)
-        if self._cblock_template_row is not None:
-            self._cblock_template_row.setVisible(source_mode)
         if self._cblock_create_btn is not None:
-            self._cblock_create_btn.setVisible(source_mode)
+            self._cblock_create_btn.setVisible(True)
         if self._cblock_open_btn is not None:
-            self._cblock_open_btn.setVisible(source_mode)
+            self._cblock_open_btn.setVisible(True)
         if self._cblock_compile_btn is not None:
-            self._cblock_compile_btn.setText(
-                "Test Compilation" if source_mode else "Validate Library Path"
-            )
+            self._cblock_compile_btn.setText("Test Compilation")
 
     # --- Utilities ----------------------------------------------------------------
 
@@ -2027,13 +1744,14 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             return
 
         if compact:
-            self._scroll.setMinimumHeight(190)
-            self._scroll.setMaximumHeight(310)
+            self._scroll.setMinimumHeight(240)
+            self._scroll.setMaximumHeight(420)
             self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             self._params_container.setSizePolicy(
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
             )
             self._main_layout.setStretchFactor(self._params_container, 0)
+            self._apply_compact_scroll_limits_for_component()
         else:
             self._scroll.setMinimumHeight(270)
             self._scroll.setMaximumHeight(16777215)
@@ -2043,26 +1761,16 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             )
             self._main_layout.setStretchFactor(self._params_container, 1)
 
-    def _on_rotate(self, degrees: int) -> None:
-        """Handle rotation button click."""
-        if self._component:
-            new_rotation = (self._component.rotation + degrees) % 360
-            self._component.rotation = new_rotation
-            self.rotate_requested.emit(degrees)
-            self.property_changed.emit("rotation", new_rotation)
+    def _apply_compact_scroll_limits_for_component(self) -> None:
+        """Tune compact scroll height for components that need more vertical space."""
+        if not self._compact_mode or self._component is None:
+            return
 
-    def _on_flip(self, axis: str) -> None:
-        """Handle flip button click."""
-        if self._component:
-            if axis == "h":
-                self._component.mirrored_h = not self._component.mirrored_h
-                self._flip_h_btn.set_active(self._component.mirrored_h)
-            else:
-                self._component.mirrored_v = not self._component.mirrored_v
-                self._flip_v_btn.set_active(self._component.mirrored_v)
-            self.flip_requested.emit(axis)
-            self.property_changed.emit(f"mirror_{axis}",
-                self._component.mirrored_h if axis == "h" else self._component.mirrored_v)
+        if self._component.type == ComponentType.C_BLOCK:
+            # C_BLOCK typically has many fields; allow the parameters panel to
+            # grow closer to the dialog action buttons.
+            self._scroll.setMinimumHeight(380)
+            self._scroll.setMaximumHeight(560)
 
     def _on_edit_waveform(self, param: str, waveform: dict) -> None:
         """Open waveform editor dialog."""
@@ -2090,19 +1798,41 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             QWidget#PropertiesSectionCard {{
                 background-color: {c.panel_header};
                 border: 1px solid {c.panel_border};
-                border-radius: 8px;
+                border-radius: 12px;
+            }}
+            QWidget#PropertiesSectionCard:hover {{
+                border: 1px solid {c.input_focus_border};
             }}
             QLabel {{
                 color: {c.foreground};
             }}
             QLabel#PropertiesSummaryTitle {{
                 color: {c.foreground};
-                font-size: 12px;
-                font-weight: 600;
+                font-size: 13px;
+                font-weight: 700;
             }}
             QLabel#PropertiesSummarySubtitle {{
                 color: {c.foreground_muted};
                 font-size: 11px;
+            }}
+            QLabel#PropertiesInfoBadge {{
+                background-color: {c.tree_item_selected};
+                color: {c.primary};
+                border: 1px solid {c.border};
+                border-radius: 10px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#PropertiesParamsCount {{
+                color: {c.foreground_muted};
+                font-size: 11px;
+                font-weight: 500;
+            }}
+            QLabel#PropertiesTypeValue {{
+                color: {c.primary};
+                font-size: 12px;
+                font-weight: 600;
             }}
             QLabel#ChannelIndexLabel {{
                 color: {c.foreground_muted};
@@ -2140,8 +1870,8 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {{
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
-                border-radius: 4px;
-                padding: 5px 6px;
+                border-radius: 7px;
+                padding: 6px 8px;
                 color: {c.foreground};
                 selection-background-color: {c.primary};
                 selection-color: {c.primary_foreground};
@@ -2153,39 +1883,61 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
                 color: {c.foreground};
                 spacing: 6px;
             }}
+            QCheckBox::indicator {{
+                width: 15px;
+                height: 15px;
+                border-radius: 4px;
+                border: 1px solid {c.input_border};
+                background: {c.input_background};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {c.primary};
+                border: 1px solid {c.primary};
+            }}
             QScrollArea {{
                 background-color: transparent;
                 border: none;
             }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {c.input_border};
+                border-radius: 5px;
+                min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {c.border};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
             QFormLayout QLabel {{
                 color: {c.foreground_muted};
+            }}
+            QLabel#PropertiesEmptyState {{
+                color: {c.foreground_muted};
+                background-color: {c.panel_header};
+                border: 1px dashed {c.panel_border};
+                border-radius: 12px;
+                padding: 26px;
             }}
         """)
 
         self._type_label.setStyleSheet(f"color: {c.foreground_muted}; font-weight: 500;")
-        self._no_selection_label.setStyleSheet(f"color: {c.foreground_muted}; padding: 40px;")
         if self._summary_icon is not None:
             self._summary_icon.setStyleSheet(
                 f"background-color: {c.input_background}; border: 1px solid {c.input_border}; "
-                "border-radius: 6px;"
+                "border-radius: 10px;"
             )
-        if self._transform_label is not None:
-            self._transform_label.setStyleSheet(f"color: {c.foreground_muted};")
-
         if self._info_header is not None:
             self._info_header.apply_theme(theme, accent_color=c.primary)
         if self._params_header is not None:
             self._params_header.apply_theme(theme, accent_color=c.success)
         if self._pos_header is not None:
             self._pos_header.apply_theme(theme, accent_color=c.warning)
-
-        button_icon = c.icon_default
-        self._rotate_ccw_btn.apply_theme(theme, icon_color=button_icon)
-        self._rotate_cw_btn.apply_theme(theme, icon_color=button_icon)
-        self._flip_h_btn.apply_theme(theme, icon_color=button_icon)
-        self._flip_v_btn.apply_theme(theme, icon_color=button_icon)
-        self._flip_h_btn.set_active(bool(self._component and self._component.mirrored_h))
-        self._flip_v_btn.set_active(bool(self._component and self._component.mirrored_v))
 
         for widget in self._widgets.values():
             if isinstance(widget, SIValueWidget):

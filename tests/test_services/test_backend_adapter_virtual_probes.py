@@ -5,7 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from pulsimgui.services.backend_adapter import BackendCallbacks, BackendInfo, PulsimBackend
+import pytest
+
+from pulsimgui.services.backend_adapter import (
+    BackendCallbacks,
+    BackendInfo,
+    BackendRunResult,
+    PulsimBackend,
+)
 from pulsimgui.services.simulation_service import SimulationSettings
 
 
@@ -108,3 +115,33 @@ def test_run_transient_populates_virtual_probe_channels() -> None:
     assert result.error_message == ""
     assert result.signals["VP1"] == [2.0, 3.0]
     assert result.signals["IP1"] == [0.75, 0.75]
+
+
+def test_repair_current_probe_channel_from_bypass_voltage() -> None:
+    backend = _build_backend()
+
+    circuit = SimpleNamespace(
+        virtual_components=lambda: [
+            SimpleNamespace(
+                type="current_probe",
+                name="IP1",
+                nodes=[0, 1],
+                numeric_params={"series_resistance": 1e-4},
+            )
+        ],
+        node_name=lambda idx: "VIN" if idx == 0 else "N_LOAD",
+    )
+    result = BackendRunResult(
+        time=[0.0, 1e-3],
+        signals={
+            "IP1": [0.0, 0.0],
+            "V(VIN)": [12.0, 12.0],
+            "V(N_LOAD)": [11.99976, 11.99976],
+        },
+        statistics={},
+    )
+
+    backend._repair_current_probe_channels_from_bypass(circuit, result)
+
+    assert result.signals["IP1"] == pytest.approx([2.4, 2.4], rel=1e-9)
+    assert result.statistics.get("virtual_probe_repaired_channels") == ["IP1"]

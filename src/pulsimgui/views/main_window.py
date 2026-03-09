@@ -323,6 +323,20 @@ class MainWindow(QMainWindow):
         self.action_hand_tool.setToolTip("Hand Tool (H)")
         self.action_hand_tool.triggered.connect(self._on_hand_tool_selected)
 
+        self.action_rotate_ccw = QAction("Rotate Counter-Clockwise", self)
+        self.action_rotate_ccw.setToolTip("Rotate selected component(s) left")
+        self.action_rotate_ccw.setEnabled(False)
+        self.action_rotate_ccw.triggered.connect(
+            lambda: self._rotate_selected_components(-90)
+        )
+
+        self.action_rotate_cw = QAction("Rotate Clockwise", self)
+        self.action_rotate_cw.setToolTip("Rotate selected component(s) right")
+        self.action_rotate_cw.setEnabled(False)
+        self.action_rotate_cw.triggered.connect(
+            lambda: self._rotate_selected_components(90)
+        )
+
         self._toolbar_tool_group = QActionGroup(self)
         self._toolbar_tool_group.setExclusive(True)
         self._toolbar_tool_group.addAction(self.action_wire_tool)
@@ -517,6 +531,9 @@ class MainWindow(QMainWindow):
         # Left tool selectors
         self._toolbar.addAction(self.action_wire_tool)
         self._toolbar.addAction(self.action_hand_tool)
+        self._toolbar.addSeparator()
+        self._toolbar.addAction(self.action_rotate_ccw)
+        self._toolbar.addAction(self.action_rotate_cw)
 
         # Add flexible spacer
         spacer = QWidget()
@@ -915,6 +932,8 @@ class MainWindow(QMainWindow):
             self.action_zoom_fit: "maximize",
             self.action_wire_tool: "wire",
             self.action_hand_tool: "hand",
+            self.action_rotate_ccw: "rotate-ccw",
+            self.action_rotate_cw: "rotate-cw",
             self.action_dc_op: "activity",
             self.action_ac: "zap",
         }
@@ -1029,7 +1048,7 @@ class MainWindow(QMainWindow):
             # Save to backup file (original.pulsim.bak)
             backup_path = Path(str(self._project.path) + ".bak")
             try:
-                self._project.save(str(backup_path))
+                self._project.save_copy(backup_path)
                 self.statusBar().showMessage("Auto-saved backup", 2000)
             except Exception:
                 pass  # Silently fail on backup
@@ -1038,9 +1057,9 @@ class MainWindow(QMainWindow):
             import tempfile
             temp_dir = Path(tempfile.gettempdir()) / "pulsimgui_autosave"
             temp_dir.mkdir(exist_ok=True)
-            backup_path = temp_dir / f"{self._project.name}.pulsim"
+            backup_path = temp_dir / f"{self._project.name}.pulsim.bak"
             try:
-                self._project.save(str(backup_path))
+                self._project.save_copy(backup_path)
                 self.statusBar().showMessage(f"Auto-saved to {backup_path}", 2000)
             except Exception:
                 pass  # Silently fail on backup
@@ -1078,6 +1097,9 @@ class MainWindow(QMainWindow):
             if isinstance(item, ComponentItem)
         ]
 
+        has_selected_components = len(selected_components) > 0
+        self.action_rotate_ccw.setEnabled(has_selected_components)
+        self.action_rotate_cw.setEnabled(has_selected_components)
         self.action_create_subcircuit.setEnabled(len(selected_components) > 0)
 
         # Don't update properties if user is editing there
@@ -1956,11 +1978,57 @@ class MainWindow(QMainWindow):
         if circuit.get_component(comp_uuid) is None:
             return
 
+        selected_component_ids = self._selected_component_ids()
+        if comp_uuid not in selected_component_ids:
+            selected_component_ids.append(comp_uuid)
+
         self._execute_schematic_command(
             RotateComponentCommand(circuit, comp_uuid, degrees=int(degrees)),
             refresh_scene=True,
             merge=False,
         )
+        self._restore_component_selection(selected_component_ids)
+
+    def _selected_component_ids(self) -> list[UUID]:
+        """Return UUIDs of currently selected components in the schematic scene."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        selected_ids: list[UUID] = []
+        for item in self._schematic_scene.selectedItems():
+            if isinstance(item, ComponentItem):
+                selected_ids.append(item.component.id)
+        return selected_ids
+
+    def _restore_component_selection(self, component_ids: list[UUID]) -> None:
+        """Restore selection by component UUIDs after scene reloads."""
+        if not component_ids:
+            return
+
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        wanted = {str(comp_id) for comp_id in component_ids}
+        self._schematic_scene.clearSelection()
+        for item in self._schematic_scene.items():
+            if isinstance(item, ComponentItem) and str(item.component.id) in wanted:
+                item.setSelected(True)
+
+    def _rotate_selected_components(self, degrees: int) -> None:
+        """Rotate selected components from toolbar actions."""
+        if self._has_text_input_focus():
+            return
+
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        selected_items = self._schematic_scene.selectedItems()
+        selected_ids = [
+            str(item.component.id) for item in selected_items if isinstance(item, ComponentItem)
+        ]
+        if not selected_ids:
+            return
+
+        # Reuse the same command path used by spacebar/context-menu rotation.
+        for component_id in selected_ids:
+            self._on_component_rotate_requested(component_id, int(degrees))
 
     def _on_component_flip_requested(self, component_id: str, horizontal: bool) -> None:
         """Flip a component via command stack."""

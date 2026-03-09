@@ -68,6 +68,8 @@ ICON_MAP = {
     "grid": "ph.grid-four",  # Grid
     "wire": "ph.path",  # Schematic wire tool
     "hand": "ph.hand",  # Selection/hand tool
+    "rotate-cw": "ph.arrow-clockwise",  # Rotate clockwise
+    "rotate-ccw": "ph.arrow-counter-clockwise",  # Rotate counter-clockwise
     "star": "ph.star",  # Favorites
     "heart": "ph.heart",  # Favorites alt
     "clock": "ph.clock",  # Recently Used

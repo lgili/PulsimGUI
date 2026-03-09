@@ -1,6 +1,7 @@
 """Application dialogs."""
 
 from pulsimgui.views.dialogs.bode_plot_dialog import BodePlotDialog
+from pulsimgui.views.dialogs.component_parameter_help_dialog import ComponentParameterHelpDialog
 from pulsimgui.views.dialogs.component_properties_dialog import ComponentPropertiesDialog
 from pulsimgui.views.dialogs.convergence_diagnostics_dialog import ConvergenceDiagnosticsDialog
 from pulsimgui.views.dialogs.create_subcircuit_dialog import CreateSubcircuitDialog
@@ -28,5 +29,6 @@ __all__ = [
     "ParameterSweepResultsDialog",
     "ThermalViewerDialog",
     "ConvergenceDiagnosticsDialog",
+    "ComponentParameterHelpDialog",
     "ComponentPropertiesDialog",
 ]

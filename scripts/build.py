@@ -36,7 +36,7 @@ def get_version() -> str:
         for line in f:
             if line.startswith("version"):
                 return line.split("=")[1].strip().strip('"')
-    return "0.7.1"
+    return "0.7.2"
 
 
 def clean() -> None:
