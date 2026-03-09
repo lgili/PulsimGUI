@@ -44,8 +44,10 @@ from pulsimgui.models.component import (
     set_mux_input_count,
     set_scope_channel_count,
     set_sum_input_count,
+    set_pwm_duty_input_enabled,
     set_thermal_port_enabled,
     supports_electrothermal_parameters,
+    DUTY_INPUT_PARAMETER,
 )
 from pulsimgui.services.theme_service import (
     DARK_THEME,
@@ -1707,7 +1709,11 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
     def _on_param_changed(self, name: str, value: Any) -> None:
         """Handle parameter value change."""
         if self._component:
-            if name == THERMAL_PORT_PARAMETER:
+            if name == DUTY_INPUT_PARAMETER:
+                set_pwm_duty_input_enabled(self._component, bool(value))
+                value = bool(self._component.parameters.get(DUTY_INPUT_PARAMETER, False))
+                self._update_display()
+            elif name == THERMAL_PORT_PARAMETER:
                 set_thermal_port_enabled(self._component, bool(value))
                 value = bool(self._component.parameters.get(THERMAL_PORT_PARAMETER, False))
                 # Legacy projects may gain new thermal fields when toggling thermal.

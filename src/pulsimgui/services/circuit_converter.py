@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import ComponentType, DUTY_INPUT_PARAMETER
 
 
 class CircuitConversionError(RuntimeError):
@@ -1202,14 +1202,31 @@ class CircuitConverter:
                 continue
 
             pwm_nodes = _raw_nodes(pwm_component)
+            duty_input_enabled = bool(params.get(DUTY_INPUT_PARAMETER, False))
+
             if len(pwm_nodes) < 2:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas não está conectada a nenhum sinal de controle."
+                    )
                 continue
             duty_input_node = str(pwm_nodes[1] or "").strip()
             if not duty_input_node:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas não está conectada a nenhum sinal de controle."
+                    )
                 continue
 
             driver_name = signal_driver_by_node.get(duty_input_node)
             if not driver_name:
+                if duty_input_enabled:
+                    pwm_name = str(pwm_component.get("name") or pwm_id)
+                    raise CircuitConversionError(
+                        f"PWM '{pwm_name}': porta DUTY_IN está habilitada mas nenhum bloco de controle reconhecido está conectado a ela."
+                    )
                 continue
 
             pwm_out_node = str(pwm_nodes[0] or "").strip()
