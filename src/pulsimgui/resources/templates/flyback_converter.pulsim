@@ -254,6 +254,7 @@
           "parameters": {
             "frequency": 100000.0,
             "duty_cycle": 0.45,
+            "enable_duty_input": false,
             "carrier": "sawtooth",
             "amplitude": 10.0
           },
