@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pulsimgui.views.waveform.waveform_viewer import MeasurementsPanel
 
-
 _SAMPLE_TABLE = {
     "Vout": {
         "c1": 1.0,

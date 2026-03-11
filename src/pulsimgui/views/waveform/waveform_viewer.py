@@ -2,33 +2,34 @@
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
-from PySide6.QtGui import QDrag, QColor, QPalette
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QComboBox,
-    QLabel,
+    QAbstractItemView,
     QCheckBox,
-    QGroupBox,
-    QSplitter,
+    QComboBox,
     QFrame,
     QGridLayout,
-    QSpinBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
     QListWidget,
     QListWidgetItem,
-    QAbstractItemView,
-    QHeaderView,
+    QPushButton,
     QSizePolicy,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
+from pulsimgui.services.backend_types import PostProcessingResult
 from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.services.theme_service import ThemeService, Theme
-
+from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.views.waveform.post_processing_panel import PostProcessingPanel
 
 # Maximum points to display before decimation kicks in
 # Higher = better resolution but slower updates
@@ -103,6 +104,7 @@ class MeasurementsPanel(QFrame):
         self.setObjectName("MeasurementsPanelRoot")
         self.setFrameStyle(QFrame.Shape.NoFrame)
         self._value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
+        self._theme: Theme | None = None
         self._muted_labels: list[QLabel] = []
         self._accent_labels: dict[QLabel, str] = {}
         self._separator: QFrame | None = None
@@ -355,13 +357,13 @@ class MeasurementsPanel(QFrame):
 
         layout.addWidget(cursor_group)
 
-        # ── Measurements table (channels as columns, metrics as rows) ─────────
+        # ── Measurements table (channels as rows, selected metrics as columns) ─
         table_group = QGroupBox("Measurements")
         table_layout = QVBoxLayout(table_group)
         table_layout.setContentsMargins(6, 14, 6, 6)
         table_layout.setSpacing(4)
 
-        self._measurement_rows: list[tuple[str, str]] = [
+        self._measurement_columns: list[tuple[str, str]] = [
             ("c1", "C1"),
             ("c2", "C2"),
             ("dv", "dV"),
@@ -371,8 +373,13 @@ class MeasurementsPanel(QFrame):
             ("rms", "RMS"),
             ("pkpk", "Pk-Pk"),
         ]
-        self._multi_table = QTableWidget(len(self._measurement_rows), 0)
-        self._multi_table.setVerticalHeaderLabels([label for _, label in self._measurement_rows])
+        self._visible_measurement_keys = [key for key, _label in self._measurement_columns]
+        self._measurement_label_by_key = dict(self._measurement_columns)
+
+        self._multi_table = QTableWidget(0, len(self._measurement_columns))
+        self._multi_table.setHorizontalHeaderLabels(
+            [label for _key, label in self._measurement_columns]
+        )
         self._multi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._multi_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._multi_table.setAlternatingRowColors(True)
@@ -396,27 +403,54 @@ class MeasurementsPanel(QFrame):
 
     def _refresh_measurements_table(self) -> None:
         signal_names = list(self._latest_per_signal.keys())
-        visible_rows = self._measurement_rows
+        visible_keys = list(self._visible_measurement_keys)
+        self._multi_table.setColumnCount(len(visible_keys))
+        self._multi_table.setHorizontalHeaderLabels(
+            [self._measurement_label_by_key.get(key, key.upper()) for key in visible_keys]
+        )
 
-        self._multi_table.setColumnCount(len(signal_names))
+        self._multi_table.setRowCount(len(signal_names))
         compact_names = [self._compact_header(name) for name in signal_names]
-        self._multi_table.setHorizontalHeaderLabels(compact_names)
-        self._multi_table.setRowCount(len(visible_rows))
-        self._multi_table.setVerticalHeaderLabels([label for _, label in visible_rows])
+        self._multi_table.setVerticalHeaderLabels(compact_names)
 
-        for col, signal_name in enumerate(signal_names):
-            header_item = self._multi_table.horizontalHeaderItem(col)
+        for row, signal_name in enumerate(signal_names):
+            header_item = self._multi_table.verticalHeaderItem(row)
             if header_item is not None:
                 header_item.setToolTip(signal_name)
 
-        for row, (metric_key, _metric_label) in enumerate(visible_rows):
-            for col, signal_name in enumerate(signal_names):
-                values = self._latest_per_signal.get(signal_name, {})
+        for row, signal_name in enumerate(signal_names):
+            values = self._latest_per_signal.get(signal_name, {})
+            for col, metric_key in enumerate(visible_keys):
                 item = QTableWidgetItem(self._fmt(values.get(metric_key)))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if self._theme is not None:
                     item.setForeground(QColor(self._theme.colors.foreground))
                 self._multi_table.setItem(row, col, item)
+
+    def available_measurement_keys(self) -> list[str]:
+        """Return all supported measurement keys in display order."""
+        return [key for key, _label in self._measurement_columns]
+
+    def visible_measurement_keys(self) -> list[str]:
+        """Return currently visible measurement-key columns."""
+        return list(self._visible_measurement_keys)
+
+    def set_visible_measurement_keys(self, keys: list[str]) -> None:
+        """Set visible measurement columns; empty input reverts to defaults."""
+        available = self.available_measurement_keys()
+        selected = [key for key in keys if key in available]
+        if not selected:
+            selected = available
+
+        # Preserve caller order while removing duplicates.
+        selected_ordered: list[str] = []
+        for key in selected:
+            if key not in selected_ordered:
+                selected_ordered.append(key)
+        if not selected_ordered:
+            selected_ordered = available
+        self._visible_measurement_keys = selected_ordered
+        self._refresh_measurements_table()
 
     def update_cursor1(self, time: float, value: float | None) -> None:
         """Update cursor 1 display."""
@@ -491,6 +525,7 @@ class MeasurementsPanel(QFrame):
 
     def apply_theme(self, theme: Theme, cursor_palette: list[tuple[int, int, int]] | None = None) -> None:
         """Apply theme colors to measurement surfaces and readouts."""
+        self._theme = theme
         cursor_colors = None
         if cursor_palette is not None and len(cursor_palette) >= 2:
             cursor_colors = (
@@ -864,6 +899,9 @@ class SignalListPanel(QFrame):
 class WaveformViewer(QWidget):
     """Widget for displaying simulation waveforms using PyQtGraph."""
 
+    post_processing_requested = Signal(object)  # list[dict]
+    _POST_PANEL_WIDTH_KEY = "waveform/post_processing_panel_width"
+
     def __init__(self, theme_service: ThemeService | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("WaveformViewerRoot")
@@ -902,6 +940,12 @@ class WaveformViewer(QWidget):
         self._streaming_traces: dict[str, pg.PlotDataItem] = {}
         self._auto_scroll = True
         self._scroll_window = 0.001  # Default 1ms window
+        self._ui_settings = QSettings("Pulsim", "PulsimGui")
+        self._post_panel_width = max(
+            220,
+            int(self._ui_settings.value(self._POST_PANEL_WIDTH_KEY, 280)),
+        )
+        self._post_processing_capability_enabled = True
 
         # Update timer for batching streaming updates
         self._update_timer = QTimer()
@@ -932,6 +976,7 @@ class WaveformViewer(QWidget):
         # ── Main 3-column splitter ────────────────────────────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        self._main_splitter = splitter
 
         # ── LEFT: Signal list panel ───────────────────────────────────────────
         self._signal_list_panel = SignalListPanel()
@@ -1024,6 +1069,12 @@ class WaveformViewer(QWidget):
         self._clear_btn.clicked.connect(self.clear_traces)
         controls_layout.addWidget(self._clear_btn)
 
+        self._post_panel_toggle_btn = QPushButton("Analyze")
+        self._post_panel_toggle_btn.setCheckable(True)
+        self._post_panel_toggle_btn.setToolTip("Show analysis and measurement panel")
+        self._post_panel_toggle_btn.toggled.connect(self._toggle_post_processing_panel)
+        controls_layout.addWidget(self._post_panel_toggle_btn)
+
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.VLine)
         sep1.setFixedWidth(1)
@@ -1074,16 +1125,27 @@ class WaveformViewer(QWidget):
         plot_layout.addWidget(controls)
         splitter.addWidget(plot_container)
 
-        # ── RIGHT: Measurements panel ─────────────────────────────────────────
+        # ── RIGHT: Measurements + Post-Processing tabs ───────────────────────
+        self._right_panel_tabs = QTabWidget()
+        self._right_panel_tabs.setObjectName("waveformRightTabs")
+        self._right_panel_tabs.setMinimumWidth(260)
+        self._right_panel_tabs.setMaximumWidth(520)
+
         self._measurements_panel = MeasurementsPanel()
-        self._measurements_panel.setMinimumWidth(240)
-        self._measurements_panel.setMaximumWidth(460)
-        splitter.addWidget(self._measurements_panel)
+        self._right_panel_tabs.addTab(self._measurements_panel, "Measurements")
+
+        self._post_processing_panel = PostProcessingPanel()
+        self._post_processing_panel.run_requested.connect(self._on_post_processing_requested)
+        self._right_panel_tabs.addTab(self._post_processing_panel, "Analysis")
+        splitter.addWidget(self._right_panel_tabs)
 
         splitter.setStretchFactor(0, 0)   # signal list: fixed
         splitter.setStretchFactor(1, 1)   # plot: expands
         splitter.setStretchFactor(2, 0)   # measurements: fixed
-        splitter.setSizes([200, 700, 280])
+        splitter.setSizes([200, 700, 0])
+        splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._right_panel_tabs.setVisible(False)
+        self._post_panel_toggle_btn.setChecked(False)
 
         layout.addWidget(splitter)
         self._update_manual_signal_add_controls()
@@ -1157,7 +1219,6 @@ class WaveformViewer(QWidget):
                     continue
                 val = self._interpolate_value(self._time_array, values, t)
                 if val is not None:
-                    color = self._signal_list_panel.get_signal_color(name)
                     lines.append(f"{name}: {val:.6g}")
             self._hover_tooltip.setText("\n".join(lines))
 
@@ -1485,6 +1546,7 @@ class WaveformViewer(QWidget):
         if result.signals:
             signal_names = list(result.signals.keys())
             self._signal_list_panel.set_signals(signal_names)
+            self._post_processing_panel.set_available_signals(signal_names)
             self._refresh_signal_list_colors()
             first_signal = signal_names[0]
             self._active_signal = first_signal
@@ -1502,8 +1564,74 @@ class WaveformViewer(QWidget):
             self._auto_range()
         else:
             self._signal_list_panel.clear()
+            self._post_processing_panel.set_available_signals([])
             self._active_signal = None
         self._refresh_measurements_table()
+
+    def _on_post_processing_requested(self, jobs: list[dict]) -> None:
+        """Forward post-processing requests to the window/service layer."""
+        self.post_processing_requested.emit(list(jobs))
+
+    def set_post_processing_capability(self, enabled: bool) -> None:
+        """Enable/disable post-processing access based on backend capability."""
+        self._post_processing_capability_enabled = bool(enabled)
+        if self._post_processing_capability_enabled:
+            self._post_panel_toggle_btn.setEnabled(True)
+            self._post_panel_toggle_btn.setToolTip("Show analysis and measurement panel")
+            self._post_processing_panel.set_capability_enabled(True)
+            return
+
+        self._post_panel_toggle_btn.setChecked(False)
+        self._post_panel_toggle_btn.setEnabled(False)
+        self._post_panel_toggle_btn.setToolTip("Analysis requires backend >= 0.7.0")
+        self._post_processing_panel.set_capability_enabled(
+            False,
+            "Analysis requires backend >= 0.7.0.",
+        )
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._right_panel_tabs.isVisible():
+            sizes = self._main_splitter.sizes()
+            if len(sizes) >= 3 and sizes[2] > 0:
+                self._post_panel_width = max(220, int(sizes[2]))
+                self._ui_settings.setValue(self._POST_PANEL_WIDTH_KEY, self._post_panel_width)
+
+    def _toggle_post_processing_panel(self, visible: bool) -> None:
+        """Expand/collapse right-side panel while preserving previous width."""
+        if visible and not self._post_processing_capability_enabled:
+            self._post_panel_toggle_btn.blockSignals(True)
+            self._post_panel_toggle_btn.setChecked(False)
+            self._post_panel_toggle_btn.blockSignals(False)
+            return
+
+        sizes = self._main_splitter.sizes()
+        if len(sizes) < 3:
+            return
+
+        if visible:
+            self._right_panel_tabs.setVisible(True)
+            right_width = max(220, int(self._post_panel_width))
+            center_width = max(360, sizes[1] - right_width if sizes[1] > right_width else int(sizes[1] * 0.7))
+            self._main_splitter.setSizes([sizes[0], center_width, right_width])
+            self._right_panel_tabs.setCurrentWidget(self._post_processing_panel)
+        else:
+            if sizes[2] > 0:
+                self._post_panel_width = max(220, int(sizes[2]))
+                self._ui_settings.setValue(self._POST_PANEL_WIDTH_KEY, self._post_panel_width)
+            self._main_splitter.setSizes([sizes[0], sizes[1] + max(sizes[2], 0), 0])
+            self._right_panel_tabs.setVisible(False)
+
+    def on_post_processing_started(self) -> None:
+        """Mark post-processing panel as running."""
+        self._post_processing_panel.set_running(True)
+
+    def on_post_processing_completed(self, result: PostProcessingResult) -> None:
+        """Render a completed post-processing result."""
+        self._post_processing_panel._on_result(result)
+
+    def on_post_processing_failed(self, message: str) -> None:
+        """Render post-processing top-level failure."""
+        self._post_processing_panel._on_error(message)
 
     def _update_signal_combo(self) -> None:
         """Update the signal combo box with available signals."""
@@ -2026,14 +2154,38 @@ class WaveformViewer(QWidget):
         if not isinstance(self._streaming_time, list):
             self._streaming_time = []
 
+        current_length = len(self._streaming_time)
+        # Keep existing series length-aligned with time before appending.
+        for series in self._streaming_signals.values():
+            missing = current_length - len(series)
+            if missing > 0:
+                series.extend([np.nan] * missing)
+
         self._streaming_time.append(time)
+        for series in self._streaming_signals.values():
+            series.append(np.nan)
+
         for name, value in signals.items():
             if not name.startswith("_"):
+                numeric_value = self._coerce_stream_value(value)
+                if numeric_value is None:
+                    continue
                 if name not in self._streaming_signals:
-                    self._streaming_signals[name] = []
-                self._streaming_signals[name].append(value)
+                    self._streaming_signals[name] = [np.nan] * current_length
+                    self._streaming_signals[name].append(numeric_value)
+                else:
+                    self._streaming_signals[name][-1] = numeric_value
 
         self._pending_updates = True
+
+    @staticmethod
+    def _coerce_stream_value(value: object) -> float | None:
+        """Convert supported scalar-like values to float for plotting."""
+        if np.isscalar(value):
+            return float(value)
+        if isinstance(value, np.ndarray) and value.size == 1:
+            return float(value.reshape(-1)[0])
+        return None
 
     def _start_animated_display(
         self,
@@ -2156,30 +2308,51 @@ class WaveformViewer(QWidget):
 
         # Convert to numpy array once (much faster for pyqtgraph)
         time_array = np.asarray(time_data, dtype=np.float64)
+        display_indices: np.ndarray | None = None
+        if time_array.size > MAX_DISPLAY_POINTS:
+            stride = max(1, time_array.size // MAX_DISPLAY_POINTS)
+            display_indices = np.arange(0, time_array.size, stride, dtype=np.int64)
+            if display_indices.size == 0 or int(display_indices[-1]) != time_array.size - 1:
+                display_indices = np.append(display_indices, time_array.size - 1)
+            time_plot = time_array[display_indices]
+        else:
+            time_plot = time_array
 
         # Update or create traces for each signal
         for name, values in self._streaming_signals.items():
-            values_array = np.asarray(values, dtype=np.float64)
+            values_array = np.asarray(values, dtype=np.float64).reshape(-1)
+            if values_array.size == 0:
+                continue
+
+            if values_array.size < time_array.size:
+                aligned_values = np.full(time_array.size, np.nan, dtype=np.float64)
+                aligned_values[-values_array.size:] = values_array
+            else:
+                aligned_values = values_array[: time_array.size]
+            if display_indices is not None:
+                plot_values = aligned_values[display_indices]
+            else:
+                plot_values = aligned_values
 
             if name in self._streaming_traces:
                 # Fast update - just set new data
-                self._streaming_traces[name].setData(time_array, values_array)
+                self._streaming_traces[name].setData(time_plot, plot_values)
             else:
                 # Create new trace (only happens once per signal)
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
                 self._color_index += 1
                 pen = self._resolve_trace_pen(name, color)
                 trace = self._plot_widget.plot(
-                    time_array, values_array, pen=pen, name=name,
+                    time_plot, plot_values, pen=pen, name=name,
                     skipFiniteCheck=True,
                 )
                 self._configure_trace_performance(trace, len(time_array))
                 self._streaming_traces[name] = trace
 
         # Set view to show waveform growing from start
-        if len(time_array) > 0:
-            t_start = float(time_array[0])
-            t_current = float(time_array[-1])
+        if len(time_plot) > 0:
+            t_start = float(time_plot[0])
+            t_current = float(time_plot[-1])
             t_range = t_current - t_start
 
             if t_range > 0:
