@@ -28,6 +28,9 @@ def test_scope_can_overlay_signals_on_same_plot(qapp) -> None:
         window._current_result = result
         window._refresh_stacked_sidebar(result)
         window._rebuild_stacked_plots(result)
+        assert len(window._plot_widgets) == 1
+
+        window._split_all_plot_groups()
         assert len(window._plot_widgets) == 3
 
         window._set_signal_plot_group("S2", "S1")
@@ -44,6 +47,7 @@ def test_scope_split_all_groups_restores_dedicated_plots(qapp) -> None:
         result = _sample_result(signal_count=4)
         window._current_result = result
         window._refresh_stacked_sidebar(result)
+        window._split_all_plot_groups()
         window._set_signal_plot_group("S2", "S1")
         window._set_signal_plot_group("S3", "S1")
         assert len(window._plot_widgets) == 2
@@ -56,6 +60,72 @@ def test_scope_split_all_groups_restores_dedicated_plots(qapp) -> None:
         window.close()
 
 
+def test_scope_drag_mapping_can_overlay_hidden_signal_into_target_plot(qapp) -> None:
+    """Dropping a hidden signal onto a plot target should show and overlay it."""
+    window = ScopeWindow("scope-group-drop-overlay", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._split_all_plot_groups()
+
+        window._stacked_signal_list.set_signal_visible("S2", False)
+        window._on_stacked_signal_visibility_changed("S2", False)
+        assert "S2" not in window._stacked_signal_list.get_visible_signals()
+        assert len(window._plot_widgets) == 2
+
+        applied = window._apply_dragged_signal_mapping("S2", target_group_leader="S1")
+        assert applied is True
+        assert "S2" in window._stacked_signal_list.get_visible_signals()
+        assert window._plot_group_leader("S2") == "S1"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_drag_mapping_can_place_signal_in_dedicated_pane(qapp) -> None:
+    """Dropping on workspace area should move signal to a dedicated pane."""
+    window = ScopeWindow("scope-group-drop-pane", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+        assert len(window._plot_widgets) == 1
+
+        applied = window._apply_dragged_signal_mapping("S2", target_group_leader=None)
+        assert applied is True
+        assert window._plot_group_leader("S2") == "S2"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_ui_state_roundtrip_restores_plot_groups(qapp) -> None:
+    """Captured UI state should restore per-signal plot-group mapping."""
+    source = ScopeWindow("scope-group-state-source", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    target = ScopeWindow("scope-group-state-target", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        source._current_result = result
+        source._refresh_stacked_sidebar(result)
+        source._split_all_plot_groups()
+        source._set_signal_plot_group("S2", "S1")
+        source._set_signal_plot_group("S3", "S3")
+        state = source.capture_ui_state()
+
+        target._current_result = result
+        target._refresh_stacked_sidebar(result)
+        target._rebuild_stacked_plots(result)
+        target.apply_ui_state(state)
+
+        assert target._plot_group_leader("S2") == "S1"
+        assert target._plot_group_leader("S3") == "S3"
+    finally:
+        source.close()
+        target.close()
+
+
 def test_scope_exposes_copy_button_per_plot(qapp) -> None:
     """Each stacked plot should have one copy button in its corner."""
     window = ScopeWindow("scope-group-copy-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
@@ -63,7 +133,7 @@ def test_scope_exposes_copy_button_per_plot(qapp) -> None:
         result = _sample_result(signal_count=3)
         window._current_result = result
         window._refresh_stacked_sidebar(result)
-        window._rebuild_stacked_plots(result)
+        window._split_all_plot_groups()
 
         copy_buttons = window.findChildren(QToolButton, "scopePlotCopyBtn")
         assert len(copy_buttons) == len(window._plot_widgets) == 3

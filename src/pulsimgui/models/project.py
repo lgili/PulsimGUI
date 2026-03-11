@@ -279,6 +279,7 @@ class ScopeWindowState:
     component_id: str
     is_open: bool = False
     geometry: list[int] | None = None  # [x, y, width, height]
+    ui_state: dict[str, object] | None = None
 
     def to_dict(self) -> dict:
         """Serialize the window state."""
@@ -286,15 +287,18 @@ class ScopeWindowState:
             "component_id": self.component_id,
             "is_open": self.is_open,
             "geometry": self.geometry,
+            "ui_state": dict(self.ui_state) if isinstance(self.ui_state, dict) else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict, fallback_id: str | None = None) -> "ScopeWindowState":
         """Deserialize window state."""
+        ui_state = data.get("ui_state")
         return cls(
             component_id=data.get("component_id") or fallback_id or "",
             is_open=data.get("is_open", False),
             geometry=data.get("geometry"),
+            ui_state=dict(ui_state) if isinstance(ui_state, dict) else None,
         )
 
 
@@ -311,6 +315,7 @@ class Project:
     created: datetime = field(default_factory=datetime.now)
     modified: datetime = field(default_factory=datetime.now)
     scope_windows: dict[str, ScopeWindowState] = field(default_factory=dict)
+    scope_workspace_state: dict[str, object] | None = None
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self):
@@ -373,6 +378,11 @@ class Project:
                 component_id: state.to_dict()
                 for component_id, state in self.scope_windows.items()
             },
+            "scope_workspace_state": (
+                dict(self.scope_workspace_state)
+                if isinstance(self.scope_workspace_state, dict)
+                else None
+            ),
         }
 
     @classmethod
@@ -400,6 +410,12 @@ class Project:
             state = ScopeWindowState.from_dict(state_data, component_id)
             if state.component_id:
                 scope_windows[state.component_id] = state
+        scope_workspace_raw = data.get("scope_workspace_state")
+        scope_workspace_state = (
+            dict(scope_workspace_raw)
+            if isinstance(scope_workspace_raw, dict)
+            else None
+        )
 
         return cls(
             name=data.get("name", "Untitled Project"),
@@ -411,6 +427,7 @@ class Project:
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
             subcircuits=subcircuits,
             scope_windows=scope_windows,
+            scope_workspace_state=scope_workspace_state,
         )
 
     def save(self, path: Path | None = None) -> None:

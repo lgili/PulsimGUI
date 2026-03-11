@@ -27,7 +27,7 @@ ICON_MAP = {
     "trash": "ph.trash",
     "delete": "ph.x",
     "edit": "ph.pencil-simple",
-    "rename": "ph.textbox",
+    "rename": "ph.text-t",
 
     # View/Zoom
     "zoom-in": "ph.magnifying-glass-plus",
@@ -63,7 +63,7 @@ ICON_MAP = {
     "zap": "ph.lightning",  # Sources
     "cpu": "ph.cpu",  # Semiconductors
     "box": "ph.cube",  # Passive
-    "activity": "ph.pulse",  # Measurements
+    "activity": "ph.activity",  # Measurements
     "tool": "ph.wrench",  # Misc
     "grid": "ph.grid-four",  # Grid
     "wire": "ph.path",  # Schematic wire tool
@@ -114,6 +114,18 @@ class IconService:
 
     _cache: dict[tuple[str, str], QIcon] = {}
 
+    @staticmethod
+    def _resolve_qta_name(name: str) -> str:
+        """Resolve logical icon aliases or accept explicit QtAwesome names.
+
+        When callers pass names with a font prefix (e.g. ``mdi6.chart-line``),
+        we use them directly. Otherwise we map aliases from ``ICON_MAP`` and
+        fallback to Phosphor for backward compatibility.
+        """
+        if "." in name:
+            return name
+        return ICON_MAP.get(name, f"ph.{name}")
+
     @classmethod
     def get_icon(cls, name: str, color: str = "#666666", size: int = 16) -> QIcon:
         """Get a QIcon for the given icon name.
@@ -129,12 +141,10 @@ class IconService:
         if not HAS_QTAWESOME:
             return QIcon()
 
-        cache_key = (name, color)
+        qta_name = cls._resolve_qta_name(name)
+        cache_key = (qta_name, color)
         if cache_key in cls._cache:
             return cls._cache[cache_key]
-
-        # Get the QtAwesome icon name
-        qta_name = ICON_MAP.get(name, f"ph.{name}")
 
         try:
             icon = qta.icon(qta_name, color=color)
