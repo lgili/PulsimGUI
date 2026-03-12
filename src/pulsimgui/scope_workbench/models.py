@@ -17,6 +17,48 @@ DEFAULT_MEASUREMENT_KEYS: tuple[str, ...] = (
     "pkpk",
 )
 
+# Valid interval targets for statistics computation.
+INTERVAL_TARGETS: tuple[str, ...] = ("a_to_b", "window", "cursor_a", "cursor_b")
+
+
+@dataclass(slots=True)
+class SavedView:
+    """A named snapshot of a zoom/time-window range inside a scope."""
+
+    view_id: str
+    name: str
+    time_start: float
+    time_end: float
+    y_min: float | None = None
+    y_max: float | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "view_id": self.view_id,
+            "name": self.name,
+            "time_start": self.time_start,
+            "time_end": self.time_end,
+            "y_min": self.y_min,
+            "y_max": self.y_max,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "SavedView":
+        view_id = str(payload.get("view_id") or "").strip()
+        name = str(payload.get("name") or view_id or "View").strip()
+        time_start_raw = payload.get("time_start", 0.0)
+        time_end_raw = payload.get("time_end", 1.0)
+        y_min_raw = payload.get("y_min")
+        y_max_raw = payload.get("y_max")
+        return cls(
+            view_id=view_id,
+            name=name,
+            time_start=float(time_start_raw) if isinstance(time_start_raw, (int, float)) else 0.0,
+            time_end=float(time_end_raw) if isinstance(time_end_raw, (int, float)) else 1.0,
+            y_min=float(y_min_raw) if isinstance(y_min_raw, (int, float)) else None,
+            y_max=float(y_max_raw) if isinstance(y_max_raw, (int, float)) else None,
+        )
+
 
 @dataclass(slots=True)
 class ScopeViewState:
@@ -30,6 +72,8 @@ class ScopeViewState:
     cursors_enabled: bool = False
     cursor_a: float | None = None
     cursor_b: float | None = None
+    interval_target: str = "a_to_b"
+    saved_views: list[SavedView] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         """Serialize scope state to a host-agnostic dictionary."""
@@ -42,6 +86,8 @@ class ScopeViewState:
             "cursors_enabled": bool(self.cursors_enabled),
             "cursor_a": self.cursor_a,
             "cursor_b": self.cursor_b,
+            "interval_target": self.interval_target,
+            "saved_views": [v.to_dict() for v in self.saved_views],
         }
 
     @classmethod
@@ -70,6 +116,19 @@ class ScopeViewState:
         cursor_a_raw = payload.get("cursor_a")
         cursor_b_raw = payload.get("cursor_b")
 
+        interval_target_raw = str(payload.get("interval_target") or "a_to_b").strip()
+        if interval_target_raw not in INTERVAL_TARGETS:
+            interval_target_raw = "a_to_b"
+
+        saved_views_raw = payload.get("saved_views", [])
+        saved_views: list[SavedView] = []
+        if isinstance(saved_views_raw, list):
+            for entry in saved_views_raw:
+                if isinstance(entry, dict):
+                    view = SavedView.from_dict(entry)
+                    if view.view_id:
+                        saved_views.append(view)
+
         return cls(
             scope_id=scope_id,
             name=name,
@@ -79,6 +138,8 @@ class ScopeViewState:
             cursors_enabled=bool(payload.get("cursors_enabled", False)),
             cursor_a=float(cursor_a_raw) if isinstance(cursor_a_raw, (int, float)) else None,
             cursor_b=float(cursor_b_raw) if isinstance(cursor_b_raw, (int, float)) else None,
+            interval_target=interval_target_raw,
+            saved_views=saved_views,
         )
 
 

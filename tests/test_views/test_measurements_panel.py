@@ -23,7 +23,8 @@ def test_measurements_panel_can_filter_visible_rows(qapp) -> None:
     try:
         panel.set_multi_signal_measurements(_SAMPLE_TABLE)
         assert panel._multi_table.rowCount() == 1
-        assert panel._multi_table.columnCount() == 8
+        # Default shows 4 compact columns (rms, max/Peak, min, pkpk)
+        assert panel._multi_table.columnCount() == 4
 
         panel.set_visible_measurement_keys(["rms", "max"])
 
@@ -31,7 +32,7 @@ def test_measurements_panel_can_filter_visible_rows(qapp) -> None:
         assert panel._multi_table.rowCount() == 1
         assert panel._multi_table.columnCount() == 2
         assert panel._multi_table.horizontalHeaderItem(0).text() == "RMS"
-        assert panel._multi_table.horizontalHeaderItem(1).text() == "Max"
+        assert panel._multi_table.horizontalHeaderItem(1).text() == "Peak"
     finally:
         panel.close()
 

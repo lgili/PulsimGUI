@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .adapter import ScopeHostAdapter, ScopeSignalDescriptor
-from .models import DEFAULT_MEASUREMENT_KEYS, ScopeViewState, ScopeWorkspaceState
+from .models import DEFAULT_MEASUREMENT_KEYS, INTERVAL_TARGETS, SavedView, ScopeViewState, ScopeWorkspaceState
 
 
 class ScopeWorkbenchSession:
@@ -212,6 +212,56 @@ class ScopeWorkbenchSession:
         scope.cursors_enabled = bool(enabled)
         scope.cursor_a = float(cursor_a) if isinstance(cursor_a, (int, float)) else None
         scope.cursor_b = float(cursor_b) if isinstance(cursor_b, (int, float)) else None
+
+    def set_scope_interval_target(self, scope_id: str, target: str) -> None:
+        """Set interval target for statistics computation in one scope."""
+        scope = self._require_scope(scope_id)
+        if target not in INTERVAL_TARGETS:
+            raise ValueError(f"Invalid interval target: {target!r}. Must be one of {INTERVAL_TARGETS}")
+        scope.interval_target = target
+
+    def add_saved_view(
+        self,
+        scope_id: str,
+        name: str,
+        time_start: float,
+        time_end: float,
+        y_min: float | None = None,
+        y_max: float | None = None,
+    ) -> SavedView:
+        """Add a named saved view to a scope."""
+        scope = self._require_scope(scope_id)
+        existing_ids = {v.view_id for v in scope.saved_views}
+        index = 1
+        while True:
+            view_id = f"view-{index}"
+            if view_id not in existing_ids:
+                break
+            index += 1
+        clean_name = str(name).strip() or f"View {index}"
+        view = SavedView(
+            view_id=view_id,
+            name=clean_name,
+            time_start=float(time_start),
+            time_end=float(time_end),
+            y_min=float(y_min) if isinstance(y_min, (int, float)) else None,
+            y_max=float(y_max) if isinstance(y_max, (int, float)) else None,
+        )
+        scope.saved_views.append(view)
+        return replace(view)
+
+    def remove_saved_view(self, scope_id: str, view_id: str) -> None:
+        """Remove a saved view from a scope."""
+        scope = self._require_scope(scope_id)
+        before = len(scope.saved_views)
+        scope.saved_views = [v for v in scope.saved_views if v.view_id != view_id]
+        if len(scope.saved_views) == before:
+            raise KeyError(f"Unknown view id: {view_id}")
+
+    def list_saved_views(self, scope_id: str) -> list[SavedView]:
+        """Return saved views for a scope."""
+        scope = self._require_scope(scope_id)
+        return [replace(v) for v in scope.saved_views]
 
     def set_signal_catalog(self, signals: list[ScopeSignalDescriptor]) -> None:
         """Replace available signal catalog published by host."""

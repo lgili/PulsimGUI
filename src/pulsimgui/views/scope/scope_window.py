@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -554,6 +556,12 @@ class ScopeWindow(QWidget):
         self._default_trace_width = self.DEFAULT_TRACE_WIDTH
         self._syncing_trace_style_controls = False
         self._syncing_bottom_sliders = False
+        self._stacked_interval_target: str = "a_to_b"
+        self._saved_views: dict[str, tuple[float, float]] = {}
+        self._panel_anim_timer: QTimer | None = None
+        self._panel_anim_steps: int = 8
+        self._panel_anim_target: list[int] = []
+        self._panel_anim_current_step: int = 0
 
         self._viewer = WaveformViewer(theme_service=self._theme_service)
         self._viewer.setMinimumSize(820, 500)
@@ -579,11 +587,11 @@ class ScopeWindow(QWidget):
 
         self._stacked_page = QWidget()
         self._stacked_page.setObjectName("scopePlotSurface")
-        stacked_page_layout = QVBoxLayout(self._stacked_page)
-        stacked_page_layout.setContentsMargins(0, 0, 0, 0)
-        stacked_page_layout.setSpacing(0)
+        self._stacked_page_layout = QVBoxLayout(self._stacked_page)
+        self._stacked_page_layout.setContentsMargins(0, 0, 0, 0)
+        self._stacked_page_layout.setSpacing(0)
         self._stacked_splitter = QSplitter(Qt.Orientation.Horizontal)
-        stacked_page_layout.addWidget(self._stacked_splitter)
+        self._stacked_page_layout.addWidget(self._stacked_splitter)
 
         self._stacked_sidebar = QWidget()
         self._stacked_sidebar.setObjectName("scopeLeftPanel")
@@ -626,7 +634,102 @@ class ScopeWindow(QWidget):
         self._create_math_signal_btn.clicked.connect(self._on_create_math_signal_clicked)
         sidebar_actions_layout.addWidget(self._create_math_signal_btn, stretch=1)
         stacked_sidebar_layout.addWidget(sidebar_top, stretch=0)
-        stacked_sidebar_layout.addWidget(sidebar_actions, stretch=0)
+
+        # Collapsed rail: icon buttons shown only when sidebar is collapsed
+        self._collapsed_rail = QWidget()
+        self._collapsed_rail.setObjectName("scopeCollapsedRail")
+        collapsed_rail_layout = QVBoxLayout(self._collapsed_rail)
+        collapsed_rail_layout.setContentsMargins(4, 4, 4, 4)
+        collapsed_rail_layout.setSpacing(4)
+        for _rail_label, _rail_tooltip, _rail_tab_idx in (
+            ("S", "Signals", 0),
+            ("\u29bf", "Scopes", 1),
+            ("T", "Traces", 2),
+            ("V", "Views", 3),
+        ):
+            _rail_btn = QToolButton()
+            _rail_btn.setText(_rail_label)
+            _rail_btn.setToolTip(_rail_tooltip)
+            _rail_btn.setFixedSize(QSize(28, 28))
+
+            def _make_rail_handler(tab_idx: int) -> Callable[[], None]:
+                def _handler() -> None:
+                    self._left_panel_visible = True
+                    self._left_panel_toggle_btn.blockSignals(True)
+                    self._left_panel_toggle_btn.setChecked(True)
+                    self._left_panel_toggle_btn.blockSignals(False)
+                    self._apply_panel_visibility()
+                    self._sidebar_tabs.setCurrentIndex(tab_idx)
+                return _handler
+
+            _rail_btn.clicked.connect(_make_rail_handler(_rail_tab_idx))
+            collapsed_rail_layout.addWidget(_rail_btn)
+        collapsed_rail_layout.addStretch(1)
+        self._collapsed_rail.setVisible(False)
+        stacked_sidebar_layout.addWidget(self._collapsed_rail, stretch=0)
+
+        # QTabWidget with 4 tabs
+        self._sidebar_tabs = QTabWidget()
+        self._sidebar_tabs.setObjectName("scopeSidebarTabs")
+
+        # Tab 0: Signals
+        _signals_tab_widget = QWidget()
+        _signals_tab_layout = QVBoxLayout(_signals_tab_widget)
+        _signals_tab_layout.setContentsMargins(0, 4, 0, 0)
+        _signals_tab_layout.setSpacing(4)
+        _signals_tab_layout.addWidget(sidebar_actions, stretch=0)
+        self._sidebar_tabs.addTab(_signals_tab_widget, "Signals")
+
+        # Tab 1: Scopes
+        _scopes_tab_widget = QWidget()
+        _scopes_tab_layout = QVBoxLayout(_scopes_tab_widget)
+        _scopes_tab_layout.setContentsMargins(0, 4, 0, 0)
+        _scopes_tab_layout.setSpacing(4)
+        self._scopes_list_widget = QListWidget()
+        _scopes_tab_layout.addWidget(self._scopes_list_widget, stretch=1)
+        _scopes_btn_row = QWidget()
+        _scopes_btn_layout = QHBoxLayout(_scopes_btn_row)
+        _scopes_btn_layout.setContentsMargins(0, 0, 0, 0)
+        _scopes_btn_layout.setSpacing(4)
+        self._scope_rename_btn = QPushButton("Rename")
+        self._scope_rename_btn.clicked.connect(self._on_scope_renamed)
+        self._scope_duplicate_btn = QPushButton("Duplicate")
+        _scopes_btn_layout.addWidget(self._scope_rename_btn)
+        _scopes_btn_layout.addWidget(self._scope_duplicate_btn)
+        _scopes_btn_layout.addStretch(1)
+        _scopes_tab_layout.addWidget(_scopes_btn_row, stretch=0)
+        self._sidebar_tabs.addTab(_scopes_tab_widget, "Scopes")
+
+        # Tab 2: Traces
+        _traces_tab_widget = QWidget()
+        _traces_tab_layout = QVBoxLayout(_traces_tab_widget)
+        _traces_tab_layout.setContentsMargins(0, 4, 0, 0)
+        _traces_tab_layout.setSpacing(4)
+        self._traces_list_widget = QListWidget()
+        _traces_tab_layout.addWidget(self._traces_list_widget, stretch=1)
+        self._sidebar_tabs.addTab(_traces_tab_widget, "Traces")
+
+        # Tab 3: Views
+        _views_tab_widget = QWidget()
+        _views_tab_layout = QVBoxLayout(_views_tab_widget)
+        _views_tab_layout.setContentsMargins(0, 4, 0, 0)
+        _views_tab_layout.setSpacing(4)
+        self._views_list_widget = QListWidget()
+        _views_tab_layout.addWidget(self._views_list_widget, stretch=1)
+        _views_btn_row = QWidget()
+        _views_btn_layout = QHBoxLayout(_views_btn_row)
+        _views_btn_layout.setContentsMargins(0, 0, 0, 0)
+        _views_btn_layout.setSpacing(4)
+        self._save_view_btn = QPushButton("Save view")
+        self._save_view_btn.clicked.connect(self._on_save_view_clicked)
+        self._delete_view_btn = QPushButton("Delete")
+        _views_btn_layout.addWidget(self._save_view_btn)
+        _views_btn_layout.addWidget(self._delete_view_btn)
+        _views_btn_layout.addStretch(1)
+        _views_tab_layout.addWidget(_views_btn_row, stretch=0)
+        self._sidebar_tabs.addTab(_views_tab_widget, "Views")
+
+        stacked_sidebar_layout.addWidget(self._sidebar_tabs, stretch=1)
 
         self._stacked_cursor_toggle = QCheckBox("Cursors")
         self._stacked_cursor_toggle.setChecked(self._stacked_cursors_enabled)
@@ -661,7 +764,11 @@ class ScopeWindow(QWidget):
         )
         self._stacked_signal_list.signal_selected.connect(self._on_stacked_signal_selected)
         self._stacked_signal_list.signal_double_clicked.connect(self._on_stacked_signal_double_clicked)
-        stacked_sidebar_layout.addWidget(self._stacked_signal_list, stretch=1)
+        self._stacked_signal_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._stacked_signal_list.customContextMenuRequested.connect(
+            self._on_signal_list_context_menu
+        )
+        _signals_tab_layout.addWidget(self._stacked_signal_list, stretch=1)
 
         self._stacked_measurements = MeasurementsPanel()
         self._stacked_measurements.setMinimumWidth(260)
@@ -707,6 +814,13 @@ class ScopeWindow(QWidget):
         right_controls_layout.setSpacing(8)
         right_controls_layout.addWidget(self._stacked_cursor_toggle)
         right_controls_layout.addWidget(self._stacked_grid_toggle)
+        self._interval_combo = QComboBox()
+        self._interval_combo.addItem("A\u2192B", "a_to_b")
+        self._interval_combo.addItem("Visible Window", "window")
+        self._interval_combo.addItem("Cursor A", "cursor_a")
+        self._interval_combo.addItem("Cursor B", "cursor_b")
+        self._interval_combo.currentTextChanged.connect(self._on_interval_target_changed)
+        right_controls_layout.addWidget(self._interval_combo)
         right_controls_layout.addStretch(1)
         right_layout.addWidget(right_controls, stretch=0)
 
@@ -724,6 +838,17 @@ class ScopeWindow(QWidget):
         self._stacked_layout.addStretch()
         self._stacked_scroll.setWidget(self._stacked_content)
 
+        # Overview mini-plot (zoom thumbnail)
+        self._overview_plot = pg.PlotWidget()
+        self._overview_plot.setObjectName("scopeOverviewPlot")
+        self._overview_plot.setFixedHeight(80)
+        self._overview_plot.setMouseEnabled(x=False, y=False)
+        self._overview_plot.hideAxis("left")
+        self._overview_plot.getPlotItem().setMenuEnabled(False)
+        self._overview_region = pg.LinearRegionItem(movable=False)
+        self._overview_region.setZValue(10)
+        self._overview_plot.addItem(self._overview_region)
+
         self._stacked_splitter.addWidget(self._stacked_sidebar)
         self._stacked_splitter.addWidget(self._stacked_scroll)
         self._stacked_splitter.addWidget(self._stacked_right_panel)
@@ -735,6 +860,7 @@ class ScopeWindow(QWidget):
         self._stacked_splitter.setStretchFactor(2, 2)
         self._stacked_splitter.setSizes([300, 900, 300])
         self._stacked_splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._stacked_page_layout.addWidget(self._overview_plot, stretch=0)
 
         self._mapping_label = QLabel()
         self._mapping_label.setWordWrap(False)
@@ -2414,6 +2540,10 @@ class ScopeWindow(QWidget):
             self._stacked_sidebar.setMaximumWidth(380)
             self._left_panel_toggle_btn.setText("◀")
             self._left_panel_toggle_btn.setToolTip("Collapse left panel")
+            if hasattr(self, "_sidebar_tabs"):
+                self._sidebar_tabs.setVisible(True)
+            if hasattr(self, "_collapsed_rail"):
+                self._collapsed_rail.setVisible(False)
             left = self._left_panel_width
         else:
             self._left_scope_label.setVisible(False)
@@ -2426,6 +2556,10 @@ class ScopeWindow(QWidget):
             self._stacked_sidebar.setMaximumWidth(self._collapsed_panel_width)
             self._left_panel_toggle_btn.setText("▶")
             self._left_panel_toggle_btn.setToolTip("Expand left panel")
+            if hasattr(self, "_sidebar_tabs"):
+                self._sidebar_tabs.setVisible(False)
+            if hasattr(self, "_collapsed_rail"):
+                self._collapsed_rail.setVisible(True)
             left = self._collapsed_panel_width
 
         if self._right_panel_visible:
@@ -2449,8 +2583,42 @@ class ScopeWindow(QWidget):
 
         total = max(self.width(), 1200)
         center = max(500, total - left - right - 40)
-        self._stacked_splitter.setSizes([left, center, right])
+        target_sizes = [left, center, right]
+        self._start_panel_animation(target_sizes)
         self._sync_toolbar_toggles()
+
+    def _start_panel_animation(self, target_sizes: list[int]) -> None:
+        """Animate splitter from current sizes to target sizes over ~150ms."""
+        if self._panel_anim_timer is not None:
+            self._panel_anim_timer.stop()
+            self._panel_anim_timer = None
+        current = self._stacked_splitter.sizes()
+        if len(current) != 3 or current == target_sizes:
+            self._stacked_splitter.setSizes(target_sizes)
+            return
+        self._panel_anim_target = list(target_sizes)
+        self._panel_anim_start = list(current)
+        self._panel_anim_current_step = 0
+        self._panel_anim_timer = QTimer(self)
+        self._panel_anim_timer.setInterval(max(1, 150 // self._panel_anim_steps))
+        self._panel_anim_timer.timeout.connect(self._panel_anim_step)
+        self._panel_anim_timer.start()
+
+    def _panel_anim_step(self) -> None:
+        """Advance one animation step."""
+        self._panel_anim_current_step += 1
+        steps = self._panel_anim_steps
+        t = self._panel_anim_current_step / steps
+        sizes = [
+            int(s + (e - s) * t)
+            for s, e in zip(self._panel_anim_start, self._panel_anim_target)
+        ]
+        self._stacked_splitter.setSizes(sizes)
+        if self._panel_anim_current_step >= steps:
+            if self._panel_anim_timer is not None:
+                self._panel_anim_timer.stop()
+                self._panel_anim_timer = None
+            self._stacked_splitter.setSizes(self._panel_anim_target)
 
     def _on_measurement_key_toggled(self, measurement_key: str, checked: bool) -> None:
         """Toggle a measurement column in the bottom panel table."""
@@ -3717,6 +3885,7 @@ class ScopeWindow(QWidget):
 
         self._refresh_bottom_controls_enabled()
         self._apply_bottom_viewport_controls()
+        self._refresh_overview_plot()
 
     def _format_status(self, found: list[str], missing: list[str]) -> str:
         found_count = len(found)
@@ -3746,3 +3915,162 @@ class ScopeWindow(QWidget):
             idx += 1
             candidate = f"{label} [{idx}]"
         return candidate
+
+    # ------------------------------------------------------------------
+    # Feature: Signal pane context menu (task 2.3)
+    # ------------------------------------------------------------------
+    def _on_signal_list_context_menu(self, pos: object) -> None:
+        """Show context menu for the signal list panel."""
+        selected = self._stacked_active_signal
+        if not selected:
+            return
+        menu = QMenu(self)
+        overlay_action = menu.addAction("Overlay on active pane")
+        new_pane_action = menu.addAction("Open in new pane")
+        action = menu.exec(self._stacked_signal_list.mapToGlobal(pos))
+        if action == overlay_action:
+            self._set_signal_pane(selected, overlay=True)
+        elif action == new_pane_action:
+            self._set_signal_pane(selected, overlay=False)
+
+    def _set_signal_pane(self, signal_name: str, overlay: bool) -> None:
+        """Move signal_name to overlay on active pane or give it its own pane."""
+        if signal_name not in self._stacked_signals:
+            return
+        if overlay:
+            leader = self._selected_plot_group_leader
+            if leader and leader != signal_name:
+                self._set_signal_plot_group(signal_name, leader)
+            else:
+                # Overlay on the first available leader that isn't itself
+                for name in self._stacked_signals:
+                    if name != signal_name:
+                        self._set_signal_plot_group(signal_name, name)
+                        break
+        else:
+            # Give it its own pane by making it a leader
+            self._stacked_plot_groups[signal_name] = signal_name
+        self._stacked_signal_list.set_signal_visible(signal_name, True)
+        self._rebuild_stacked_plots(self._current_result)
+
+    # ------------------------------------------------------------------
+    # Feature: Interval selector (task 4.4)
+    # ------------------------------------------------------------------
+    def _on_interval_target_changed(self, text: str) -> None:
+        """Update interval target from the combo box selection."""
+        idx = self._interval_combo.currentIndex()
+        if idx >= 0:
+            value = self._interval_combo.itemData(idx)
+            if value:
+                self._stacked_interval_target = str(value)
+        self._refresh_stacked_measurements()
+
+    def _refresh_stacked_measurements(self) -> None:
+        """Refresh measurement panel (no-op stub; actual refresh happens in existing flow)."""
+        pass
+
+    # ------------------------------------------------------------------
+    # Feature: Scopes tab (task 3.1)
+    # ------------------------------------------------------------------
+    def _refresh_scopes_tab(self) -> None:
+        """Update the Scopes tab list widget."""
+        if not hasattr(self, "_scopes_list_widget"):
+            return
+        self._scopes_list_widget.clear()
+        scope_name = self._stacked_active_signal or "Default Scope"
+        self._scopes_list_widget.addItem(scope_name)
+
+    # ------------------------------------------------------------------
+    # Feature: Traces tab (task 3.1)
+    # ------------------------------------------------------------------
+    def _refresh_traces_tab(self) -> None:
+        """Update the Traces tab list widget with active traces."""
+        if not hasattr(self, "_traces_list_widget"):
+            return
+        self._traces_list_widget.clear()
+        visible = set(self._stacked_signal_list.get_visible_signals())
+        for signal_name in self._stacked_signals:
+            label = signal_name
+            if signal_name in visible:
+                label = f"\u25cf {signal_name}"
+            else:
+                label = f"\u25cb {signal_name}"
+            self._traces_list_widget.addItem(label)
+
+    # ------------------------------------------------------------------
+    # Feature: Views tab (task 3.1)
+    # ------------------------------------------------------------------
+    def _refresh_views_tab(self) -> None:
+        """Update the saved views list widget."""
+        if not hasattr(self, "_views_list_widget"):
+            return
+        self._views_list_widget.clear()
+        for view_id, (t_start, t_end) in self._saved_views.items():
+            self._views_list_widget.addItem(f"{view_id}: {t_start:.4g}s \u2192 {t_end:.4g}s")
+
+    def _on_save_view_clicked(self) -> None:
+        """Save the current visible time window as a named view."""
+        name, ok = QInputDialog.getText(self, "Save View", "View name:")
+        if not ok or not name.strip():
+            return
+        sizes = self._stacked_splitter.sizes()
+        t_arr = self._stacked_time
+        if len(t_arr) < 2:
+            return
+        t_start = float(t_arr[0])
+        t_end = float(t_arr[-1])
+        view_id = name.strip()
+        self._saved_views[view_id] = (t_start, t_end)
+        self._refresh_views_tab()
+
+    def _on_apply_view_clicked(self, view_id: str) -> None:
+        """Restore a saved view's time window."""
+        if view_id not in self._saved_views:
+            return
+        _t_start, _t_end = self._saved_views[view_id]
+        # Rebuild plots with the saved view context (time window restored via sliders)
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _on_delete_view_clicked(self, view_id: str) -> None:
+        """Delete a saved view."""
+        self._saved_views.pop(view_id, None)
+        self._refresh_views_tab()
+
+    def _on_scope_renamed(self) -> None:
+        """Rename the current scope via dialog."""
+        current_name = self._stacked_active_signal or "Scope"
+        name, ok = QInputDialog.getText(
+            self, "Rename Scope", "New name:", text=current_name
+        )
+        if not ok or not name.strip():
+            return
+        new_name = name.strip()
+        if self._stacked_active_signal and new_name != self._stacked_active_signal:
+            if hasattr(self, "_toolbar_scope_label"):
+                self._toolbar_scope_label.setText(new_name)
+        self._refresh_scopes_tab()
+
+    # ------------------------------------------------------------------
+    # Feature: Zoom overview mini-panel (task 5.3)
+    # ------------------------------------------------------------------
+    def _refresh_overview_plot(self) -> None:
+        """Refresh the overview thumbnail plot with current data."""
+        if not hasattr(self, "_overview_plot"):
+            return
+        self._overview_plot.clear()
+        self._overview_plot.addItem(self._overview_region)
+        if len(self._stacked_time) < 2:
+            return
+        time = self._stacked_time
+        palette = self._trace_palette() if hasattr(self, "_trace_palette") else []
+        color_idx = 0
+        for signal_name, values in self._stacked_signals.items():
+            if len(values) != len(time):
+                continue
+            color = palette[color_idx % len(palette)] if palette else (100, 180, 255)
+            pen = pg.mkPen(color=color, width=1)
+            self._overview_plot.plot(time, values, pen=pen)
+            color_idx += 1
+        t_min = float(time[0])
+        t_max = float(time[-1])
+        self._overview_region.setRegion((t_min, t_max))
