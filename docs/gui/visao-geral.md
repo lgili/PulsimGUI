@@ -7,7 +7,8 @@
 1. **Library Panel**: component catalog and search.
 2. **Schematic Editor**: central workspace to build the circuit.
 3. **Properties Panel**: parameter editing for the selected item.
-4. **Waveform Viewer**: signal inspection and measurements.
+4. **Scope Workbench**: multi-scope signal analysis with cursors, measurement columns,
+   saved views, and zoom overview. See [Scope Workbench](scope-workbench.md).
 5. **Status Bar**: simulation state, backend status, and messages.
 
 ## Typical Workflow
@@ -30,6 +31,8 @@
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
 | Zoom to fit | `Ctrl+0` |
 | Wire tool | `W` |
+| Toggle scope sidebar | `Ctrl+B` |
+| Enable cursors | `C` (in Scope Workbench) |
 
 ## Most Used Configuration Windows
 

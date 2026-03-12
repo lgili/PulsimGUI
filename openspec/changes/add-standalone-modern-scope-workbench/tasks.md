@@ -46,5 +46,5 @@
 - [x] 7.1 Add deterministic unit tests for measurement engine and cursor math
 - [x] 7.2 Add headless GUI tests for sidebar collapse and contextual bottom panel behavior
 - [x] 7.3 Add integration tests using a placeholder/fake backend publisher
-- [ ] 7.4 Update user docs with multi-scope and measurement-column workflows
+- [x] 7.4 Update user docs with multi-scope and measurement-column workflows
 - [x] 7.5 Run validation locally: `PYTHONPATH=src QT_QPA_PLATFORM=offscreen pytest tests/`

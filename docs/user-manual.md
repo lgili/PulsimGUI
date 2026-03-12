@@ -67,10 +67,29 @@ Operational guide for day-to-day PulsimGui usage.
 
 ## 4. Analyze Waveforms
 
-- Plot voltage/current signals in the viewer.
-- Use zoom and pan for local inspection.
-- Use cursors for delta-time and amplitude measurements.
-- Compare multiple traces for phase and dynamic analysis.
+Open the **Scope Workbench** by double-clicking a scope component or via
+**View → Scope Workbench**.  Full reference: [Scope Workbench](gui/scope-workbench.md).
+
+### Quick workflow
+
+1. After a simulation completes, the scope opens automatically.
+2. Use **zoom / pan** for local inspection (scroll wheel, `Shift`+scroll, `Ctrl`+scroll).
+3. Enable **Cursors** (`C`) to activate the bottom measurement panel.
+4. Choose the **interval target** (A→B, Visible Window, Cursor A, or Cursor B) to control
+   which time window the statistics are computed over.
+5. Click **+ Add Measurement** to select which columns are visible (RMS, Peak, Min,
+   Pk-Pk, Mean, C1, C2, ΔV).
+6. Use the **Views** tab to save and recall named zoom ranges.
+
+### Multi-scope
+
+- Click **+ Scope** in the Scopes tab to open a second independent scope.
+- Each scope keeps its own signal set, cursor positions, and measurement columns.
+- Drag signals between panes or use right-click → **Send to pane** to overlay traces.
+
+### Sidebar
+
+Press **Ctrl+B** to collapse the sidebar to a compact icon rail; press it again to expand.
 
 ## 5. Manage Projects
 
