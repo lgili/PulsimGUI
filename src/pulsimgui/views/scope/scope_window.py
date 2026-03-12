@@ -1654,20 +1654,22 @@ class ScopeWindow(QWidget):
 
     @staticmethod
     def _scope_shell_palette() -> dict[str, str]:
-        """Return scope-local shell colors (light chrome)."""
+        """Return scope-local dark shell colors (VirtuScope style)."""
         return {
-            "window_bg": "#eef2f7",
-            "surface_bg": "#f4f7fb",
-            "panel_bg": "#f8fafc",
-            "panel_alt": "#eef3f9",
-            "header_bg": "#e7edf6",
-            "border": "#cbd5e1",
-            "border_soft": "#d8e1ec",
-            "text": "#1f2937",
-            "muted": "#5b6472",
-            "accent": "#2563eb",
-            "accent_hover": "#1d4ed8",
+            "window_bg": "#111318",
+            "surface_bg": "#161b27",
+            "panel_bg": "#1a1f2e",
+            "panel_alt": "#1e2438",
+            "header_bg": "#1c2235",
+            "border": "#2a3044",
+            "border_soft": "#2e3a52",
+            "text": "#e2e8f4",
+            "muted": "#7a8aaa",
+            "accent": "#3b82f6",
+            "accent_hover": "#2563eb",
             "accent_fg": "#ffffff",
+            "card_bg": "#1e2438",
+            "card_border": "#2e3a52",
         }
 
     @staticmethod
@@ -2037,9 +2039,136 @@ class ScopeWindow(QWidget):
             handle_fill=QColor(shell["panel_bg"]),
             handle_border=QColor(shell["accent"]),
         )
+
+        # ── Force-dark overrides on child panels ──────────────────────────
+        # These win over the panels' own apply_theme() because they are
+        # applied AFTER, targeting the exact same widget objectNames.
+        self._stacked_signal_list.apply_scope_dark_overrides(shell)
+        self._stacked_measurements.apply_scope_dark_overrides(shell)
+        self._apply_dark_sidebar_tabs(shell)
+
         self._sync_trace_style_controls()
         self._refresh_title()
         self._rebuild_stacked_plots(self._current_result)
+
+    def _apply_dark_sidebar_tabs(self, shell: dict) -> None:
+        """Apply dark VirtuScope styling to the sidebar tab widget and lists."""
+        if not hasattr(self, "_sidebar_tabs"):
+            return
+        bg = shell["panel_bg"]
+        surface = shell["surface_bg"]
+        border = shell["border"]
+        text = shell["text"]
+        muted = shell["muted"]
+        accent = shell["accent"]
+        card = shell.get("card_bg", "#1e2438")
+
+        self._sidebar_tabs.setStyleSheet(f"""
+            QTabWidget#scopeSidebarTabs::pane {{
+                background-color: {bg};
+                border: none;
+            }}
+            QTabWidget#scopeSidebarTabs > QTabBar::tab {{
+                background-color: {surface};
+                color: {muted};
+                border: none;
+                padding: 5px 10px;
+                font-size: 10px;
+                font-weight: 600;
+                min-width: 52px;
+            }}
+            QTabWidget#scopeSidebarTabs > QTabBar::tab:selected {{
+                background-color: {bg};
+                color: {text};
+                border-bottom: 2px solid {accent};
+            }}
+            QTabWidget#scopeSidebarTabs > QTabBar::tab:hover:!selected {{
+                background-color: rgba(255,255,255,0.05);
+                color: {text};
+            }}
+        """)
+
+        # Lists inside Scopes / Traces / Views tabs
+        list_style = f"""
+            QListWidget {{
+                background-color: {surface};
+                border: none;
+                color: {text};
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: 5px 8px;
+                border-radius: 6px;
+                margin: 1px 2px;
+                color: {text};
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(59, 130, 246, 0.22);
+            }}
+            QListWidget::item:hover {{
+                background-color: rgba(255,255,255,0.05);
+            }}
+        """
+        for lw in (
+            self._scopes_list_widget,
+            self._traces_list_widget,
+            self._views_list_widget,
+        ):
+            lw.setStyleSheet(list_style)
+
+        # Style action buttons inside the Views/Scopes tab containers
+        btn_style = f"""
+            QPushButton {{
+                background-color: {card};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 7px;
+                padding: 4px 10px;
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{
+                background-color: {shell.get("panel_alt", "#1e2438")};
+                border-color: {accent};
+                color: {text};
+            }}
+        """
+        for btn in (self._save_view_btn, self._delete_view_btn):
+            btn.setStyleSheet(btn_style)
+
+        # Re-apply dark to the stacked sidebar container itself
+        self._stacked_sidebar.setStyleSheet(f"""
+            QWidget#scopeLeftPanel,
+            QWidget#scopeLeftPanel > QWidget {{
+                background-color: {bg};
+            }}
+            QWidget#scopeCollapsedRail {{
+                background-color: {bg};
+                border-right: 1px solid {border};
+            }}
+            QToolButton#scopeCollapsedRailBtn {{
+                background-color: transparent;
+                border: none;
+                color: {muted};
+                padding: 4px;
+                border-radius: 6px;
+            }}
+            QToolButton#scopeCollapsedRailBtn:hover {{
+                background-color: rgba(59,130,246,0.18);
+                color: {text};
+            }}
+            QPushButton#scopePanelToggleBtn {{
+                background-color: transparent;
+                color: {muted};
+                border: none;
+                font-size: 12px;
+            }}
+            QPushButton#scopePanelToggleBtn:hover {{
+                color: {text};
+                background-color: rgba(255,255,255,0.07);
+                border-radius: 5px;
+            }}
+        """)
 
     def _apply_stacked_cursor_positions(self, c1: float, c2: float) -> None:
         if len(self._stacked_time) == 0:

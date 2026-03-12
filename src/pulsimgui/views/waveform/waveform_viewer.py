@@ -37,18 +37,18 @@ MAX_DISPLAY_POINTS = 10000
 TRACE_PERFORMANCE_THRESHOLD = 5000
 
 
-# Color palette for traces (distinguishable colors)
+# Color palette for traces — vibrant, high-contrast on dark backgrounds
 TRACE_COLORS = [
-    (31, 119, 180),   # Blue
-    (255, 127, 14),   # Orange
-    (44, 160, 44),    # Green
-    (214, 39, 40),    # Red
-    (148, 103, 189),  # Purple
-    (140, 86, 75),    # Brown
-    (227, 119, 194),  # Pink
-    (127, 127, 127),  # Gray
-    (188, 189, 34),   # Olive
-    (23, 190, 207),   # Cyan
+    (0, 212, 255),    # Cyan
+    (46, 204, 113),   # Emerald green
+    (224, 64, 251),   # Violet / magenta
+    (255, 165, 0),    # Orange
+    (255, 99, 132),   # Coral red
+    (147, 112, 219),  # Medium purple
+    (64, 224, 208),   # Turquoise
+    (255, 215, 0),    # Gold
+    (0, 191, 255),    # Deep sky blue
+    (127, 255, 0),    # Chartreuse
 ]
 
 # Cursor colors
@@ -556,6 +556,99 @@ class MeasurementsPanel(QFrame):
         self._cursor_palette = cursor_colors
         self._apply_styles(theme, cursor_colors=cursor_colors)
 
+    def apply_scope_dark_overrides(self, shell: dict) -> None:
+        """Apply forced-dark scope theme to the measurements panel.
+
+        *shell* is the dict returned by ``ScopeWindow._scope_shell_palette()``.
+        Called from ``ScopeWindow.apply_theme()`` after the regular
+        ``apply_theme()`` so these styles always win in the scope context.
+        """
+        accent = shell.get("accent", "#3b82f6")
+        self.setStyleSheet(f"""
+            QFrame#MeasurementsPanelRoot {{
+                background-color: {shell["panel_bg"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 10px;
+            }}
+            QGroupBox {{
+                font-weight: 600;
+                font-size: 10px;
+                color: {shell["muted"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 10px;
+                background-color: {shell["surface_bg"]};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 7px;
+                background-color: {shell["surface_bg"]};
+            }}
+            QTableWidget {{
+                background-color: {shell["surface_bg"]};
+                alternate-background-color: {shell["panel_bg"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                gridline-color: {shell["border"]};
+                color: {shell["text"]};
+                font-size: 10px;
+            }}
+            QTableWidget::item {{
+                padding: 0 6px;
+                color: {shell["text"]};
+            }}
+            QHeaderView::section {{
+                background-color: {shell["panel_bg"]};
+                color: {shell["muted"]};
+                border: none;
+                border-right: 1px solid {shell["border"]};
+                border-bottom: 1px solid {shell["border"]};
+                padding: 4px 6px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+            }}
+            QTableCornerButton::section {{
+                background-color: {shell["panel_bg"]};
+                border: none;
+                border-right: 1px solid {shell["border"]};
+                border-bottom: 1px solid {shell["border"]};
+            }}
+            QLabel {{
+                color: {shell["text"]};
+            }}
+            QScrollBar:vertical, QScrollBar:horizontal {{
+                background: {shell["surface_bg"]};
+                border: none;
+                width: 6px;
+                height: 6px;
+            }}
+            QScrollBar::handle {{
+                background: {shell["border"]};
+                border-radius: 3px;
+            }}
+        """)
+        # Re-apply accent label colors for dark
+        for label, accent_role in self._accent_labels.items():
+            color = {
+                "cursor_1": "#f87171",
+                "cursor_2": accent,
+                "delta": "#34d399",
+                "frequency": "#818cf8",
+                "stat_min": "#22d3ee",
+                "stat_max": "#f87171",
+                "stat_mean": shell["text"],
+                "stat_rms": accent,
+                "stat_pkpk": "#34d399",
+            }.get(accent_role, shell["text"])
+            label.setStyleSheet(f"{self._value_style_base} color: {color};")
+        for label in self._muted_labels:
+            label.setStyleSheet(f"color: {shell['muted']}; font-size: 10px;")
+        if hasattr(self, "_multi_table"):
+            self._multi_table.viewport().update()
+
 
 class SignalListItem(QListWidgetItem):
     """Custom list item for signals with visibility checkbox."""
@@ -823,6 +916,77 @@ class SignalListPanel(QFrame):
         self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
         for index, item in enumerate(self._signal_items.values()):
             item.color = self._trace_palette[index % len(self._trace_palette)]
+
+    def apply_scope_dark_overrides(self, shell: dict) -> None:
+        """Apply forced-dark scope theme to the signal list panel.
+
+        *shell* is the dict returned by ``ScopeWindow._scope_shell_palette()``.
+        This is called from ``ScopeWindow.apply_theme()`` AFTER the regular
+        ``apply_theme()`` so it always wins regardless of the app theme.
+        """
+        self.setStyleSheet(f"""
+            QFrame#SignalListPanelRoot {{
+                background-color: {shell["panel_bg"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 10px;
+            }}
+            QListWidget {{
+                background-color: {shell["surface_bg"]};
+                border: none;
+                border-radius: 8px;
+                color: {shell["text"]};
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: 5px 8px;
+                border-radius: 6px;
+                margin: 1px 2px;
+                color: {shell["text"]};
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(59, 130, 246, 0.22);
+                color: {shell["text"]};
+            }}
+            QListWidget::item:hover {{
+                background-color: rgba(255, 255, 255, 0.05);
+            }}
+            QListWidget::indicator {{
+                width: 28px;
+                height: 15px;
+                border-radius: 7px;
+                background-color: #252b3b;
+                border: 1px solid #364052;
+            }}
+            QListWidget::indicator:checked {{
+                background-color: {shell["accent"]};
+                border: 1px solid {shell["accent"]};
+            }}
+            QListWidget::indicator:hover {{
+                border-color: {shell["accent"]};
+            }}
+            QLineEdit#signalFilterEdit {{
+                background-color: {shell["surface_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 7px;
+                padding: 4px 8px;
+                font-size: 10px;
+            }}
+            QLineEdit#signalFilterEdit:focus {{
+                border-color: {shell["accent"]};
+            }}
+        """)
+        self._header_label.setStyleSheet(
+            f"font-weight: 700; font-size: 11px; color: {shell['text']};"
+        )
+        # Re-colour group/category header rows as dark cards
+        for i in range(self._list_widget.count()):
+            item = self._list_widget.item(i)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) in (
+                "__category_header__", "__group_header__"
+            ):
+                item.setBackground(QColor(shell.get("card_bg", "#1e2438")))
+                item.setForeground(QColor(shell.get("muted", "#7a8aaa")))
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme to the signal list panel surfaces."""
