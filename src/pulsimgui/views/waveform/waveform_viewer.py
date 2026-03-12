@@ -110,6 +110,7 @@ class MeasurementsPanel(QFrame):
         self._separator: QFrame | None = None
         self._cursor_palette: tuple[str, str] | None = None
         self._latest_per_signal: dict[str, dict[str, float | None]] = {}
+        self._signal_colors: dict[str, tuple[int, int, int]] = {}
         self._setup_ui()
         self._apply_styles()
 
@@ -368,12 +369,12 @@ class MeasurementsPanel(QFrame):
             ("c2", "C2"),
             ("dv", "dV"),
             ("min", "Min"),
-            ("max", "Max"),
+            ("max", "Peak"),
             ("mean", "Mean"),
             ("rms", "RMS"),
             ("pkpk", "Pk-Pk"),
         ]
-        self._visible_measurement_keys = [key for key, _label in self._measurement_columns]
+        self._visible_measurement_keys = ["rms", "max", "min", "pkpk"]
         self._measurement_label_by_key = dict(self._measurement_columns)
 
         self._multi_table = QTableWidget(0, len(self._measurement_columns))
@@ -401,6 +402,24 @@ class MeasurementsPanel(QFrame):
         layout.addWidget(table_group, stretch=0)
         layout.addStretch(1)
 
+    def set_signal_colors(self, colors: dict[str, tuple[int, int, int]]) -> None:
+        """Set signal colors used for colored dots in the measurements table."""
+        self._signal_colors = dict(colors)
+        self._refresh_measurements_table()
+
+    def _make_color_icon(self, color: tuple[int, int, int]):
+        from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor, QIcon
+        r, g, b = color
+        px = QPixmap(10, 10)
+        px.fill(Qt.GlobalColor.transparent)
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QBrush(QColor(r, g, b)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(1, 1, 8, 8)
+        p.end()
+        return QIcon(px)
+
     def _refresh_measurements_table(self) -> None:
         signal_names = list(self._latest_per_signal.keys())
         visible_keys = list(self._visible_measurement_keys)
@@ -410,13 +429,15 @@ class MeasurementsPanel(QFrame):
         )
 
         self._multi_table.setRowCount(len(signal_names))
-        compact_names = [self._compact_header(name) for name in signal_names]
-        self._multi_table.setVerticalHeaderLabels(compact_names)
 
         for row, signal_name in enumerate(signal_names):
-            header_item = self._multi_table.verticalHeaderItem(row)
-            if header_item is not None:
-                header_item.setToolTip(signal_name)
+            compact = self._compact_header(signal_name)
+            header_item = QTableWidgetItem(compact)
+            header_item.setToolTip(signal_name)
+            color = self._signal_colors.get(signal_name)
+            if color is not None:
+                header_item.setIcon(self._make_color_icon(color))
+            self._multi_table.setVerticalHeaderItem(row, header_item)
 
         for row, signal_name in enumerate(signal_names):
             values = self._latest_per_signal.get(signal_name, {})
@@ -765,7 +786,37 @@ class SignalListPanel(QFrame):
         else:
             header.setForeground(QColor("#6b7280"))
 
+    def set_signals_with_groups(
+        self,
+        groups: dict[str, list[str]],
+        group_labels: dict[str, str] | None = None,
+    ) -> None:
+        """Set signals organised under named group headers derived from plot groups."""
+        self._list_widget.clear()
+        self._signal_items.clear()
+        self._color_index = 0
 
+        flt = self._filter_edit.text().strip().lower() if hasattr(self, "_filter_edit") else ""
+
+        for group_idx, (leader, signal_names) in enumerate(groups.items()):
+            display = (group_labels or {}).get(leader) or f"Group {group_idx + 1}"
+
+            header = QListWidgetItem(f"  {display}")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            header.setData(Qt.ItemDataRole.UserRole, "__group_header__")
+            self._list_widget.addItem(header)
+            self._apply_category_header_style(header)
+
+            for name in signal_names:
+                color = self._trace_palette[self._color_index % len(self._trace_palette)]
+                self._color_index += 1
+                item = SignalListItem(name, color)
+                self._list_widget.addItem(item)
+                self._signal_items[name] = item
+                if flt and flt not in name.lower():
+                    item.setHidden(True)
+
+        self._update_compact_height()
 
     def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
         """Update signal color palette and refresh existing list colors."""
@@ -816,7 +867,7 @@ class SignalListPanel(QFrame):
         self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
         for i in range(self._list_widget.count()):
             item = self._list_widget.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == "__category_header__":
+            if item.data(Qt.ItemDataRole.UserRole) in ("__category_header__", "__group_header__"):
                 self._apply_category_header_style(item)
         self._update_compact_height()
 

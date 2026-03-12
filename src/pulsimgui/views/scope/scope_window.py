@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import ComponentType
+from pulsimgui.resources.icons import IconService
 from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.views.waveform import WaveformViewer
@@ -654,6 +655,7 @@ class ScopeWindow(QWidget):
         self._stacked_signal_list = SignalListPanel()
         self._stacked_signal_list.setMinimumWidth(200)
         self._stacked_signal_list.setMaximumWidth(320)
+        self._stacked_signal_list._compact_max_rows = 10
         self._stacked_signal_list.signal_visibility_changed.connect(
             self._on_stacked_signal_visibility_changed
         )
@@ -682,12 +684,11 @@ class ScopeWindow(QWidget):
         right_header_layout.addWidget(self._right_header_label, stretch=1)
         self._trace_style_menu_btn = QToolButton()
         self._trace_style_menu_btn.setObjectName("scopeTraceMenuBtn")
-        self._trace_style_menu_btn.setText("Style")
+        self._trace_style_menu_btn.setText("")
         self._trace_style_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._trace_style_menu = QMenu(self._trace_style_menu_btn)
         self._trace_style_menu.aboutToShow.connect(self._populate_trace_style_menu)
         self._trace_style_menu_btn.setMenu(self._trace_style_menu)
-        right_header_layout.addWidget(self._trace_style_menu_btn, stretch=0)
         self._right_panel_toggle_btn = QPushButton("▶")
         self._right_panel_toggle_btn.setObjectName("scopePanelToggleBtn")
         self._right_panel_toggle_btn.setCheckable(True)
@@ -744,10 +745,143 @@ class ScopeWindow(QWidget):
         self._message_label.setWordWrap(False)
         self._message_label.setObjectName("scopeMessageLabel")
 
+        self._scope_toolbar = QWidget()
+        self._scope_toolbar.setObjectName("scopeTopChrome")
+        chrome_layout = QVBoxLayout(self._scope_toolbar)
+        chrome_layout.setContentsMargins(0, 0, 0, 0)
+        chrome_layout.setSpacing(0)
+
+        self._scope_menu_row = QWidget()
+        self._scope_menu_row.setObjectName("scopeTopMenuRow")
+        menu_layout = QHBoxLayout(self._scope_menu_row)
+        menu_layout.setContentsMargins(10, 5, 10, 5)
+        menu_layout.setSpacing(6)
+
+        self._scope_brand_label = QLabel("VirtuScope")
+        self._scope_brand_label.setObjectName("scopeBrandLabel")
+        menu_layout.addWidget(self._scope_brand_label)
+        menu_layout.addSpacing(12)
+
+        self._menu_file_btn = QToolButton()
+        self._menu_file_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_file_btn.setText("File")
+        self._menu_file_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_file_btn)
+
+        self._menu_view_btn = QToolButton()
+        self._menu_view_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_view_btn.setText("View")
+        self._menu_view_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_view_btn)
+
+        self._menu_sim_btn = QToolButton()
+        self._menu_sim_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_sim_btn.setText("Simulation")
+        self._menu_sim_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_sim_btn)
+
+        self._menu_help_btn = QToolButton()
+        self._menu_help_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_help_btn.setText("Help")
+        self._menu_help_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_help_btn)
+
+        menu_layout.addStretch(1)
+        self._scope_version_label = QLabel("Scope v1.0")
+        self._scope_version_label.setObjectName("scopeVersionLabel")
+        menu_layout.addWidget(self._scope_version_label)
+        chrome_layout.addWidget(self._scope_menu_row)
+
+        self._scope_tool_row = QWidget()
+        self._scope_tool_row.setObjectName("scopeToolbarRow")
+        toolbar_layout = QHBoxLayout(self._scope_tool_row)
+        toolbar_layout.setContentsMargins(10, 4, 10, 4)
+        toolbar_layout.setSpacing(4)
+
+        self._toolbar_left_btn = QToolButton()
+        self._toolbar_left_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_left_btn.setCheckable(True)
+        self._toolbar_left_btn.setChecked(True)
+        self._toolbar_left_btn.setToolTip("Toggle signals panel (Ctrl+B)")
+        self._toolbar_left_btn.toggled.connect(self._on_toolbar_left_toggled)
+        toolbar_layout.addWidget(self._toolbar_left_btn)
+
+        self._toolbar_cursor_btn = QToolButton()
+        self._toolbar_cursor_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_cursor_btn.setCheckable(True)
+        self._toolbar_cursor_btn.setChecked(False)
+        self._toolbar_cursor_btn.setToolTip("Enable cursors")
+        self._toolbar_cursor_btn.toggled.connect(self._on_toolbar_cursor_toggled)
+        toolbar_layout.addWidget(self._toolbar_cursor_btn)
+
+        self._toolbar_grid_btn = QToolButton()
+        self._toolbar_grid_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_grid_btn.setCheckable(True)
+        self._toolbar_grid_btn.setChecked(True)
+        self._toolbar_grid_btn.setToolTip("Toggle grid")
+        self._toolbar_grid_btn.toggled.connect(self._on_toolbar_grid_toggled)
+        toolbar_layout.addWidget(self._toolbar_grid_btn)
+
+        self._toolbar_separator_1 = QFrame()
+        self._toolbar_separator_1.setObjectName("scopeToolbarSeparator")
+        self._toolbar_separator_1.setFrameShape(QFrame.Shape.VLine)
+        self._toolbar_separator_1.setFrameShadow(QFrame.Shadow.Plain)
+        toolbar_layout.addWidget(self._toolbar_separator_1)
+
+        self._toolbar_autoscale_btn = QToolButton()
+        self._toolbar_autoscale_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_autoscale_btn.setToolTip("Fit view (AutoScale)")
+        self._toolbar_autoscale_btn.clicked.connect(self._on_autoscale_clicked)
+        toolbar_layout.addWidget(self._toolbar_autoscale_btn)
+
+        self._toolbar_math_btn = QToolButton()
+        self._toolbar_math_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_math_btn.setToolTip("Create math signal")
+        self._toolbar_math_btn.clicked.connect(self._on_create_math_signal_clicked)
+        toolbar_layout.addWidget(self._toolbar_math_btn)
+
+        self._trace_style_menu_btn.setObjectName("scopeToolbarBtn")
+        self._trace_style_menu_btn.setToolTip("Trace style and plot placement")
+        self._trace_style_menu_btn.setAutoRaise(False)
+        self._trace_style_menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        toolbar_layout.addWidget(self._trace_style_menu_btn)
+
+        self._toolbar_separator_2 = QFrame()
+        self._toolbar_separator_2.setObjectName("scopeToolbarSeparator")
+        self._toolbar_separator_2.setFrameShape(QFrame.Shape.VLine)
+        self._toolbar_separator_2.setFrameShadow(QFrame.Shadow.Plain)
+        toolbar_layout.addWidget(self._toolbar_separator_2)
+
+        self._toolbar_right_btn = QToolButton()
+        self._toolbar_right_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_right_btn.setCheckable(True)
+        self._toolbar_right_btn.setChecked(True)
+        self._toolbar_right_btn.setToolTip("Toggle measurements panel")
+        self._toolbar_right_btn.toggled.connect(self._on_toolbar_right_toggled)
+        toolbar_layout.addWidget(self._toolbar_right_btn)
+
+        self._toolbar_copy_btn = QToolButton()
+        self._toolbar_copy_btn.setObjectName("scopeToolbarBtn")
+        self._toolbar_copy_btn.setToolTip("Copy active plot image")
+        self._toolbar_copy_btn.clicked.connect(
+            lambda _checked=False: self._copy_plot_to_clipboard(
+                self._plot_widgets[0] if self._plot_widgets else None
+            )
+        )
+        toolbar_layout.addWidget(self._toolbar_copy_btn)
+
+        toolbar_layout.addStretch(1)
+        self._toolbar_scope_label = QLabel()
+        self._toolbar_scope_label.setObjectName("scopeToolbarScopeLabel")
+        self._toolbar_scope_label.setText("No signal")
+        toolbar_layout.addWidget(self._toolbar_scope_label)
+        chrome_layout.addWidget(self._scope_tool_row)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
+        layout.addWidget(self._scope_toolbar, stretch=0)
         layout.addWidget(self._stacked_page, stretch=1)
 
         self._scope_bottom_controls = QWidget()
@@ -808,6 +942,15 @@ class ScopeWindow(QWidget):
         self._autoscale_btn = QPushButton("AutoScale")
         self._autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         bottom_layout.addWidget(self._autoscale_btn)
+        self._measurement_menu_btn = QToolButton()
+        self._measurement_menu_btn.setObjectName("scopeMeasurementMenuBtn")
+        self._measurement_menu_btn.setText("+ Add Measurement")
+        self._measurement_menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._measurement_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._measurement_menu = QMenu(self._measurement_menu_btn)
+        self._measurement_menu.aboutToShow.connect(self._populate_measurement_menu)
+        self._measurement_menu_btn.setMenu(self._measurement_menu)
+        bottom_layout.addWidget(self._measurement_menu_btn)
         layout.addWidget(self._scope_bottom_controls, stretch=0)
         self._scope_bottom_tab = self._scope_bottom_controls
         self._scope_bottom_tab.setVisible(False)
@@ -1373,25 +1516,202 @@ class ScopeWindow(QWidget):
     # ------------------------------------------------------------------
     def _refresh_title(self) -> None:
         label = "Scope" if self._scope_type == ComponentType.ELECTRICAL_SCOPE else "Thermal Scope"
-        self.setWindowTitle(f"{self._component_name or 'Unnamed'} - {label}")
+        title = self._component_name or label
+        self.setWindowTitle(title)
         if hasattr(self, "_scope_title_label"):
             self._scope_title_label.setText(self._component_name or "Unnamed")
         if hasattr(self, "_scope_type_badge"):
             self._scope_type_badge.setText(label)
+        if hasattr(self, "_toolbar_scope_label"):
+            active = str(self._stacked_active_signal or "").strip()
+            self._toolbar_scope_label.setText(active or (self._component_name or label))
+
+    @staticmethod
+    def _scope_shell_palette() -> dict[str, str]:
+        """Return scope-local shell colors (light chrome)."""
+        return {
+            "window_bg": "#eef2f7",
+            "surface_bg": "#f4f7fb",
+            "panel_bg": "#f8fafc",
+            "panel_alt": "#eef3f9",
+            "header_bg": "#e7edf6",
+            "border": "#cbd5e1",
+            "border_soft": "#d8e1ec",
+            "text": "#1f2937",
+            "muted": "#5b6472",
+            "accent": "#2563eb",
+            "accent_hover": "#1d4ed8",
+            "accent_fg": "#ffffff",
+        }
+
+    @staticmethod
+    def _scope_plot_palette() -> dict[str, str]:
+        """Return dark plot colors for contrast against light shell."""
+        return {
+            "plot_bg": "#0b111c",
+            "plot_axis": "#8ca0ba",
+            "plot_text": "#a9bbd2",
+            "grid_alpha": "0.23",
+        }
+
+    def _apply_toolbar_icons(self) -> None:
+        base_color = "#d7deea"
+        accent_color = "#8ed86b"
+        cursor_color = accent_color if self._stacked_cursors_enabled else base_color
+        grid_color = "#6cc7ff" if self._stacked_grid_enabled else base_color
+        self._toolbar_left_btn.setIcon(IconService.get_icon("menu", base_color, 14))
+        self._toolbar_right_btn.setIcon(IconService.get_icon("layers", base_color, 14))
+        self._toolbar_cursor_btn.setIcon(IconService.get_icon("crosshairs", cursor_color, 14))
+        self._toolbar_grid_btn.setIcon(IconService.get_icon("grid", grid_color, 14))
+        self._toolbar_autoscale_btn.setIcon(IconService.get_icon("maximize", base_color, 14))
+        self._toolbar_math_btn.setIcon(IconService.get_icon("plus", base_color, 14))
+        self._trace_style_menu_btn.setIcon(IconService.get_icon("sliders", base_color, 14))
+        self._toolbar_copy_btn.setIcon(IconService.get_icon("external-link", base_color, 14))
+        self._measurement_menu_btn.setIcon(IconService.get_icon("plus", "#dbe4f5", 13))
+        for btn in (
+            self._toolbar_left_btn,
+            self._toolbar_right_btn,
+            self._toolbar_cursor_btn,
+            self._toolbar_grid_btn,
+            self._toolbar_autoscale_btn,
+            self._toolbar_math_btn,
+            self._trace_style_menu_btn,
+            self._toolbar_copy_btn,
+            self._measurement_menu_btn,
+        ):
+            btn.setIconSize(QSize(13, 13))
+
+    def _sync_toolbar_toggles(self) -> None:
+        for btn, checked in (
+            (self._toolbar_left_btn, self._left_panel_visible),
+            (self._toolbar_right_btn, self._right_panel_visible),
+            (self._toolbar_cursor_btn, self._stacked_cursors_enabled),
+            (self._toolbar_grid_btn, self._stacked_grid_enabled),
+        ):
+            btn.blockSignals(True)
+            btn.setChecked(bool(checked))
+            btn.blockSignals(False)
+        self._apply_toolbar_icons()
+
+    def _on_toolbar_left_toggled(self, checked: bool) -> None:
+        self._left_panel_toggle_btn.blockSignals(True)
+        self._left_panel_toggle_btn.setChecked(bool(checked))
+        self._left_panel_toggle_btn.blockSignals(False)
+        self._on_toggle_left_panel_clicked(bool(checked))
+
+    def _on_toolbar_right_toggled(self, checked: bool) -> None:
+        self._right_panel_toggle_btn.blockSignals(True)
+        self._right_panel_toggle_btn.setChecked(bool(checked))
+        self._right_panel_toggle_btn.blockSignals(False)
+        self._on_toggle_right_panel_clicked(bool(checked))
+
+    def _on_toolbar_cursor_toggled(self, checked: bool) -> None:
+        self._stacked_cursor_toggle.blockSignals(True)
+        self._stacked_cursor_toggle.setChecked(bool(checked))
+        self._stacked_cursor_toggle.blockSignals(False)
+        self._on_stacked_cursor_toggled(bool(checked))
+
+    def _on_toolbar_grid_toggled(self, checked: bool) -> None:
+        self._stacked_grid_toggle.blockSignals(True)
+        self._stacked_grid_toggle.setChecked(bool(checked))
+        self._stacked_grid_toggle.blockSignals(False)
+        self._on_stacked_grid_toggled(bool(checked))
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply active theme to scope chrome and stacked display."""
         self._theme = theme
-        c = theme.colors
-        is_dark = theme.is_dark
+        shell = self._scope_shell_palette()
         self._viewer.apply_theme(theme)
         self._apply_stacked_trace_colors()
         self._stacked_signal_list.apply_theme(theme)
         self._stacked_measurements.apply_theme(theme, cursor_palette=self._cursor_palette())
+        self._apply_toolbar_icons()
+        self._sync_toolbar_toggles()
         self.setStyleSheet(f"""
+            ScopeWindow {{
+                background-color: {shell["window_bg"]};
+            }}
+            QWidget#scopeTopChrome {{
+                background-color: #2d3241;
+                border: 1px solid #3a4254;
+                border-radius: 10px;
+            }}
+            QWidget#scopeTopMenuRow {{
+                background-color: #2f3546;
+                border-bottom: 1px solid #3f495f;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                min-height: 30px;
+            }}
+            QLabel#scopeBrandLabel {{
+                color: #ecf2ff;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.2px;
+                padding-left: 2px;
+            }}
+            QToolButton#scopeMenuTextBtn {{
+                color: #d6deed;
+                background: transparent;
+                border: none;
+                padding: 2px 6px;
+                font-size: 10px;
+                font-weight: 500;
+            }}
+            QToolButton#scopeMenuTextBtn:hover {{
+                color: #ffffff;
+                background-color: rgba(255, 255, 255, 0.08);
+                border-radius: 4px;
+            }}
+            QLabel#scopeVersionLabel {{
+                color: #aab6cc;
+                font-size: 10px;
+                font-weight: 500;
+            }}
+            QWidget#scopeToolbarRow {{
+                background-color: #333a4c;
+                border-bottom-left-radius: 10px;
+                border-bottom-right-radius: 10px;
+                min-height: 32px;
+            }}
+            QLabel#scopeToolbarScopeLabel {{
+                color: #c6d0e2;
+                font-size: 10px;
+                font-weight: 600;
+                padding-right: 2px;
+            }}
+            QFrame#scopeToolbarSeparator {{
+                background-color: #4b556d;
+                min-width: 1px;
+                max-width: 1px;
+                border: none;
+                margin: 2px 5px;
+            }}
+            QToolButton#scopeToolbarBtn {{
+                min-width: 22px;
+                max-width: 22px;
+                min-height: 22px;
+                max-height: 22px;
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 5px;
+                padding: 0px;
+            }}
+            QToolButton#scopeToolbarBtn:hover {{
+                background-color: rgba(255, 255, 255, 0.10);
+                border-color: rgba(206, 220, 242, 0.20);
+            }}
+            QToolButton#scopeToolbarBtn:checked {{
+                background-color: rgba(93, 146, 224, 0.30);
+                border-color: rgba(131, 177, 241, 0.65);
+            }}
+            QToolButton#scopeToolbarBtn::menu-indicator {{
+                image: none;
+                width: 0px;
+            }}
             QWidget#scopePlotSurface {{
-                background: {c.background};
-                border: 1px solid {c.panel_border};
+                background: {shell["surface_bg"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 12px;
             }}
             QWidget#scopeLeftPanel,
@@ -1400,20 +1720,20 @@ class ScopeWindow(QWidget):
             QScrollArea#scopeStackedScroll,
             QScrollArea#scopeStackedScroll > QWidget,
             QScrollArea#scopeStackedScroll > QWidget > QWidget {{
-                background-color: {c.panel_background};
+                background-color: {shell["panel_bg"]};
             }}
             QWidget#scopeBottomControlBar {{
-                background-color: {c.panel_background};
-                border: 1px solid {c.panel_border};
+                background-color: {shell["surface_bg"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 12px;
             }}
             QWidget#scopeBottomControlBar QLabel {{
-                color: {c.foreground_muted};
+                color: {shell["muted"]};
                 font-size: 11px;
                 font-weight: 600;
             }}
             QLabel#scopeSliderInfoLabel {{
-                color: {c.foreground};
+                color: {shell["text"]};
                 font-size: 11px;
                 font-weight: 600;
             }}
@@ -1424,90 +1744,90 @@ class ScopeWindow(QWidget):
                 max-height: 26px;
                 padding: 0px;
                 border-radius: 8px;
-                background-color: {c.background_alt};
-                border: 1px solid {c.input_border};
+                background-color: {shell["panel_bg"]};
+                border: 1px solid {shell["border"]};
             }}
             QPushButton#scopeSliderStepBtn:hover {{
-                border-color: {c.primary};
+                border-color: {shell["accent"]};
             }}
             QSlider#scopeTimelineSlider::groove:horizontal,
             QSlider#scopeZoomSlider::groove:horizontal {{
                 border: none;
                 height: 6px;
-                background: {c.divider};
+                background: {shell["border_soft"]};
                 border-radius: 3px;
             }}
             QSlider#scopeTimelineSlider::handle:horizontal,
             QSlider#scopeZoomSlider::handle:horizontal {{
-                background: {c.primary};
-                border: 1px solid {c.primary};
+                background: {shell["accent"]};
+                border: 1px solid {shell["accent"]};
                 width: 16px;
                 margin: -6px 0;
                 border-radius: 8px;
             }}
             QLabel#scopeMappingLabel {{
-                color: {c.foreground_muted};
+                color: {shell["muted"]};
                 font-size: 11px;
                 font-weight: 500;
             }}
             QLabel#scopeMessageLabel {{
-                color: {c.success if is_dark else c.primary};
+                color: {shell["accent"]};
                 font-weight: 600;
                 font-size: 12px;
             }}
             QComboBox, QDoubleSpinBox {{
-                background-color: {c.input_background};
-                color: {c.foreground};
-                border: 1px solid {c.input_border};
-                border-radius: 10px;
-                padding: 5px 10px;
-                min-height: 28px;
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                padding: 3px 8px;
+                min-height: 24px;
             }}
             QComboBox:hover, QDoubleSpinBox:hover {{
-                border-color: {c.input_focus_border};
+                border-color: {shell["accent"]};
             }}
             QPushButton {{
-                background-color: {c.secondary};
-                color: {c.secondary_foreground};
-                border: 1px solid {c.border};
-                border-radius: 10px;
-                padding: 5px 12px;
-                min-height: 28px;
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                padding: 4px 10px;
+                min-height: 24px;
                 font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: {c.secondary_hover};
-                border-color: {c.input_focus_border};
+                background-color: {shell["panel_alt"]};
+                border-color: {shell["accent"]};
             }}
             QPushButton#scopeMathSignalBtn {{
-                background-color: {c.primary};
-                color: {c.primary_foreground};
-                border-color: {c.primary};
+                background-color: {shell["accent"]};
+                color: {shell["accent_fg"]};
+                border-color: {shell["accent"]};
             }}
             QPushButton#scopeMathSignalBtn:hover {{
-                background-color: {c.primary_hover};
+                background-color: {shell["accent_hover"]};
             }}
-            QToolButton#scopeTraceMenuBtn {{
-                background-color: {c.secondary};
-                color: {c.secondary_foreground};
-                border: 1px solid {c.border};
-                border-radius: 10px;
-                padding: 5px 12px;
-                min-height: 28px;
+            QToolButton#scopeMeasurementMenuBtn {{
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                padding: 3px 9px;
+                min-height: 24px;
                 font-weight: 600;
             }}
-            QToolButton#scopeTraceMenuBtn:hover {{
-                background-color: {c.secondary_hover};
-                border-color: {c.input_focus_border};
+            QToolButton#scopeMeasurementMenuBtn:hover {{
+                background-color: {shell["panel_alt"]};
+                border-color: {shell["accent"]};
             }}
-            QToolButton#scopeTraceMenuBtn::menu-indicator {{
+            QToolButton#scopeMeasurementMenuBtn::menu-indicator {{
                 image: none;
                 width: 0px;
             }}
             QToolButton#scopePlotCopyBtn {{
-                background-color: {"rgba(15, 23, 42, 170)" if is_dark else "rgba(255, 255, 255, 190)"};
-                color: {c.foreground};
-                border: 1px solid {c.panel_border};
+                background-color: rgba(12, 18, 30, 170);
+                color: #d8e4f7;
+                border: 1px solid #28364d;
                 border-radius: 7px;
                 padding: 1px 7px;
                 min-height: 22px;
@@ -1515,14 +1835,14 @@ class ScopeWindow(QWidget):
                 font-weight: 600;
             }}
             QToolButton#scopePlotCopyBtn:hover {{
-                background-color: {c.primary};
-                color: {c.primary_foreground};
-                border-color: {c.primary};
+                background-color: {shell["accent"]};
+                color: {shell["accent_fg"]};
+                border-color: {shell["accent"]};
             }}
             QMenu {{
-                background-color: {c.panel_background};
-                color: {c.foreground};
-                border: 1px solid {c.panel_border};
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 8px;
                 padding: 6px;
             }}
@@ -1531,11 +1851,11 @@ class ScopeWindow(QWidget):
                 border-radius: 6px;
             }}
             QMenu::item:selected {{
-                background-color: {c.tree_item_hover};
-                color: {c.foreground};
+                background-color: {shell["panel_alt"]};
+                color: {shell["text"]};
             }}
             QCheckBox {{
-                color: {c.foreground};
+                color: {shell["text"]};
                 spacing: 6px;
                 font-weight: 600;
             }}
@@ -1543,24 +1863,24 @@ class ScopeWindow(QWidget):
                 width: 14px;
                 height: 14px;
                 border-radius: 4px;
-                border: 1px solid {c.input_border};
-                background-color: {c.input_background};
+                border: 1px solid {shell["border"]};
+                background-color: {shell["panel_bg"]};
             }}
             QCheckBox::indicator:checked {{
-                border-color: {c.primary};
-                background-color: {c.primary};
+                border-color: {shell["accent"]};
+                background-color: {shell["accent"]};
             }}
             QWidget#scopeRightControlBar QCheckBox {{
                 spacing: 4px;
                 padding: 0;
             }}
             QWidget#scopeRightControlBar {{
-                background-color: {c.background_alt};
-                border: 1px solid {c.panel_border};
+                background-color: {shell["panel_alt"]};
+                border: 1px solid {shell["border_soft"]};
                 border-radius: 10px;
             }}
             QWidget#scopeRightControlBar QLabel {{
-                color: {c.foreground_muted};
+                color: {shell["muted"]};
                 font-size: 11px;
                 font-weight: 600;
             }}
@@ -1575,23 +1895,24 @@ class ScopeWindow(QWidget):
                 font-size: 11px;
             }}
             QComboBox {{
-                background-color: {c.input_background};
-                color: {c.foreground};
-                border: 1px solid {c.input_border};
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 7px;
-                padding: 4px 9px;
-                min-height: 25px;
+                padding: 3px 8px;
+                min-height: 24px;
                 font-size: 11px;
             }}
         """)
         self._timeline_slider.set_theme_colors(
-            track_bg=QColor(c.background_alt),
-            track_border=QColor(c.input_border),
-            selected_fill=QColor(c.primary),
-            handle_fill=QColor(c.panel_background),
-            handle_border=QColor(c.primary),
+            track_bg=QColor(shell["panel_alt"]),
+            track_border=QColor(shell["border"]),
+            selected_fill=QColor(shell["accent"]),
+            handle_fill=QColor(shell["panel_bg"]),
+            handle_border=QColor(shell["accent"]),
         )
         self._sync_trace_style_controls()
+        self._refresh_title()
         self._rebuild_stacked_plots(self._current_result)
 
     def _apply_stacked_cursor_positions(self, c1: float, c2: float) -> None:
@@ -1692,6 +2013,12 @@ class ScopeWindow(QWidget):
             override = self._trace_style_color(signal_name)
             if override is not None:
                 self._stacked_signal_list.set_signal_color(signal_name, override)
+        all_colors = {
+            name: color
+            for name in self._stacked_signals
+            if (color := self._stacked_signal_list.get_signal_color(name)) is not None
+        }
+        self._stacked_measurements.set_signal_colors(all_colors)
 
     def _selected_trace_signal(self) -> str | None:
         signal_name = self._trace_signal_combo.currentText().strip()
@@ -1910,6 +2237,44 @@ class ScopeWindow(QWidget):
         split_plots = self._trace_style_menu.addAction("Split all into dedicated plots")
         split_plots.triggered.connect(self._split_all_plot_groups)
 
+    def _populate_measurement_menu(self) -> None:
+        """Build the contextual bottom-panel measurement-column selector menu."""
+        self._measurement_menu.clear()
+        available_keys = self._stacked_measurements.available_measurement_keys()
+        if not available_keys:
+            action = self._measurement_menu.addAction("No measurement columns available")
+            action.setEnabled(False)
+            return
+
+        label_by_key = {
+            "c1": "Cursor A",
+            "c2": "Cursor B",
+            "dv": "dV",
+            "min": "Min",
+            "max": "Max",
+            "mean": "Mean",
+            "rms": "RMS",
+            "pkpk": "Pk-Pk",
+        }
+        visible = set(self._stacked_measurements.visible_measurement_keys())
+
+        for key in available_keys:
+            action = self._measurement_menu.addAction(label_by_key.get(key, key.upper()))
+            action.setCheckable(True)
+            action.setChecked(key in visible)
+            action.toggled.connect(
+                lambda checked, measurement_key=key: self._on_measurement_key_toggled(
+                    measurement_key,
+                    checked,
+                )
+            )
+
+        self._measurement_menu.addSeparator()
+        show_all = self._measurement_menu.addAction("Show all")
+        show_all.triggered.connect(
+            lambda: self._stacked_measurements.set_visible_measurement_keys(available_keys)
+        )
+
     def _set_trace_width_for_signal(self, signal_name: str, width: float) -> None:
         if signal_name not in self._trace_signal_names():
             return
@@ -2039,7 +2404,7 @@ class ScopeWindow(QWidget):
 
     def _apply_panel_visibility(self) -> None:
         if self._left_panel_visible:
-            self._left_scope_label.setVisible(True)
+            self._left_scope_label.setVisible(False)
             self._scope_selector_combo.setVisible(True)
             self._left_sidebar_top_row.setVisible(True)
             self._left_sidebar_actions_row.setVisible(True)
@@ -2047,6 +2412,8 @@ class ScopeWindow(QWidget):
             self._stacked_signal_list.setVisible(True)
             self._stacked_sidebar.setMinimumWidth(270)
             self._stacked_sidebar.setMaximumWidth(380)
+            self._left_panel_toggle_btn.setText("◀")
+            self._left_panel_toggle_btn.setToolTip("Collapse left panel")
             left = self._left_panel_width
         else:
             self._left_scope_label.setVisible(False)
@@ -2057,28 +2424,33 @@ class ScopeWindow(QWidget):
             self._stacked_signal_list.setVisible(False)
             self._stacked_sidebar.setMinimumWidth(self._collapsed_panel_width)
             self._stacked_sidebar.setMaximumWidth(self._collapsed_panel_width)
+            self._left_panel_toggle_btn.setText("▶")
+            self._left_panel_toggle_btn.setToolTip("Expand left panel")
             left = self._collapsed_panel_width
 
         if self._right_panel_visible:
             self._right_header_label.setVisible(True)
-            self._trace_style_menu_btn.setVisible(True)
             self._stacked_right_controls.setVisible(True)
             self._stacked_measurements.setVisible(True)
             self._stacked_right_panel.setMinimumWidth(280)
             self._stacked_right_panel.setMaximumWidth(420)
+            self._right_panel_toggle_btn.setText("▶")
+            self._right_panel_toggle_btn.setToolTip("Collapse right panel")
             right = self._right_panel_width
         else:
             self._right_header_label.setVisible(False)
-            self._trace_style_menu_btn.setVisible(False)
             self._stacked_right_controls.setVisible(False)
             self._stacked_measurements.setVisible(False)
             self._stacked_right_panel.setMinimumWidth(self._collapsed_panel_width)
             self._stacked_right_panel.setMaximumWidth(self._collapsed_panel_width)
+            self._right_panel_toggle_btn.setText("◀")
+            self._right_panel_toggle_btn.setToolTip("Expand right panel")
             right = self._collapsed_panel_width
 
         total = max(self.width(), 1200)
         center = max(500, total - left - right - 40)
         self._stacked_splitter.setSizes([left, center, right])
+        self._sync_toolbar_toggles()
 
     def _on_measurement_key_toggled(self, measurement_key: str, checked: bool) -> None:
         """Toggle a measurement column in the bottom panel table."""
@@ -2101,32 +2473,12 @@ class ScopeWindow(QWidget):
             normalized = self._stacked_measurements.visible_measurement_keys()
         self._stacked_measurements.set_visible_measurement_keys(normalized)
 
-        if hasattr(self, "_left_panel_toggle_btn"):
-            self._left_panel_toggle_btn.blockSignals(True)
-            self._left_panel_toggle_btn.setChecked(self._left_panel_visible)
-            if self._left_panel_visible:
-                self._left_panel_toggle_btn.setText("◀")
-                self._left_panel_toggle_btn.setToolTip("Collapse left panel")
-            else:
-                self._left_panel_toggle_btn.setText("▶")
-                self._left_panel_toggle_btn.setToolTip("Expand left panel")
-            self._left_panel_toggle_btn.blockSignals(False)
-
-        if hasattr(self, "_right_panel_toggle_btn"):
-            self._right_panel_toggle_btn.blockSignals(True)
-            self._right_panel_toggle_btn.setChecked(self._right_panel_visible)
-            if self._right_panel_visible:
-                self._right_panel_toggle_btn.setText("▶")
-                self._right_panel_toggle_btn.setToolTip("Collapse right panel")
-            else:
-                self._right_panel_toggle_btn.setText("◀")
-                self._right_panel_toggle_btn.setToolTip("Expand right panel")
-            self._right_panel_toggle_btn.blockSignals(False)
-
     def _on_scope_selector_changed(self, signal_name: str) -> None:
         if not signal_name or signal_name not in self._stacked_signals:
             return
         self._stacked_active_signal = signal_name
+        if hasattr(self, "_toolbar_scope_label"):
+            self._toolbar_scope_label.setText(signal_name)
         self._selected_plot_group_leader = self._plot_group_leader(signal_name)
         self._stacked_signal_list.set_signal_visible(signal_name, True)
         self._rebuild_stacked_plots(self._current_result)
@@ -2433,6 +2785,7 @@ class ScopeWindow(QWidget):
             self._timeline_slider.setEnabled(False)
             self._zoom_slider.setEnabled(False)
             self._autoscale_btn.setEnabled(False)
+            self._measurement_menu_btn.setEnabled(False)
             self._timeline_dec_btn.setEnabled(False)
             self._timeline_inc_btn.setEnabled(False)
             self._zoom_dec_btn.setEnabled(False)
@@ -2444,6 +2797,7 @@ class ScopeWindow(QWidget):
         self._timeline_slider.setEnabled(True)
         self._zoom_slider.setEnabled(True)
         self._autoscale_btn.setEnabled(True)
+        self._measurement_menu_btn.setEnabled(True)
         self._timeline_dec_btn.setEnabled(True)
         self._timeline_inc_btn.setEnabled(True)
         self._zoom_dec_btn.setEnabled(True)
@@ -2488,6 +2842,7 @@ class ScopeWindow(QWidget):
         self._timeline_slider.setEnabled(has_data)
         self._zoom_slider.setEnabled(has_data)
         self._autoscale_btn.setEnabled(has_data)
+        self._measurement_menu_btn.setEnabled(has_data)
 
     @staticmethod
     def _decimate_stacked_for_display(
@@ -2598,12 +2953,14 @@ class ScopeWindow(QWidget):
     def _on_stacked_cursor_toggled(self, checked: bool) -> None:
         self._stacked_cursors_enabled = checked
         self._scope_bottom_tab.setVisible(bool(checked))
+        self._sync_toolbar_toggles()
         self._set_stacked_cursor_enabled(len(self._stacked_time) > 0)
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
 
     def _on_stacked_grid_toggled(self, checked: bool) -> None:
         self._stacked_grid_enabled = checked
+        self._sync_toolbar_toggles()
         self._rebuild_stacked_plots(self._current_result)
 
     def _auto_range_stacked(self) -> None:
@@ -2697,7 +3054,11 @@ class ScopeWindow(QWidget):
         previous_visible = set(self._stacked_signal_list.get_visible_signals())
         previous_active = self._stacked_active_signal
 
-        self._stacked_signal_list.set_signals(list(valid_signals.keys()))
+        groups: dict[str, list[str]] = {}
+        for name in valid_signals:
+            leader = self._stacked_plot_groups.get(name, name)
+            groups.setdefault(leader, []).append(name)
+        self._stacked_signal_list.set_signals_with_groups(groups)
         self._apply_stacked_trace_colors()
 
         if previous_visible:
@@ -2742,6 +3103,8 @@ class ScopeWindow(QWidget):
         finally:
             self._scope_selector_combo.blockSignals(False)
         self._create_math_signal_btn.setEnabled(bool(names))
+        if hasattr(self, "_toolbar_scope_label"):
+            self._toolbar_scope_label.setText(current or (self._component_name or "No signal"))
 
     def _configure_stacked_cursor_spins(self) -> None:
         if len(self._stacked_time) == 0:
@@ -3206,7 +3569,7 @@ class ScopeWindow(QWidget):
             )
             plot.setMinimumHeight(220)
             plot.getPlotItem().hideButtons()
-            grid_alpha = 0.18 if (self._theme and self._theme.is_dark) else 0.28
+            grid_alpha = 0.23
             if not self._stacked_grid_enabled:
                 grid_alpha = 0.0
             plot.showGrid(x=self._stacked_grid_enabled, y=self._stacked_grid_enabled, alpha=grid_alpha)
@@ -3305,47 +3668,42 @@ class ScopeWindow(QWidget):
             panel_layout.addWidget(plot_container)
 
             # --- Apply theming ---
-            if self._theme is not None:
-                c = self._theme.colors
-                plot.setBackground(c.plot_background)
-                for axis_name in ("left", "bottom"):
-                    axis = item.getAxis(axis_name)
-                    axis.setPen(pg.mkPen(c.plot_axis))
-                    axis.setTickPen(pg.mkPen(c.plot_axis))
-                    axis.setTextPen(pg.mkPen(c.plot_text))
-                plot.showGrid(
-                    x=self._stacked_grid_enabled,
-                    y=self._stacked_grid_enabled,
-                    alpha=0.18 if self._theme.is_dark else 0.28,
-                )
+            shell = self._scope_shell_palette()
+            plot_colors = self._scope_plot_palette()
+            plot.setBackground(plot_colors["plot_bg"])
+            for axis_name in ("left", "bottom"):
+                axis = item.getAxis(axis_name)
+                axis.setPen(pg.mkPen(plot_colors["plot_axis"]))
+                axis.setTickPen(pg.mkPen(plot_colors["plot_axis"]))
+                axis.setTextPen(pg.mkPen(plot_colors["plot_text"]))
+            plot.showGrid(
+                x=self._stacked_grid_enabled,
+                y=self._stacked_grid_enabled,
+                alpha=0.23,
+            )
 
-                header_bg = c.panel_header if is_active else c.panel_background
-                name_weight = "700" if is_active else "600"
-                dot_and_name.setStyleSheet(
-                    f"color: {hex_color}; font-weight: {name_weight}; font-size: 12px;"
+            header_bg = shell["header_bg"] if is_active else shell["panel_bg"]
+            name_weight = "700" if is_active else "600"
+            dot_and_name.setStyleSheet(
+                f"color: {hex_color}; font-weight: {name_weight}; font-size: 12px;"
+            )
+            if sig_stats:
+                stats_lbl.setStyleSheet(
+                    f"color: {shell['muted']}; font-size: 10px; font-family: monospace; font-weight: 500;"
                 )
-                if sig_stats:
-                    stats_lbl.setStyleSheet(
-                        f"color: {c.foreground_muted}; font-size: 10px; font-family: monospace; font-weight: 500;"
-                    )
-                # Panel border: slim left accent + softer card fill.
-                panel.setStyleSheet(
-                    f"""
-                    QFrame {{
-                        background-color: {c.panel_background};
-                        border: 1px solid {c.panel_border};
-                        border-left: 3px solid {hex_color};
-                        border-radius: 10px;
-                    }}
-                    """
-                )
-                header_widget.setStyleSheet(
-                    f"background-color: {header_bg}; border-radius: 7px; margin: 0; border: 1px solid {c.panel_border};"
-                )
-            else:
-                dot_and_name.setStyleSheet(f"color: {hex_color}; font-weight: 600; font-size: 12px;")
-                if sig_stats:
-                    stats_lbl.setStyleSheet("color: #666; font-size: 10px; font-family: monospace;")
+            panel.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {shell["panel_bg"]};
+                    border: 1px solid {shell["border"]};
+                    border-left: 3px solid {hex_color};
+                    border-radius: 10px;
+                }}
+                """
+            )
+            header_widget.setStyleSheet(
+                f"background-color: {header_bg}; border-radius: 7px; margin: 0; border: 1px solid {shell['border_soft']};"
+            )
 
             self._attach_plot_interactions(
                 plot,
