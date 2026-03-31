@@ -51,6 +51,7 @@ ICON_MAP = {
     "search": "ph.magnifying-glass",
     "settings": "ph.gear",
     "menu": "ph.list",
+    "sidebar": "ph.sidebar-simple",
     "x": "ph.x",
     "plus": "ph.plus",
     "minus": "ph.minus",
@@ -92,6 +93,9 @@ ICON_MAP = {
 
     # Additional icons
     "layers": "ph.stack",
+    "table": "ph.table",
+    "wave": "ph.wave-sine",
+    "sliders-horizontal": "ph.sliders-horizontal",
     "lock": "ph.lock",
     "unlock": "ph.lock-open",
     "eye": "ph.eye",

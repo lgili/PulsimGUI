@@ -2,8 +2,8 @@
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QIcon, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_types import PostProcessingResult
 from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import Theme, ThemeService
@@ -659,24 +661,21 @@ class SignalListItem(QListWidgetItem):
         self._color = color
         self._visible = False
 
-        self.setText(signal_name)
+        self.setText("")
         self.setFlags(
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsUserCheckable
             | Qt.ItemFlag.ItemIsDragEnabled
         )
-        self.setCheckState(Qt.CheckState.Unchecked)
 
         # Set color indicator
         self._update_color_display()
 
     def _update_color_display(self) -> None:
-        """Update the color display for this item with a colored dot prefix."""
-        r, g, b = self._color
-        self.setForeground(QColor(r, g, b))
-        # Prefix signal name with a colored bullet
-        self.setText(f"●  {self._signal_name}")
+        """Keep the backing item empty; the row widget renders the visuals."""
+        self.setIcon(QIcon())
+        self.setText("")
+        self.setSizeHint(QSize(0, 26))
 
     @property
     def signal_name(self) -> str:
@@ -697,13 +696,187 @@ class SignalListItem(QListWidgetItem):
     @property
     def is_visible(self) -> bool:
         """Check if signal is visible on plot."""
-        return self.checkState() == Qt.CheckState.Checked
+        return self._visible
 
     def set_visible(self, visible: bool) -> None:
         """Set visibility state."""
-        self.setCheckState(
-            Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked
+        self._visible = bool(visible)
+
+
+class GroupHeaderListItem(QListWidgetItem):
+    """List item used as collapsible group header in the signal panel."""
+
+    def __init__(self, leader: str, display: str, signal_count: int, collapsed: bool = False):
+        super().__init__()
+        self._leader = leader
+        self._display = display
+        self._signal_count = signal_count
+        self._collapsed = collapsed
+        self.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self.setData(Qt.ItemDataRole.UserRole, "__group_header__")
+        self.setData(Qt.ItemDataRole.UserRole + 1, leader)
+        self.set_collapsed(collapsed)
+
+    @property
+    def leader(self) -> str:
+        return self._leader
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        self.setText("")
+
+
+class SignalRowWidget(QFrame):
+    """Visual row for one signal inside the list panel."""
+
+    clicked = Signal(str)
+    double_clicked = Signal(str)
+    visibility_toggled = Signal(str, bool)
+
+    def __init__(self, signal_name: str, color: tuple[int, int, int], parent=None):
+        super().__init__(parent)
+        self._signal_name = signal_name
+        self._color = color
+        self._syncing = False
+        self.setObjectName("SignalListRowCard")
+        self.setMinimumHeight(26)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+
+        self._toggle = QCheckBox()
+        self._toggle.setObjectName("signalRowToggle")
+        self._toggle.setText("")
+        self._toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self._toggle, stretch=0)
+
+        self._chip = QLabel()
+        self._chip.setObjectName("signalRowChip")
+        self._chip.setFixedSize(10, 10)
+        layout.addWidget(self._chip, stretch=0)
+
+        self._label = QLabel(signal_name)
+        self._label.setObjectName("signalRowLabel")
+        layout.addWidget(self._label, stretch=1)
+
+        self._update_color()
+
+    def _update_color(self) -> None:
+        r, g, b = self._color
+        self._chip.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border-radius: 4px; border: 1px solid rgba(255,255,255,0.14);"
         )
+
+    def signal_name(self) -> str:
+        return self._signal_name
+
+    def set_color(self, color: tuple[int, int, int]) -> None:
+        self._color = color
+        self._update_color()
+
+    def set_visible_state(self, visible: bool) -> None:
+        self._syncing = True
+        try:
+            self._toggle.setChecked(bool(visible))
+        finally:
+            self._syncing = False
+
+    def _on_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self.visibility_toggled.emit(self._signal_name, bool(checked))
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._signal_name)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit(self._signal_name)
+        super().mouseDoubleClickEvent(event)
+
+
+class GroupHeaderWidget(QFrame):
+    """Visual card header for one group of signals."""
+
+    clicked = Signal(str)
+    visibility_requested = Signal(str, bool)
+
+    def __init__(self, leader: str, display: str, signal_count: int, collapsed: bool, parent=None):
+        super().__init__(parent)
+        self._leader = leader
+        self._display = display
+        self._signal_count = signal_count
+        self._collapsed = collapsed
+        self._group_visible = True
+        self.setObjectName("SignalListGroupCard")
+        self.setMinimumHeight(34)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+
+        self._collapse_btn = QToolButton()
+        self._collapse_btn.setObjectName("signalGroupCollapseBtn")
+        self._collapse_btn.setAutoRaise(True)
+        self._collapse_btn.clicked.connect(self._emit_clicked)
+        layout.addWidget(self._collapse_btn, stretch=0)
+
+        title_stack = QWidget()
+        title_layout = QVBoxLayout(title_stack)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(0)
+        self._title_label = QLabel(display)
+        self._title_label.setObjectName("signalGroupTitle")
+        title_layout.addWidget(self._title_label)
+        suffix = "signal" if signal_count == 1 else "signals"
+        self._meta_label = QLabel(f"{signal_count} {suffix}")
+        self._meta_label.setObjectName("signalGroupMeta")
+        title_layout.addWidget(self._meta_label)
+        layout.addWidget(title_stack, stretch=1)
+
+        self._visible_btn = QToolButton()
+        self._visible_btn.setObjectName("signalGroupActionBtn")
+        self._visible_btn.setAutoRaise(True)
+        self._visible_btn.clicked.connect(self._toggle_group_visibility)
+        layout.addWidget(self._visible_btn, stretch=0)
+
+        self.set_collapsed(collapsed)
+        self.set_group_visible(True)
+
+    @property
+    def leader(self) -> str:
+        return self._leader
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        icon_name = "chevron-right" if self._collapsed else "chevron-down"
+        self._collapse_btn.setIcon(IconService.get_icon(icon_name, "#9aa8c5", 12))
+        self._collapse_btn.setIconSize(QSize(12, 12))
+
+    def set_group_visible(self, visible: bool) -> None:
+        self._group_visible = bool(visible)
+        icon_name = "eye" if visible else "eye-off"
+        self._visible_btn.setIcon(IconService.get_icon(icon_name, "#a9b8d4", 12))
+        self._visible_btn.setIconSize(QSize(12, 12))
+        self._visible_btn.setToolTip("Hide group" if visible else "Show group")
+
+    def _emit_clicked(self) -> None:
+        self.clicked.emit(self._leader)
+
+    def _toggle_group_visibility(self) -> None:
+        self.visibility_requested.emit(self._leader, not self._group_visible)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._leader)
+        super().mousePressEvent(event)
 
 
 class SignalListPanel(QFrame):
@@ -727,6 +900,12 @@ class SignalListPanel(QFrame):
         self._root_layout: QVBoxLayout | None = None
         self._header_row: QWidget | None = None
         self._theme: Theme | None = None
+        self._group_headers: dict[str, GroupHeaderListItem] = {}
+        self._group_children: dict[str, list[str]] = {}
+        self._collapsed_groups: dict[str, bool] = {}
+        self._group_widgets: dict[str, GroupHeaderWidget] = {}
+        self._signal_widgets: dict[str, SignalRowWidget] = {}
+        self._syncing_visibility = False
 
         self._setup_ui()
 
@@ -784,7 +963,9 @@ class SignalListPanel(QFrame):
             return
 
         row_height = self._row_height_hint()
-        item_count = self._list_widget.count()
+        item_count = sum(
+            1 for idx in range(self._list_widget.count()) if not self._list_widget.item(idx).isHidden()
+        )
         visible_rows = min(max(item_count, self._compact_min_rows), self._compact_max_rows)
 
         list_height = (self._list_widget.frameWidth() * 2) + (visible_rows * row_height) + 4
@@ -814,6 +995,10 @@ class SignalListPanel(QFrame):
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._group_headers.clear()
+        self._group_children.clear()
+        self._group_widgets.clear()
+        self._signal_widgets.clear()
 
         flt = self._filter_edit.text().strip().lower() if hasattr(self, "_filter_edit") else ""
         for name in signal_names:
@@ -823,10 +1008,9 @@ class SignalListPanel(QFrame):
             item = SignalListItem(name, color)
             self._list_widget.addItem(item)
             self._signal_items[name] = item
-            if flt and flt not in name.lower():
-                item.setHidden(True)
+            self._install_signal_row_widget(item)
 
-        self._update_compact_height()
+        self._apply_group_filter(flt)
 
     def set_signals_with_categories(
         self,
@@ -837,6 +1021,10 @@ class SignalListPanel(QFrame):
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._group_headers.clear()
+        self._group_children.clear()
+        self._group_widgets.clear()
+        self._signal_widgets.clear()
 
         # Group signals preserving insertion order
         groups: dict[str, list[str]] = {"ELECTRICAL": [], "CONTROL": [], "THERMAL": []}
@@ -852,7 +1040,7 @@ class SignalListPanel(QFrame):
 
             # Category header item
             header = QListWidgetItem(cat_name)
-            header.setFlags(Qt.ItemFlag.NoItemFlags)  # non-interactive
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
             header.setData(Qt.ItemDataRole.UserRole, "__category_header__")
             self._list_widget.addItem(header)
             self._apply_category_header_style(header)
@@ -863,17 +1051,17 @@ class SignalListPanel(QFrame):
                 item = SignalListItem(name, color)
                 self._list_widget.addItem(item)
                 self._signal_items[name] = item
-                if flt and flt not in name.lower():
-                    item.setHidden(True)
+                self._install_signal_row_widget(item)
 
-        self._update_compact_height()
+        self._apply_group_filter(flt)
 
     def _apply_category_header_style(self, header: QListWidgetItem) -> None:
         """Style a category header list item."""
         font = header.font()
-        font.setPointSize(max(font.pointSize() - 1, 7))
+        font.setPointSize(max(font.pointSize(), 8))
         font.setBold(True)
         header.setFont(font)
+        header.setSizeHint(QSize(0, 28))
         if self._theme is not None:
             header.setForeground(QColor(self._theme.colors.foreground_muted))
         else:
@@ -888,17 +1076,23 @@ class SignalListPanel(QFrame):
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._group_headers.clear()
+        self._group_children.clear()
+        self._group_widgets.clear()
+        self._signal_widgets.clear()
 
         flt = self._filter_edit.text().strip().lower() if hasattr(self, "_filter_edit") else ""
 
         for group_idx, (leader, signal_names) in enumerate(groups.items()):
             display = (group_labels or {}).get(leader) or f"Group {group_idx + 1}"
-
-            header = QListWidgetItem(f"  {display}")
-            header.setFlags(Qt.ItemFlag.NoItemFlags)
-            header.setData(Qt.ItemDataRole.UserRole, "__group_header__")
+            count = len(signal_names)
+            collapsed = self._collapsed_groups.get(leader, False)
+            header = GroupHeaderListItem(leader, display, count, collapsed)
             self._list_widget.addItem(header)
             self._apply_category_header_style(header)
+            self._group_headers[leader] = header
+            self._group_children[leader] = list(signal_names)
+            self._install_group_header_widget(header, leader, display, count)
 
             for name in signal_names:
                 color = self._trace_palette[self._color_index % len(self._trace_palette)]
@@ -906,16 +1100,120 @@ class SignalListPanel(QFrame):
                 item = SignalListItem(name, color)
                 self._list_widget.addItem(item)
                 self._signal_items[name] = item
-                if flt and flt not in name.lower():
-                    item.setHidden(True)
+                self._install_signal_row_widget(item)
+
+        self._apply_group_filter(flt)
 
         self._update_compact_height()
+
+    def _install_signal_row_widget(self, item: SignalListItem) -> None:
+        row = SignalRowWidget(item.signal_name, item.color)
+        row.set_visible_state(item.is_visible)
+        row.clicked.connect(self._on_signal_widget_clicked)
+        row.double_clicked.connect(self._on_signal_widget_double_clicked)
+        row.visibility_toggled.connect(self._on_signal_widget_toggled)
+        item.setText("")
+        item.setIcon(QIcon())
+        item.setSizeHint(QSize(0, row.sizeHint().height() + 2))
+        self._list_widget.setItemWidget(item, row)
+        self._signal_widgets[item.signal_name] = row
+
+    def _install_group_header_widget(
+        self,
+        item: GroupHeaderListItem,
+        leader: str,
+        display: str,
+        signal_count: int,
+    ) -> None:
+        widget = GroupHeaderWidget(
+            leader,
+            display,
+            signal_count,
+            self._collapsed_groups.get(leader, False),
+        )
+        widget.clicked.connect(self._toggle_group_collapsed)
+        widget.visibility_requested.connect(self._set_group_visibility)
+        item.setText("")
+        item.setSizeHint(QSize(0, widget.sizeHint().height() + 2))
+        self._list_widget.setItemWidget(item, widget)
+        self._group_widgets[leader] = widget
+        self._sync_group_header_widget(leader)
+
+    def _apply_group_filter(self, flt: str) -> None:
+        flt = flt.strip().lower()
+        if self._group_headers:
+            for leader, header in self._group_headers.items():
+                child_names = self._group_children.get(leader, [])
+                matched_any = False
+                collapsed = self._collapsed_groups.get(leader, False)
+                for name in child_names:
+                    item = self._signal_items.get(name)
+                    if item is None:
+                        continue
+                    matches = (not flt) or (flt in name.lower())
+                    matched_any = matched_any or matches
+                    item.setHidden((not matches) or (collapsed and not flt))
+                header.setHidden(bool(flt) and not matched_any)
+                header.set_collapsed(collapsed)
+                self._sync_group_header_widget(leader)
+        else:
+            for name, item in self._signal_items.items():
+                item.setHidden(bool(flt) and flt not in name.lower())
+        self._update_compact_height()
+
+    def _toggle_group_collapsed(self, leader: str) -> None:
+        if leader not in self._group_headers:
+            return
+        self._collapsed_groups[leader] = not self._collapsed_groups.get(leader, False)
+        self._apply_group_filter(self._filter_edit.text() if hasattr(self, "_filter_edit") else "")
+
+    def _set_group_visibility(self, leader: str, visible: bool) -> None:
+        names = self._group_children.get(leader, [])
+        changed_names: list[str] = []
+        self._syncing_visibility = True
+        self._list_widget.blockSignals(True)
+        try:
+            for name in names:
+                item = self._signal_items.get(name)
+                if item is None or item.is_visible == bool(visible):
+                    continue
+                item.set_visible(bool(visible))
+                row = self._signal_widgets.get(name)
+                if row is not None:
+                    row.set_visible_state(bool(visible))
+                changed_names.append(name)
+        finally:
+            self._list_widget.blockSignals(False)
+            self._syncing_visibility = False
+        for name in changed_names:
+            self.signal_visibility_changed.emit(name, bool(visible))
+        self._sync_group_header_widget(leader)
+
+    def _group_all_visible(self, leader: str) -> bool:
+        names = self._group_children.get(leader, [])
+        if not names:
+            return True
+        return all(
+            item.is_visible
+            for name in names
+            if (item := self._signal_items.get(name)) is not None
+        )
+
+    def _sync_group_header_widget(self, leader: str) -> None:
+        widget = self._group_widgets.get(leader)
+        if widget is None:
+            return
+        widget.set_collapsed(self._collapsed_groups.get(leader, False))
+        widget.set_group_visible(self._group_all_visible(leader))
 
     def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
         """Update signal color palette and refresh existing list colors."""
         self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
         for index, item in enumerate(self._signal_items.values()):
             item.color = self._trace_palette[index % len(self._trace_palette)]
+            row = self._signal_widgets.get(item.signal_name)
+            if row is not None:
+                row.set_color(item.color)
 
     def apply_scope_dark_overrides(self, shell: dict) -> None:
         """Apply forced-dark scope theme to the signal list panel.
@@ -926,50 +1224,85 @@ class SignalListPanel(QFrame):
         """
         self.setStyleSheet(f"""
             QFrame#SignalListPanelRoot {{
-                background-color: {shell["panel_bg"]};
-                border: 1px solid {shell["border"]};
+                background-color: {shell["panel_alt"]};
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 12px;
+            }}
+            QFrame#SignalListGroupCard {{
+                background-color: rgba(14, 20, 30, 0.42);
+                border: 1px solid {shell["border_soft"]};
                 border-radius: 10px;
             }}
-            QListWidget {{
-                background-color: {shell["surface_bg"]};
+            QLabel#signalGroupTitle {{
+                color: {shell["text"]};
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QLabel#signalGroupMeta {{
+                color: {shell["muted"]};
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QToolButton#signalGroupCollapseBtn,
+            QToolButton#signalGroupActionBtn {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+            }}
+            QFrame#SignalListRowCard {{
+                background-color: transparent;
                 border: none;
                 border-radius: 8px;
+            }}
+            QFrame#SignalListRowCard:hover {{
+                background-color: rgba(255, 255, 255, 0.04);
+            }}
+            QLabel#signalRowLabel {{
                 color: {shell["text"]};
-                outline: none;
+                font-size: 10px;
+                font-weight: 600;
             }}
-            QListWidget::item {{
-                padding: 5px 8px;
-                border-radius: 6px;
-                margin: 1px 2px;
-                color: {shell["text"]};
+            QCheckBox#signalRowToggle {{
+                spacing: 0px;
             }}
-            QListWidget::item:selected {{
-                background-color: rgba(59, 130, 246, 0.22);
-                color: {shell["text"]};
-            }}
-            QListWidget::item:hover {{
-                background-color: rgba(255, 255, 255, 0.05);
-            }}
-            QListWidget::indicator {{
+            QCheckBox#signalRowToggle::indicator {{
                 width: 28px;
                 height: 15px;
                 border-radius: 7px;
                 background-color: #252b3b;
                 border: 1px solid #364052;
             }}
-            QListWidget::indicator:checked {{
+            QCheckBox#signalRowToggle::indicator:checked {{
                 background-color: {shell["accent"]};
                 border: 1px solid {shell["accent"]};
             }}
-            QListWidget::indicator:hover {{
-                border-color: {shell["accent"]};
+            QListWidget {{
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+                color: {shell["text"]};
+                outline: none;
+                padding: 2px 0px;
+            }}
+            QListWidget::item {{
+                padding: 6px 8px;
+                border-radius: 8px;
+                margin: 1px 0px;
+                color: {shell["text"]};
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(59, 130, 246, 0.16);
+                color: {shell["text"]};
+            }}
+            QListWidget::item:hover {{
+                background-color: rgba(255, 255, 255, 0.04);
             }}
             QLineEdit#signalFilterEdit {{
-                background-color: {shell["surface_bg"]};
+                background-color: rgba(11, 17, 28, 0.55);
                 color: {shell["text"]};
-                border: 1px solid {shell["border"]};
-                border-radius: 7px;
-                padding: 4px 8px;
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 8px;
+                padding: 5px 9px;
                 font-size: 10px;
             }}
             QLineEdit#signalFilterEdit:focus {{
@@ -985,7 +1318,7 @@ class SignalListPanel(QFrame):
             if item is not None and item.data(Qt.ItemDataRole.UserRole) in (
                 "__category_header__", "__group_header__"
             ):
-                item.setBackground(QColor(shell.get("card_bg", "#1e2438")))
+                item.setBackground(QColor(shell.get("surface_bg", "#161b27")))
                 item.setForeground(QColor(shell.get("muted", "#7a8aaa")))
 
     def apply_theme(self, theme: Theme) -> None:
@@ -997,6 +1330,51 @@ class SignalListPanel(QFrame):
                 background-color: {c.panel_background};
                 border: 1px solid {c.panel_border};
                 border-radius: 10px;
+            }}
+            QFrame#SignalListGroupCard {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
+                border-radius: 10px;
+            }}
+            QLabel#signalGroupTitle {{
+                color: {c.foreground};
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QLabel#signalGroupMeta {{
+                color: {c.foreground_muted};
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QToolButton#signalGroupCollapseBtn,
+            QToolButton#signalGroupActionBtn {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+            }}
+            QFrame#SignalListRowCard {{
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+            }}
+            QFrame#SignalListRowCard:hover {{
+                background-color: {c.tree_item_hover};
+            }}
+            QLabel#signalRowLabel {{
+                color: {c.foreground};
+                font-size: 10px;
+                font-weight: 600;
+            }}
+            QCheckBox#signalRowToggle::indicator {{
+                width: 28px;
+                height: 15px;
+                border-radius: 7px;
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+            }}
+            QCheckBox#signalRowToggle::indicator:checked {{
+                background-color: {c.primary};
+                border: 1px solid {c.primary};
             }}
             QListWidget {{
                 background-color: {c.background};
@@ -1045,14 +1423,27 @@ class SignalListPanel(QFrame):
         """Override display color for a specific signal."""
         if signal_name in self._signal_items:
             self._signal_items[signal_name].color = color
+            row = self._signal_widgets.get(signal_name)
+            if row is not None:
+                row.set_color(color)
 
     def set_signal_visible(self, signal_name: str, visible: bool) -> None:
         """Set visibility state for a signal."""
         if signal_name in self._signal_items:
-            # Block signals to prevent recursive updates
+            self._syncing_visibility = True
             self._list_widget.blockSignals(True)
-            self._signal_items[signal_name].set_visible(visible)
-            self._list_widget.blockSignals(False)
+            try:
+                self._signal_items[signal_name].set_visible(visible)
+                row = self._signal_widgets.get(signal_name)
+                if row is not None:
+                    row.set_visible_state(visible)
+            finally:
+                self._list_widget.blockSignals(False)
+                self._syncing_visibility = False
+            for leader, names in self._group_children.items():
+                if signal_name in names:
+                    self._sync_group_header_widget(leader)
+                    break
 
     def get_visible_signals(self) -> list[str]:
         """Get list of visible signal names."""
@@ -1065,12 +1456,24 @@ class SignalListPanel(QFrame):
     def _on_item_changed(self, item: SignalListItem) -> None:
         """Handle item checkbox state change."""
         if isinstance(item, SignalListItem):
+            row = self._signal_widgets.get(item.signal_name)
+            if row is not None:
+                row.set_visible_state(item.is_visible)
+            if self._syncing_visibility:
+                return
+            for leader, names in self._group_children.items():
+                if item.signal_name in names:
+                    self._sync_group_header_widget(leader)
+                    break
             self.signal_visibility_changed.emit(
                 item.signal_name, item.is_visible
             )
 
     def _on_item_clicked(self, item: SignalListItem) -> None:
         """Handle item click (selection)."""
+        if isinstance(item, GroupHeaderListItem):
+            self._toggle_group_collapsed(item.leader)
+            return
         if isinstance(item, SignalListItem):
             self.signal_selected.emit(item.signal_name)
 
@@ -1079,15 +1482,53 @@ class SignalListPanel(QFrame):
         if isinstance(item, SignalListItem):
             # Toggle visibility on double-click
             item.set_visible(not item.is_visible)
+            row = self._signal_widgets.get(item.signal_name)
+            if row is not None:
+                row.set_visible_state(item.is_visible)
             self.signal_visibility_changed.emit(
                 item.signal_name, item.is_visible
             )
+            self.signal_double_clicked.emit(item.signal_name)
+
+    def _on_signal_widget_clicked(self, signal_name: str) -> None:
+        item = self._signal_items.get(signal_name)
+        if item is None:
+            return
+        self._list_widget.setCurrentItem(item)
+        self._on_item_clicked(item)
+
+    def _on_signal_widget_double_clicked(self, signal_name: str) -> None:
+        item = self._signal_items.get(signal_name)
+        if item is None:
+            return
+        self._list_widget.setCurrentItem(item)
+        self._on_item_double_clicked(item)
+
+    def _on_signal_widget_toggled(self, signal_name: str, visible: bool) -> None:
+        item = self._signal_items.get(signal_name)
+        if item is None:
+            return
+        self._syncing_visibility = True
+        self._list_widget.blockSignals(True)
+        try:
+            item.set_visible(visible)
+        finally:
+            self._list_widget.blockSignals(False)
+            self._syncing_visibility = False
+        for leader, names in self._group_children.items():
+            if signal_name in names:
+                self._sync_group_header_widget(leader)
+                break
+        self.signal_visibility_changed.emit(signal_name, visible)
 
     def _show_all(self) -> None:
         """Show all signals."""
         for name, item in self._signal_items.items():
             if not item.is_visible:
                 item.set_visible(True)
+                row = self._signal_widgets.get(name)
+                if row is not None:
+                    row.set_visible_state(True)
                 self.signal_visibility_changed.emit(name, True)
 
     def _hide_all(self) -> None:
@@ -1095,19 +1536,24 @@ class SignalListPanel(QFrame):
         for name, item in self._signal_items.items():
             if item.is_visible:
                 item.set_visible(False)
+                row = self._signal_widgets.get(name)
+                if row is not None:
+                    row.set_visible_state(False)
                 self.signal_visibility_changed.emit(name, False)
 
     def _on_filter_changed(self, text: str) -> None:
         """Filter list items by name."""
-        flt = text.strip().lower()
-        for name, item in self._signal_items.items():
-            item.setHidden(bool(flt) and flt not in name.lower())
+        self._apply_group_filter(text)
 
     def clear(self) -> None:
         """Clear all signals."""
         self._list_widget.clear()
         self._signal_items.clear()
         self._color_index = 0
+        self._group_headers.clear()
+        self._group_children.clear()
+        self._group_widgets.clear()
+        self._signal_widgets.clear()
         self._update_compact_height()
 
 

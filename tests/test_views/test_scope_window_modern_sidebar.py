@@ -16,6 +16,13 @@ def _sample_result(signal_count: int = 3, sample_count: int = 16) -> SimulationR
     return SimulationResult(time=time, signals=signals, statistics={})
 
 
+def _prepare_window(window: ScopeWindow) -> None:
+    result = _sample_result(signal_count=3, sample_count=64)
+    window._current_result = result
+    window._refresh_stacked_sidebar(result)
+    window._rebuild_stacked_plots(result)
+
+
 # ── Sidebar tab structure ────────────────────────────────────────────────────
 
 def test_sidebar_has_four_named_tabs(qapp) -> None:
@@ -158,11 +165,19 @@ def test_views_list_initially_empty(qapp) -> None:
 # ── Zoom overview ────────────────────────────────────────────────────────────
 
 def test_overview_plot_exists_and_is_compact(qapp) -> None:
-    """Overview mini-plot must exist with 80 px fixed height."""
+    """Overview mini-plot must be an inset, not a full-width strip."""
     window = ScopeWindow("mst-overview-1", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
     try:
         assert hasattr(window, "_overview_plot")
-        assert window._overview_plot.height() == 80
+        assert hasattr(window, "_overview_inset")
+        assert window._stacked_page_layout.indexOf(window._overview_inset) == -1
+        assert window._overview_plot.width() == 148
+        assert window._overview_plot.height() == 82
+
+        _prepare_window(window)
+
+        assert not window._overview_inset.isHidden()
+        assert window._overview_inset.parent() is not None
     finally:
         window.close()
 
@@ -186,5 +201,35 @@ def test_grouped_signal_list_shows_group_header(qapp) -> None:
             if lw.item(row).data(Qt.ItemDataRole.UserRole) == "__group_header__"
         ]
         assert len(header_items) >= 1
+    finally:
+        window.close()
+
+
+def test_grouped_signal_list_headers_can_collapse_and_expand(qapp) -> None:
+    """Group headers should hide/show child signal rows when toggled."""
+    from PySide6.QtCore import Qt
+
+    window = ScopeWindow("mst-group-2", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        _prepare_window(window)
+        lw = window._stacked_signal_list._list_widget
+        header_item = next(
+            lw.item(row)
+            for row in range(lw.count())
+            if lw.item(row).data(Qt.ItemDataRole.UserRole) == "__group_header__"
+        )
+        signal_items = [
+            lw.item(row)
+            for row in range(lw.count())
+            if hasattr(lw.item(row), "signal_name")
+        ]
+        assert signal_items
+        assert all(not item.isHidden() for item in signal_items)
+
+        window._stacked_signal_list._on_item_clicked(header_item)
+        assert all(item.isHidden() for item in signal_items)
+
+        window._stacked_signal_list._on_item_clicked(header_item)
+        assert all(not item.isHidden() for item in signal_items)
     finally:
         window.close()
