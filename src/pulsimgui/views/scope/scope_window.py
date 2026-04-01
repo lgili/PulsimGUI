@@ -655,6 +655,24 @@ class ScopeWindow(QWidget):
         self._panel_anim_steps: int = 8
         self._panel_anim_target: list[int] = []
         self._panel_anim_current_step: int = 0
+        self._analysis_view_state: dict[str, dict[str, object]] = {
+            "fft": {
+                "window": "hann",
+                "points": 1024,
+                "scale": "db",
+                "x_range": None,
+                "y_range": None,
+            },
+            "compare": {
+                "reference_signal": "",
+                "mode": "overlay",
+                "normalize": False,
+                "x_range": None,
+                "y_range": None,
+            },
+        }
+        self._syncing_fft_controls = False
+        self._syncing_compare_controls = False
 
         self._viewer = WaveformViewer(theme_service=self._theme_service)
         self._viewer.setMinimumSize(820, 500)
@@ -1323,16 +1341,10 @@ class ScopeWindow(QWidget):
         self._analysis_tabs.setDocumentMode(True)
         self._analysis_tabs.currentChanged.connect(self._on_analysis_tab_changed)
         self._analysis_tabs.addTab(self._stacked_page, "Scope")
-        self._fft_placeholder = self._build_analysis_placeholder(
-            "FFT",
-            "Frequency-domain analysis will appear here.",
-        )
-        self._compare_placeholder = self._build_analysis_placeholder(
-            "Compare",
-            "Compare traces and runs inside this workspace.",
-        )
-        self._analysis_tabs.addTab(self._fft_placeholder, "FFT")
-        self._analysis_tabs.addTab(self._compare_placeholder, "Compare")
+        self._fft_page = self._build_fft_page()
+        self._compare_page = self._build_compare_page()
+        self._analysis_tabs.addTab(self._fft_page, "FFT")
+        self._analysis_tabs.addTab(self._compare_page, "Compare")
 
         layout.addWidget(self._scope_toolbar, stretch=0)
         layout.addWidget(self._analysis_tabs, stretch=1)
@@ -2019,9 +2031,49 @@ class ScopeWindow(QWidget):
         rect = self.geometry()
         return rect.x(), rect.y(), rect.width(), rect.height()
 
+    def _capture_analysis_plot_range(self, tab_key: str) -> None:
+        """Persist the current view range for one analysis plot."""
+        plot = {
+            "fft": getattr(self, "_fft_plot", None),
+            "compare": getattr(self, "_compare_plot", None),
+        }.get(tab_key)
+        state = self._analysis_view_state.get(tab_key)
+        if plot is None or state is None:
+            return
+        x_range, y_range = plot.getPlotItem().getViewBox().viewRange()
+        state["x_range"] = [float(x_range[0]), float(x_range[1])]
+        state["y_range"] = [float(y_range[0]), float(y_range[1])]
+
+    def _restore_analysis_plot_range(self, tab_key: str) -> bool:
+        """Restore a previously captured range for one analysis plot."""
+        plot = {
+            "fft": getattr(self, "_fft_plot", None),
+            "compare": getattr(self, "_compare_plot", None),
+        }.get(tab_key)
+        state = self._analysis_view_state.get(tab_key)
+        if plot is None or state is None:
+            return False
+        x_range = state.get("x_range")
+        y_range = state.get("y_range")
+        if not (
+            isinstance(x_range, (list, tuple))
+            and len(x_range) == 2
+            and isinstance(y_range, (list, tuple))
+            and len(y_range) == 2
+        ):
+            return False
+        plot.getPlotItem().getViewBox().setRange(
+            xRange=(float(x_range[0]), float(x_range[1])),
+            yRange=(float(y_range[0]), float(y_range[1])),
+            padding=0.0,
+        )
+        return True
+
     def capture_ui_state(self) -> dict[str, object]:
         """Capture scope-specific UI state for workspace/session persistence."""
         self._sync_plot_groups()
+        self._capture_analysis_plot_range("fft")
+        self._capture_analysis_plot_range("compare")
         return {
             "left_panel_visible": bool(self._left_panel_visible),
             "right_panel_visible": bool(self._right_panel_visible),
@@ -2039,6 +2091,10 @@ class ScopeWindow(QWidget):
             "analysis_tab_index": int(self._analysis_tabs.currentIndex()),
             "inspector_snap_mode": str(self._inspector_snap_mode),
             "simulation_state": str(self._simulation_state),
+            "analysis_view_state": {
+                "fft": dict(self._analysis_view_state.get("fft", {})),
+                "compare": dict(self._analysis_view_state.get("compare", {})),
+            },
         }
 
     def apply_ui_state(self, state: dict[str, object] | None) -> None:
@@ -2137,6 +2193,15 @@ class ScopeWindow(QWidget):
         if isinstance(simulation_state_raw, str) and simulation_state_raw.strip():
             self._simulation_state = simulation_state_raw.strip().lower()
 
+        analysis_view_state_raw = state.get("analysis_view_state")
+        if isinstance(analysis_view_state_raw, dict):
+            for key in ("fft", "compare"):
+                payload = analysis_view_state_raw.get(key)
+                if isinstance(payload, dict):
+                    merged = dict(self._analysis_view_state.get(key, {}))
+                    merged.update(payload)
+                    self._analysis_view_state[key] = merged
+
         self._apply_panel_visibility()
         self._sync_scope_action_states()
 
@@ -2150,6 +2215,7 @@ class ScopeWindow(QWidget):
             self._rebuild_stacked_plots(self._current_result)
             self._update_stacked_measurements()
             self._refresh_inspector()
+            self._refresh_analysis_views()
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -2333,6 +2399,362 @@ class ScopeWindow(QWidget):
         layout.addWidget(subtitle_label)
         layout.addStretch(1)
         return page
+
+    def _build_fft_page(self) -> QWidget:
+        """Create the frequency-domain analysis page with local controls."""
+        page = QWidget()
+        page.setObjectName("scopeAnalysisPlaceholder")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("FFT")
+        header.setObjectName("scopePlaceholderTitle")
+        subtitle = QLabel("Frequency-domain analysis with tab-local settings.")
+        subtitle.setObjectName("scopePlaceholderSubtitle")
+        layout.addWidget(header)
+        layout.addWidget(subtitle)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        controls_layout.addWidget(QLabel("Signal"))
+        self._fft_signal_combo = QComboBox()
+        self._fft_signal_combo.setMinimumWidth(180)
+        self._fft_signal_combo.currentIndexChanged.connect(self._on_fft_signal_changed)
+        controls_layout.addWidget(self._fft_signal_combo)
+        controls_layout.addWidget(QLabel("Window"))
+        self._fft_window_combo = QComboBox()
+        self._fft_window_combo.addItem("Hann", "hann")
+        self._fft_window_combo.addItem("Hamming", "hamming")
+        self._fft_window_combo.addItem("Blackman", "blackman")
+        self._fft_window_combo.addItem("Rectangular", "rect")
+        self._fft_window_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
+        controls_layout.addWidget(self._fft_window_combo)
+        controls_layout.addWidget(QLabel("Points"))
+        self._fft_points_combo = QComboBox()
+        for points in (256, 512, 1024, 2048, 4096):
+            self._fft_points_combo.addItem(str(points), points)
+        self._fft_points_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
+        controls_layout.addWidget(self._fft_points_combo)
+        controls_layout.addWidget(QLabel("Scale"))
+        self._fft_scale_combo = QComboBox()
+        self._fft_scale_combo.addItem("dB", "db")
+        self._fft_scale_combo.addItem("Linear", "linear")
+        self._fft_scale_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
+        controls_layout.addWidget(self._fft_scale_combo)
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._fft_summary_label = QLabel("Waiting for signal data.")
+        self._fft_summary_label.setObjectName("scopePlaceholderSubtitle")
+        layout.addWidget(self._fft_summary_label)
+
+        self._fft_plot = pg.PlotWidget()
+        self._fft_plot.setObjectName("scopeAnalysisPlot")
+        self._fft_plot.setBackground("#10151f")
+        self._fft_plot.showGrid(x=True, y=True, alpha=0.24)
+        self._fft_plot.getPlotItem().setLabel("bottom", "Frequency", units="Hz")
+        self._fft_plot.getPlotItem().setLabel("left", "Magnitude")
+        self._fft_plot.getViewBox().sigRangeChangedManually.connect(
+            lambda *_args: self._capture_analysis_plot_range("fft")
+        )
+        layout.addWidget(self._fft_plot, stretch=1)
+        return page
+
+    def _build_compare_page(self) -> QWidget:
+        """Create the compare analysis page with local controls."""
+        page = QWidget()
+        page.setObjectName("scopeAnalysisPlaceholder")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("Compare")
+        header.setObjectName("scopePlaceholderTitle")
+        subtitle = QLabel("Overlay or subtract traces without disturbing the Scope tab.")
+        subtitle.setObjectName("scopePlaceholderSubtitle")
+        layout.addWidget(header)
+        layout.addWidget(subtitle)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        controls_layout.addWidget(QLabel("Primary"))
+        self._compare_primary_combo = QComboBox()
+        self._compare_primary_combo.setMinimumWidth(180)
+        self._compare_primary_combo.currentIndexChanged.connect(self._on_compare_primary_changed)
+        controls_layout.addWidget(self._compare_primary_combo)
+        controls_layout.addWidget(QLabel("Reference"))
+        self._compare_reference_combo = QComboBox()
+        self._compare_reference_combo.setMinimumWidth(180)
+        self._compare_reference_combo.currentIndexChanged.connect(self._on_compare_settings_changed)
+        controls_layout.addWidget(self._compare_reference_combo)
+        controls_layout.addWidget(QLabel("Mode"))
+        self._compare_mode_combo = QComboBox()
+        self._compare_mode_combo.addItem("Overlay", "overlay")
+        self._compare_mode_combo.addItem("Delta", "delta")
+        self._compare_mode_combo.currentIndexChanged.connect(self._on_compare_settings_changed)
+        controls_layout.addWidget(self._compare_mode_combo)
+        self._compare_normalize_toggle = QCheckBox("Normalize")
+        self._compare_normalize_toggle.toggled.connect(self._on_compare_settings_changed)
+        controls_layout.addWidget(self._compare_normalize_toggle)
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._compare_summary_label = QLabel("Waiting for at least two visible signals.")
+        self._compare_summary_label.setObjectName("scopePlaceholderSubtitle")
+        layout.addWidget(self._compare_summary_label)
+
+        self._compare_plot = pg.PlotWidget()
+        self._compare_plot.setObjectName("scopeAnalysisPlot")
+        self._compare_plot.setBackground("#10151f")
+        self._compare_plot.showGrid(x=True, y=True, alpha=0.24)
+        self._compare_plot.getPlotItem().setLabel("bottom", "Time", units="s")
+        self._compare_plot.getPlotItem().setLabel("left", "Value")
+        self._compare_plot.getViewBox().sigRangeChangedManually.connect(
+            lambda *_args: self._capture_analysis_plot_range("compare")
+        )
+        layout.addWidget(self._compare_plot, stretch=1)
+        return page
+
+    @staticmethod
+    def _set_combo_to_data(combo: QComboBox, value: object) -> None:
+        index = combo.findData(value)
+        if index >= 0 and combo.currentIndex() != index:
+            combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _set_combo_to_text(combo: QComboBox, value: str) -> None:
+        index = combo.findText(str(value))
+        if index >= 0 and combo.currentIndex() != index:
+            combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _analysis_window_weights(kind: str, size: int) -> np.ndarray:
+        if size <= 0:
+            return np.ones(0, dtype=float)
+        if kind == "hamming":
+            return np.hamming(size)
+        if kind == "blackman":
+            return np.blackman(size)
+        if kind == "rect":
+            return np.ones(size, dtype=float)
+        return np.hanning(size)
+
+    def _refresh_analysis_views(self) -> None:
+        """Refresh all non-scope analysis tabs from the current shared selection."""
+        self._refresh_fft_view()
+        self._refresh_compare_view()
+
+    def _refresh_fft_view(self) -> None:
+        names = list(self._stacked_signals.keys())
+        active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
+        self._syncing_fft_controls = True
+        try:
+            self._fft_signal_combo.blockSignals(True)
+            self._fft_signal_combo.clear()
+            for name in names:
+                self._fft_signal_combo.addItem(self._display_signal_name(name), name)
+            if active_signal:
+                self._set_combo_to_data(self._fft_signal_combo, active_signal)
+            self._set_combo_to_data(
+                self._fft_window_combo,
+                self._analysis_view_state["fft"].get("window", "hann"),
+            )
+            self._set_combo_to_data(
+                self._fft_points_combo,
+                self._analysis_view_state["fft"].get("points", 1024),
+            )
+            self._set_combo_to_data(
+                self._fft_scale_combo,
+                self._analysis_view_state["fft"].get("scale", "db"),
+            )
+        finally:
+            self._fft_signal_combo.blockSignals(False)
+            self._syncing_fft_controls = False
+
+        self._fft_plot.clear()
+        if not active_signal or len(self._stacked_time) < 2:
+            self._fft_summary_label.setText("Waiting for signal data.")
+            return
+
+        values = self._stacked_signals.get(active_signal)
+        if values is None or len(values) < 2:
+            self._fft_summary_label.setText("FFT requires at least two samples.")
+            return
+
+        sample_period = float(abs(self._stacked_time[1] - self._stacked_time[0]))
+        if sample_period < 1e-18:
+            self._fft_summary_label.setText("FFT unavailable: invalid sample period.")
+            return
+
+        state = self._analysis_view_state["fft"]
+        points = int(state.get("points", 1024) or 1024)
+        points = max(8, points)
+        signal_slice = values[: min(len(values), points)]
+        window_kind = str(state.get("window", "hann") or "hann")
+        weights = self._analysis_window_weights(window_kind, len(signal_slice))
+        weighted = signal_slice * weights
+        spectrum = np.fft.rfft(weighted, n=points)
+        freqs = np.fft.rfftfreq(points, d=sample_period)
+        magnitude = np.abs(spectrum)
+        scale = str(state.get("scale", "db") or "db")
+        if scale == "db":
+            magnitude = 20.0 * np.log10(np.maximum(magnitude, 1e-12))
+            self._fft_plot.getPlotItem().setLabel("left", "Magnitude", units="dB")
+        else:
+            self._fft_plot.getPlotItem().setLabel("left", "Magnitude")
+
+        color = self._trace_style_color(active_signal) or self._stacked_signal_list.get_signal_color(active_signal) or (90, 210, 255)
+        self._fft_plot.plot(
+            freqs,
+            magnitude,
+            pen=pg.mkPen(color=color, width=1.8),
+            clear=True,
+        )
+        if not self._restore_analysis_plot_range("fft"):
+            self._fft_plot.enableAutoRange(axis="xy", enable=True)
+
+        peak_index = int(np.argmax(np.abs(spectrum))) if len(spectrum) else 0
+        peak_freq = float(freqs[peak_index]) if len(freqs) > peak_index else 0.0
+        self._fft_summary_label.setText(
+            f"{self._display_signal_name(active_signal)}  •  {window_kind.title()}  •  {points} pts  •  Peak {peak_freq:.4g} Hz"
+        )
+
+    def _refresh_compare_view(self) -> None:
+        names = list(self._stacked_signals.keys())
+        active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
+        compare_state = self._analysis_view_state["compare"]
+        reference_signal = str(compare_state.get("reference_signal") or "").strip()
+        if reference_signal not in self._stacked_signals or reference_signal == active_signal:
+            reference_signal = next((name for name in names if name != active_signal), "")
+            compare_state["reference_signal"] = reference_signal
+
+        self._syncing_compare_controls = True
+        try:
+            self._compare_primary_combo.blockSignals(True)
+            self._compare_reference_combo.blockSignals(True)
+            self._compare_primary_combo.clear()
+            self._compare_reference_combo.clear()
+            for name in names:
+                label = self._display_signal_name(name)
+                self._compare_primary_combo.addItem(label, name)
+                self._compare_reference_combo.addItem(label, name)
+            if active_signal:
+                self._set_combo_to_data(self._compare_primary_combo, active_signal)
+            if reference_signal:
+                self._set_combo_to_data(self._compare_reference_combo, reference_signal)
+            self._set_combo_to_data(
+                self._compare_mode_combo,
+                compare_state.get("mode", "overlay"),
+            )
+            self._compare_normalize_toggle.setChecked(bool(compare_state.get("normalize", False)))
+        finally:
+            self._compare_primary_combo.blockSignals(False)
+            self._compare_reference_combo.blockSignals(False)
+            self._syncing_compare_controls = False
+
+        self._compare_plot.clear()
+        if not active_signal or not reference_signal:
+            self._compare_summary_label.setText("Waiting for at least two visible signals.")
+            return
+
+        primary_values = self._stacked_signals.get(active_signal)
+        reference_values = self._stacked_signals.get(reference_signal)
+        if primary_values is None or reference_values is None or len(self._stacked_time) < 2:
+            self._compare_summary_label.setText("Compare unavailable for the current selection.")
+            return
+
+        mode = str(compare_state.get("mode", "overlay") or "overlay")
+        normalize = bool(compare_state.get("normalize", False))
+        primary_plot = np.array(primary_values, copy=True)
+        reference_plot = np.array(reference_values, copy=True)
+
+        if normalize:
+            primary_scale = max(float(np.max(np.abs(primary_plot))), 1e-12)
+            reference_scale = max(float(np.max(np.abs(reference_plot))), 1e-12)
+            primary_plot = primary_plot / primary_scale
+            reference_plot = reference_plot / reference_scale
+
+        primary_color = self._trace_style_color(active_signal) or self._stacked_signal_list.get_signal_color(active_signal) or (90, 210, 255)
+        reference_color = self._trace_style_color(reference_signal) or self._stacked_signal_list.get_signal_color(reference_signal) or (150, 230, 110)
+
+        if mode == "delta":
+            delta_values = primary_plot - reference_plot
+            self._compare_plot.plot(
+                self._stacked_time,
+                delta_values,
+                pen=pg.mkPen(color=(248, 114, 114), width=1.8),
+                clear=True,
+            )
+            rms_delta = float(np.sqrt(np.mean(delta_values ** 2))) if len(delta_values) else 0.0
+            self._compare_summary_label.setText(
+                f"Delta  •  {self._display_signal_name(active_signal)} - {self._display_signal_name(reference_signal)}  •  RMS {rms_delta:.4g}"
+            )
+        else:
+            self._compare_plot.plot(
+                self._stacked_time,
+                primary_plot,
+                pen=pg.mkPen(color=primary_color, width=1.8),
+                clear=True,
+                name=self._display_signal_name(active_signal),
+            )
+            self._compare_plot.plot(
+                self._stacked_time,
+                reference_plot,
+                pen=pg.mkPen(color=reference_color, width=1.8),
+                name=self._display_signal_name(reference_signal),
+            )
+            rms_delta = float(np.sqrt(np.mean((primary_plot - reference_plot) ** 2))) if len(primary_plot) else 0.0
+            self._compare_summary_label.setText(
+                f"Overlay  •  {self._display_signal_name(active_signal)} vs {self._display_signal_name(reference_signal)}  •  RMS Δ {rms_delta:.4g}"
+            )
+
+        if not self._restore_analysis_plot_range("compare"):
+            self._compare_plot.enableAutoRange(axis="xy", enable=True)
+
+    def _on_fft_signal_changed(self) -> None:
+        """Route FFT signal selection through the shared active-signal contract."""
+        if self._syncing_fft_controls:
+            return
+        signal_name = str(self._fft_signal_combo.currentData() or "").strip()
+        if signal_name and signal_name != self._stacked_active_signal:
+            self._on_stacked_signal_selected(signal_name)
+
+    def _on_fft_settings_changed(self) -> None:
+        """Persist FFT-local settings and redraw the frequency plot."""
+        if self._syncing_fft_controls:
+            return
+        fft_state = self._analysis_view_state["fft"]
+        fft_state["window"] = str(self._fft_window_combo.currentData() or "hann")
+        fft_state["points"] = int(self._fft_points_combo.currentData() or 1024)
+        fft_state["scale"] = str(self._fft_scale_combo.currentData() or "db")
+        fft_state["x_range"] = None
+        fft_state["y_range"] = None
+        self._refresh_fft_view()
+
+    def _on_compare_primary_changed(self) -> None:
+        """Keep compare primary selection synchronized with the shared active signal."""
+        if self._syncing_compare_controls:
+            return
+        signal_name = str(self._compare_primary_combo.currentData() or "").strip()
+        if signal_name and signal_name != self._stacked_active_signal:
+            self._on_stacked_signal_selected(signal_name)
+
+    def _on_compare_settings_changed(self) -> None:
+        """Persist compare-tab local settings and redraw the comparison plot."""
+        if self._syncing_compare_controls:
+            return
+        compare_state = self._analysis_view_state["compare"]
+        compare_state["reference_signal"] = str(self._compare_reference_combo.currentData() or "")
+        compare_state["mode"] = str(self._compare_mode_combo.currentData() or "overlay")
+        compare_state["normalize"] = bool(self._compare_normalize_toggle.isChecked())
+        compare_state["x_range"] = None
+        compare_state["y_range"] = None
+        self._refresh_compare_view()
 
     @staticmethod
     def _compose_scope_action_tooltip(
@@ -2809,6 +3231,10 @@ class ScopeWindow(QWidget):
         self._bottom_drawer_active_tab = max(self._bottom_drawer_active_tab, 0)
         if index >= 0:
             self._log_scope_event(f"Analysis tab changed to {self._analysis_tabs.tabText(index)}")
+            if index == 1:
+                self._refresh_fft_view()
+            elif index == 2:
+                self._refresh_compare_view()
         self._sync_scope_action_states()
         self._refresh_status_bar()
 
@@ -5102,6 +5528,7 @@ class ScopeWindow(QWidget):
             self._refresh_inspector()
             self._refresh_quick_metrics()
             self._refresh_status_bar()
+            self._refresh_analysis_views()
             return
 
         time = np.asarray(result.time, dtype=float)
@@ -5134,6 +5561,7 @@ class ScopeWindow(QWidget):
             self._refresh_inspector()
             self._refresh_quick_metrics()
             self._refresh_status_bar()
+            self._refresh_analysis_views()
             return
 
         self._stacked_time = time
@@ -5186,6 +5614,7 @@ class ScopeWindow(QWidget):
         self._refresh_inspector()
         self._refresh_quick_metrics()
         self._refresh_status_bar()
+        self._refresh_analysis_views()
 
     def _sync_scope_selector(self) -> None:
         names = list(self._stacked_signals.keys())
@@ -5272,6 +5701,7 @@ class ScopeWindow(QWidget):
             self._set_trace_controls_for_signal(signal_name)
             self._update_stacked_measurements()
             self._refresh_inspector()
+            self._refresh_analysis_views()
 
     def _on_stacked_signal_double_clicked(self, signal_name: str) -> None:
         if signal_name not in self._stacked_signals:

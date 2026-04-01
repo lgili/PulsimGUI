@@ -62,6 +62,46 @@ def test_analysis_tabs_expose_scope_fft_compare(qapp) -> None:
         window.close()
 
 
+def test_fft_tab_keeps_local_settings_after_switch(qapp) -> None:
+    """FFT controls should persist across tab switches without affecting Scope."""
+    window = ScopeWindow("mst-tabs-fft-state", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        _prepare_window(window)
+        window._analysis_tabs.setCurrentIndex(1)
+        window._fft_window_combo.setCurrentIndex(window._fft_window_combo.findData("blackman"))
+        window._fft_points_combo.setCurrentIndex(window._fft_points_combo.findData(2048))
+        window._fft_scale_combo.setCurrentIndex(window._fft_scale_combo.findData("linear"))
+
+        window._analysis_tabs.setCurrentIndex(0)
+        window._analysis_tabs.setCurrentIndex(1)
+
+        assert window._fft_window_combo.currentData() == "blackman"
+        assert window._fft_points_combo.currentData() == 2048
+        assert window._fft_scale_combo.currentData() == "linear"
+    finally:
+        window.close()
+
+
+def test_compare_tab_keeps_local_settings_after_switch(qapp) -> None:
+    """Compare controls should persist across tab switches without losing reference state."""
+    window = ScopeWindow("mst-tabs-compare-state", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        _prepare_window(window)
+        window._analysis_tabs.setCurrentIndex(2)
+        window._compare_reference_combo.setCurrentIndex(window._compare_reference_combo.findData("S2"))
+        window._compare_mode_combo.setCurrentIndex(window._compare_mode_combo.findData("delta"))
+        window._compare_normalize_toggle.setChecked(True)
+
+        window._analysis_tabs.setCurrentIndex(0)
+        window._analysis_tabs.setCurrentIndex(2)
+
+        assert window._compare_reference_combo.currentData() == "S2"
+        assert window._compare_mode_combo.currentData() == "delta"
+        assert window._compare_normalize_toggle.isChecked() is True
+    finally:
+        window.close()
+
+
 def test_top_level_scope_actions_expose_shortcuts_and_tooltips(qapp) -> None:
     """Top chrome actions should exist as QAction objects with discoverable metadata."""
     window = ScopeWindow("mst-tabs-4", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
@@ -323,6 +363,39 @@ def test_signal_alias_roundtrips_in_ui_state(qapp) -> None:
         assert restored._display_signal_name(signal_name) == "Alias Vout"
         assert restored._simulation_state == "running"
         assert restored._stacked_signal_list._signal_widgets[signal_name]._label.text() == "Alias Vout"
+    finally:
+        restored.close()
+        window.close()
+
+
+def test_analysis_tab_state_roundtrips_in_ui_state(qapp) -> None:
+    """FFT and Compare local settings should survive UI-state capture/apply."""
+    window = ScopeWindow("mst-analysis-state-1", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    restored = ScopeWindow("mst-analysis-state-2", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        _prepare_window(window)
+        window._analysis_tabs.setCurrentIndex(1)
+        window._fft_window_combo.setCurrentIndex(window._fft_window_combo.findData("blackman"))
+        window._fft_points_combo.setCurrentIndex(window._fft_points_combo.findData(2048))
+        window._fft_scale_combo.setCurrentIndex(window._fft_scale_combo.findData("linear"))
+        window._analysis_tabs.setCurrentIndex(2)
+        window._compare_reference_combo.setCurrentIndex(window._compare_reference_combo.findData("S2"))
+        window._compare_mode_combo.setCurrentIndex(window._compare_mode_combo.findData("delta"))
+        window._compare_normalize_toggle.setChecked(True)
+        state = window.capture_ui_state()
+
+        _prepare_window(restored)
+        restored.apply_ui_state(state)
+
+        assert restored._analysis_tabs.currentIndex() == 2
+        restored._analysis_tabs.setCurrentIndex(1)
+        assert restored._fft_window_combo.currentData() == "blackman"
+        assert restored._fft_points_combo.currentData() == 2048
+        assert restored._fft_scale_combo.currentData() == "linear"
+        restored._analysis_tabs.setCurrentIndex(2)
+        assert restored._compare_reference_combo.currentData() == "S2"
+        assert restored._compare_mode_combo.currentData() == "delta"
+        assert restored._compare_normalize_toggle.isChecked() is True
     finally:
         restored.close()
         window.close()
