@@ -27,7 +27,7 @@
 
 - [x] 5.1 Implement the right inspector with Trace, Axis, Style, Cursor, and Measurements sections
 - [x] 5.2 Make inspector edits update the plot, signals panel, and measurement surfaces in real time
-- [ ] 5.3 Implement add-expression flow with validation, unit preview, and optional auto-plot behavior
+- [x] 5.3 Implement add-expression flow with validation, unit preview, and optional auto-plot behavior
 
 ## 6. Bottom Area
 

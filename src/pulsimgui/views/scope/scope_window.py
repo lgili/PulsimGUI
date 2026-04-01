@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable
 
@@ -69,20 +70,209 @@ from pulsimgui.views.waveform.waveform_viewer import (
 from .bindings import ScopeChannelBinding, ScopeSignal
 
 
+_MATH_BINARY_OPS: dict[type[ast.operator], Callable[[object, object], object]] = {
+    ast.Add: lambda left, right: left + right,
+    ast.Sub: lambda left, right: left - right,
+    ast.Mult: lambda left, right: left * right,
+    ast.Div: lambda left, right: left / right,
+    ast.Pow: lambda left, right: left ** right,
+}
+_MATH_UNARY_OPS: dict[type[ast.unaryop], Callable[[object], object]] = {
+    ast.UAdd: lambda value: value,
+    ast.USub: lambda value: -value,
+}
+_MATH_ALLOWED_NAMES = frozenset({"A", "B", "t"})
+_MATH_ALLOWED_CALLS = frozenset({"abs", "sqrt", "square", "derivative", "integral", "moving_avg", "avg"})
+
+
+def _math_moving_average(values: object, window: object) -> np.ndarray:
+    array = np.asarray(values, dtype=float)
+    kernel_size = int(round(float(window)))
+    if kernel_size < 2:
+        raise ValueError("moving_avg window must be at least 2 samples")
+    kernel_size = min(kernel_size, len(array))
+    kernel = np.ones(kernel_size, dtype=float) / float(kernel_size)
+    return np.convolve(array, kernel, mode="same")
+
+
+def _math_validate_ast(node: ast.AST) -> None:
+    if isinstance(node, ast.Expression):
+        _math_validate_ast(node.body)
+        return
+    if isinstance(node, ast.BinOp):
+        if type(node.op) not in _MATH_BINARY_OPS:
+            raise ValueError("Unsupported binary operator")
+        _math_validate_ast(node.left)
+        _math_validate_ast(node.right)
+        return
+    if isinstance(node, ast.UnaryOp):
+        if type(node.op) not in _MATH_UNARY_OPS:
+            raise ValueError("Unsupported unary operator")
+        _math_validate_ast(node.operand)
+        return
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in _MATH_ALLOWED_CALLS:
+            raise ValueError("Unsupported function call")
+        for arg in node.args:
+            _math_validate_ast(arg)
+        return
+    if isinstance(node, ast.Name):
+        if node.id not in _MATH_ALLOWED_NAMES:
+            raise ValueError(f"Unknown symbol '{node.id}'")
+        return
+    if isinstance(node, ast.Constant):
+        if not isinstance(node.value, (int, float)):
+            raise ValueError("Only numeric constants are supported")
+        return
+    raise ValueError("Unsupported expression syntax")
+
+
+def _math_eval_ast(node: ast.AST, env: dict[str, object], time: np.ndarray) -> object:
+    if isinstance(node, ast.Expression):
+        return _math_eval_ast(node.body, env, time)
+    if isinstance(node, ast.BinOp):
+        left = _math_eval_ast(node.left, env, time)
+        right = _math_eval_ast(node.right, env, time)
+        return _MATH_BINARY_OPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp):
+        operand = _math_eval_ast(node.operand, env, time)
+        return _MATH_UNARY_OPS[type(node.op)](operand)
+    if isinstance(node, ast.Name):
+        return env[node.id]
+    if isinstance(node, ast.Constant):
+        return float(node.value)
+    if isinstance(node, ast.Call):
+        func_name = node.func.id if isinstance(node.func, ast.Name) else ""
+        args = [_math_eval_ast(arg, env, time) for arg in node.args]
+        if func_name == "abs":
+            return np.abs(args[0])
+        if func_name == "sqrt":
+            return np.sqrt(np.maximum(np.asarray(args[0], dtype=float), 0.0))
+        if func_name == "square":
+            return np.square(args[0])
+        if func_name == "derivative":
+            return np.gradient(np.asarray(args[0], dtype=float), time)
+        if func_name == "integral":
+            dt = np.diff(time, prepend=time[0])
+            return np.cumsum(np.asarray(args[0], dtype=float) * dt)
+        if func_name in {"moving_avg", "avg"}:
+            return _math_moving_average(args[0], args[1])
+    raise ValueError("Unsupported expression syntax")
+
+
+def _evaluate_math_expression(formula: str, env: dict[str, object], time: np.ndarray) -> np.ndarray:
+    expression = str(formula or "").strip()
+    if not expression:
+        raise ValueError("Expression cannot be empty")
+    parsed = ast.parse(expression, mode="eval")
+    _math_validate_ast(parsed)
+    result = _math_eval_ast(parsed, env, time)
+    array = np.asarray(result, dtype=float)
+    if array.ndim == 0:
+        return np.full_like(time, float(array), dtype=float)
+    if len(array) != len(time):
+        raise ValueError("Expression must return one value per sample")
+    return array
+
+
+def _combine_math_units(left: str, right: str, operator_name: str) -> str:
+    left_unit = str(left or "").strip()
+    right_unit = str(right or "").strip()
+    if operator_name in {"add", "sub"}:
+        if left_unit == right_unit:
+            return left_unit
+        if not left_unit:
+            return right_unit
+        if not right_unit:
+            return left_unit
+        return "mixed"
+    if operator_name == "mul":
+        if not left_unit:
+            return right_unit
+        if not right_unit:
+            return left_unit
+        return f"{left_unit}*{right_unit}"
+    if operator_name == "div":
+        if left_unit == right_unit:
+            return ""
+        if not right_unit:
+            return left_unit
+        if not left_unit:
+            return f"1/{right_unit}"
+        return f"{left_unit}/{right_unit}"
+    if operator_name == "pow":
+        if not left_unit:
+            return ""
+        return f"{left_unit}^{right_unit or 'n'}"
+    return left_unit
+
+
+def _infer_math_unit(node: ast.AST, env_units: dict[str, str]) -> str:
+    if isinstance(node, ast.Expression):
+        return _infer_math_unit(node.body, env_units)
+    if isinstance(node, ast.Name):
+        return str(env_units.get(node.id, "") or "")
+    if isinstance(node, ast.Constant):
+        return ""
+    if isinstance(node, ast.UnaryOp):
+        return _infer_math_unit(node.operand, env_units)
+    if isinstance(node, ast.BinOp):
+        left_unit = _infer_math_unit(node.left, env_units)
+        right_unit = _infer_math_unit(node.right, env_units)
+        if isinstance(node.op, ast.Add):
+            return _combine_math_units(left_unit, right_unit, "add")
+        if isinstance(node.op, ast.Sub):
+            return _combine_math_units(left_unit, right_unit, "sub")
+        if isinstance(node.op, ast.Mult):
+            return _combine_math_units(left_unit, right_unit, "mul")
+        if isinstance(node.op, ast.Div):
+            return _combine_math_units(left_unit, right_unit, "div")
+        if isinstance(node.op, ast.Pow):
+            return _combine_math_units(left_unit, right_unit, "pow")
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        func_name = node.func.id
+        base_unit = _infer_math_unit(node.args[0], env_units) if node.args else ""
+        if func_name in {"abs", "moving_avg", "avg"}:
+            return base_unit
+        if func_name == "square":
+            return f"{base_unit}^2" if base_unit else ""
+        if func_name == "sqrt":
+            return f"sqrt({base_unit})" if base_unit else ""
+        if func_name == "derivative":
+            return f"{base_unit}/s" if base_unit else "1/s"
+        if func_name == "integral":
+            return f"{base_unit}*s" if base_unit else "s"
+    return ""
+
+
+def _infer_math_expression_unit(formula: str, env_units: dict[str, str]) -> str:
+    expression = str(formula or "").strip()
+    if not expression:
+        return ""
+    parsed = ast.parse(expression, mode="eval")
+    _math_validate_ast(parsed)
+    return _infer_math_unit(parsed, env_units)
+
+
 class MathSignalDialog(QDialog):
     """Dialog that encapsulates math signal interactions."""
     def __init__(
         self,
         parent: QWidget,
-        signal_names: list[str],
+        signal_data: dict[str, np.ndarray],
+        signal_units: dict[str, str],
+        time_values: np.ndarray,
         default_signal: str,
         theme: Theme | None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Math Signal")
         self.setModal(True)
-        self.setMinimumWidth(500)
-        self._signal_names = signal_names
+        self.setMinimumWidth(560)
+        self._signal_names = list(signal_data.keys())
+        self._signal_data = {name: np.asarray(values, dtype=float) for name, values in signal_data.items()}
+        self._signal_units = {str(name): str(unit or "") for name, unit in signal_units.items()}
+        self._time_values = np.asarray(time_values, dtype=float)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
@@ -90,7 +280,7 @@ class MathSignalDialog(QDialog):
 
         title = QLabel("Math Signal")
         title.setObjectName("mathSignalDialogTitle")
-        subtitle = QLabel("Create derived traces from one or two signals")
+        subtitle = QLabel("Create derived traces with an explicit formula and live validation.")
         subtitle.setObjectName("mathSignalDialogSubtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -104,18 +294,17 @@ class MathSignalDialog(QDialog):
         inputs_form.setHorizontalSpacing(10)
         inputs_form.setVerticalSpacing(8)
         self._source_a_combo = QComboBox()
-        self._source_a_combo.addItems(signal_names)
+        self._source_a_combo.addItems(self._signal_names)
         idx = self._source_a_combo.findText(default_signal)
         if idx >= 0:
             self._source_a_combo.setCurrentIndex(idx)
         inputs_form.addRow("Signal A", self._source_a_combo)
 
-        self._source_b_label = QLabel("Signal B")
         self._source_b_combo = QComboBox()
-        self._source_b_combo.addItems(signal_names)
+        self._source_b_combo.addItems(self._signal_names)
         if idx >= 0:
             self._source_b_combo.setCurrentIndex(idx)
-        inputs_form.addRow(self._source_b_label, self._source_b_combo)
+        inputs_form.addRow("Signal B", self._source_b_combo)
 
         self._swap_sources_btn = QPushButton("Swap A ↔ B")
         self._swap_sources_btn.setObjectName("mathSignalSwapBtn")
@@ -123,49 +312,18 @@ class MathSignalDialog(QDialog):
         inputs_form.addRow("", self._swap_sources_btn)
         layout.addLayout(inputs_form)
 
-        transform_section = QLabel("Transform")
-        transform_section.setObjectName("mathSignalSection")
-        layout.addWidget(transform_section)
-        transform_form = QFormLayout()
-        transform_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        transform_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        transform_form.setHorizontalSpacing(10)
-        transform_form.setVerticalSpacing(8)
-
-        self._operation_combo = QComboBox()
-        self._operation_combo.addItem("Add (A + B)", "ADD")
-        self._operation_combo.addItem("Subtract (A - B)", "SUB")
-        self._operation_combo.addItem("Multiply (A × B)", "MUL")
-        self._operation_combo.addItem("Divide (A / B)", "DIV")
-        self._operation_combo.addItem("Moving Average", "AVG")
-        self._operation_combo.addItem("Negate (-A)", "NEG")
-        self._operation_combo.addItem("Absolute (|A|)", "ABS")
-        self._operation_combo.addItem("Square (A²)", "SQR")
-        self._operation_combo.addItem("Derivative (dA/dt)", "DER")
-        self._operation_combo.addItem("Integral (∫A dt)", "INT")
-        transform_form.addRow("Operation", self._operation_combo)
-
-        self._window_label = QLabel("Window")
-        self._window_spin = QSpinBox()
-        self._window_spin.setRange(2, 5000)
-        self._window_spin.setValue(16)
-        self._window_spin.setSingleStep(2)
-        transform_form.addRow(self._window_label, self._window_spin)
-
-        self._gain_spin = QDoubleSpinBox()
-        self._gain_spin.setDecimals(4)
-        self._gain_spin.setRange(-1e6, 1e6)
-        self._gain_spin.setValue(1.0)
-        self._gain_spin.setSingleStep(0.1)
-        transform_form.addRow("Gain", self._gain_spin)
-
-        self._offset_spin = QDoubleSpinBox()
-        self._offset_spin.setDecimals(6)
-        self._offset_spin.setRange(-1e12, 1e12)
-        self._offset_spin.setValue(0.0)
-        self._offset_spin.setSingleStep(0.1)
-        transform_form.addRow("Offset", self._offset_spin)
-        layout.addLayout(transform_form)
+        formula_section = QLabel("Formula")
+        formula_section.setObjectName("mathSignalSection")
+        layout.addWidget(formula_section)
+        self._formula_edit = QLineEdit("A")
+        self._formula_edit.setPlaceholderText("Examples: A + B, abs(A), moving_avg(A, 16), derivative(A)")
+        layout.addWidget(self._formula_edit)
+        self._formula_help = QLabel(
+            "Use variables A, B and t. Supported functions: abs(), sqrt(), square(), derivative(), integral(), moving_avg()."
+        )
+        self._formula_help.setObjectName("mathSignalDialogSubtitle")
+        self._formula_help.setWordWrap(True)
+        layout.addWidget(self._formula_help)
 
         output_section = QLabel("Output")
         output_section.setObjectName("mathSignalSection")
@@ -179,6 +337,12 @@ class MathSignalDialog(QDialog):
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("Auto")
         output_form.addRow("Result Name", self._name_edit)
+        self._unit_preview_label = QLabel("Result Unit: —")
+        self._unit_preview_label.setObjectName("mathSignalDialogSubtitle")
+        output_form.addRow("Unit Preview", self._unit_preview_label)
+        self._auto_plot_check = QCheckBox("Add to plot immediately")
+        self._auto_plot_check.setChecked(True)
+        output_form.addRow("Behavior", self._auto_plot_check)
 
         self._preview_label = QLabel("Preview: --")
         self._preview_label.setObjectName("mathSignalPreview")
@@ -187,9 +351,9 @@ class MathSignalDialog(QDialog):
         layout.addWidget(self._preview_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        if ok_btn is not None:
-            ok_btn.setText("Create")
+        self._create_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if self._create_button is not None:
+            self._create_button.setText("Create")
         cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         if cancel_btn is not None:
             cancel_btn.setText("Cancel")
@@ -197,12 +361,10 @@ class MathSignalDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self._operation_combo.currentIndexChanged.connect(self._update_state)
         self._source_a_combo.currentIndexChanged.connect(self._update_state)
         self._source_b_combo.currentIndexChanged.connect(self._update_state)
-        self._gain_spin.valueChanged.connect(self._update_state)
-        self._offset_spin.valueChanged.connect(self._update_state)
-        self._window_spin.valueChanged.connect(self._update_state)
+        self._formula_edit.textChanged.connect(self._update_state)
+        self._name_edit.textChanged.connect(self._update_state)
 
         if theme is not None:
             c = theme.colors
@@ -230,13 +392,13 @@ class MathSignalDialog(QDialog):
                 QLabel#mathSignalPreview {{
                     font-size: 11px;
                     font-weight: 600;
-                    color: {c.primary};
+                    color: {c.foreground};
                     background-color: {c.background_alt};
                     border: 1px solid {c.panel_border};
                     border-radius: 10px;
                     padding: 7px 10px;
                 }}
-                QComboBox, QDoubleSpinBox, QLineEdit {{
+                QComboBox, QLineEdit {{
                     background-color: {c.input_background};
                     color: {c.foreground};
                     border: 1px solid {c.input_border};
@@ -267,16 +429,6 @@ class MathSignalDialog(QDialog):
 
         self._update_state()
 
-    def _current_operation(self) -> str:
-        data = self._operation_combo.currentData()
-        return str(data) if data is not None else "ADD"
-
-    def _operation_needs_b(self, op_code: str) -> bool:
-        return op_code in {"ADD", "SUB", "MUL", "DIV"}
-
-    def _operation_needs_window(self, op_code: str) -> bool:
-        return op_code == "AVG"
-
     def _on_swap_sources_clicked(self) -> None:
         idx_a = self._source_a_combo.currentIndex()
         idx_b = self._source_b_combo.currentIndex()
@@ -285,53 +437,60 @@ class MathSignalDialog(QDialog):
         self._update_state()
 
     def _update_state(self) -> None:
-        op_code = self._current_operation()
-        needs_b = self._operation_needs_b(op_code)
-        needs_window = self._operation_needs_window(op_code)
-        self._source_b_label.setVisible(needs_b)
-        self._source_b_combo.setVisible(needs_b)
-        self._swap_sources_btn.setVisible(needs_b)
-        self._window_label.setVisible(needs_window)
-        self._window_spin.setVisible(needs_window)
-
         source_a = self._source_a_combo.currentText().strip()
         source_b = self._source_b_combo.currentText().strip()
-        gain = self._gain_spin.value()
-        offset = self._offset_spin.value()
+        formula = self._formula_edit.text().strip()
+        env = {
+            "A": self._signal_data.get(source_a, np.array([], dtype=float)),
+            "B": self._signal_data.get(source_b, np.array([], dtype=float)),
+            "t": self._time_values,
+        }
+        env_units = {
+            "A": self._signal_units.get(source_a, ""),
+            "B": self._signal_units.get(source_b, ""),
+            "t": "s",
+        }
 
-        if needs_b:
-            expr = f"{source_a} {op_code} {source_b}"
-        elif needs_window:
-            expr = f"AVG({source_a}, N={self._window_spin.value()})"
-        else:
-            expr = f"{op_code}({source_a})"
+        valid = False
+        preview_text = "Preview: Enter an expression."
+        unit_text = "Result Unit: —"
+        try:
+            result = _evaluate_math_expression(formula, env, self._time_values)
+            unit = _infer_math_expression_unit(formula, env_units)
+            valid = True
+            min_val = float(np.min(result)) if len(result) else 0.0
+            max_val = float(np.max(result)) if len(result) else 0.0
+            preview_text = (
+                f"Preview: valid expression • {len(result)} samples • "
+                f"min {min_val:.4g} • max {max_val:.4g}"
+            )
+            unit_text = f"Result Unit: {unit or 'unitless'}"
+        except Exception as exc:
+            preview_text = f"Preview: invalid expression • {exc}"
 
-        extras = []
-        if abs(gain - 1.0) > 1e-12:
-            extras.append(f"×{gain:.4g}")
-        if abs(offset) > 1e-12:
-            extras.append(f"+{offset:.4g}")
-        if extras:
-            expr = f"{expr} {' '.join(extras)}"
-
-        self._preview_label.setText(f"Preview: {expr}")
+        self._preview_label.setText(preview_text)
+        self._unit_preview_label.setText(unit_text)
+        if self._create_button is not None:
+            self._create_button.setEnabled(valid)
 
     def selected_config(self) -> dict[str, object]:
         """Return the currently selected math-signal configuration."""
-        op_code = self._current_operation()
         source_a = self._source_a_combo.currentText().strip()
         source_b = self._source_b_combo.currentText().strip()
+        formula = self._formula_edit.text().strip()
         custom_name = self._name_edit.text().strip()
+        env_units = {
+            "A": self._signal_units.get(source_a, ""),
+            "B": self._signal_units.get(source_b, ""),
+            "t": "s",
+        }
         return {
-            "operation": op_code,
             "source_a": source_a,
             "source_b": source_b,
-            "gain": float(self._gain_spin.value()),
-            "offset": float(self._offset_spin.value()),
-            "window": int(self._window_spin.value()),
+            "formula": formula,
             "custom_name": custom_name,
-            "needs_b": self._operation_needs_b(op_code),
-            "needs_window": self._operation_needs_window(op_code),
+            "auto_plot": bool(self._auto_plot_check.isChecked()),
+            "result_unit": _infer_math_expression_unit(formula, env_units),
         }
 
 
@@ -652,6 +811,7 @@ class ScopeWindow(QWidget):
         self._saved_views: dict[str, tuple[float, float]] = {}
         self._signal_axis_targets: dict[str, str] = {}
         self._signal_labels: dict[str, str] = {}
+        self._signal_units: dict[str, str] = {}
         self._inspector_snap_mode: str = "none"
         self._bottom_drawer_expanded = False
         self._bottom_drawer_height = 196
@@ -2256,6 +2416,37 @@ class ScopeWindow(QWidget):
         if not text:
             return "No signal"
         return self._signal_labels.get(text, text)
+
+    def _infer_signal_unit(self, signal_name: str, result: SimulationResult | None = None) -> str:
+        """Infer engineering units from backend metadata or naming heuristics."""
+        name = str(signal_name or "").strip()
+        if not name:
+            return ""
+        cached = str(self._signal_units.get(name, "") or "").strip()
+        if cached:
+            return cached
+
+        active_result = result or self._current_result
+        stats = active_result.statistics if active_result and isinstance(active_result.statistics, dict) else {}
+        metadata = stats.get("virtual_channel_metadata")
+        if isinstance(metadata, dict):
+            entry = metadata.get(name)
+            unit = self._virtual_metadata_field(entry, "unit")
+            if unit:
+                return unit
+
+        upper = name.upper()
+        if upper.startswith("V") or upper.startswith("VP"):
+            return "V"
+        if upper.startswith("I") or upper.startswith("IP"):
+            return "A"
+        if upper.startswith("P"):
+            return "W"
+        if upper.startswith(("T", "TJ", "TEMP")) or "TEMP" in upper:
+            return "C"
+        if "FREQ" in upper:
+            return "Hz"
+        return ""
 
     def _measurement_scope_label(self) -> str:
         target = normalize_interval_target(self._stacked_interval_target)
@@ -4987,7 +5178,9 @@ class ScopeWindow(QWidget):
 
         dialog = MathSignalDialog(
             self,
-            signal_names=available_signals,
+            signal_data={name: self._stacked_signals[name] for name in available_signals},
+            signal_units={name: self._infer_signal_unit(name) for name in available_signals},
+            time_values=self._stacked_time,
             default_signal=preferred_signal,
             theme=self._theme,
         )
@@ -4995,112 +5188,64 @@ class ScopeWindow(QWidget):
             return
 
         config = dialog.selected_config()
-        op_code = str(config["operation"])
-        source_a = str(config["source_a"])
-        source_b = str(config["source_b"])
-        gain = float(config["gain"])
-        offset = float(config["offset"])
-        window = int(config["window"])
-        needs_b = bool(config["needs_b"])
-        needs_window = bool(config["needs_window"])
-        custom_name = str(config["custom_name"])
+        try:
+            self._create_math_signal_from_config(config)
+        except Exception as exc:
+            QMessageBox.warning(self, "Math Signal", str(exc))
+
+    def _create_math_signal_from_config(self, config: dict[str, object]) -> str:
+        """Create one derived trace from a validated dialog configuration."""
+        source_a = str(config.get("source_a") or "").strip()
+        source_b = str(config.get("source_b") or "").strip()
+        formula = str(config.get("formula") or "").strip()
+        custom_name = str(config.get("custom_name") or "").strip()
+        auto_plot = bool(config.get("auto_plot", True))
+        result_unit = str(config.get("result_unit") or "").strip()
 
         if source_a not in self._stacked_signals:
-            QMessageBox.information(self, "Math Signal", "Invalid Source A signal.")
-            return
+            raise ValueError("Invalid Source A signal.")
+        if source_b and source_b not in self._stacked_signals:
+            raise ValueError("Invalid Source B signal.")
+        if len(self._stacked_time) == 0:
+            raise ValueError("No sampled time base is available for math expressions.")
 
-        a_values = self._stacked_signals[source_a]
-        if len(a_values) == 0:
-            return
-
-        if needs_b:
-            if source_b not in self._stacked_signals:
-                QMessageBox.information(self, "Math Signal", "Invalid Source B signal.")
-                return
-            b_values = self._stacked_signals[source_b]
-            if len(b_values) != len(a_values):
-                QMessageBox.information(
-                    self,
-                    "Math Signal",
-                    "Source signals must have the same sample count.",
-                )
-                return
-        else:
-            b_values = None
-
-        if op_code == "ADD":
-            result = a_values + b_values
-        elif op_code == "SUB":
-            result = a_values - b_values
-        elif op_code == "MUL":
-            result = a_values * b_values
-        elif op_code == "DIV":
-            safe = np.abs(b_values) > 1e-15
-            result = np.divide(a_values, b_values, out=np.zeros_like(a_values), where=safe)
-        elif op_code == "AVG":
-            if len(a_values) < 2:
-                QMessageBox.information(self, "Math Signal", "Not enough samples for moving average.")
-                return
-            kernel_size = max(2, min(window, len(a_values)))
-            kernel = np.ones(kernel_size, dtype=float) / float(kernel_size)
-            result = np.convolve(a_values, kernel, mode="same")
-        elif op_code == "NEG":
-            result = -a_values
-        elif op_code == "ABS":
-            result = np.abs(a_values)
-        elif op_code == "SQR":
-            result = np.square(a_values)
-        elif op_code == "DER":
-            if len(self._stacked_time) < 2:
-                QMessageBox.information(self, "Math Signal", "Not enough samples for derivative.")
-                return
-            result = np.gradient(a_values, self._stacked_time)
-        elif op_code == "INT":
-            if len(self._stacked_time) < 2:
-                QMessageBox.information(self, "Math Signal", "Not enough samples for integral.")
-                return
-            dt = np.diff(self._stacked_time, prepend=self._stacked_time[0])
-            result = np.cumsum(a_values * dt)
-        else:
-            QMessageBox.information(self, "Math Signal", "Unsupported operation.")
-            return
-
-        result = (result * gain) + offset
+        env = {
+            "A": self._stacked_signals[source_a],
+            "B": self._stacked_signals.get(source_b, self._stacked_signals[source_a]),
+            "t": self._stacked_time,
+        }
+        result = _evaluate_math_expression(formula, env, self._stacked_time)
 
         self._math_signal_counter += 1
-        if custom_name:
-            name = f"MATH_{self._math_signal_counter}:{custom_name}"
-        elif needs_b:
-            name = f"MATH_{self._math_signal_counter}:{op_code}({source_a},{source_b})"
-        elif needs_window:
-            name = f"MATH_{self._math_signal_counter}:{op_code}({source_a},N={window})"
-        else:
-            name = f"MATH_{self._math_signal_counter}:{op_code}({source_a})"
-        self._stacked_signals[name] = np.asarray(result, dtype=float)
-        self._rebuild_stacked_statistics_cache()
+        signal_key = f"MATH_{self._math_signal_counter}"
+        display_name = custom_name or formula
+        if len(display_name) > 64:
+            display_name = f"{display_name[:61]}..."
 
         if self._current_result is None:
             self._current_result = SimulationResult()
             self._current_result.time = list(self._stacked_time)
             self._current_result.signals = {}
-        self._current_result.signals[name] = list(self._stacked_signals[name])
-        self._signal_axis_targets[name] = "left"
 
-        visible = set(self._stacked_signal_list.get_visible_signals())
-        visible.add(name)
-        self._stacked_signal_list.set_signals(list(self._stacked_signals.keys()))
-        self._apply_stacked_trace_colors()
-        for signal in self._stacked_signals:
-            self._stacked_signal_list.set_signal_visible(signal, signal in visible)
+        self._current_result.signals[signal_key] = list(np.asarray(result, dtype=float))
+        self._signal_labels[signal_key] = display_name
+        self._signal_units[signal_key] = result_unit
+        self._signal_axis_targets[signal_key] = "left"
 
-        self._stacked_active_signal = name
-        self._sync_scope_selector()
-        self._sync_trace_style_controls()
-        self._refresh_signal_list_metadata()
+        self._refresh_stacked_sidebar(self._current_result)
         self._rebuild_stacked_plots(self._current_result)
-        self._update_stacked_measurements()
+
+        if auto_plot:
+            self._stacked_signal_list.set_signal_visible(signal_key, True)
+            self._on_scope_selector_changed(signal_key)
+        else:
+            self._stacked_signal_list.set_signal_visible(signal_key, False)
+            self._on_stacked_signal_visibility_changed(signal_key, False)
+
+        self._refresh_signal_list_metadata()
         self._refresh_inspector()
-        self._log_scope_event(f"Math signal added: {name}")
+        self._log_scope_event(f"Math signal added: {display_name}")
+        return signal_key
 
     def _zoom_window_fraction(self) -> float:
         if not hasattr(self, "_zoom_slider"):
@@ -5520,6 +5665,7 @@ class ScopeWindow(QWidget):
             self._stacked_signal_stats = {}
             self._stacked_plot_groups = {}
             self._signal_axis_targets = {}
+            self._signal_units = {}
             self._stacked_active_signal = None
             self._selected_plot_group_leader = None
             self._stacked_cursor_initialized = False
@@ -5553,6 +5699,7 @@ class ScopeWindow(QWidget):
             self._stacked_signal_stats = {}
             self._stacked_plot_groups = {}
             self._signal_axis_targets = {}
+            self._signal_units = {}
             self._stacked_active_signal = None
             self._selected_plot_group_leader = None
             self._stacked_cursor_initialized = False
@@ -5577,6 +5724,10 @@ class ScopeWindow(QWidget):
         self._stacked_signals = valid_signals
         self._signal_axis_targets = {
             name: self._signal_axis_targets.get(name, "left")
+            for name in valid_signals
+        }
+        self._signal_units = {
+            name: self._signal_units.get(name) or self._infer_signal_unit(name, result)
             for name in valid_signals
         }
         self._sync_plot_groups()
