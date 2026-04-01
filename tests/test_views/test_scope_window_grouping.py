@@ -101,6 +101,43 @@ def test_scope_drag_mapping_can_place_signal_in_dedicated_pane(qapp) -> None:
         window.close()
 
 
+def test_scope_drag_drop_handler_selects_signal_and_creates_dedicated_pane(qapp) -> None:
+    """Workspace drop handler should move the signal and synchronize active selection."""
+    window = ScopeWindow("scope-group-drop-handler", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        applied = window._handle_signal_drop_request("S2", None)
+
+        assert applied is True
+        assert window._stacked_active_signal == "S2"
+        assert window._plot_group_leader("S2") == "S2"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_can_render_right_axis_for_overlay_group(qapp) -> None:
+    """Assigning a trace to the right axis should create a real secondary viewbox."""
+    window = ScopeWindow("scope-group-right-axis", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        window._set_signal_axis_target("S2", "right")
+
+        assert len(window._plot_widgets) == 1
+        assert len(window._plot_right_view_boxes) == 1
+        assert window._plot_widgets[0].getPlotItem().getAxis("right").isVisible()
+    finally:
+        window.close()
+
+
 def test_scope_ui_state_roundtrip_restores_plot_groups(qapp) -> None:
     """Captured UI state should restore per-signal plot-group mapping."""
     source = ScopeWindow("scope-group-state-source", "Group Scope", ComponentType.ELECTRICAL_SCOPE)

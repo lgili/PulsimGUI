@@ -246,11 +246,28 @@ def test_saved_views_survive_workspace_roundtrip() -> None:
 def test_interval_target_survives_workspace_roundtrip() -> None:
     session = ScopeWorkbenchSession("ws-3")
     scope_id = session.active_scope_id
-    session.set_scope_interval_target(scope_id, "cursor_a")
+    session.set_scope_interval_target(scope_id, "full")
 
     payload = session.export_state_dict()
     restored = ScopeWorkspaceState.from_dict(payload)
-    assert restored.scopes[0].interval_target == "cursor_a"
+    assert restored.scopes[0].interval_target == "full"
+
+
+def test_legacy_interval_target_aliases_normalize_on_roundtrip() -> None:
+    restored = ScopeWorkspaceState.from_dict(
+        {
+            "workspace_id": "ws-legacy",
+            "scopes": [
+                {
+                    "scope_id": "scope-1",
+                    "name": "Scope 1",
+                    "interval_target": "cursor_a",
+                }
+            ],
+        }
+    )
+
+    assert restored.scopes[0].interval_target == "a_to_b"
 
 
 def test_default_measurement_keys_are_exported() -> None:

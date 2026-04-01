@@ -18,7 +18,21 @@ DEFAULT_MEASUREMENT_KEYS: tuple[str, ...] = (
 )
 
 # Valid interval targets for statistics computation.
-INTERVAL_TARGETS: tuple[str, ...] = ("a_to_b", "window", "cursor_a", "cursor_b")
+INTERVAL_TARGETS: tuple[str, ...] = ("full", "window", "a_to_b")
+_INTERVAL_TARGET_ALIASES: dict[str, str] = {
+    "full_range": "full",
+    "visible_range": "window",
+    "between_cursors": "a_to_b",
+    "cursor_a": "a_to_b",
+    "cursor_b": "a_to_b",
+}
+
+
+def normalize_interval_target(target: str | None) -> str:
+    """Normalize legacy or user-facing interval target aliases."""
+    value = str(target or "full").strip().lower() or "full"
+    value = _INTERVAL_TARGET_ALIASES.get(value, value)
+    return value
 
 
 @dataclass(slots=True)
@@ -72,7 +86,7 @@ class ScopeViewState:
     cursors_enabled: bool = False
     cursor_a: float | None = None
     cursor_b: float | None = None
-    interval_target: str = "a_to_b"
+    interval_target: str = "full"
     saved_views: list[SavedView] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -116,9 +130,11 @@ class ScopeViewState:
         cursor_a_raw = payload.get("cursor_a")
         cursor_b_raw = payload.get("cursor_b")
 
-        interval_target_raw = str(payload.get("interval_target") or "a_to_b").strip()
+        interval_target_raw = normalize_interval_target(
+            str(payload.get("interval_target") or "full").strip()
+        )
         if interval_target_raw not in INTERVAL_TARGETS:
-            interval_target_raw = "a_to_b"
+            interval_target_raw = "full"
 
         saved_views_raw = payload.get("saved_views", [])
         saved_views: list[SavedView] = []

@@ -9,6 +9,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QCloseEvent,
     QColor,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.models.component import ComponentType
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.simulation_service import SimulationResult
+from pulsimgui.scope_workbench import normalize_interval_target
 from pulsimgui.services.theme_service import LIGHT_THEME, Theme, ThemeService
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.waveform.waveform_viewer import (
@@ -507,6 +510,82 @@ class ScopePlotViewBox(pg.ViewBox):
         super().mouseClickEvent(ev)
 
 
+class ScopePlotWidget(pg.PlotWidget):
+    """Plot widget that accepts signal drops onto a specific plot group."""
+
+    def __init__(
+        self,
+        *,
+        group_leader: str,
+        drop_handler: Callable[[str, str | None], bool] | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._group_leader = group_leader
+        self._drop_handler = drop_handler
+        self.setAcceptDrops(True)
+
+    def _dragged_signal_name(self, event) -> str | None:
+        return SignalListPanel.signal_name_from_mime(event.mimeData())
+
+    def dragEnterEvent(self, event) -> None:
+        if self._dragged_signal_name(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._dragged_signal_name(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        signal_name = self._dragged_signal_name(event)
+        if signal_name and self._drop_handler is not None:
+            if self._drop_handler(signal_name, self._group_leader):
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
+
+class ScopeWorkspaceDropArea(QWidget):
+    """Central workspace drop area for assigning a signal to a dedicated pane."""
+
+    def __init__(
+        self,
+        *,
+        drop_handler: Callable[[str, str | None], bool] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._drop_handler = drop_handler
+        self.setAcceptDrops(True)
+
+    def _dragged_signal_name(self, event) -> str | None:
+        return SignalListPanel.signal_name_from_mime(event.mimeData())
+
+    def dragEnterEvent(self, event) -> None:
+        if self._dragged_signal_name(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._dragged_signal_name(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        signal_name = self._dragged_signal_name(event)
+        if signal_name and self._drop_handler is not None:
+            if self._drop_handler(signal_name, None):
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
+
 class ScopeWindow(QWidget):
     """Standalone scope window wrapping a :class:`WaveformViewer`."""
 
@@ -544,7 +623,7 @@ class ScopeWindow(QWidget):
         self._math_signal_counter = 0
         self._stacked_cursors_enabled = False
         self._left_panel_visible = True
-        self._right_panel_visible = False
+        self._right_panel_visible = True
         self._left_panel_width = 300
         self._right_panel_width = 300
         self._collapsed_panel_width = 64
@@ -552,6 +631,7 @@ class ScopeWindow(QWidget):
         self._stacked_cursor_lines: list[tuple[pg.InfiniteLine, pg.InfiniteLine]] = []
         self._stacked_hover_items: list[tuple[pg.InfiniteLine, pg.InfiniteLine, pg.TextItem]] = []
         self._stacked_plot_interaction_refs: list[tuple[object, object]] = []
+        self._plot_right_view_boxes: list[pg.ViewBox] = []
         self._syncing_stacked_cursor_controls = False
         self._stacked_cursor_initialized = False
         self._trace_styles: dict[str, dict[str, object]] = {}
@@ -560,8 +640,17 @@ class ScopeWindow(QWidget):
         self._default_trace_width = self.DEFAULT_TRACE_WIDTH
         self._syncing_trace_style_controls = False
         self._syncing_bottom_sliders = False
-        self._stacked_interval_target: str = "a_to_b"
+        self._stacked_interval_target: str = "full"
         self._saved_views: dict[str, tuple[float, float]] = {}
+        self._signal_axis_targets: dict[str, str] = {}
+        self._signal_labels: dict[str, str] = {}
+        self._inspector_snap_mode: str = "none"
+        self._bottom_drawer_expanded = False
+        self._bottom_drawer_height = 196
+        self._bottom_drawer_active_tab = 0
+        self._bottom_events: list[str] = []
+        self._simulation_state: str = "ready"
+        self._scope_actions: dict[str, QAction] = {}
         self._panel_anim_timer: QTimer | None = None
         self._panel_anim_steps: int = 8
         self._panel_anim_target: list[int] = []
@@ -577,6 +666,9 @@ class ScopeWindow(QWidget):
         self._trace_signal_combo = QComboBox()
         self._trace_signal_combo.setMinimumWidth(260)
         self._trace_signal_combo.currentTextChanged.connect(self._on_trace_style_signal_changed)
+        self._trace_alias_edit = QLineEdit()
+        self._trace_alias_edit.setPlaceholderText("Use signal name")
+        self._trace_alias_edit.editingFinished.connect(self._on_trace_alias_edited)
         self._trace_width_spin = QDoubleSpinBox()
         self._trace_width_spin.setRange(0.5, 8.0)
         self._trace_width_spin.setSingleStep(0.2)
@@ -785,6 +877,9 @@ class ScopeWindow(QWidget):
         )
         self._stacked_signal_list.signal_selected.connect(self._on_stacked_signal_selected)
         self._stacked_signal_list.signal_double_clicked.connect(self._on_stacked_signal_double_clicked)
+        self._stacked_signal_list.signal_axis_badge_clicked.connect(
+            self._on_signal_axis_badge_clicked
+        )
         self._stacked_signal_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._stacked_signal_list.customContextMenuRequested.connect(
             self._on_signal_list_context_menu
@@ -809,7 +904,7 @@ class ScopeWindow(QWidget):
         right_header_layout = QHBoxLayout(right_header)
         right_header_layout.setContentsMargins(0, 0, 0, 0)
         right_header_layout.setSpacing(8)
-        self._right_header_label = QLabel("Measurements")
+        self._right_header_label = QLabel("Inspector")
         right_header_layout.addWidget(self._right_header_label, stretch=1)
         self._trace_style_menu_btn = QToolButton()
         self._trace_style_menu_btn.setObjectName("scopeTraceMenuBtn")
@@ -837,21 +932,136 @@ class ScopeWindow(QWidget):
         right_controls_layout.addWidget(self._stacked_cursor_toggle)
         right_controls_layout.addWidget(self._stacked_grid_toggle)
         self._interval_combo = QComboBox()
-        self._interval_combo.addItem("A\u2192B", "a_to_b")
+        self._interval_combo.addItem("Full Range", "full")
         self._interval_combo.addItem("Visible Window", "window")
-        self._interval_combo.addItem("Cursor A", "cursor_a")
-        self._interval_combo.addItem("Cursor B", "cursor_b")
+        self._interval_combo.addItem("Between Cursors", "a_to_b")
         self._interval_combo.currentTextChanged.connect(self._on_interval_target_changed)
         right_controls_layout.addStretch(1)
-        right_layout.addWidget(right_controls, stretch=0)
+        self._stacked_right_controls.setVisible(False)
 
-        right_layout.addWidget(self._stacked_measurements, stretch=1)
+        self._inspector_visible_toggle = QCheckBox("Visible")
+        self._inspector_visible_toggle.toggled.connect(self._on_inspector_visible_toggled)
+
+        self._inspector_axis_combo = QComboBox()
+        self._inspector_axis_combo.addItem("Left", "left")
+        self._inspector_axis_combo.addItem("Right", "right")
+        self._inspector_axis_combo.addItem("New Plot", "new_plot")
+        self._inspector_axis_combo.currentIndexChanged.connect(self._on_inspector_axis_changed)
+
+        self._inspector_autoscale_toggle = QCheckBox("Auto Scale")
+        self._inspector_autoscale_toggle.setChecked(True)
+
+        self._inspector_min_spin = QDoubleSpinBox()
+        self._inspector_min_spin.setDecimals(5)
+        self._inspector_min_spin.setRange(-1e12, 1e12)
+        self._inspector_min_spin.setEnabled(False)
+
+        self._inspector_max_spin = QDoubleSpinBox()
+        self._inspector_max_spin.setDecimals(5)
+        self._inspector_max_spin.setRange(-1e12, 1e12)
+        self._inspector_max_spin.setEnabled(False)
+
+        self._inspector_line_style_combo = QComboBox()
+        self._inspector_line_style_combo.addItem("Solid", "solid")
+        self._inspector_line_style_combo.addItem("Dashed", "dashed")
+        self._inspector_line_style_combo.addItem("Dotted", "dotted")
+        self._inspector_line_style_combo.setEnabled(False)
+
+        self._inspector_snap_combo = QComboBox()
+        self._inspector_snap_combo.addItem("None", "none")
+        self._inspector_snap_combo.addItem("Samples", "samples")
+        self._inspector_snap_combo.addItem("Peaks", "peaks")
+        self._inspector_snap_combo.addItem("Edges", "edges")
+        self._inspector_snap_combo.addItem("Zero Crossings", "zero_crossings")
+        self._inspector_snap_combo.currentIndexChanged.connect(self._on_inspector_snap_mode_changed)
+
+        self._inspector_interval_combo = QComboBox()
+        self._inspector_interval_combo.addItem("Full Range", "full")
+        self._inspector_interval_combo.addItem("Visible Window", "window")
+        self._inspector_interval_combo.addItem("Between Cursors", "a_to_b")
+        self._inspector_interval_combo.currentIndexChanged.connect(
+            self._on_inspector_interval_changed
+        )
+
+        self._inspector_measure_menu_btn = QToolButton()
+        self._inspector_measure_menu_btn.setObjectName("scopeMeasurementMenuBtn")
+        self._inspector_measure_menu_btn.setText("+ Add Measurement")
+        self._inspector_measure_menu_btn.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._inspector_measure_menu_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+
+        trace_body = QWidget()
+        trace_form = QFormLayout(trace_body)
+        trace_form.setContentsMargins(0, 0, 0, 0)
+        trace_form.setSpacing(8)
+        trace_form.addRow("Signal", self._trace_signal_combo)
+        trace_form.addRow("Alias", self._trace_alias_edit)
+        trace_form.addRow("", self._inspector_visible_toggle)
+        trace_form.addRow("Color", self._trace_color_btn)
+
+        axis_body = QWidget()
+        axis_form = QFormLayout(axis_body)
+        axis_form.setContentsMargins(0, 0, 0, 0)
+        axis_form.setSpacing(8)
+        axis_form.addRow("Target", self._inspector_axis_combo)
+        axis_form.addRow("", self._inspector_autoscale_toggle)
+        axis_form.addRow("Min", self._inspector_min_spin)
+        axis_form.addRow("Max", self._inspector_max_spin)
+
+        style_body = QWidget()
+        style_form = QFormLayout(style_body)
+        style_form.setContentsMargins(0, 0, 0, 0)
+        style_form.setSpacing(8)
+        style_form.addRow("Line Style", self._inspector_line_style_combo)
+        style_form.addRow("Thickness", self._trace_width_spin)
+        style_form.addRow("Reset", self._trace_reset_btn)
+
+        cursor_body = QWidget()
+        cursor_form = QFormLayout(cursor_body)
+        cursor_form.setContentsMargins(0, 0, 0, 0)
+        cursor_form.setSpacing(8)
+        cursor_form.addRow("", self._stacked_cursor_toggle)
+        cursor_form.addRow("X1", self._c1_spin)
+        cursor_form.addRow("X2", self._c2_spin)
+        cursor_form.addRow("Snap", self._inspector_snap_combo)
+
+        measure_body = QWidget()
+        measure_form = QFormLayout(measure_body)
+        measure_form.setContentsMargins(0, 0, 0, 0)
+        measure_form.setSpacing(8)
+        measure_form.addRow("Scope", self._inspector_interval_combo)
+        measure_form.addRow("Columns", self._inspector_measure_menu_btn)
+
+        self._inspector_scroll = QScrollArea()
+        self._inspector_scroll.setObjectName("scopeInspectorScroll")
+        self._inspector_scroll.setWidgetResizable(True)
+        self._inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._inspector_content = QWidget()
+        self._inspector_content.setObjectName("scopeInspectorContent")
+        inspector_layout = QVBoxLayout(self._inspector_content)
+        inspector_layout.setContentsMargins(0, 2, 0, 0)
+        inspector_layout.setSpacing(8)
+        inspector_layout.addWidget(self._create_inspector_section("Trace", trace_body))
+        inspector_layout.addWidget(self._create_inspector_section("Axis", axis_body))
+        inspector_layout.addWidget(self._create_inspector_section("Style", style_body))
+        inspector_layout.addWidget(self._create_inspector_section("Cursor", cursor_body))
+        inspector_layout.addWidget(
+            self._create_inspector_section("Measurements", measure_body)
+        )
+        inspector_layout.addStretch(1)
+        self._inspector_scroll.setWidget(self._inspector_content)
+        right_layout.addWidget(self._inspector_scroll, stretch=1)
 
         self._stacked_scroll = QScrollArea()
         self._stacked_scroll.setObjectName("scopeStackedScroll")
         self._stacked_scroll.setWidgetResizable(True)
         self._stacked_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._stacked_content = QWidget()
+        self._stacked_content = ScopeWorkspaceDropArea(
+            drop_handler=self._handle_signal_drop_request
+        )
         self._stacked_content.setObjectName("scopeStackedScrollContent")
         self._stacked_layout = QVBoxLayout(self._stacked_content)
         self._stacked_layout.setContentsMargins(8, 8, 8, 8)
@@ -939,6 +1149,18 @@ class ScopeWindow(QWidget):
         self._menu_sim_btn.setAutoRaise(True)
         menu_layout.addWidget(self._menu_sim_btn)
 
+        self._menu_tools_btn = QToolButton()
+        self._menu_tools_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_tools_btn.setText("Tools")
+        self._menu_tools_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_tools_btn)
+
+        self._menu_window_btn = QToolButton()
+        self._menu_window_btn.setObjectName("scopeMenuTextBtn")
+        self._menu_window_btn.setText("Window")
+        self._menu_window_btn.setAutoRaise(True)
+        menu_layout.addWidget(self._menu_window_btn)
+
         self._menu_help_btn = QToolButton()
         self._menu_help_btn.setObjectName("scopeMenuTextBtn")
         self._menu_help_btn.setText("Help")
@@ -956,6 +1178,34 @@ class ScopeWindow(QWidget):
         toolbar_layout = QHBoxLayout(self._scope_tool_row)
         toolbar_layout.setContentsMargins(8, 3, 8, 3)
         toolbar_layout.setSpacing(3)
+
+        self._toolbar_run_btn = QToolButton()
+        self._toolbar_run_btn.setObjectName("scopeToolbarTransportBtn")
+        self._toolbar_run_btn.setProperty("accentTone", "green")
+        self._toolbar_run_btn.clicked.connect(self._on_run_requested)
+        toolbar_layout.addWidget(self._toolbar_run_btn)
+
+        self._toolbar_pause_btn = QToolButton()
+        self._toolbar_pause_btn.setObjectName("scopeToolbarTransportBtn")
+        self._toolbar_pause_btn.clicked.connect(self._on_pause_requested)
+        toolbar_layout.addWidget(self._toolbar_pause_btn)
+
+        self._toolbar_stop_btn = QToolButton()
+        self._toolbar_stop_btn.setObjectName("scopeToolbarTransportBtn")
+        self._toolbar_stop_btn.setProperty("accentTone", "red")
+        self._toolbar_stop_btn.clicked.connect(self._on_stop_requested)
+        toolbar_layout.addWidget(self._toolbar_stop_btn)
+
+        self._toolbar_step_btn = QToolButton()
+        self._toolbar_step_btn.setObjectName("scopeToolbarTransportBtn")
+        self._toolbar_step_btn.clicked.connect(self._on_step_requested)
+        toolbar_layout.addWidget(self._toolbar_step_btn)
+
+        self._toolbar_separator_0 = QFrame()
+        self._toolbar_separator_0.setObjectName("scopeToolbarSeparator")
+        self._toolbar_separator_0.setFrameShape(QFrame.Shape.VLine)
+        self._toolbar_separator_0.setFrameShadow(QFrame.Shadow.Plain)
+        toolbar_layout.addWidget(self._toolbar_separator_0)
 
         self._toolbar_left_btn = QToolButton()
         self._toolbar_left_btn.setObjectName("scopeToolbarTransportBtn")
@@ -996,6 +1246,16 @@ class ScopeWindow(QWidget):
         self._toolbar_autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         toolbar_layout.addWidget(self._toolbar_autoscale_btn)
 
+        self._toolbar_zoom_in_btn = QToolButton()
+        self._toolbar_zoom_in_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_zoom_in_btn.clicked.connect(lambda _checked=False: self._step_slider(self._zoom_slider, 8))
+        toolbar_layout.addWidget(self._toolbar_zoom_in_btn)
+
+        self._toolbar_zoom_out_btn = QToolButton()
+        self._toolbar_zoom_out_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_zoom_out_btn.clicked.connect(lambda _checked=False: self._step_slider(self._zoom_slider, -8))
+        toolbar_layout.addWidget(self._toolbar_zoom_out_btn)
+
         self._toolbar_measure_btn = QToolButton()
         self._toolbar_measure_btn.setObjectName("scopeToolbarMenuBtn")
         self._toolbar_measure_btn.setToolTip("Measurement columns")
@@ -1007,6 +1267,16 @@ class ScopeWindow(QWidget):
         self._toolbar_math_btn.setToolTip("Create math signal")
         self._toolbar_math_btn.clicked.connect(self._on_create_math_signal_clicked)
         toolbar_layout.addWidget(self._toolbar_math_btn)
+
+        self._toolbar_fft_btn = QToolButton()
+        self._toolbar_fft_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_fft_btn.clicked.connect(lambda _checked=False: self._analysis_tabs.setCurrentIndex(1))
+        toolbar_layout.addWidget(self._toolbar_fft_btn)
+
+        self._toolbar_compare_btn = QToolButton()
+        self._toolbar_compare_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_compare_btn.clicked.connect(lambda _checked=False: self._analysis_tabs.setCurrentIndex(2))
+        toolbar_layout.addWidget(self._toolbar_compare_btn)
 
         self._toolbar_separator_2 = QFrame()
         self._toolbar_separator_2.setObjectName("scopeToolbarSeparator")
@@ -1030,6 +1300,13 @@ class ScopeWindow(QWidget):
         )
         toolbar_layout.addWidget(self._toolbar_copy_btn)
 
+        self._toolbar_right_btn = QToolButton()
+        self._toolbar_right_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_right_btn.setCheckable(True)
+        self._toolbar_right_btn.setChecked(True)
+        self._toolbar_right_btn.toggled.connect(lambda checked: self._set_right_panel_visible(bool(checked)))
+        toolbar_layout.addWidget(self._toolbar_right_btn)
+
         toolbar_layout.addStretch(1)
         self._toolbar_scope_label = QLabel()
         self._toolbar_scope_label.setObjectName("scopeToolbarScopeBadge")
@@ -1041,14 +1318,55 @@ class ScopeWindow(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
+        self._analysis_tabs = QTabWidget()
+        self._analysis_tabs.setObjectName("scopeAnalysisTabs")
+        self._analysis_tabs.setDocumentMode(True)
+        self._analysis_tabs.currentChanged.connect(self._on_analysis_tab_changed)
+        self._analysis_tabs.addTab(self._stacked_page, "Scope")
+        self._fft_placeholder = self._build_analysis_placeholder(
+            "FFT",
+            "Frequency-domain analysis will appear here.",
+        )
+        self._compare_placeholder = self._build_analysis_placeholder(
+            "Compare",
+            "Compare traces and runs inside this workspace.",
+        )
+        self._analysis_tabs.addTab(self._fft_placeholder, "FFT")
+        self._analysis_tabs.addTab(self._compare_placeholder, "Compare")
+
         layout.addWidget(self._scope_toolbar, stretch=0)
-        layout.addWidget(self._stacked_page, stretch=1)
+        layout.addWidget(self._analysis_tabs, stretch=1)
 
         self._scope_bottom_controls = QWidget()
         self._scope_bottom_controls.setObjectName("scopeBottomControlBar")
         bottom_layout = QVBoxLayout(self._scope_bottom_controls)
         bottom_layout.setContentsMargins(8, 5, 8, 5)
         bottom_layout.setSpacing(5)
+
+        self._scope_quick_metrics_row = QWidget()
+        self._scope_quick_metrics_row.setObjectName("scopeQuickMetricsRow")
+        quick_layout = QHBoxLayout(self._scope_quick_metrics_row)
+        quick_layout.setContentsMargins(0, 0, 0, 0)
+        quick_layout.setSpacing(8)
+        self._quick_metric_signal = QLabel("No signal")
+        self._quick_metric_signal.setObjectName("scopeQuickMetricPrimary")
+        self._quick_metric_rms = QLabel("RMS —")
+        self._quick_metric_peak = QLabel("Peak —")
+        self._quick_metric_mean = QLabel("Mean —")
+        self._quick_metric_dt = QLabel("Δt —")
+        self._quick_metric_dv = QLabel("ΔY —")
+        for widget in (
+            self._quick_metric_signal,
+            self._quick_metric_rms,
+            self._quick_metric_peak,
+            self._quick_metric_mean,
+            self._quick_metric_dt,
+            self._quick_metric_dv,
+        ):
+            widget.setObjectName("scopeQuickMetricChip")
+            quick_layout.addWidget(widget, stretch=0)
+        quick_layout.addStretch(1)
+        bottom_layout.addWidget(self._scope_quick_metrics_row, stretch=0)
 
         self._scope_bottom_viewport_row = QWidget()
         self._scope_bottom_viewport_row.setObjectName("scopeBottomViewportRow")
@@ -1117,32 +1435,49 @@ class ScopeWindow(QWidget):
         self._measurement_menu.aboutToShow.connect(self._populate_measurement_menu)
         self._measurement_menu_btn.setMenu(self._measurement_menu)
         self._toolbar_measure_btn.setMenu(self._measurement_menu)
+        self._inspector_measure_menu_btn.setMenu(self._measurement_menu)
         viewport_layout.addWidget(self._interval_combo)
         viewport_layout.addWidget(self._measurement_menu_btn)
         bottom_layout.addWidget(self._scope_bottom_viewport_row, stretch=0)
 
-        self._scope_bottom_measure_row = QWidget()
-        self._scope_bottom_measure_row.setObjectName("scopeBottomMeasureRow")
-        measure_layout = QVBoxLayout(self._scope_bottom_measure_row)
-        measure_layout.setContentsMargins(8, 5, 8, 5)
-        measure_layout.setSpacing(4)
-
-        self._scope_bottom_measure_header = QWidget()
-        self._scope_bottom_measure_header.setObjectName("scopeBottomMeasureHeader")
-        measure_header_layout = QHBoxLayout(self._scope_bottom_measure_header)
-        measure_header_layout.setContentsMargins(0, 0, 0, 0)
-        measure_header_layout.setSpacing(8)
-        self._scope_bottom_measure_title = QLabel("Measurements")
+        self._scope_bottom_drawer_header = QWidget()
+        self._scope_bottom_drawer_header.setObjectName("scopeBottomDrawerHeader")
+        drawer_header_layout = QHBoxLayout(self._scope_bottom_drawer_header)
+        drawer_header_layout.setContentsMargins(0, 0, 0, 0)
+        drawer_header_layout.setSpacing(8)
+        self._scope_bottom_measure_title = QLabel("Analysis Drawer")
         self._scope_bottom_measure_title.setObjectName("scopeBottomMeasureTitle")
-        measure_header_layout.addWidget(self._scope_bottom_measure_title)
-        self._scope_bottom_measure_summary = QLabel("Δt: —  |  f: —")
+        drawer_header_layout.addWidget(self._scope_bottom_measure_title)
+        self._scope_bottom_measure_summary = QLabel("Scope: Full Range  |  Δt: —  |  f: —")
         self._scope_bottom_measure_summary.setObjectName("scopeBottomMeasureSummary")
-        measure_header_layout.addWidget(self._scope_bottom_measure_summary)
-        measure_header_layout.addStretch(1)
+        drawer_header_layout.addWidget(self._scope_bottom_measure_summary)
+        drawer_header_layout.addStretch(1)
         self._scope_bottom_measure_mode = QLabel("Sample based")
         self._scope_bottom_measure_mode.setObjectName("scopeBottomMeasureMode")
-        measure_header_layout.addWidget(self._scope_bottom_measure_mode)
-        measure_layout.addWidget(self._scope_bottom_measure_header)
+        drawer_header_layout.addWidget(self._scope_bottom_measure_mode)
+        self._scope_bottom_drawer_toggle_btn = QToolButton()
+        self._scope_bottom_drawer_toggle_btn.setObjectName("scopeBottomDrawerToggleBtn")
+        self._scope_bottom_drawer_toggle_btn.setCheckable(True)
+        self._scope_bottom_drawer_toggle_btn.setChecked(self._bottom_drawer_expanded)
+        self._scope_bottom_drawer_toggle_btn.setText("Expand")
+        self._scope_bottom_drawer_toggle_btn.toggled.connect(self._on_bottom_drawer_toggled)
+        drawer_header_layout.addWidget(self._scope_bottom_drawer_toggle_btn)
+        bottom_layout.addWidget(self._scope_bottom_drawer_header, stretch=0)
+
+        self._scope_bottom_tab = QWidget()
+        self._scope_bottom_tab.setObjectName("scopeBottomDrawerBody")
+        drawer_layout = QVBoxLayout(self._scope_bottom_tab)
+        drawer_layout.setContentsMargins(0, 0, 0, 0)
+        drawer_layout.setSpacing(4)
+
+        self._scope_bottom_tabs = QTabWidget()
+        self._scope_bottom_tabs.setObjectName("scopeBottomTabs")
+        self._scope_bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
+
+        measurements_page = QWidget()
+        measure_layout = QVBoxLayout(measurements_page)
+        measure_layout.setContentsMargins(0, 0, 0, 0)
+        measure_layout.setSpacing(4)
 
         self._scope_bottom_measure_table = QTableWidget(0, 0)
         self._scope_bottom_measure_table.setObjectName("scopeBottomMeasureTable")
@@ -1158,12 +1493,48 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scope_bottom_measure_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scope_bottom_measure_table.setMinimumHeight(86)
-        self._scope_bottom_measure_table.setMaximumHeight(138)
+        self._scope_bottom_measure_table.setMaximumHeight(180)
         measure_layout.addWidget(self._scope_bottom_measure_table)
-        bottom_layout.addWidget(self._scope_bottom_measure_row, stretch=1)
+        self._scope_bottom_tabs.addTab(measurements_page, "Measurements")
+
+        self._scope_bottom_events = QListWidget()
+        self._scope_bottom_events.setObjectName("scopeBottomEventsList")
+        self._scope_bottom_tabs.addTab(self._scope_bottom_events, "Events")
+
+        self._scope_bottom_console = QPlainTextEdit()
+        self._scope_bottom_console.setObjectName("scopeBottomConsole")
+        self._scope_bottom_console.setReadOnly(True)
+        self._scope_bottom_tabs.addTab(self._scope_bottom_console, "Console")
+
+        drawer_layout.addWidget(self._scope_bottom_tabs)
+        bottom_layout.addWidget(self._scope_bottom_tab, stretch=1)
+
+        self._scope_status_bar = QWidget()
+        self._scope_status_bar.setObjectName("scopeStatusBar")
+        status_layout = QHBoxLayout(self._scope_status_bar)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(8)
+        self._scope_status_state = QLabel("Ready")
+        self._scope_status_state.setObjectName("scopeStatusLabel")
+        self._scope_status_mode = QLabel("Transient Mode")
+        self._scope_status_mode.setObjectName("scopeStatusLabel")
+        self._scope_status_rate = QLabel("Sample rate: —")
+        self._scope_status_rate.setObjectName("scopeStatusLabel")
+        self._scope_status_cursor = QLabel("Δt —  ΔY —")
+        self._scope_status_cursor.setObjectName("scopeStatusLabel")
+        for widget in (
+            self._scope_status_state,
+            self._scope_status_mode,
+            self._scope_status_rate,
+            self._scope_status_cursor,
+        ):
+            status_layout.addWidget(widget, stretch=0)
+        status_layout.addStretch(1)
+        bottom_layout.addWidget(self._scope_status_bar, stretch=0)
+
         layout.addWidget(self._scope_bottom_controls, stretch=0)
-        self._scope_bottom_tab = self._scope_bottom_controls
-        self._scope_bottom_tab.setVisible(False)
+        self._scope_bottom_controls.setVisible(True)
+        self._scope_bottom_tab.setVisible(self._bottom_drawer_expanded)
 
         self._mapping_label.setVisible(False)
         self._message_label.setVisible(False)
@@ -1171,8 +1542,13 @@ class ScopeWindow(QWidget):
         self._set_stacked_cursor_enabled(False)
         self._apply_stacked_trace_colors()
         self._sync_trace_style_controls()
-        self._stacked_right_panel.setVisible(False)
+        self._build_scope_actions()
+        self._build_scope_menus()
+        self._on_bottom_drawer_toggled(False)
         self._apply_panel_visibility()
+        self._refresh_inspector()
+        self._refresh_quick_metrics()
+        self._refresh_status_bar()
 
         self._refresh_title()
         if self._theme_service is not None:
@@ -1655,6 +2031,14 @@ class ScopeWindow(QWidget):
             "cursor_a": float(self._c1_spin.value()),
             "cursor_b": float(self._c2_spin.value()),
             "active_signal": str(self._stacked_active_signal or ""),
+            "interval_target": normalize_interval_target(self._stacked_interval_target),
+            "signal_axis_targets": dict(self._signal_axis_targets),
+            "signal_labels": dict(self._signal_labels),
+            "bottom_drawer_expanded": bool(self._bottom_drawer_expanded),
+            "bottom_drawer_tab": int(self._bottom_drawer_active_tab),
+            "analysis_tab_index": int(self._analysis_tabs.currentIndex()),
+            "inspector_snap_mode": str(self._inspector_snap_mode),
+            "simulation_state": str(self._simulation_state),
         }
 
     def apply_ui_state(self, state: dict[str, object] | None) -> None:
@@ -1668,6 +2052,13 @@ class ScopeWindow(QWidget):
             self._left_panel_toggle_btn.setChecked(left_visible_raw)
             self._left_panel_toggle_btn.blockSignals(False)
             self._on_toggle_left_panel_clicked(left_visible_raw)
+
+        right_visible_raw = state.get("right_panel_visible")
+        if isinstance(right_visible_raw, bool):
+            self._right_panel_toggle_btn.blockSignals(True)
+            self._right_panel_toggle_btn.setChecked(right_visible_raw)
+            self._right_panel_toggle_btn.blockSignals(False)
+            self._right_panel_visible = right_visible_raw
 
         measurement_keys_raw = state.get("measurement_keys")
         if isinstance(measurement_keys_raw, list):
@@ -1685,6 +2076,22 @@ class ScopeWindow(QWidget):
         else:
             self._stacked_plot_groups = {}
 
+        signal_axis_targets_raw = state.get("signal_axis_targets")
+        if isinstance(signal_axis_targets_raw, dict):
+            self._signal_axis_targets = {
+                str(signal_name): str(target)
+                for signal_name, target in signal_axis_targets_raw.items()
+                if str(signal_name).strip() and str(target).strip()
+            }
+
+        signal_labels_raw = state.get("signal_labels")
+        if isinstance(signal_labels_raw, dict):
+            self._signal_labels = {
+                str(signal_name): str(label)
+                for signal_name, label in signal_labels_raw.items()
+                if str(signal_name).strip() and str(label).strip()
+            }
+
         active_signal_raw = state.get("active_signal")
         if isinstance(active_signal_raw, str) and active_signal_raw.strip():
             self._stacked_active_signal = active_signal_raw.strip()
@@ -1700,14 +2107,49 @@ class ScopeWindow(QWidget):
         if isinstance(cursor_b_raw, (int, float)):
             self._c2_spin.setValue(float(cursor_b_raw))
 
+        interval_target_raw = state.get("interval_target")
+        if isinstance(interval_target_raw, str) and interval_target_raw.strip():
+            combo_idx = self._interval_combo.findData(
+                normalize_interval_target(interval_target_raw.strip())
+            )
+            if combo_idx >= 0:
+                self._interval_combo.setCurrentIndex(combo_idx)
+
+        drawer_expanded_raw = state.get("bottom_drawer_expanded")
+        if isinstance(drawer_expanded_raw, bool):
+            self._on_bottom_drawer_toggled(drawer_expanded_raw)
+
+        drawer_tab_raw = state.get("bottom_drawer_tab")
+        if isinstance(drawer_tab_raw, int):
+            self._scope_bottom_tabs.setCurrentIndex(max(0, drawer_tab_raw))
+
+        analysis_tab_raw = state.get("analysis_tab_index")
+        if isinstance(analysis_tab_raw, int):
+            self._analysis_tabs.setCurrentIndex(max(0, analysis_tab_raw))
+
+        snap_mode_raw = state.get("inspector_snap_mode")
+        if isinstance(snap_mode_raw, str) and snap_mode_raw.strip():
+            snap_index = self._inspector_snap_combo.findData(snap_mode_raw.strip())
+            if snap_index >= 0:
+                self._inspector_snap_combo.setCurrentIndex(snap_index)
+
+        simulation_state_raw = state.get("simulation_state")
+        if isinstance(simulation_state_raw, str) and simulation_state_raw.strip():
+            self._simulation_state = simulation_state_raw.strip().lower()
+
+        self._apply_panel_visibility()
+        self._sync_scope_action_states()
+
         if self._stacked_signals:
             self._sync_plot_groups()
             if self._stacked_active_signal not in self._stacked_signals:
                 self._stacked_active_signal = next(iter(self._stacked_signals))
             self._sync_scope_selector()
+            self._refresh_signal_list_metadata()
             self._sync_trace_style_controls()
             self._rebuild_stacked_plots(self._current_result)
             self._update_stacked_measurements()
+            self._refresh_inspector()
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -1730,7 +2172,820 @@ class ScopeWindow(QWidget):
             self._scope_type_badge.setText(label)
         if hasattr(self, "_toolbar_scope_label"):
             active = str(self._stacked_active_signal or "").strip()
-            self._toolbar_scope_label.setText(active or (self._component_name or label))
+            self._toolbar_scope_label.setText(
+                self._display_signal_name(active or (self._component_name or label))
+            )
+
+    def _display_signal_name(self, signal_name: str | None) -> str:
+        """Return the current UI label for one signal."""
+        text = str(signal_name or "").strip()
+        if not text:
+            return "No signal"
+        return self._signal_labels.get(text, text)
+
+    def _measurement_scope_label(self) -> str:
+        target = normalize_interval_target(self._stacked_interval_target)
+        return {
+            "full": "Full Range",
+            "window": "Visible Window",
+            "a_to_b": "Between Cursors",
+        }.get(target, "Full Range")
+
+    def _current_visible_time_window(self) -> tuple[float, float] | None:
+        """Return the currently visible horizontal time range."""
+        if not self._plot_widgets or len(self._stacked_time) < 2:
+            return None
+        x_range = self._plot_widgets[0].getPlotItem().getViewBox().viewRange()[0]
+        start = float(x_range[0])
+        end = float(x_range[1])
+        if end < start:
+            start, end = end, start
+        t_min = float(self._stacked_time[0])
+        t_max = float(self._stacked_time[-1])
+        start = min(max(start, t_min), t_max)
+        end = min(max(end, t_min), t_max)
+        return (start, end)
+
+    def _measurement_scope_bounds(self) -> tuple[float, float] | None:
+        """Resolve the active measurement bounds in seconds."""
+        if len(self._stacked_time) < 1:
+            return None
+
+        target = normalize_interval_target(self._stacked_interval_target)
+        if target == "full":
+            return (float(self._stacked_time[0]), float(self._stacked_time[-1]))
+        if target == "window":
+            return self._current_visible_time_window() or (
+                float(self._stacked_time[0]),
+                float(self._stacked_time[-1]),
+            )
+        if target == "a_to_b":
+            if not self._stacked_cursors_enabled:
+                return None
+            start = float(min(self._c1_spin.value(), self._c2_spin.value()))
+            end = float(max(self._c1_spin.value(), self._c2_spin.value()))
+            if abs(end - start) < 1e-15:
+                return None
+            return (start, end)
+        return (float(self._stacked_time[0]), float(self._stacked_time[-1]))
+
+    def _measurement_subset(
+        self,
+        values: np.ndarray,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Return the active measurement subset for one signal array."""
+        bounds = self._measurement_scope_bounds()
+        if bounds is None or len(self._stacked_time) != len(values):
+            return None, None
+        start, end = bounds
+        if end < start:
+            start, end = end, start
+
+        if normalize_interval_target(self._stacked_interval_target) == "full":
+            return self._stacked_time, values
+
+        left = int(np.searchsorted(self._stacked_time, start, side="left"))
+        right = int(np.searchsorted(self._stacked_time, end, side="right"))
+        left = max(0, min(left, len(self._stacked_time)))
+        right = max(left, min(right, len(self._stacked_time)))
+        if right <= left:
+            return None, None
+        return self._stacked_time[left:right], values[left:right]
+
+    @staticmethod
+    def _calculate_measurement_stats(values: np.ndarray | None) -> dict[str, float | None]:
+        """Compute deterministic statistics for one measurement subset."""
+        if values is None or len(values) == 0:
+            return {
+                "min": None,
+                "max": None,
+                "mean": None,
+                "rms": None,
+                "pkpk": None,
+            }
+        min_val = float(np.min(values))
+        max_val = float(np.max(values))
+        mean_val = float(np.mean(values))
+        rms_val = float(np.sqrt(np.mean(values ** 2)))
+        return {
+            "min": min_val,
+            "max": max_val,
+            "mean": mean_val,
+            "rms": rms_val,
+            "pkpk": max_val - min_val,
+        }
+
+    def _axis_badge_text(self, signal_name: str) -> str:
+        target = self._signal_axis_targets.get(signal_name, "left")
+        return {
+            "left": "L",
+            "right": "R",
+            "new_plot": "P",
+        }.get(target, "L")
+
+    def _create_inspector_section(self, title: str, body: QWidget) -> QFrame:
+        """Create one collapsible inspector section."""
+        section = QFrame()
+        section.setObjectName("scopeInspectorSection")
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(0)
+
+        header_btn = QToolButton()
+        header_btn.setObjectName("scopeInspectorSectionBtn")
+        header_btn.setText(title)
+        header_btn.setCheckable(True)
+        header_btn.setChecked(True)
+        header_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        header_btn.setArrowType(Qt.ArrowType.DownArrow)
+
+        def _on_toggled(checked: bool) -> None:
+            body.setVisible(bool(checked))
+            header_btn.setArrowType(
+                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+            )
+
+        header_btn.toggled.connect(_on_toggled)
+        section_layout.addWidget(header_btn)
+
+        body_container = QWidget()
+        body_container.setObjectName("scopeInspectorSectionBody")
+        body_layout = QVBoxLayout(body_container)
+        body_layout.setContentsMargins(10, 8, 10, 10)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(body)
+        section_layout.addWidget(body_container)
+        return section
+
+    def _build_analysis_placeholder(self, title: str, subtitle: str) -> QWidget:
+        """Create a lightweight placeholder for non-scope analysis tabs."""
+        page = QWidget()
+        page.setObjectName("scopeAnalysisPlaceholder")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(6)
+        title_label = QLabel(title)
+        title_label.setObjectName("scopePlaceholderTitle")
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("scopePlaceholderSubtitle")
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addStretch(1)
+        return page
+
+    @staticmethod
+    def _compose_scope_action_tooltip(
+        title: str,
+        description: str = "",
+        shortcut: str | None = None,
+    ) -> str:
+        lines = [title]
+        text = str(description or "").strip()
+        if text:
+            lines.append(text)
+        shortcut_text = str(shortcut or "").strip()
+        if shortcut_text:
+            lines.append(f"Shortcut: {shortcut_text}")
+        return "\n".join(lines)
+
+    def _register_scope_action(
+        self,
+        key: str,
+        text: str,
+        handler: Callable[[bool], None] | Callable[[], None],
+        *,
+        shortcut: str | None = None,
+        description: str = "",
+        checkable: bool = False,
+        checked: bool = False,
+        enabled: bool = True,
+    ) -> QAction:
+        action = QAction(text, self)
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut))
+            action.setShortcutVisibleInContextMenu(True)
+        action.setCheckable(checkable)
+        if checkable:
+            action.setChecked(bool(checked))
+        action.setEnabled(bool(enabled))
+        tooltip = self._compose_scope_action_tooltip(text, description, shortcut)
+        action.setToolTip(tooltip)
+        action.setStatusTip(description or text)
+        action.triggered.connect(handler)  # type: ignore[arg-type]
+        self.addAction(action)
+        self._scope_actions[key] = action
+        return action
+
+    def _build_scope_actions(self) -> None:
+        """Create reusable QAction objects for menus, shortcuts, and toolbar state."""
+        if self._scope_actions:
+            return
+
+        self._register_scope_action(
+            "run",
+            "Run",
+            self._on_run_requested,
+            shortcut="Space",
+            description="Start or resume the simulation context for this scope",
+        )
+        self._register_scope_action(
+            "pause",
+            "Pause",
+            self._on_pause_requested,
+            description="Pause the active simulation context",
+            enabled=False,
+        )
+        self._register_scope_action(
+            "stop",
+            "Stop",
+            self._on_stop_requested,
+            shortcut="S",
+            description="Stop the active simulation context",
+            enabled=False,
+        )
+        self._register_scope_action(
+            "step",
+            "Step",
+            self._on_step_requested,
+            description="Advance one deterministic analysis step",
+            enabled=False,
+        )
+        self._register_scope_action(
+            "zoom_in",
+            "Zoom In",
+            lambda _checked=False: self._step_slider(self._zoom_slider, 8),
+            description="Tighten the visible time window",
+        )
+        self._register_scope_action(
+            "zoom_out",
+            "Zoom Out",
+            lambda _checked=False: self._step_slider(self._zoom_slider, -8),
+            description="Expand the visible time window",
+        )
+        self._register_scope_action(
+            "fit_view",
+            "Fit View",
+            lambda _checked=False: self._on_autoscale_clicked(),
+            shortcut="F",
+            description="Fit the current plot view to the full data range",
+        )
+        self._register_scope_action(
+            "toggle_signals_panel",
+            "Toggle Signals Panel",
+            lambda checked: self._on_toggle_left_panel_clicked(bool(checked)),
+            shortcut="Ctrl+B",
+            description="Show or hide the left signals panel",
+            checkable=True,
+            checked=self._left_panel_visible,
+        )
+        self._register_scope_action(
+            "toggle_inspector",
+            "Toggle Inspector",
+            lambda checked: self._set_right_panel_visible(bool(checked)),
+            description="Show or hide the right inspector panel",
+            checkable=True,
+            checked=self._right_panel_visible,
+        )
+        self._register_scope_action(
+            "toggle_grid",
+            "Toggle Grid",
+            lambda checked: self._on_stacked_grid_toggled(bool(checked)),
+            shortcut="G",
+            description="Show or hide the plot grid",
+            checkable=True,
+            checked=self._stacked_grid_enabled,
+        )
+        self._register_scope_action(
+            "toggle_cursors",
+            "Cursor Tool",
+            lambda checked: self._on_stacked_cursor_toggled(bool(checked)),
+            shortcut="C",
+            description="Enable or disable the analysis cursors",
+            checkable=True,
+            checked=self._stacked_cursors_enabled,
+        )
+        self._register_scope_action(
+            "toggle_measurements",
+            "Measurements",
+            lambda checked: self._on_bottom_drawer_toggled(bool(checked)),
+            shortcut="M",
+            description="Expand or collapse the detailed measurements drawer",
+            checkable=True,
+            checked=self._bottom_drawer_expanded,
+        )
+        self._register_scope_action(
+            "add_expression",
+            "Add Expression",
+            lambda _checked=False: self._on_create_math_signal_clicked(),
+            shortcut="Ctrl+E",
+            description="Create a derived math trace from existing signals",
+        )
+        self._register_scope_action(
+            "show_fft_tab",
+            "FFT",
+            lambda _checked=False: self._analysis_tabs.setCurrentIndex(1),
+            description="Switch to FFT analysis mode",
+        )
+        self._register_scope_action(
+            "show_compare_tab",
+            "Compare",
+            lambda _checked=False: self._analysis_tabs.setCurrentIndex(2),
+            description="Switch to run or trace comparison mode",
+        )
+        self._register_scope_action(
+            "split_view",
+            "Split View",
+            lambda _checked=False: self._split_all_plot_groups(),
+            description="Split visible traces into dedicated plots",
+        )
+        self._register_scope_action(
+            "export_snapshot",
+            "Export Snapshot",
+            lambda _checked=False: self._copy_plot_to_clipboard(
+                self._plot_widgets[0] if self._plot_widgets else None
+            ),
+            shortcut="Ctrl+Shift+E",
+            description="Copy the active plot as an image",
+        )
+        self._register_scope_action(
+            "reset_layout",
+            "Reset Layout",
+            lambda _checked=False: self._reset_scope_layout(),
+            description="Restore the default scope panel layout",
+        )
+        self._register_scope_action(
+            "show_shortcuts",
+            "Shortcuts",
+            lambda _checked=False: self._show_scope_shortcuts(),
+            description="Open the scope shortcut reference",
+        )
+        self._register_scope_action(
+            "show_about",
+            "About",
+            lambda _checked=False: self._show_scope_about(),
+            description="Open information about the scope workspace",
+        )
+        self._sync_scope_action_states()
+
+    def _build_scope_menus(self) -> None:
+        """Attach popup menus to the compact scope menu buttons."""
+        self._file_menu = QMenu(self)
+        self._file_menu.addAction("Save Session", lambda: self._log_scope_event("Session saved"))
+        self._file_menu.addAction(self._scope_actions["export_snapshot"])
+        self._file_menu.addAction(
+            "Export Measurements",
+            lambda: self._log_scope_event("Measurements exported"),
+        )
+
+        self._view_menu = QMenu(self)
+        self._view_menu.addAction(self._scope_actions["toggle_signals_panel"])
+        self._view_menu.addAction(self._scope_actions["toggle_inspector"])
+        self._view_menu.addAction(self._scope_actions["toggle_measurements"])
+        self._view_menu.addAction(self._scope_actions["toggle_grid"])
+        self._view_menu.addSeparator()
+        self._view_menu.addAction(self._scope_actions["fit_view"])
+        self._view_menu.addAction(self._scope_actions["reset_layout"])
+
+        self._simulation_menu = QMenu(self)
+        self._simulation_menu.addAction(self._scope_actions["run"])
+        self._simulation_menu.addAction(self._scope_actions["pause"])
+        self._simulation_menu.addAction(self._scope_actions["stop"])
+        self._simulation_menu.addAction(self._scope_actions["step"])
+
+        self._tools_menu = QMenu(self)
+        self._tools_menu.addAction(self._scope_actions["toggle_cursors"])
+        self._tools_menu.addAction(self._scope_actions["toggle_measurements"])
+        self._tools_menu.addAction(self._scope_actions["add_expression"])
+        self._tools_menu.addSeparator()
+        self._tools_menu.addAction(self._scope_actions["show_fft_tab"])
+        self._tools_menu.addAction(self._scope_actions["show_compare_tab"])
+
+        self._window_menu = QMenu(self)
+        self._window_menu.addAction("Scope", lambda: self._analysis_tabs.setCurrentIndex(0))
+        self._window_menu.addAction(self._scope_actions["show_fft_tab"])
+        self._window_menu.addAction(self._scope_actions["show_compare_tab"])
+        self._window_menu.addSeparator()
+        self._window_menu.addAction(self._scope_actions["split_view"])
+        self._window_menu.addAction(self._scope_actions["reset_layout"])
+
+        self._help_menu = QMenu(self)
+        self._help_menu.addAction(self._scope_actions["show_shortcuts"])
+        self._help_menu.addAction(self._scope_actions["show_about"])
+
+        menu_map = {
+            self._menu_file_btn: self._file_menu,
+            self._menu_view_btn: self._view_menu,
+            self._menu_sim_btn: self._simulation_menu,
+            self._menu_tools_btn: self._tools_menu,
+            self._menu_window_btn: self._window_menu,
+            self._menu_help_btn: self._help_menu,
+        }
+        for button, menu in menu_map.items():
+            button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            button.setMenu(menu)
+
+    def _show_scope_shortcuts(self) -> None:
+        """Display a compact shortcuts help dialog."""
+        QMessageBox.information(
+            self,
+            "Scope Shortcuts",
+            "Space: Run/Pause\nS: Stop\nF: Fit\nC: Toggle cursors\nM: Measurements\nG: Grid\nCtrl+B: Toggle sidebar",
+        )
+
+    def _show_scope_about(self) -> None:
+        """Display scope workbench information."""
+        QMessageBox.information(
+            self,
+            "About Scope Workbench",
+            "Standalone professional scope workspace for PulsimGui.",
+        )
+
+    def _set_simulation_state(self, state: str) -> None:
+        """Persist the lightweight local simulation state used by the scope chrome."""
+        value = str(state or "").strip().lower() or "ready"
+        if value not in {"ready", "running", "paused", "stopped", "error"}:
+            value = "ready"
+        self._simulation_state = value
+        self._apply_toolbar_icons()
+        self._sync_scope_action_states()
+        self._refresh_status_bar()
+
+    def _on_run_requested(self, _checked: bool = False) -> None:
+        self._set_simulation_state("running")
+        self._log_scope_event("Run requested")
+
+    def _on_pause_requested(self, _checked: bool = False) -> None:
+        if self._simulation_state != "running":
+            return
+        self._set_simulation_state("paused")
+        self._log_scope_event("Pause requested")
+
+    def _on_stop_requested(self, _checked: bool = False) -> None:
+        if self._simulation_state not in {"running", "paused"}:
+            return
+        self._set_simulation_state("stopped")
+        self._log_scope_event("Stop requested")
+
+    def _on_step_requested(self, _checked: bool = False) -> None:
+        if len(self._stacked_time) < 2:
+            return
+        self._set_simulation_state("paused")
+        self._log_scope_event("Single step requested")
+
+    def _reset_scope_layout(self) -> None:
+        """Restore the default panel and drawer layout."""
+        self._left_panel_visible = True
+        self._right_panel_visible = True
+        self._left_panel_width = 300
+        self._right_panel_width = 300
+        self._bottom_drawer_expanded = False
+        self._scope_bottom_drawer_toggle_btn.blockSignals(True)
+        self._scope_bottom_drawer_toggle_btn.setChecked(False)
+        self._scope_bottom_drawer_toggle_btn.blockSignals(False)
+        self._scope_bottom_tab.setVisible(False)
+        self._apply_panel_visibility()
+
+    def _set_right_panel_visible(self, visible: bool) -> None:
+        """Set right inspector visibility and sync the toggle button."""
+        self._right_panel_visible = bool(visible)
+        self._right_panel_toggle_btn.blockSignals(True)
+        self._right_panel_toggle_btn.setChecked(bool(visible))
+        self._right_panel_toggle_btn.blockSignals(False)
+        self._apply_panel_visibility()
+
+    def _log_scope_event(self, message: str) -> None:
+        """Append one message to the Events and Console drawer tabs."""
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._bottom_events.append(text)
+        if hasattr(self, "_scope_bottom_events"):
+            self._scope_bottom_events.addItem(text)
+        if hasattr(self, "_scope_bottom_console"):
+            self._scope_bottom_console.appendPlainText(text)
+
+    def _refresh_signal_list_metadata(self) -> None:
+        """Push current label and axis metadata into the left signal list."""
+        if not hasattr(self, "_stacked_signal_list"):
+            return
+        for signal_name in self._stacked_signals:
+            self._stacked_signal_list.set_signal_label(
+                signal_name,
+                self._display_signal_name(signal_name),
+            )
+            self._stacked_signal_list.set_signal_axis_badge(
+                signal_name,
+                self._axis_badge_text(signal_name),
+            )
+
+    def _refresh_inspector(self) -> None:
+        """Synchronize right inspector widgets from current selection/state."""
+        signal_name = self._selected_trace_signal() or self._stacked_active_signal
+        enabled = signal_name in self._stacked_signals
+
+        self._trace_alias_edit.blockSignals(True)
+        self._trace_alias_edit.setText(self._signal_labels.get(signal_name or "", ""))
+        self._trace_alias_edit.blockSignals(False)
+        self._trace_alias_edit.setEnabled(enabled)
+
+        self._inspector_visible_toggle.blockSignals(True)
+        self._inspector_visible_toggle.setChecked(
+            bool(enabled and signal_name in self._stacked_signal_list.get_visible_signals())
+        )
+        self._inspector_visible_toggle.blockSignals(False)
+        self._inspector_visible_toggle.setEnabled(enabled)
+
+        axis_target = self._signal_axis_targets.get(signal_name or "", "left")
+        axis_index = self._inspector_axis_combo.findData(axis_target)
+        self._inspector_axis_combo.blockSignals(True)
+        if axis_index >= 0:
+            self._inspector_axis_combo.setCurrentIndex(axis_index)
+        self._inspector_axis_combo.blockSignals(False)
+        self._inspector_axis_combo.setEnabled(enabled)
+
+        interval_index = self._inspector_interval_combo.findData(self._stacked_interval_target)
+        self._inspector_interval_combo.blockSignals(True)
+        if interval_index >= 0:
+            self._inspector_interval_combo.setCurrentIndex(interval_index)
+        self._inspector_interval_combo.blockSignals(False)
+
+        snap_index = self._inspector_snap_combo.findData(self._inspector_snap_mode)
+        self._inspector_snap_combo.blockSignals(True)
+        if snap_index >= 0:
+            self._inspector_snap_combo.setCurrentIndex(snap_index)
+        self._inspector_snap_combo.blockSignals(False)
+
+        if enabled and signal_name:
+            stats = self._stacked_signal_stats.get(signal_name)
+            if stats is not None:
+                self._inspector_min_spin.setValue(float(stats.get("min", 0.0)))
+                self._inspector_max_spin.setValue(float(stats.get("max", 0.0)))
+        self._sync_scope_action_states()
+
+    def _refresh_quick_metrics(self) -> None:
+        """Update compact bottom readouts for the active trace and cursor state."""
+        signal_name = self._stacked_active_signal
+        if signal_name not in self._stacked_signals:
+            self._quick_metric_signal.setText("No signal")
+            self._quick_metric_rms.setText("RMS —")
+            self._quick_metric_peak.setText("Peak —")
+            self._quick_metric_mean.setText("Mean —")
+            self._quick_metric_dt.setText("Δt —")
+            self._quick_metric_dv.setText("ΔY —")
+            return
+
+        _subset_time, subset_values = self._measurement_subset(self._stacked_signals[signal_name])
+        stats = self._calculate_measurement_stats(subset_values)
+        self._quick_metric_signal.setText(
+            f"{self._display_signal_name(signal_name)}  •  {self._measurement_scope_label()}"
+        )
+        self._quick_metric_rms.setText(
+            f"RMS {self._format_measurement_value(stats.get('rms'))}"
+        )
+        self._quick_metric_peak.setText(
+            f"Peak {self._format_measurement_value(stats.get('max'))}"
+        )
+        self._quick_metric_mean.setText(
+            f"Mean {self._format_measurement_value(stats.get('mean'))}"
+        )
+
+        dt_text = "—"
+        dv_text = "—"
+        if self._stacked_cursors_enabled:
+            dt = self._c2_spin.value() - self._c1_spin.value()
+            dt_text = self._format_time_display(abs(dt))
+            values = self._stacked_signals.get(signal_name)
+            if values is not None:
+                v1 = self._interpolate_stacked_value(self._c1_spin.value(), values)
+                v2 = self._interpolate_stacked_value(self._c2_spin.value(), values)
+                if v1 is not None and v2 is not None:
+                    dv_text = self._format_measurement_value(v2 - v1)
+        self._quick_metric_dt.setText(f"Δt {dt_text}")
+        self._quick_metric_dv.setText(f"ΔY {dv_text}")
+
+    def _estimate_sample_rate_text(self) -> str:
+        """Return a compact sample-rate label derived from current timebase."""
+        if len(self._stacked_time) < 2:
+            return "Sample rate: —"
+        dt = float(self._stacked_time[1] - self._stacked_time[0])
+        if abs(dt) < 1e-18:
+            return "Sample rate: —"
+        sample_rate = abs(1.0 / dt)
+        if sample_rate >= 1e6:
+            return f"Sample rate: {sample_rate/1e6:.3g} MHz"
+        if sample_rate >= 1e3:
+            return f"Sample rate: {sample_rate/1e3:.3g} kHz"
+        return f"Sample rate: {sample_rate:.4g} Hz"
+
+    def _refresh_status_bar(self) -> None:
+        """Update the compact status bar readout."""
+        tab_label = self._analysis_tabs.tabText(self._analysis_tabs.currentIndex())
+        self._scope_status_state.setText(self._simulation_state.title())
+        self._scope_status_mode.setText(f"{tab_label} Mode")
+        self._scope_status_rate.setText(self._estimate_sample_rate_text())
+        if self._stacked_cursors_enabled:
+            signal_name = self._stacked_active_signal
+            dv_text = "—"
+            if signal_name in self._stacked_signals:
+                values = self._stacked_signals[signal_name]
+                v1 = self._interpolate_stacked_value(self._c1_spin.value(), values)
+                v2 = self._interpolate_stacked_value(self._c2_spin.value(), values)
+                if v1 is not None and v2 is not None:
+                    dv_text = self._format_measurement_value(v2 - v1)
+            self._scope_status_cursor.setText(
+                f"X1 {self._format_time_display(self._c1_spin.value())}   "
+                f"X2 {self._format_time_display(self._c2_spin.value())}   "
+                f"Δt {self._format_time_display(abs(self._c2_spin.value() - self._c1_spin.value()))}   "
+                f"ΔY {dv_text}"
+            )
+        else:
+            self._scope_status_cursor.setText("Δt —   ΔY —")
+
+    def _on_analysis_tab_changed(self, index: int) -> None:
+        """Track active analysis tab changes."""
+        if not hasattr(self, "_scope_status_state"):
+            return
+        self._bottom_drawer_active_tab = max(self._bottom_drawer_active_tab, 0)
+        if index >= 0:
+            self._log_scope_event(f"Analysis tab changed to {self._analysis_tabs.tabText(index)}")
+        self._sync_scope_action_states()
+        self._refresh_status_bar()
+
+    def _on_bottom_drawer_toggled(self, checked: bool) -> None:
+        """Expand or collapse the detailed bottom drawer."""
+        self._bottom_drawer_expanded = bool(checked)
+        self._scope_bottom_tab.setVisible(bool(checked))
+        self._scope_bottom_drawer_toggle_btn.blockSignals(True)
+        self._scope_bottom_drawer_toggle_btn.setChecked(bool(checked))
+        self._scope_bottom_drawer_toggle_btn.blockSignals(False)
+        self._scope_bottom_drawer_toggle_btn.setText("Collapse" if checked else "Expand")
+        self._sync_scope_action_states()
+
+    def _on_bottom_tab_changed(self, index: int) -> None:
+        """Persist last active drawer tab."""
+        self._bottom_drawer_active_tab = int(max(0, index))
+
+    def _on_inspector_visible_toggled(self, checked: bool) -> None:
+        """Toggle the active signal visibility from the inspector."""
+        signal_name = self._selected_trace_signal() or self._stacked_active_signal
+        if not signal_name or signal_name not in self._stacked_signals:
+            return
+        self._stacked_signal_list.set_signal_visible(signal_name, bool(checked))
+        self._on_stacked_signal_visibility_changed(signal_name, bool(checked))
+
+    def _set_signal_alias(self, signal_name: str, alias: str | None) -> None:
+        """Store an optional display alias and refresh all synchronized surfaces."""
+        if signal_name not in self._stacked_signals:
+            return
+        text = str(alias or "").strip()
+        if not text or text == signal_name:
+            self._signal_labels.pop(signal_name, None)
+        else:
+            self._signal_labels[signal_name] = text
+        self._refresh_signal_list_metadata()
+        self._sync_scope_selector()
+        self._refresh_inspector()
+        self._update_stacked_measurements()
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _on_trace_alias_edited(self) -> None:
+        """Apply alias edits from the inspector trace section."""
+        signal_name = self._selected_trace_signal() or self._stacked_active_signal
+        if not signal_name or signal_name not in self._stacked_signals:
+            return
+        self._set_signal_alias(signal_name, self._trace_alias_edit.text())
+
+    def _set_signal_axis_target(self, signal_name: str, target: str) -> None:
+        """Set one signal axis target and refresh dependent UI."""
+        if signal_name not in self._stacked_signals:
+            return
+        normalized = str(target or "left").strip().lower() or "left"
+        if normalized not in {"left", "right", "new_plot"}:
+            normalized = "left"
+        self._signal_axis_targets[signal_name] = normalized
+        if normalized == "new_plot":
+            self._set_signal_plot_group(signal_name, signal_name)
+        self._refresh_signal_list_metadata()
+        self._refresh_inspector()
+        self._rebuild_stacked_plots(self._current_result)
+
+    def _cycle_signal_axis_target(self, signal_name: str) -> None:
+        """Rotate axis assignment between left, right, and dedicated plot."""
+        order = ("left", "right", "new_plot")
+        current = self._signal_axis_targets.get(signal_name, "left")
+        try:
+            next_index = (order.index(current) + 1) % len(order)
+        except ValueError:
+            next_index = 0
+        self._set_signal_axis_target(signal_name, order[next_index])
+
+    def _on_signal_axis_badge_clicked(self, signal_name: str) -> None:
+        """Handle direct axis badge interaction from the signals panel."""
+        if signal_name not in self._stacked_signals:
+            return
+        self._on_stacked_signal_selected(signal_name)
+        self._cycle_signal_axis_target(signal_name)
+
+    def _on_inspector_axis_changed(self) -> None:
+        """Apply a new axis/placement assignment to the active signal."""
+        signal_name = self._selected_trace_signal() or self._stacked_active_signal
+        if not signal_name or signal_name not in self._stacked_signals:
+            return
+        target = str(self._inspector_axis_combo.currentData() or "left")
+        self._set_signal_axis_target(signal_name, target)
+
+    def _on_inspector_snap_mode_changed(self) -> None:
+        """Persist snap mode selection for future cursor interactions."""
+        self._inspector_snap_mode = str(self._inspector_snap_combo.currentData() or "none")
+        self._refresh_inspector()
+
+    def _on_inspector_interval_changed(self) -> None:
+        """Keep bottom and inspector interval selectors synchronized."""
+        target = self._inspector_interval_combo.currentData()
+        index = self._interval_combo.findData(target)
+        if index >= 0 and self._interval_combo.currentIndex() != index:
+            self._interval_combo.blockSignals(True)
+            self._interval_combo.setCurrentIndex(index)
+            self._interval_combo.blockSignals(False)
+        self._on_interval_target_changed(self._inspector_interval_combo.currentText())
+
+    def _sync_scope_action_states(self) -> None:
+        """Keep shared QAction state aligned with current workspace state."""
+        if not self._scope_actions:
+            return
+
+        has_data = len(self._stacked_time) > 1 and bool(self._stacked_signals)
+        has_selection = bool(self._selected_trace_signal() or self._stacked_active_signal)
+        running = self._simulation_state == "running"
+        paused = self._simulation_state == "paused"
+
+        check_states = {
+            "toggle_signals_panel": self._left_panel_visible,
+            "toggle_inspector": self._right_panel_visible,
+            "toggle_grid": self._stacked_grid_enabled,
+            "toggle_cursors": self._stacked_cursors_enabled,
+            "toggle_measurements": self._bottom_drawer_expanded,
+        }
+        for key, checked in check_states.items():
+            action = self._scope_actions.get(key)
+            if action is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(bool(checked))
+            action.blockSignals(False)
+
+        enabled_states = {
+            "run": True,
+            "pause": running,
+            "stop": running or paused,
+            "step": has_data and not running,
+            "zoom_in": has_data,
+            "zoom_out": has_data,
+            "fit_view": has_data,
+            "toggle_grid": has_data,
+            "toggle_cursors": has_data,
+            "toggle_measurements": has_data,
+            "add_expression": bool(self._stacked_signals),
+            "show_fft_tab": bool(self._stacked_signals),
+            "show_compare_tab": bool(self._stacked_signals),
+            "split_view": has_data,
+            "export_snapshot": has_data,
+            "toggle_signals_panel": True,
+            "toggle_inspector": True,
+            "reset_layout": True,
+            "show_shortcuts": True,
+            "show_about": True,
+        }
+        for key, enabled in enabled_states.items():
+            action = self._scope_actions.get(key)
+            if action is not None:
+                action.setEnabled(bool(enabled))
+
+        button_map = {
+            "run": getattr(self, "_toolbar_run_btn", None),
+            "pause": getattr(self, "_toolbar_pause_btn", None),
+            "stop": getattr(self, "_toolbar_stop_btn", None),
+            "step": getattr(self, "_toolbar_step_btn", None),
+            "toggle_signals_panel": getattr(self, "_toolbar_left_btn", None),
+            "toggle_cursors": getattr(self, "_toolbar_cursor_btn", None),
+            "toggle_grid": getattr(self, "_toolbar_grid_btn", None),
+            "fit_view": getattr(self, "_toolbar_autoscale_btn", None),
+            "zoom_in": getattr(self, "_toolbar_zoom_in_btn", None),
+            "zoom_out": getattr(self, "_toolbar_zoom_out_btn", None),
+            "toggle_measurements": getattr(self, "_toolbar_measure_btn", None),
+            "add_expression": getattr(self, "_toolbar_math_btn", None),
+            "show_fft_tab": getattr(self, "_toolbar_fft_btn", None),
+            "show_compare_tab": getattr(self, "_toolbar_compare_btn", None),
+            "export_snapshot": getattr(self, "_toolbar_copy_btn", None),
+            "toggle_inspector": getattr(self, "_toolbar_right_btn", None),
+        }
+        for key, button in button_map.items():
+            action = self._scope_actions.get(key)
+            if action is None or button is None:
+                continue
+            button.setEnabled(action.isEnabled())
+            button.setToolTip(action.toolTip())
 
     @staticmethod
     def _scope_shell_palette() -> dict[str, str]:
@@ -1764,30 +3019,52 @@ class ScopeWindow(QWidget):
 
     def _apply_toolbar_icons(self) -> None:
         base_color = "#d7deea"
+        running_color = "#96db79" if self._simulation_state == "running" else base_color
+        paused_color = "#f4d35e" if self._simulation_state == "paused" else base_color
+        stopped_color = "#f87171" if self._simulation_state in {"stopped", "error"} else base_color
         cursor_color = "#96db79" if self._stacked_cursors_enabled else base_color
         grid_color = "#72cfff" if self._stacked_grid_enabled else base_color
+        inspector_color = "#92a5c9" if self._right_panel_visible else base_color
+        self._toolbar_run_btn.setIcon(IconService.get_icon("play", running_color, 14))
+        self._toolbar_pause_btn.setIcon(IconService.get_icon("pause", paused_color, 14))
+        self._toolbar_stop_btn.setIcon(IconService.get_icon("stop", stopped_color, 14))
+        self._toolbar_step_btn.setIcon(IconService.get_icon("ph.skip-forward", base_color, 14))
         self._toolbar_left_btn.setIcon(IconService.get_icon("ph.sidebar-simple-fill", "#92a5c9", 14))
         self._toolbar_cursor_btn.setIcon(IconService.get_icon("ph.crosshair-simple", cursor_color, 14))
         self._toolbar_grid_btn.setIcon(IconService.get_icon("ph.grid-four", grid_color, 14))
         self._toolbar_autoscale_btn.setIcon(IconService.get_icon("ph.corners-out", base_color, 14))
+        self._toolbar_zoom_in_btn.setIcon(IconService.get_icon("zoom-in", base_color, 14))
+        self._toolbar_zoom_out_btn.setIcon(IconService.get_icon("zoom-out", base_color, 14))
         self._toolbar_measure_btn.setIcon(IconService.get_icon("ph.ruler", base_color, 14))
         self._toolbar_math_btn.setIcon(IconService.get_icon("ph.function", base_color, 14))
+        self._toolbar_fft_btn.setIcon(IconService.get_icon("ph.waveform", base_color, 14))
+        self._toolbar_compare_btn.setIcon(IconService.get_icon("layers", base_color, 14))
         self._trace_style_menu_btn.setIcon(IconService.get_icon("ph.waveform", base_color, 14))
         self._toolbar_copy_btn.setIcon(IconService.get_icon("ph.arrow-square-out", base_color, 14))
+        self._toolbar_right_btn.setIcon(IconService.get_icon("ph.sidebar-simple", inspector_color, 14))
         self._measurement_menu_btn.setIcon(IconService.get_icon("plus", "#dbe4f5", 13))
         if hasattr(self, "_scope_brand_icon"):
             self._scope_brand_icon.setPixmap(
                 IconService.get_icon("ph.wave-sine", "#59c7ff", 16).pixmap(16, 16)
             )
         for btn in (
+            self._toolbar_run_btn,
+            self._toolbar_pause_btn,
+            self._toolbar_stop_btn,
+            self._toolbar_step_btn,
             self._toolbar_left_btn,
             self._toolbar_cursor_btn,
             self._toolbar_grid_btn,
             self._toolbar_autoscale_btn,
+            self._toolbar_zoom_in_btn,
+            self._toolbar_zoom_out_btn,
             self._toolbar_measure_btn,
             self._toolbar_math_btn,
+            self._toolbar_fft_btn,
+            self._toolbar_compare_btn,
             self._trace_style_menu_btn,
             self._toolbar_copy_btn,
+            self._toolbar_right_btn,
             self._measurement_menu_btn,
         ):
             btn.setIconSize(QSize(11, 11))
@@ -1797,11 +3074,13 @@ class ScopeWindow(QWidget):
             (self._toolbar_left_btn, self._left_panel_visible),
             (self._toolbar_cursor_btn, self._stacked_cursors_enabled),
             (self._toolbar_grid_btn, self._stacked_grid_enabled),
+            (self._toolbar_right_btn, self._right_panel_visible),
         ):
             btn.blockSignals(True)
             btn.setChecked(bool(checked))
             btn.blockSignals(False)
         self._apply_toolbar_icons()
+        self._sync_scope_action_states()
 
     def _on_toolbar_left_toggled(self, checked: bool) -> None:
         self._left_panel_toggle_btn.blockSignals(True)
@@ -1973,6 +3252,38 @@ class ScopeWindow(QWidget):
                 border: 1px solid {shell["border"]};
                 border-radius: 12px;
             }}
+            QTabWidget#scopeAnalysisTabs::pane {{
+                border: 1px solid {shell["border"]};
+                border-radius: 12px;
+                background-color: {shell["surface_bg"]};
+                top: -1px;
+            }}
+            QTabWidget#scopeAnalysisTabs > QTabBar::tab {{
+                background-color: transparent;
+                color: {shell["muted"]};
+                padding: 6px 12px;
+                font-size: 10px;
+                font-weight: 600;
+                border: none;
+                margin-right: 4px;
+            }}
+            QTabWidget#scopeAnalysisTabs > QTabBar::tab:selected {{
+                color: {shell["text"]};
+                border-bottom: 2px solid {shell["accent"]};
+            }}
+            QWidget#scopeAnalysisPlaceholder {{
+                background-color: {shell["surface_bg"]};
+            }}
+            QLabel#scopePlaceholderTitle {{
+                color: {shell["text"]};
+                font-size: 16px;
+                font-weight: 700;
+            }}
+            QLabel#scopePlaceholderSubtitle {{
+                color: {shell["muted"]};
+                font-size: 11px;
+                font-weight: 500;
+            }}
             QWidget#scopeLeftPanel,
             QWidget#scopeRightPanel,
             QWidget#scopeStackedScrollContent,
@@ -1991,6 +3302,24 @@ class ScopeWindow(QWidget):
                 border: 1px solid #3a4254;
                 border-radius: 12px;
             }}
+            QWidget#scopeQuickMetricsRow {{
+                background-color: transparent;
+                border: none;
+            }}
+            QLabel#scopeQuickMetricPrimary {{
+                color: #eef3ff;
+                font-size: 10px;
+                font-weight: 700;
+            }}
+            QLabel#scopeQuickMetricChip {{
+                color: #d6deef;
+                font-size: 9px;
+                font-weight: 600;
+                background-color: rgba(18, 23, 33, 0.34);
+                border: 1px solid rgba(112, 126, 152, 0.24);
+                border-radius: 8px;
+                padding: 3px 8px;
+            }}
             QWidget#scopeBottomControlBar QLabel {{
                 color: #c3cee0;
                 font-size: 9px;
@@ -2000,14 +3329,14 @@ class ScopeWindow(QWidget):
                 background-color: transparent;
                 border: none;
             }}
-            QWidget#scopeBottomMeasureRow {{
+            QWidget#scopeBottomDrawerHeader {{
+                background-color: transparent;
+                border: none;
+            }}
+            QWidget#scopeBottomDrawerBody {{
                 background-color: #262c39;
                 border: 1px solid #3a4254;
                 border-radius: 8px;
-            }}
-            QWidget#scopeBottomMeasureHeader {{
-                background-color: transparent;
-                border: none;
             }}
             QLabel#scopeBottomMeasureTitle {{
                 color: #e5ecfb;
@@ -2023,6 +3352,39 @@ class ScopeWindow(QWidget):
                 color: #a9b8d4;
                 font-size: 9px;
                 font-weight: 500;
+            }}
+            QToolButton#scopeBottomDrawerToggleBtn {{
+                background-color: #31394b;
+                color: #dbe4f5;
+                border: 1px solid #46516b;
+                border-radius: 8px;
+                padding: 2px 10px;
+                min-height: 22px;
+                font-weight: 600;
+            }}
+            QToolButton#scopeBottomDrawerToggleBtn:hover {{
+                background-color: #3a4356;
+                border-color: #6ea6ff;
+            }}
+            QTabWidget#scopeBottomTabs::pane {{
+                border: none;
+                background-color: transparent;
+            }}
+            QTabWidget#scopeBottomTabs > QTabBar::tab {{
+                background-color: rgba(255,255,255,0.04);
+                color: #b9c4db;
+                border: 1px solid #3a4254;
+                border-bottom: none;
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
+                padding: 5px 10px;
+                margin-right: 4px;
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QTabWidget#scopeBottomTabs > QTabBar::tab:selected {{
+                background-color: #2b3140;
+                color: #eef3ff;
             }}
             QTableWidget#scopeBottomMeasureTable {{
                 background-color: #1f2531;
@@ -2040,6 +3402,24 @@ class ScopeWindow(QWidget):
                 border-right: 1px solid #3a455e;
                 border-bottom: 1px solid #3a455e;
                 padding: 3px 6px;
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QListWidget#scopeBottomEventsList,
+            QPlainTextEdit#scopeBottomConsole {{
+                background-color: #1f2531;
+                color: #dde6f8;
+                border: 1px solid #384258;
+                border-radius: 6px;
+                font-size: 9px;
+            }}
+            QWidget#scopeStatusBar {{
+                background-color: rgba(17, 23, 33, 0.28);
+                border-top: 1px solid #3a4254;
+                padding-top: 2px;
+            }}
+            QLabel#scopeStatusLabel {{
+                color: #b9c7df;
                 font-size: 9px;
                 font-weight: 600;
             }}
@@ -2222,6 +3602,39 @@ class ScopeWindow(QWidget):
                 font-size: 11px;
                 font-weight: 600;
             }}
+            QScrollArea#scopeInspectorScroll,
+            QWidget#scopeInspectorContent {{
+                background-color: transparent;
+                border: none;
+            }}
+            QFrame#scopeInspectorSection {{
+                background-color: #202736;
+                border: 1px solid #394158;
+                border-radius: 10px;
+            }}
+            QToolButton#scopeInspectorSectionBtn {{
+                color: #e5ecfb;
+                background-color: transparent;
+                border: none;
+                padding: 7px 10px;
+                font-size: 10px;
+                font-weight: 700;
+                text-align: left;
+            }}
+            QWidget#scopeInspectorSectionBody {{
+                background-color: transparent;
+                border: none;
+            }}
+            QFrame#scopeRightPanel QLabel {{
+                color: #cfdbf0;
+                font-size: 10px;
+                font-weight: 600;
+            }}
+            QFrame#scopeRightPanel QCheckBox {{
+                color: #dbe4f5;
+                font-size: 10px;
+                font-weight: 600;
+            }}
             QPushButton#scopePanelToggleBtn {{
                 min-width: 28px;
                 max-width: 28px;
@@ -2258,6 +3671,10 @@ class ScopeWindow(QWidget):
         self._apply_dark_sidebar_tabs(shell)
 
         self._sync_trace_style_controls()
+        self._refresh_signal_list_metadata()
+        self._refresh_inspector()
+        self._refresh_quick_metrics()
+        self._refresh_status_bar()
         self._refresh_title()
         self._rebuild_stacked_plots(self._current_result)
 
@@ -2456,6 +3873,7 @@ class ScopeWindow(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._plot_widgets.clear()
+        self._plot_right_view_boxes.clear()
         self._stacked_cursor_lines.clear()
         self._stacked_hover_items.clear()
         self._stacked_plot_interaction_refs.clear()
@@ -2562,7 +3980,7 @@ class ScopeWindow(QWidget):
 
         for row, signal_name in enumerate(table_data.keys()):
             self._scope_bottom_measure_table.setRowHeight(row, 22)
-            signal_item = QTableWidgetItem(signal_name)
+            signal_item = QTableWidgetItem(self._display_signal_name(signal_name))
             signal_color = self._stacked_signal_list.get_signal_color(signal_name)
             if signal_color is not None:
                 signal_item.setForeground(QColor(*signal_color))
@@ -2580,8 +3998,9 @@ class ScopeWindow(QWidget):
         target_height = max(74, min(138, target_height))
         self._scope_bottom_measure_table.setFixedHeight(target_height)
 
+        scope_text = self._measurement_scope_label()
         if dt is None:
-            self._scope_bottom_measure_summary.setText("Δt: —  |  f: —")
+            self._scope_bottom_measure_summary.setText(f"Scope: {scope_text}  |  Δt: —  |  f: —")
             return
         dt_abs = abs(dt)
         freq = (1.0 / dt_abs) if dt_abs > 1e-15 else None
@@ -2592,7 +4011,9 @@ class ScopeWindow(QWidget):
             freq_text = f"{freq/1e3:.3g} kHz"
         else:
             freq_text = f"{freq:.4g} Hz"
-        self._scope_bottom_measure_summary.setText(f"Δt: {dt_text}  |  f: {freq_text}")
+        self._scope_bottom_measure_summary.setText(
+            f"Scope: {scope_text}  |  Δt: {dt_text}  |  f: {freq_text}"
+        )
 
     def _selected_trace_signal(self) -> str | None:
         signal_name = self._trace_signal_combo.currentText().strip()
@@ -2739,6 +4160,26 @@ class ScopeWindow(QWidget):
         self._set_signal_plot_group(signal_name, target_group_leader)
         return True
 
+    def _handle_signal_drop_request(
+        self,
+        signal_name: str,
+        target_group_leader: str | None,
+    ) -> bool:
+        """Handle a drag/drop request from the signal tree into the workspace."""
+        applied = self._apply_dragged_signal_mapping(
+            signal_name,
+            target_group_leader=target_group_leader,
+        )
+        if not applied:
+            return False
+        self._on_stacked_signal_selected(signal_name)
+        self._refresh_signal_list_metadata()
+        self._log_scope_event(
+            f"Signal '{self._display_signal_name(signal_name)}' dropped into "
+            f"{'new plot' if target_group_leader is None else self._display_signal_name(target_group_leader)}"
+        )
+        return True
+
     def _populate_trace_style_menu(self) -> None:
         """Build the trace-style menu with per-signal actions."""
         self._trace_style_menu.clear()
@@ -2858,6 +4299,7 @@ class ScopeWindow(QWidget):
         self._apply_trace_styles_to_viewer()
         self._set_trace_controls_for_signal(signal_name)
         self._rebuild_stacked_plots(self._current_result)
+        self._refresh_inspector()
 
     def _pick_trace_color_for_signal(self, signal_name: str) -> None:
         if signal_name not in self._trace_signal_names():
@@ -2883,6 +4325,7 @@ class ScopeWindow(QWidget):
         self._apply_stacked_trace_colors()
         self._set_trace_controls_for_signal(signal_name)
         self._rebuild_stacked_plots(self._current_result)
+        self._refresh_inspector()
 
     def _reset_trace_style_for_signal(self, signal_name: str) -> None:
         if signal_name not in self._trace_signal_names():
@@ -2892,6 +4335,7 @@ class ScopeWindow(QWidget):
         self._apply_stacked_trace_colors()
         self._set_trace_controls_for_signal(signal_name)
         self._rebuild_stacked_plots(self._current_result)
+        self._refresh_inspector()
 
     def _reset_all_trace_styles(self) -> None:
         if not self._trace_styles:
@@ -2901,6 +4345,7 @@ class ScopeWindow(QWidget):
         self._apply_stacked_trace_colors()
         self._sync_trace_style_controls()
         self._rebuild_stacked_plots(self._current_result)
+        self._refresh_inspector()
 
     def _prune_trace_style(self, signal_name: str) -> None:
         style = self._trace_styles.get(signal_name)
@@ -2960,8 +4405,7 @@ class ScopeWindow(QWidget):
         self._on_toggle_left_panel_clicked(target_state)
 
     def _on_toggle_right_panel_clicked(self, checked: bool) -> None:
-        self._right_panel_visible = False
-        self._stacked_right_panel.setVisible(False)
+        self._right_panel_visible = bool(checked)
         self._apply_panel_visibility()
 
     def _on_splitter_moved(self, _pos: int, _index: int) -> None:
@@ -3007,17 +4451,24 @@ class ScopeWindow(QWidget):
                 self._collapsed_rail.setVisible(True)
             left = self._collapsed_panel_width
 
-        self._right_panel_visible = False
-        self._right_header_label.setVisible(False)
-        self._stacked_right_controls.setVisible(False)
-        self._stacked_measurements.setVisible(False)
-        self._stacked_right_panel.setMinimumWidth(0)
-        self._stacked_right_panel.setMaximumWidth(0)
-        self._stacked_right_panel.setVisible(False)
-        right = 0
+        if self._right_panel_visible:
+            self._right_header_label.setVisible(True)
+            self._stacked_right_panel.setMinimumWidth(280)
+            self._stacked_right_panel.setMaximumWidth(420)
+            self._stacked_right_panel.setVisible(True)
+            self._right_panel_toggle_btn.setText("▶")
+            self._right_panel_toggle_btn.setToolTip("Collapse inspector")
+            right = self._right_panel_width
+        else:
+            self._stacked_right_panel.setMinimumWidth(0)
+            self._stacked_right_panel.setMaximumWidth(0)
+            self._stacked_right_panel.setVisible(False)
+            self._right_panel_toggle_btn.setText("◀")
+            self._right_panel_toggle_btn.setToolTip("Expand inspector")
+            right = 0
 
         total = max(self.width(), 1200)
-        center = max(500, total - left - 24)
+        center = max(500, total - left - right - 24)
         target_sizes = [left, center, right]
         self._start_panel_animation(target_sizes)
         self._sync_toolbar_toggles()
@@ -3082,11 +4533,12 @@ class ScopeWindow(QWidget):
             return
         self._stacked_active_signal = signal_name
         if hasattr(self, "_toolbar_scope_label"):
-            self._toolbar_scope_label.setText(signal_name)
+            self._toolbar_scope_label.setText(self._display_signal_name(signal_name))
         self._selected_plot_group_leader = self._plot_group_leader(signal_name)
         self._stacked_signal_list.set_signal_visible(signal_name, True)
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
+        self._refresh_inspector()
 
     def _on_create_math_signal_clicked(self) -> None:
         available_signals = list(self._stacked_signals.keys())
@@ -3197,6 +4649,7 @@ class ScopeWindow(QWidget):
             self._current_result.time = list(self._stacked_time)
             self._current_result.signals = {}
         self._current_result.signals[name] = list(self._stacked_signals[name])
+        self._signal_axis_targets[name] = "left"
 
         visible = set(self._stacked_signal_list.get_visible_signals())
         visible.add(name)
@@ -3208,8 +4661,11 @@ class ScopeWindow(QWidget):
         self._stacked_active_signal = name
         self._sync_scope_selector()
         self._sync_trace_style_controls()
+        self._refresh_signal_list_metadata()
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
+        self._refresh_inspector()
+        self._log_scope_event(f"Math signal added: {name}")
 
     def _zoom_window_fraction(self) -> float:
         if not hasattr(self, "_zoom_slider"):
@@ -3365,6 +4821,7 @@ class ScopeWindow(QWidget):
             self._syncing_bottom_sliders = False
         self._auto_range_stacked()
         self._apply_bottom_viewport_controls()
+        self._log_scope_event("Autoscale applied")
 
     def _step_timeline_window(self, delta: int) -> None:
         if not self._timeline_slider.isEnabled():
@@ -3396,6 +4853,8 @@ class ScopeWindow(QWidget):
             self._zoom_inc_btn.setEnabled(False)
             self._timeline_range_label.setText("-- to --")
             self._zoom_percent_label.setText("0%")
+            if self._stacked_interval_target == "window":
+                self._update_stacked_measurements()
             return
 
         self._timeline_slider.setEnabled(True)
@@ -3440,6 +4899,8 @@ class ScopeWindow(QWidget):
                 self._zoom_slider.setValue(zoom_percent)
             finally:
                 self._syncing_bottom_sliders = False
+        if normalize_interval_target(self._stacked_interval_target) == "window":
+            self._update_stacked_measurements()
 
     def _refresh_bottom_controls_enabled(self) -> None:
         has_data = len(self._stacked_time) > 1 and bool(self._plot_widgets)
@@ -3447,6 +4908,9 @@ class ScopeWindow(QWidget):
         self._zoom_slider.setEnabled(has_data)
         self._autoscale_btn.setEnabled(has_data)
         self._measurement_menu_btn.setEnabled(has_data)
+        self._inspector_measure_menu_btn.setEnabled(has_data)
+        self._scope_bottom_drawer_toggle_btn.setEnabled(has_data)
+        self._sync_scope_action_states()
 
     @staticmethod
     def _decimate_stacked_for_display(
@@ -3556,20 +5020,28 @@ class ScopeWindow(QWidget):
 
     def _on_stacked_cursor_toggled(self, checked: bool) -> None:
         self._stacked_cursors_enabled = checked
-        self._scope_bottom_tab.setVisible(bool(checked))
+        if checked and not self._bottom_drawer_expanded:
+            self._on_bottom_drawer_toggled(True)
         self._sync_toolbar_toggles()
         self._set_stacked_cursor_enabled(len(self._stacked_time) > 0)
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
+        self._log_scope_event("Cursors enabled" if checked else "Cursors disabled")
+        self._refresh_inspector()
+        self._refresh_status_bar()
 
     def _on_stacked_grid_toggled(self, checked: bool) -> None:
         self._stacked_grid_enabled = checked
         self._sync_toolbar_toggles()
         self._rebuild_stacked_plots(self._current_result)
+        self._log_scope_event("Grid shown" if checked else "Grid hidden")
 
     def _auto_range_stacked(self) -> None:
         for plot in self._plot_widgets:
             plot.autoRange()
+        for right_view_box in self._plot_right_view_boxes:
+            right_view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+            right_view_box.autoRange()
 
     def _sync_stacked_cursor_lines(self) -> None:
         if not self._stacked_cursors_enabled or self._syncing_stacked_cursor_controls:
@@ -3612,6 +5084,7 @@ class ScopeWindow(QWidget):
             self._stacked_signals = {}
             self._stacked_signal_stats = {}
             self._stacked_plot_groups = {}
+            self._signal_axis_targets = {}
             self._stacked_active_signal = None
             self._selected_plot_group_leader = None
             self._stacked_cursor_initialized = False
@@ -3622,9 +5095,13 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.clear_cursor_measurements()
             self._stacked_measurements.set_multi_signal_measurements({})
             self._scope_bottom_measure_table.setRowCount(0)
-            self._scope_bottom_measure_summary.setText("Δt: —  |  f: —")
+            self._scope_bottom_measure_summary.setText("Scope: Full Range  |  Δt: —  |  f: —")
             self._sync_trace_style_controls()
             self._refresh_bottom_controls_enabled()
+            self._refresh_signal_list_metadata()
+            self._refresh_inspector()
+            self._refresh_quick_metrics()
+            self._refresh_status_bar()
             return
 
         time = np.asarray(result.time, dtype=float)
@@ -3639,6 +5116,7 @@ class ScopeWindow(QWidget):
             self._stacked_signals = {}
             self._stacked_signal_stats = {}
             self._stacked_plot_groups = {}
+            self._signal_axis_targets = {}
             self._stacked_active_signal = None
             self._selected_plot_group_leader = None
             self._stacked_cursor_initialized = False
@@ -3649,13 +5127,21 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.clear_cursor_measurements()
             self._stacked_measurements.set_multi_signal_measurements({})
             self._scope_bottom_measure_table.setRowCount(0)
-            self._scope_bottom_measure_summary.setText("Δt: —  |  f: —")
+            self._scope_bottom_measure_summary.setText("Scope: Full Range  |  Δt: —  |  f: —")
             self._sync_trace_style_controls()
             self._refresh_bottom_controls_enabled()
+            self._refresh_signal_list_metadata()
+            self._refresh_inspector()
+            self._refresh_quick_metrics()
+            self._refresh_status_bar()
             return
 
         self._stacked_time = time
         self._stacked_signals = valid_signals
+        self._signal_axis_targets = {
+            name: self._signal_axis_targets.get(name, "left")
+            for name in valid_signals
+        }
         self._sync_plot_groups()
         self._rebuild_stacked_statistics_cache()
 
@@ -3696,6 +5182,10 @@ class ScopeWindow(QWidget):
         self._update_stacked_measurements()
         self._sync_trace_style_controls()
         self._refresh_bottom_controls_enabled()
+        self._refresh_signal_list_metadata()
+        self._refresh_inspector()
+        self._refresh_quick_metrics()
+        self._refresh_status_bar()
 
     def _sync_scope_selector(self) -> None:
         names = list(self._stacked_signals.keys())
@@ -3712,7 +5202,9 @@ class ScopeWindow(QWidget):
             self._scope_selector_combo.blockSignals(False)
         self._create_math_signal_btn.setEnabled(bool(names))
         if hasattr(self, "_toolbar_scope_label"):
-            self._toolbar_scope_label.setText(current or (self._component_name or "No signal"))
+            self._toolbar_scope_label.setText(
+                self._display_signal_name(current or (self._component_name or "No signal"))
+            )
 
     def _configure_stacked_cursor_spins(self) -> None:
         if len(self._stacked_time) == 0:
@@ -3765,6 +5257,7 @@ class ScopeWindow(QWidget):
         self._sync_scope_selector()
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
+        self._refresh_inspector()
 
     def _on_stacked_signal_selected(self, signal_name: str) -> None:
         if signal_name in self._stacked_signals:
@@ -3778,6 +5271,7 @@ class ScopeWindow(QWidget):
                 self._trace_signal_combo.blockSignals(False)
             self._set_trace_controls_for_signal(signal_name)
             self._update_stacked_measurements()
+            self._refresh_inspector()
 
     def _on_stacked_signal_double_clicked(self, signal_name: str) -> None:
         if signal_name not in self._stacked_signals:
@@ -3820,6 +5314,7 @@ class ScopeWindow(QWidget):
         self._set_trace_controls_for_signal(signal_name)
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
+        self._refresh_inspector()
 
     def _on_stacked_cursor_changed(self, _value: float) -> None:
         self._stacked_cursor_initialized = True
@@ -3833,7 +5328,11 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.clear_cursor_measurements()
             self._stacked_measurements.set_multi_signal_measurements({})
             self._scope_bottom_measure_table.setRowCount(0)
-            self._scope_bottom_measure_summary.setText("Δt: —  |  f: —")
+            self._scope_bottom_measure_summary.setText(
+                f"Scope: {self._measurement_scope_label()}  |  Δt: —  |  f: —"
+            )
+            self._refresh_quick_metrics()
+            self._refresh_status_bar()
             return
 
         signal_name = self._stacked_active_signal
@@ -3842,15 +5341,16 @@ class ScopeWindow(QWidget):
             self._stacked_active_signal = signal_name
 
         values = self._stacked_signals[signal_name]
-        stats = self._stacked_signal_stats.get(signal_name)
-        if stats is None:
+        subset_time, subset_values = self._measurement_subset(values)
+        scoped_stats = self._calculate_measurement_stats(subset_values)
+        if scoped_stats.get("min") is None:
             self._stacked_measurements.clear_statistics()
         else:
             self._stacked_measurements.update_statistics(
-                stats["min"],
-                stats["max"],
-                stats["mean"],
-                stats["rms"],
+                float(scoped_stats["min"]),
+                float(scoped_stats["max"]),
+                float(scoped_stats["mean"]),
+                float(scoped_stats["rms"]),
             )
 
         if self._stacked_cursors_enabled:
@@ -3865,12 +5365,15 @@ class ScopeWindow(QWidget):
             self._stacked_measurements.update_delta(dt, dv, v1, v2)
             table_data = self._build_stacked_measurements_table(t1, t2)
             self._stacked_measurements.set_multi_signal_measurements(table_data)
-            self._refresh_bottom_measurements(table_data, dt=dt)
+            summary_dt = dt if normalize_interval_target(self._stacked_interval_target) == "a_to_b" else None
+            self._refresh_bottom_measurements(table_data, dt=summary_dt)
         else:
             self._stacked_measurements.clear_cursor_measurements()
             table_data = self._build_stacked_measurements_table(None, None)
             self._stacked_measurements.set_multi_signal_measurements(table_data)
             self._refresh_bottom_measurements(table_data, dt=None)
+        self._refresh_quick_metrics()
+        self._refresh_status_bar()
 
     def _build_stacked_measurements_table(
         self,
@@ -3879,9 +5382,8 @@ class ScopeWindow(QWidget):
     ) -> dict[str, dict[str, float | None]]:
         table: dict[str, dict[str, float | None]] = {}
         for name, values in self._stacked_signals.items():
-            stats = self._stacked_signal_stats.get(name)
-            if stats is None:
-                continue
+            _subset_time, subset_values = self._measurement_subset(values)
+            stats = self._calculate_measurement_stats(subset_values)
             c1 = self._interpolate_stacked_value(t1, values) if t1 is not None else None
             c2 = self._interpolate_stacked_value(t2, values) if t2 is not None else None
             dv = c2 - c1 if c1 is not None and c2 is not None else None
@@ -4066,6 +5568,7 @@ class ScopeWindow(QWidget):
             return
         QGuiApplication.clipboard().setPixmap(pixmap)
         self._message_label.setText("Plot image copied to clipboard.")
+        self._log_scope_event("Plot image copied to clipboard")
 
     def _rebuild_stacked_plots(self, result: SimulationResult | None) -> None:
         self._clear_stacked_plots()
@@ -4173,7 +5676,7 @@ class ScopeWindow(QWidget):
             title_row_layout.setContentsMargins(0, 0, 0, 0)
             title_row_layout.setSpacing(6)
 
-            title_label = QLabel(primary_signal_name)
+            title_label = QLabel(self._display_signal_name(primary_signal_name))
             title_label.setObjectName("scopePlotHeaderTitle")
             title_row_layout.addWidget(title_label, stretch=0)
 
@@ -4185,15 +5688,18 @@ class ScopeWindow(QWidget):
             title_row_layout.addStretch(1)
             title_stack_layout.addWidget(title_row)
 
-            subtitle_text = "Single trace"
+            axis_badge = self._axis_badge_text(primary_signal_name)
+            subtitle_text = f"Axis {axis_badge}"
             if len(group_signal_names) > 1:
                 overlay_names = [
-                    name for name in group_signal_names if name != primary_signal_name
+                    self._display_signal_name(name)
+                    for name in group_signal_names
+                    if name != primary_signal_name
                 ]
                 overlay_preview = ", ".join(overlay_names[:2])
                 if len(overlay_names) > 2:
                     overlay_preview = f"{overlay_preview}, ..."
-                subtitle_text = f"Overlay: {overlay_preview}"
+                subtitle_text = f"Axis {axis_badge}  •  Overlay: {overlay_preview}"
             subtitle_label = QLabel(subtitle_text)
             subtitle_label.setObjectName("scopePlotHeaderMeta")
             title_stack_layout.addWidget(subtitle_label)
@@ -4215,7 +5721,15 @@ class ScopeWindow(QWidget):
             panel_layout.addWidget(header_widget)
 
             # --- Plot ---
-            plot = pg.PlotWidget(
+            group_right_signal_names = [
+                name
+                for name in group_signal_names
+                if self._signal_axis_targets.get(name, "left") == "right"
+            ]
+
+            plot = ScopePlotWidget(
+                group_leader=group_leader,
+                drop_handler=self._handle_signal_drop_request,
                 viewBox=ScopePlotViewBox(
                     group_leader=group_leader,
                     wheel_handler=self._on_group_plot_wheel,
@@ -4230,6 +5744,7 @@ class ScopeWindow(QWidget):
             plot.showGrid(x=self._stacked_grid_enabled, y=self._stacked_grid_enabled, alpha=grid_alpha)
             item = plot.getPlotItem()
             item.setLabel("left", "")
+            item.hideAxis("right")
             self._style_stacked_axes(item)
             if idx == len(group_items) - 1:
                 item.setLabel("bottom", "Time", units="s")
@@ -4243,6 +5758,32 @@ class ScopeWindow(QWidget):
 
             if len(group_signal_names) > 1:
                 item.addLegend(offset=(8, 8))
+
+            right_view_box: ScopePlotViewBox | None = None
+            if group_right_signal_names:
+                item.showAxis("right")
+                right_axis = item.getAxis("right")
+                right_axis.setStyle(
+                    tickFont=item.getAxis("left").style.get("tickFont"),
+                    autoExpandTextSpace=False,
+                    tickTextOffset=6,
+                )
+                right_view_box = ScopePlotViewBox(
+                    group_leader=group_leader,
+                    wheel_handler=self._on_group_plot_wheel,
+                    select_handler=self._on_group_plot_selected,
+                )
+                item.scene().addItem(right_view_box)
+                right_axis.linkToView(right_view_box)
+                right_view_box.setXLink(item.vb)
+
+                def _sync_right_geometry(*_args, main_vb=item.vb, secondary_vb=right_view_box) -> None:
+                    secondary_vb.setGeometry(main_vb.sceneBoundingRect())
+                    secondary_vb.linkedViewChanged(main_vb, secondary_vb.XAxis)
+
+                item.vb.sigResized.connect(_sync_right_geometry)
+                _sync_right_geometry()
+                self._plot_right_view_boxes.append(right_view_box)
 
             hover_series: list[tuple[str, np.ndarray, tuple[int, int, int]]] = []
             for signal_name in group_signal_names:
@@ -4267,13 +5808,24 @@ class ScopeWindow(QWidget):
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
                 pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                 trace_name = signal_name if len(group_signal_names) > 1 else None
-                trace = plot.plot(
-                    t_trace,
-                    plot_values,
-                    pen=pen,
-                    name=trace_name,
-                    skipFiniteCheck=True,
-                )
+                if signal_name in group_right_signal_names and right_view_box is not None:
+                    trace = pg.PlotDataItem(
+                        t_trace,
+                        plot_values,
+                        pen=pen,
+                        skipFiniteCheck=True,
+                    )
+                    right_view_box.addItem(trace)
+                    if item.legend is not None and trace_name:
+                        item.legend.addItem(trace, trace_name)
+                else:
+                    trace = plot.plot(
+                        t_trace,
+                        plot_values,
+                        pen=pen,
+                        name=trace_name,
+                        skipFiniteCheck=True,
+                    )
                 self._configure_stacked_trace_performance(trace, len(t_trace))
                 hover_series.append((signal_name, values, color))
 
@@ -4336,6 +5888,11 @@ class ScopeWindow(QWidget):
             plot.setBackground(plot_colors["plot_bg"])
             for axis_name in ("left", "bottom"):
                 axis = item.getAxis(axis_name)
+                axis.setPen(pg.mkPen(plot_colors["plot_axis"]))
+                axis.setTickPen(pg.mkPen(plot_colors["plot_axis"]))
+                axis.setTextPen(pg.mkPen(plot_colors["plot_text"]))
+            if group_right_signal_names:
+                axis = item.getAxis("right")
                 axis.setPen(pg.mkPen(plot_colors["plot_axis"]))
                 axis.setTickPen(pg.mkPen(plot_colors["plot_axis"]))
                 axis.setTextPen(pg.mkPen(plot_colors["plot_text"]))
@@ -4427,17 +5984,89 @@ class ScopeWindow(QWidget):
     # ------------------------------------------------------------------
     def _on_signal_list_context_menu(self, pos: object) -> None:
         """Show context menu for the signal list panel."""
-        selected = self._stacked_active_signal
-        if not selected:
+        list_widget = self._stacked_signal_list._list_widget
+        global_pos = self._stacked_signal_list.mapToGlobal(pos)
+        list_pos = list_widget.viewport().mapFromGlobal(global_pos)
+        item = list_widget.itemAt(list_pos)
+        if item is None:
             return
+
         menu = QMenu(self)
-        overlay_action = menu.addAction("Overlay on active pane")
-        new_pane_action = menu.addAction("Open in new pane")
-        action = menu.exec(self._stacked_signal_list.mapToGlobal(pos))
-        if action == overlay_action:
+
+        if item.data(Qt.ItemDataRole.UserRole) == "__group_header__":
+            leader = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
+            if not leader:
+                return
+            collapsed = self._stacked_signal_list._collapsed_groups.get(leader, False)
+            toggle_group_action = menu.addAction("Expand Group" if collapsed else "Collapse Group")
+            group_visible = all(
+                name in self._stacked_signal_list.get_visible_signals()
+                for name in self._stacked_signal_list._group_children.get(leader, [])
+            )
+            visibility_action = menu.addAction("Hide Group" if group_visible else "Show Group")
+            split_group_action = menu.addAction("Split Group into Dedicated Plots")
+            action = menu.exec(global_pos)
+            if action == toggle_group_action:
+                self._stacked_signal_list._toggle_group_collapsed(leader)
+            elif action == visibility_action:
+                self._stacked_signal_list._set_group_visibility(leader, not group_visible)
+            elif action == split_group_action:
+                for signal_name in self._stacked_signal_list._group_children.get(leader, []):
+                    self._set_signal_plot_group(signal_name, signal_name)
+            return
+
+        selected = getattr(item, "signal_name", None)
+        if not selected or selected not in self._stacked_signals:
+            return
+        self._on_stacked_signal_selected(selected)
+
+        is_visible = selected in self._stacked_signal_list.get_visible_signals()
+        visible_action = menu.addAction("Hide" if is_visible else "Show")
+        rename_action = menu.addAction("Rename Alias…")
+        color_action = menu.addAction("Change Color…")
+
+        axis_menu = menu.addMenu("Move to Axis")
+        current_axis = self._signal_axis_targets.get(selected, "left")
+        axis_actions = {}
+        for label, target in (("Left", "left"), ("Right", "right"), ("New Plot", "new_plot")):
+            axis_action = axis_menu.addAction(label)
+            axis_action.setCheckable(True)
+            axis_action.setChecked(current_axis == target)
+            axis_actions[axis_action] = target
+
+        menu.addSeparator()
+        overlay_action = menu.addAction("Overlay on Active Pane")
+        new_pane_action = menu.addAction("Open in New Pane")
+        add_measure_action = menu.addAction("Show Measurements")
+        highlight_action = menu.addAction("Highlight Trace")
+
+        action = menu.exec(global_pos)
+        if action == visible_action:
+            self._stacked_signal_list.set_signal_visible(selected, not is_visible)
+            self._on_stacked_signal_visibility_changed(selected, not is_visible)
+        elif action == rename_action:
+            current_alias = self._signal_labels.get(selected, "")
+            alias, ok = QInputDialog.getText(
+                self,
+                "Rename Signal Alias",
+                "Alias:",
+                text=current_alias,
+            )
+            if ok:
+                self._set_signal_alias(selected, alias)
+        elif action == color_action:
+            self._pick_trace_color_for_signal(selected)
+        elif action in axis_actions:
+            self._set_signal_axis_target(selected, axis_actions[action])
+        elif action == overlay_action:
             self._set_signal_pane(selected, overlay=True)
         elif action == new_pane_action:
             self._set_signal_pane(selected, overlay=False)
+        elif action == add_measure_action:
+            self._on_bottom_drawer_toggled(True)
+            self._scope_bottom_tabs.setCurrentIndex(0)
+        elif action == highlight_action:
+            self._on_stacked_signal_selected(selected)
 
     def _set_signal_pane(self, signal_name: str, overlay: bool) -> None:
         """Move signal_name to overlay on active pane or give it its own pane."""
@@ -4468,12 +6097,18 @@ class ScopeWindow(QWidget):
         if idx >= 0:
             value = self._interval_combo.itemData(idx)
             if value:
-                self._stacked_interval_target = str(value)
+                self._stacked_interval_target = normalize_interval_target(str(value))
+        inspector_idx = self._inspector_interval_combo.findData(self._stacked_interval_target)
+        if inspector_idx >= 0 and self._inspector_interval_combo.currentIndex() != inspector_idx:
+            self._inspector_interval_combo.blockSignals(True)
+            self._inspector_interval_combo.setCurrentIndex(inspector_idx)
+            self._inspector_interval_combo.blockSignals(False)
         self._refresh_stacked_measurements()
+        self._refresh_inspector()
 
     def _refresh_stacked_measurements(self) -> None:
-        """Refresh measurement panel (no-op stub; actual refresh happens in existing flow)."""
-        pass
+        """Refresh all measurement-dependent surfaces."""
+        self._update_stacked_measurements()
 
     # ------------------------------------------------------------------
     # Feature: Scopes tab (task 3.1)
@@ -4528,6 +6163,7 @@ class ScopeWindow(QWidget):
         view_id = name.strip()
         self._saved_views[view_id] = (t_start, t_end)
         self._refresh_views_tab()
+        self._log_scope_event(f"Saved view created: {view_id}")
 
     def _on_apply_view_clicked(self, view_id: str) -> None:
         """Restore a saved view's time window."""

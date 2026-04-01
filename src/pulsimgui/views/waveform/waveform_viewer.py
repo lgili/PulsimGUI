@@ -1,8 +1,10 @@
 """Waveform viewer widget for displaying simulation results."""
 
+from __future__ import annotations
+
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QMimeData, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -58,6 +60,8 @@ CURSOR_COLORS = [
     (255, 0, 0),     # Red for cursor 1
     (0, 0, 255),     # Blue for cursor 2
 ]
+
+SIGNAL_MIME_TYPE = "application/x-pulsimgui-scope-signal"
 
 
 class DraggableCursor(pg.InfiniteLine):
@@ -736,11 +740,13 @@ class SignalRowWidget(QFrame):
     clicked = Signal(str)
     double_clicked = Signal(str)
     visibility_toggled = Signal(str, bool)
+    axis_badge_clicked = Signal(str)
 
     def __init__(self, signal_name: str, color: tuple[int, int, int], parent=None):
         super().__init__(parent)
         self._signal_name = signal_name
         self._color = color
+        self._axis_badge = "L"
         self._syncing = False
         self.setObjectName("SignalListRowCard")
         self.setMinimumHeight(26)
@@ -764,6 +770,15 @@ class SignalRowWidget(QFrame):
         self._label.setObjectName("signalRowLabel")
         layout.addWidget(self._label, stretch=1)
 
+        self._axis_button = QToolButton()
+        self._axis_button.setObjectName("signalRowAxisBadge")
+        self._axis_button.setText(self._axis_badge)
+        self._axis_button.setAutoRaise(True)
+        self._axis_button.setToolTip("Cycle axis target")
+        self._axis_button.setFixedWidth(24)
+        self._axis_button.clicked.connect(self._on_axis_badge_clicked)
+        layout.addWidget(self._axis_button, stretch=0)
+
         self._update_color()
 
     def _update_color(self) -> None:
@@ -779,6 +794,14 @@ class SignalRowWidget(QFrame):
         self._color = color
         self._update_color()
 
+    def set_label_text(self, text: str) -> None:
+        self._label.setText(text)
+
+    def set_axis_badge(self, badge: str) -> None:
+        text = str(badge or "").strip().upper() or "L"
+        self._axis_badge = text
+        self._axis_button.setText(text)
+
     def set_visible_state(self, visible: bool) -> None:
         self._syncing = True
         try:
@@ -790,6 +813,9 @@ class SignalRowWidget(QFrame):
         if self._syncing:
             return
         self.visibility_toggled.emit(self._signal_name, bool(checked))
+
+    def _on_axis_badge_clicked(self) -> None:
+        self.axis_badge_clicked.emit(self._signal_name)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -879,6 +905,28 @@ class GroupHeaderWidget(QFrame):
         super().mousePressEvent(event)
 
 
+class SignalListWidget(QListWidget):
+    """List widget that emits explicit MIME payloads for signal drag/drop."""
+
+    def mimeData(self, items: list[QListWidgetItem]) -> QMimeData | None:  # type: ignore[override]
+        mime = super().mimeData(items)
+        signal_name = next(
+            (
+                item.signal_name
+                for item in items
+                if hasattr(item, "signal_name") and str(item.signal_name).strip()
+            ),
+            "",
+        )
+        if not signal_name:
+            return mime
+        if mime is None:
+            mime = QMimeData()
+        mime.setText(signal_name)
+        mime.setData(SIGNAL_MIME_TYPE, signal_name.encode("utf-8"))
+        return mime
+
+
 class SignalListPanel(QFrame):
     """Panel showing list of available signals with visibility toggles."""
 
@@ -886,6 +934,27 @@ class SignalListPanel(QFrame):
     signal_visibility_changed = Signal(str, bool)  # signal_name, visible
     signal_selected = Signal(str)  # signal_name
     signal_double_clicked = Signal(str)  # signal_name (for adding to plot)
+    signal_axis_badge_clicked = Signal(str)  # signal_name
+
+    @staticmethod
+    def create_signal_mime_data(signal_name: str) -> QMimeData:
+        """Build the canonical drag payload for one signal name."""
+        mime = QMimeData()
+        text = str(signal_name or "").strip()
+        mime.setText(text)
+        mime.setData(SIGNAL_MIME_TYPE, text.encode("utf-8"))
+        return mime
+
+    @staticmethod
+    def signal_name_from_mime(mime_data: QMimeData | None) -> str | None:
+        """Extract one dragged signal name from MIME data."""
+        if mime_data is None:
+            return None
+        if mime_data.hasFormat(SIGNAL_MIME_TYPE):
+            payload = bytes(mime_data.data(SIGNAL_MIME_TYPE)).decode("utf-8", errors="ignore").strip()
+            return payload or None
+        text = mime_data.text().strip()
+        return text or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -937,7 +1006,7 @@ class SignalListPanel(QFrame):
         layout.addWidget(self._filter_edit)
 
         # Signal list
-        self._list_widget = QListWidget()
+        self._list_widget = SignalListWidget()
         self._list_widget.setDragEnabled(True)
         self._list_widget.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self._list_widget.setSelectionMode(
@@ -1112,6 +1181,7 @@ class SignalListPanel(QFrame):
         row.clicked.connect(self._on_signal_widget_clicked)
         row.double_clicked.connect(self._on_signal_widget_double_clicked)
         row.visibility_toggled.connect(self._on_signal_widget_toggled)
+        row.axis_badge_clicked.connect(self._on_signal_axis_badge_clicked)
         item.setText("")
         item.setIcon(QIcon())
         item.setSizeHint(QSize(0, row.sizeHint().height() + 2))
@@ -1262,6 +1332,19 @@ class SignalListPanel(QFrame):
                 font-size: 10px;
                 font-weight: 600;
             }}
+            QToolButton#signalRowAxisBadge {{
+                color: {shell["muted"]};
+                font-size: 9px;
+                font-weight: 700;
+                background-color: rgba(11, 17, 28, 0.55);
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 7px;
+                padding: 1px 6px;
+            }}
+            QToolButton#signalRowAxisBadge:hover {{
+                color: {shell["text"]};
+                border-color: {shell["accent"]};
+            }}
             QCheckBox#signalRowToggle {{
                 spacing: 0px;
             }}
@@ -1365,6 +1448,19 @@ class SignalListPanel(QFrame):
                 font-size: 10px;
                 font-weight: 600;
             }}
+            QToolButton#signalRowAxisBadge {{
+                color: {c.foreground_muted};
+                font-size: 9px;
+                font-weight: 700;
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+                border-radius: 7px;
+                padding: 1px 6px;
+            }}
+            QToolButton#signalRowAxisBadge:hover {{
+                color: {c.foreground};
+                border-color: {c.input_focus_border};
+            }}
             QCheckBox#signalRowToggle::indicator {{
                 width: 28px;
                 height: 15px;
@@ -1426,6 +1522,18 @@ class SignalListPanel(QFrame):
             row = self._signal_widgets.get(signal_name)
             if row is not None:
                 row.set_color(color)
+
+    def set_signal_label(self, signal_name: str, label: str) -> None:
+        """Update display label for one signal row."""
+        row = self._signal_widgets.get(signal_name)
+        if row is not None:
+            row.set_label_text(label)
+
+    def set_signal_axis_badge(self, signal_name: str, badge: str) -> None:
+        """Update the axis badge shown for one signal row."""
+        row = self._signal_widgets.get(signal_name)
+        if row is not None:
+            row.set_axis_badge(badge)
 
     def set_signal_visible(self, signal_name: str, visible: bool) -> None:
         """Set visibility state for a signal."""
@@ -1520,6 +1628,12 @@ class SignalListPanel(QFrame):
                 self._sync_group_header_widget(leader)
                 break
         self.signal_visibility_changed.emit(signal_name, visible)
+
+    def _on_signal_axis_badge_clicked(self, signal_name: str) -> None:
+        if signal_name not in self._signal_items:
+            return
+        self.signal_selected.emit(signal_name)
+        self.signal_axis_badge_clicked.emit(signal_name)
 
     def _show_all(self) -> None:
         """Show all signals."""

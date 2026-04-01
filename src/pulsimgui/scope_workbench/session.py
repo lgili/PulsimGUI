@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .adapter import ScopeHostAdapter, ScopeSignalDescriptor
-from .models import DEFAULT_MEASUREMENT_KEYS, INTERVAL_TARGETS, SavedView, ScopeViewState, ScopeWorkspaceState
+from .models import (
+    DEFAULT_MEASUREMENT_KEYS,
+    INTERVAL_TARGETS,
+    SavedView,
+    ScopeViewState,
+    ScopeWorkspaceState,
+    normalize_interval_target,
+)
 
 
 class ScopeWorkbenchSession:
@@ -216,9 +223,10 @@ class ScopeWorkbenchSession:
     def set_scope_interval_target(self, scope_id: str, target: str) -> None:
         """Set interval target for statistics computation in one scope."""
         scope = self._require_scope(scope_id)
-        if target not in INTERVAL_TARGETS:
+        normalized = normalize_interval_target(target)
+        if normalized not in INTERVAL_TARGETS:
             raise ValueError(f"Invalid interval target: {target!r}. Must be one of {INTERVAL_TARGETS}")
-        scope.interval_target = target
+        scope.interval_target = normalized
 
     def add_saved_view(
         self,
