@@ -209,6 +209,55 @@ def test_scope_copy_plot_to_clipboard_writes_pixmap(monkeypatch, qapp) -> None:
         window.close()
 
 
+def test_scope_plot_context_menu_exposes_analysis_actions(qapp) -> None:
+    """Plot context menu should expose scope-aware navigation and analysis actions."""
+    window = ScopeWindow("scope-group-menu-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        menu = window._build_plot_context_menu("S1")
+        action_texts = [action.text() for action in menu.actions() if action.text()]
+
+        assert "Fit All" in action_texts
+        assert "Reset Zoom" in action_texts
+        assert "Hide Grid" in action_texts
+        assert "Add Cursors" in action_texts
+        assert "Show Measurements" in action_texts
+        assert "Copy Plot Image" in action_texts
+        assert "Split Plot" in action_texts
+    finally:
+        window.close()
+
+
+def test_scope_plot_context_menu_actions_update_scope_state(qapp) -> None:
+    """Context-menu actions should mutate grid, cursors, drawer, and grouping deterministically."""
+    window = ScopeWindow("scope-group-menu-2", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        window._apply_plot_context_action("S1", "toggle_grid")
+        assert window._stacked_grid_enabled is False
+
+        window._apply_plot_context_action("S1", "toggle_cursors")
+        assert window._stacked_cursors_enabled is True
+
+        window._apply_plot_context_action("S1", "show_measurements")
+        assert window._bottom_drawer_expanded is True
+        assert window._scope_bottom_tabs.currentIndex() == 0
+
+        window._apply_plot_context_action("S1", "split_plot")
+        assert window._plot_group_leader("S2") == "S2"
+        assert window._plot_group_leader("S3") == "S3"
+    finally:
+        window.close()
+
+
 def test_scope_hover_tooltip_includes_all_overlay_curves(qapp) -> None:
     """Hover tooltip text should include values for every overlaid signal."""
     window = ScopeWindow("scope-group-3", "Group Scope", ComponentType.ELECTRICAL_SCOPE)

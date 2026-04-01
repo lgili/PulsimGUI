@@ -490,11 +490,13 @@ class ScopePlotViewBox(pg.ViewBox):
         group_leader: str,
         wheel_handler: Callable[[pg.ViewBox, object, str], bool] | None = None,
         select_handler: Callable[[str], None] | None = None,
+        context_handler: Callable[[str, object], None] | None = None,
     ) -> None:
         super().__init__(enableMenu=False)
         self._group_leader = group_leader
         self._wheel_handler = wheel_handler
         self._select_handler = select_handler
+        self._context_handler = context_handler
 
     def wheelEvent(self, ev, axis=None):
         if self._wheel_handler is not None and self._wheel_handler(self, ev, self._group_leader):
@@ -507,6 +509,11 @@ class ScopePlotViewBox(pg.ViewBox):
             and ev.button() == Qt.MouseButton.LeftButton
         ):
             self._select_handler(self._group_leader)
+        elif (
+            self._context_handler is not None
+            and ev.button() == Qt.MouseButton.RightButton
+        ):
+            self._context_handler(self._group_leader, ev.screenPos())
         super().mouseClickEvent(ev)
 
 
@@ -615,6 +622,7 @@ class ScopeWindow(QWidget):
         self._bindings: list[ScopeChannelBinding] = []
         self._current_result: SimulationResult | None = None
         self._plot_widgets: list[pg.PlotWidget] = []
+        self._plot_widgets_by_group: dict[str, pg.PlotWidget] = {}
         self._default_mode_set = False
         self._stacked_time: np.ndarray = np.array([], dtype=float)
         self._stacked_signals: dict[str, np.ndarray] = {}
@@ -4299,6 +4307,7 @@ class ScopeWindow(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._plot_widgets.clear()
+        self._plot_widgets_by_group.clear()
         self._plot_right_view_boxes.clear()
         self._stacked_cursor_lines.clear()
         self._stacked_hover_items.clear()
@@ -6164,6 +6173,7 @@ class ScopeWindow(QWidget):
                     group_leader=group_leader,
                     wheel_handler=self._on_group_plot_wheel,
                     select_handler=self._on_group_plot_selected,
+                    context_handler=self._show_plot_context_menu,
                 )
             )
             plot.setMinimumHeight(220)
@@ -6202,6 +6212,7 @@ class ScopeWindow(QWidget):
                     group_leader=group_leader,
                     wheel_handler=self._on_group_plot_wheel,
                     select_handler=self._on_group_plot_selected,
+                    context_handler=self._show_plot_context_menu,
                 )
                 item.scene().addItem(right_view_box)
                 right_axis.linkToView(right_view_box)
@@ -6311,6 +6322,7 @@ class ScopeWindow(QWidget):
                 self._overview_inset.show()
 
             panel_layout.addWidget(plot_container)
+            self._plot_widgets_by_group[group_leader] = plot
 
             # --- Apply theming ---
             shell = self._scope_shell_palette()
@@ -6408,6 +6420,97 @@ class ScopeWindow(QWidget):
             idx += 1
             candidate = f"{label} [{idx}]"
         return candidate
+
+    def _plot_group_signal_names(self, group_leader: str) -> list[str]:
+        """Return visible signal names belonging to one plot group."""
+        if not group_leader:
+            return []
+        return [
+            signal_name
+            for signal_name in self._stacked_signal_list.get_visible_signals()
+            if self._plot_group_leader(signal_name) == group_leader
+        ]
+
+    def _build_plot_context_menu(self, group_leader: str) -> QMenu:
+        """Build a scope-aware context menu for one plot pane."""
+        menu = QMenu(self)
+        group_signals = self._plot_group_signal_names(group_leader)
+        active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
+        self._selected_plot_group_leader = group_leader
+
+        fit_action = menu.addAction("Fit All")
+        reset_action = menu.addAction("Reset Zoom")
+        grid_action = menu.addAction("Hide Grid" if self._stacked_grid_enabled else "Show Grid")
+        cursor_action = menu.addAction("Remove Cursors" if self._stacked_cursors_enabled else "Add Cursors")
+        menu.addSeparator()
+        measure_action = menu.addAction("Show Measurements")
+        copy_action = menu.addAction("Copy Plot Image")
+
+        split_action = None
+        if len(group_signals) > 1:
+            split_action = menu.addAction("Split Plot")
+
+        overlay_action = None
+        if active_signal and active_signal not in group_signals:
+            overlay_action = menu.addAction(f"Overlay {self._display_signal_name(active_signal)} Here")
+
+        action_key_map: dict[QAction, str] = {
+            fit_action: "fit",
+            reset_action: "reset_zoom",
+            grid_action: "toggle_grid",
+            cursor_action: "toggle_cursors",
+            measure_action: "show_measurements",
+            copy_action: "copy_plot",
+        }
+        if split_action is not None:
+            action_key_map[split_action] = "split_plot"
+        if overlay_action is not None:
+            action_key_map[overlay_action] = "overlay_active"
+
+        for action, key in action_key_map.items():
+            action.triggered.connect(
+                lambda _checked=False, action_key=key, leader=group_leader: self._apply_plot_context_action(
+                    leader,
+                    action_key,
+                )
+            )
+        return menu
+
+    def _apply_plot_context_action(self, group_leader: str, action_key: str) -> None:
+        """Apply one context-menu action to a plot group."""
+        if action_key in {"fit", "reset_zoom"}:
+            self._on_autoscale_clicked()
+            return
+        if action_key == "toggle_grid":
+            self._toolbar_grid_btn.setChecked(not self._stacked_grid_enabled)
+            return
+        if action_key == "toggle_cursors":
+            self._stacked_cursor_toggle.setChecked(not self._stacked_cursors_enabled)
+            return
+        if action_key == "show_measurements":
+            self._on_bottom_drawer_toggled(True)
+            self._scope_bottom_tabs.setCurrentIndex(0)
+            return
+        if action_key == "copy_plot":
+            self._copy_plot_to_clipboard(self._plot_widgets_by_group.get(group_leader))
+            return
+        if action_key == "split_plot":
+            for signal_name in self._plot_group_signal_names(group_leader):
+                self._set_signal_plot_group(signal_name, signal_name)
+            self._rebuild_stacked_plots(self._current_result)
+            return
+        if action_key == "overlay_active":
+            active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
+            if active_signal:
+                self._set_signal_plot_group(active_signal, group_leader)
+                self._rebuild_stacked_plots(self._current_result)
+
+    def _show_plot_context_menu(self, group_leader: str, global_pos: object) -> None:
+        """Show the context menu for one plot group."""
+        if group_leader not in self._plot_widgets_by_group:
+            return
+        menu = self._build_plot_context_menu(group_leader)
+        menu.exec(global_pos.toPoint() if hasattr(global_pos, "toPoint") else global_pos)
 
     # ------------------------------------------------------------------
     # Feature: Signal pane context menu (task 2.3)

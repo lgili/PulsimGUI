@@ -20,7 +20,7 @@
 
 - [x] 4.1 Implement tabbed central views for Scope, FFT, and Compare with independent view state
 - [x] 4.2 Support overlay, dual-axis, and stacked-plot compositions with consistent trace identity
-- [ ] 4.3 Implement navigator inset, crosshair/cursor overlays, and plot context menus
+- [x] 4.3 Implement navigator inset, crosshair/cursor overlays, and plot context menus
 - [ ] 4.4 Ensure zoom, pan, fit, and trace selection interactions remain responsive under dense data
 
 ## 5. Inspector and Analysis Controls
