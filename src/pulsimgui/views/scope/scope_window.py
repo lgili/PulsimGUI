@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -264,6 +265,7 @@ class MathSignalDialog(QDialog):
         time_values: np.ndarray,
         default_signal: str,
         theme: Theme | None,
+        scope_theme: dict[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Math Signal")
@@ -368,56 +370,89 @@ class MathSignalDialog(QDialog):
 
         if theme is not None:
             c = theme.colors
+            shell = scope_theme or {
+                "panel_bg": c.panel_background,
+                "border": c.panel_border,
+                "text": c.foreground,
+                "muted": c.foreground_muted,
+                "field_bg": c.input_background,
+                "field_border": c.input_border,
+                "focus": c.input_focus_border,
+                "button_bg": c.secondary,
+                "button_hover_bg": c.secondary_hover,
+                "button_text": c.secondary_foreground,
+                "accent": c.primary,
+                "accent_fg": c.primary_foreground,
+                "menu_bg": c.menu_background,
+                "menu_text": c.foreground,
+                "menu_border": c.panel_border,
+                "menu_hover_bg": c.menu_hover,
+            }
             self.setStyleSheet(f"""
                 QDialog {{
-                    background-color: {c.panel_background};
-                    border: 1px solid {c.panel_border};
+                    background-color: {shell["panel_bg"]};
+                    border: 1px solid {shell["border"]};
                     border-radius: 12px;
                 }}
                 QLabel#mathSignalDialogTitle {{
                     font-size: 18px;
                     font-weight: 700;
-                    color: {c.foreground};
+                    color: {shell["text"]};
                 }}
                 QLabel#mathSignalDialogSubtitle {{
                     font-size: 12px;
-                    color: {c.foreground_muted};
+                    color: {shell["muted"]};
                 }}
                 QLabel#mathSignalSection {{
                     font-size: 11px;
                     font-weight: 700;
-                    color: {c.foreground};
+                    color: {shell["text"]};
                     margin-top: 4px;
                 }}
                 QLabel#mathSignalPreview {{
                     font-size: 11px;
                     font-weight: 600;
-                    color: {c.foreground};
-                    background-color: {c.background_alt};
-                    border: 1px solid {c.panel_border};
+                    color: {shell["text"]};
+                    background-color: {shell["field_bg"]};
+                    border: 1px solid {shell["border"]};
                     border-radius: 10px;
                     padding: 7px 10px;
                 }}
                 QComboBox, QLineEdit {{
-                    background-color: {c.input_background};
-                    color: {c.foreground};
-                    border: 1px solid {c.input_border};
+                    background-color: {shell["field_bg"]};
+                    color: {shell["text"]};
+                    border: 1px solid {shell["field_border"]};
                     border-radius: 10px;
                     padding: 5px 9px;
                     min-height: 28px;
                 }}
+                QComboBox:hover, QLineEdit:hover {{
+                    border-color: {shell["focus"]};
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {shell["menu_bg"]};
+                    color: {shell["menu_text"]};
+                    border: 1px solid {shell["menu_border"]};
+                    selection-background-color: {shell["menu_hover_bg"]};
+                    selection-color: {shell["menu_text"]};
+                    outline: none;
+                }}
+                QCheckBox {{
+                    color: {shell["text"]};
+                    font-weight: 600;
+                }}
                 QPushButton {{
-                    background-color: {c.secondary};
-                    color: {c.foreground};
-                    border: 1px solid {c.border};
+                    background-color: {shell["button_bg"]};
+                    color: {shell["button_text"]};
+                    border: 1px solid {shell["border"]};
                     border-radius: 10px;
                     padding: 6px 12px;
                     min-height: 28px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: {c.secondary_hover};
-                    border-color: {c.primary};
+                    background-color: {shell["button_hover_bg"]};
+                    border-color: {shell["accent"]};
                 }}
                 QPushButton#mathSignalSwapBtn {{
                     min-width: 108px;
@@ -502,6 +537,7 @@ class TimeRangeSlider(QWidget):
         super().__init__(parent)
         self.setObjectName("scopeTimelineSlider")
         self.setMinimumHeight(28)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._minimum = 0
         self._maximum = 1000
         self._low = 0
@@ -510,11 +546,11 @@ class TimeRangeSlider(QWidget):
         self._handle_radius = 7
         self._track_height = 6
 
-        self._track_bg = QColor("#3a3f4b")
-        self._track_border = QColor("#5a6272")
-        self._selected_fill = QColor("#4b8bff")
-        self._handle_fill = QColor("#d8deea")
-        self._handle_border = QColor("#6a7386")
+        self._track_bg = QColor(LIGHT_THEME.colors.divider)
+        self._track_border = QColor(LIGHT_THEME.colors.border)
+        self._selected_fill = QColor(LIGHT_THEME.colors.primary)
+        self._handle_fill = QColor(LIGHT_THEME.colors.input_background)
+        self._handle_border = QColor(LIGHT_THEME.colors.input_focus_border)
 
     def set_theme_colors(
         self,
@@ -608,6 +644,12 @@ class TimeRangeSlider(QWidget):
             painter.setBrush(QBrush(self._handle_fill))
             painter.drawEllipse(x - self._handle_radius, (self.height() // 2) - self._handle_radius, self._handle_radius * 2, self._handle_radius * 2)
 
+        if self.hasFocus():
+            focus_pen = QPen(self._handle_border, 1.4)
+            painter.setPen(focus_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 6, 6)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle the Qt mousePressEvent callback."""
         if not self.isEnabled() or event.button() != Qt.MouseButton.LeftButton:
@@ -632,12 +674,70 @@ class TimeRangeSlider(QWidget):
         """Handle the Qt mouseReleaseEvent callback."""
         self._drag_target = None
 
+    def keyPressEvent(self, event) -> None:
+        """Pan the active timeline window using keyboard arrows."""
+        key = event.key()
+        if key not in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            super().keyPressEvent(event)
+            return
+        delta = -10 if key == Qt.Key.Key_Left else 10
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta = int(delta / 2)
+            if delta == 0:
+                delta = -1 if key == Qt.Key.Key_Left else 1
+        low = self._low + delta
+        high = self._high + delta
+        width = self._high - self._low
+        if low < self._minimum:
+            low = self._minimum
+            high = min(self._maximum, low + width)
+        if high > self._maximum:
+            high = self._maximum
+            low = max(self._minimum, high - width)
+        self.setValues(low, high)
+        event.accept()
+
     def _update_from_mouse(self, x: int) -> None:
         value = self._x_to_value(x)
         if self._drag_target == "low":
             self.setValues(value, self._high)
         elif self._drag_target == "high":
             self.setValues(self._low, value)
+
+
+class BottomDrawerResizeHandle(QWidget):
+    """Thin drag handle used to resize the analysis drawer body."""
+
+    resize_delta_requested = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("scopeBottomDrawerResizeHandle")
+        self.setFixedHeight(6)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self._last_global_y: int | None = None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._last_global_y = int(event.globalPosition().y())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._last_global_y is None:
+            super().mouseMoveEvent(event)
+            return
+        current_y = int(event.globalPosition().y())
+        delta = self._last_global_y - current_y
+        if delta != 0:
+            self.resize_delta_requested.emit(delta)
+            self._last_global_y = current_y
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._last_global_y = None
+        super().mouseReleaseEvent(event)
 
 
 class ScopePlotViewBox(pg.ViewBox):
@@ -760,6 +860,8 @@ class ScopeWindow(QWidget):
     STACKED_MAX_DISPLAY_POINTS = 10000
     STACKED_TOTAL_POINT_BUDGET = 24000
     STACKED_MIN_POINTS_PER_SIGNAL = 1200
+    BOTTOM_DRAWER_MIN_HEIGHT = 132
+    BOTTOM_DRAWER_MAX_HEIGHT = 320
 
     def __init__(
         self,
@@ -782,10 +884,15 @@ class ScopeWindow(QWidget):
         self._current_result: SimulationResult | None = None
         self._plot_widgets: list[pg.PlotWidget] = []
         self._plot_widgets_by_group: dict[str, pg.PlotWidget] = {}
+        self._plot_trace_items_by_signal: dict[str, pg.PlotDataItem] = {}
+        self._plot_group_signals_by_leader: dict[str, list[str]] = {}
+        self._plot_header_refs: dict[str, dict[str, object]] = {}
+        self._plot_overlay_layouts_by_group: dict[str, QGridLayout] = {}
         self._default_mode_set = False
         self._stacked_time: np.ndarray = np.array([], dtype=float)
         self._stacked_signals: dict[str, np.ndarray] = {}
         self._stacked_signal_stats: dict[str, dict[str, float]] = {}
+        self._stacked_decimation_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
         self._stacked_active_signal: str | None = None
         self._math_signal_counter = 0
         self._stacked_cursors_enabled = False
@@ -851,9 +958,11 @@ class ScopeWindow(QWidget):
 
         self._trace_signal_combo = QComboBox()
         self._trace_signal_combo.setMinimumWidth(260)
+        self._trace_signal_combo.setToolTip("Choose which trace is edited in the inspector")
         self._trace_signal_combo.currentTextChanged.connect(self._on_trace_style_signal_changed)
         self._trace_alias_edit = QLineEdit()
         self._trace_alias_edit.setPlaceholderText("Use signal name")
+        self._trace_alias_edit.setToolTip("Override the display label used across the scope workspace")
         self._trace_alias_edit.editingFinished.connect(self._on_trace_alias_edited)
         self._trace_width_spin = QDoubleSpinBox()
         self._trace_width_spin.setRange(0.5, 8.0)
@@ -861,10 +970,13 @@ class ScopeWindow(QWidget):
         self._trace_width_spin.setDecimals(1)
         self._trace_width_spin.setMaximumWidth(86)
         self._trace_width_spin.setValue(self._default_trace_width)
+        self._trace_width_spin.setToolTip("Set the line thickness for the selected trace")
         self._trace_width_spin.valueChanged.connect(self._on_trace_width_changed)
         self._trace_color_btn = QPushButton("Color")
+        self._trace_color_btn.setToolTip("Choose a custom trace color")
         self._trace_color_btn.clicked.connect(self._on_trace_color_clicked)
         self._trace_reset_btn = QPushButton("Reset")
+        self._trace_reset_btn.setToolTip("Reset the selected trace style to defaults")
         self._trace_reset_btn.clicked.connect(self._on_trace_style_reset)
 
         self._stacked_page = QWidget()
@@ -893,12 +1005,20 @@ class ScopeWindow(QWidget):
         self._left_scope_label.setObjectName("scopeSidebarTitle")
         sidebar_top_layout.addWidget(self._left_scope_label)
         sidebar_top_layout.addStretch(1)
-        self._left_panel_toggle_btn = QPushButton("◀")
+        self._left_panel_toggle_btn = QPushButton()
         self._left_panel_toggle_btn.setObjectName("scopePanelToggleBtn")
         self._left_panel_toggle_btn.setCheckable(True)
         self._left_panel_toggle_btn.setChecked(True)
         self._left_panel_toggle_btn.setFixedWidth(26)
-        self._left_panel_toggle_btn.setToolTip("Collapse left panel")
+        self._left_panel_toggle_btn.setText("")
+        self._left_panel_toggle_btn.setIconSize(QSize(14, 14))
+        self._left_panel_toggle_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Collapse Signals Panel",
+                "Hide the left signals panel and keep only the compact rail",
+                "Ctrl+B",
+            )
+        )
         self._left_panel_toggle_btn.clicked.connect(self._on_toggle_left_panel_clicked)
         self._toggle_sidebar_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
         self._toggle_sidebar_shortcut.activated.connect(self._on_toggle_sidebar_shortcut)
@@ -916,6 +1036,9 @@ class ScopeWindow(QWidget):
         self._scope_selector_combo = QComboBox()
         self._scope_selector_combo.setObjectName("scopeSidebarScopeCombo")
         self._scope_selector_combo.setMinimumWidth(130)
+        self._scope_selector_combo.setToolTip(
+            "Choose the active signal context for inspector and quick metrics"
+        )
         self._scope_selector_combo.currentTextChanged.connect(self._on_scope_selector_changed)
         selector_layout.addWidget(self._scope_selector_combo, stretch=1)
         stacked_sidebar_layout.addWidget(self._scope_selector_row, stretch=0)
@@ -928,12 +1051,16 @@ class ScopeWindow(QWidget):
         sidebar_actions_layout.setSpacing(0)
         self._create_math_signal_btn = QPushButton("+ Add Signal Expression...")
         self._create_math_signal_btn.setObjectName("scopeAddSignalExprBtn")
+        self._create_math_signal_btn.setToolTip(
+            "Create a derived math trace from available signals (Ctrl+E)"
+        )
         self._create_math_signal_btn.clicked.connect(self._on_create_math_signal_clicked)
         sidebar_actions_layout.addWidget(self._create_math_signal_btn, stretch=1)
 
         # Collapsed rail: icon buttons shown only when sidebar is collapsed
         self._collapsed_rail = QWidget()
         self._collapsed_rail.setObjectName("scopeCollapsedRail")
+        self._collapsed_rail_buttons: list[tuple[QToolButton, str]] = []
         collapsed_rail_layout = QVBoxLayout(self._collapsed_rail)
         collapsed_rail_layout.setContentsMargins(4, 4, 4, 4)
         collapsed_rail_layout.setSpacing(6)
@@ -947,7 +1074,8 @@ class ScopeWindow(QWidget):
             _rail_btn.setObjectName("scopeCollapsedRailBtn")
             _rail_btn.setToolTip(_rail_tooltip)
             _rail_btn.setFixedSize(QSize(30, 30))
-            _rail_btn.setIcon(IconService.get_icon(_rail_icon, "#91a0bf", 14))
+            _rail_btn.setProperty("scopeIconName", _rail_icon)
+            _rail_btn.setIcon(IconService.get_icon(_rail_icon, LIGHT_THEME.colors.icon_default, 14))
             _rail_btn.setIconSize(QSize(14, 14))
 
             def _make_rail_handler(tab_idx: int) -> Callable[[], None]:
@@ -962,6 +1090,7 @@ class ScopeWindow(QWidget):
 
             _rail_btn.clicked.connect(_make_rail_handler(_rail_tab_idx))
             collapsed_rail_layout.addWidget(_rail_btn)
+            self._collapsed_rail_buttons.append((_rail_btn, _rail_icon))
         collapsed_rail_layout.addStretch(1)
         self._collapsed_rail.setVisible(False)
         stacked_sidebar_layout.addWidget(self._collapsed_rail, stretch=0)
@@ -991,8 +1120,13 @@ class ScopeWindow(QWidget):
         _scopes_btn_layout.setContentsMargins(0, 0, 0, 0)
         _scopes_btn_layout.setSpacing(4)
         self._scope_rename_btn = QPushButton("Rename")
+        self._scope_rename_btn.setToolTip("Rename the current scope entry")
         self._scope_rename_btn.clicked.connect(self._on_scope_renamed)
         self._scope_duplicate_btn = QPushButton("Duplicate")
+        self._scope_duplicate_btn.setEnabled(False)
+        self._scope_duplicate_btn.setToolTip(
+            "Scope duplication will be enabled when multi-scope duplication is implemented"
+        )
         _scopes_btn_layout.addWidget(self._scope_rename_btn)
         _scopes_btn_layout.addWidget(self._scope_duplicate_btn)
         _scopes_btn_layout.addStretch(1)
@@ -1014,19 +1148,30 @@ class ScopeWindow(QWidget):
         _views_tab_layout.setContentsMargins(0, 4, 0, 0)
         _views_tab_layout.setSpacing(4)
         self._views_list_widget = QListWidget()
+        self._views_list_widget.setToolTip("Saved viewport presets for this scope")
+        self._views_list_widget.currentItemChanged.connect(self._on_saved_view_selection_changed)
+        self._views_list_widget.itemDoubleClicked.connect(self._on_view_list_item_activated)
         _views_tab_layout.addWidget(self._views_list_widget, stretch=1)
         _views_btn_row = QWidget()
         _views_btn_layout = QHBoxLayout(_views_btn_row)
         _views_btn_layout.setContentsMargins(0, 0, 0, 0)
         _views_btn_layout.setSpacing(4)
         self._save_view_btn = QPushButton("Save view")
+        self._save_view_btn.setToolTip("Capture the current viewport as a named saved view")
         self._save_view_btn.clicked.connect(self._on_save_view_clicked)
         self._delete_view_btn = QPushButton("Delete")
+        self._delete_view_btn.setToolTip("Delete the selected saved view")
+        self._delete_view_btn.setEnabled(False)
+        self._delete_view_btn.clicked.connect(self._on_delete_selected_view_clicked)
         _views_btn_layout.addWidget(self._save_view_btn)
         _views_btn_layout.addWidget(self._delete_view_btn)
         _views_btn_layout.addStretch(1)
         _views_tab_layout.addWidget(_views_btn_row, stretch=0)
         self._sidebar_tabs.addTab(_views_tab_widget, "Views")
+        self._sidebar_tabs.setTabToolTip(0, "Signals, visibility, grouping, and routing")
+        self._sidebar_tabs.setTabToolTip(1, "Scope groups and future multi-scope management")
+        self._sidebar_tabs.setTabToolTip(2, "Visible traces and quick placement overview")
+        self._sidebar_tabs.setTabToolTip(3, "Saved viewport presets and reusable views")
 
         stacked_sidebar_layout.addWidget(self._sidebar_tabs, stretch=1)
 
@@ -1058,6 +1203,9 @@ class ScopeWindow(QWidget):
         self._stacked_signal_list.setMinimumWidth(200)
         self._stacked_signal_list.setMaximumWidth(320)
         self._stacked_signal_list._compact_max_rows = 10
+        self._stacked_signal_list.setToolTip(
+            "Signal browser with visibility toggles, axis badges, and drag/drop"
+        )
         self._stacked_signal_list.signal_visibility_changed.connect(
             self._on_stacked_signal_visibility_changed
         )
@@ -1087,10 +1235,12 @@ class ScopeWindow(QWidget):
 
         right_header = QWidget()
         self._right_header_row = right_header
+        right_header.setObjectName("scopePanelHeaderRow")
         right_header_layout = QHBoxLayout(right_header)
         right_header_layout.setContentsMargins(0, 0, 0, 0)
         right_header_layout.setSpacing(8)
         self._right_header_label = QLabel("Inspector")
+        self._right_header_label.setObjectName("scopePanelHeaderLabel")
         right_header_layout.addWidget(self._right_header_label, stretch=1)
         self._trace_style_menu_btn = QToolButton()
         self._trace_style_menu_btn.setObjectName("scopeTraceMenuBtn")
@@ -1099,12 +1249,20 @@ class ScopeWindow(QWidget):
         self._trace_style_menu = QMenu(self._trace_style_menu_btn)
         self._trace_style_menu.aboutToShow.connect(self._populate_trace_style_menu)
         self._trace_style_menu_btn.setMenu(self._trace_style_menu)
-        self._right_panel_toggle_btn = QPushButton("▶")
+        self._right_panel_toggle_btn = QPushButton()
         self._right_panel_toggle_btn.setObjectName("scopePanelToggleBtn")
         self._right_panel_toggle_btn.setCheckable(True)
         self._right_panel_toggle_btn.setChecked(True)
         self._right_panel_toggle_btn.setFixedWidth(28)
-        self._right_panel_toggle_btn.setToolTip("Collapse right panel")
+        self._right_panel_toggle_btn.setText("")
+        self._right_panel_toggle_btn.setIconSize(QSize(14, 14))
+        self._right_panel_toggle_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Collapse Inspector Panel",
+                "Hide the right inspector panel to free more plot space",
+                "Ctrl+I",
+            )
+        )
         self._right_panel_toggle_btn.clicked.connect(self._on_toggle_right_panel_clicked)
         right_header_layout.addWidget(self._right_panel_toggle_btn, stretch=0)
         right_layout.addWidget(right_header, stretch=0)
@@ -1121,17 +1279,24 @@ class ScopeWindow(QWidget):
         self._interval_combo.addItem("Full Range", "full")
         self._interval_combo.addItem("Visible Window", "window")
         self._interval_combo.addItem("Between Cursors", "a_to_b")
+        self._interval_combo.setToolTip(
+            "Choose the active measurement scope for quick metrics and tables"
+        )
         self._interval_combo.currentTextChanged.connect(self._on_interval_target_changed)
         right_controls_layout.addStretch(1)
         self._stacked_right_controls.setVisible(False)
 
         self._inspector_visible_toggle = QCheckBox("Visible")
+        self._inspector_visible_toggle.setToolTip("Show or hide the selected trace")
         self._inspector_visible_toggle.toggled.connect(self._on_inspector_visible_toggled)
 
         self._inspector_axis_combo = QComboBox()
         self._inspector_axis_combo.addItem("Left", "left")
         self._inspector_axis_combo.addItem("Right", "right")
         self._inspector_axis_combo.addItem("New Plot", "new_plot")
+        self._inspector_axis_combo.setToolTip(
+            "Assign the selected trace to the left axis, right axis, or a dedicated plot"
+        )
         self._inspector_axis_combo.currentIndexChanged.connect(self._on_inspector_axis_changed)
 
         self._inspector_autoscale_toggle = QCheckBox("Auto Scale")
@@ -1151,6 +1316,9 @@ class ScopeWindow(QWidget):
         self._inspector_line_style_combo.addItem("Solid", "solid")
         self._inspector_line_style_combo.addItem("Dashed", "dashed")
         self._inspector_line_style_combo.addItem("Dotted", "dotted")
+        self._inspector_line_style_combo.setToolTip(
+            "Choose the line style for the selected trace"
+        )
         self._inspector_line_style_combo.setEnabled(False)
 
         self._inspector_snap_combo = QComboBox()
@@ -1159,12 +1327,18 @@ class ScopeWindow(QWidget):
         self._inspector_snap_combo.addItem("Peaks", "peaks")
         self._inspector_snap_combo.addItem("Edges", "edges")
         self._inspector_snap_combo.addItem("Zero Crossings", "zero_crossings")
+        self._inspector_snap_combo.setToolTip(
+            "Choose how cursor motion snaps to waveform features"
+        )
         self._inspector_snap_combo.currentIndexChanged.connect(self._on_inspector_snap_mode_changed)
 
         self._inspector_interval_combo = QComboBox()
         self._inspector_interval_combo.addItem("Full Range", "full")
         self._inspector_interval_combo.addItem("Visible Window", "window")
         self._inspector_interval_combo.addItem("Between Cursors", "a_to_b")
+        self._inspector_interval_combo.setToolTip(
+            "Choose the measurement scope used by inspector and bottom analysis"
+        )
         self._inspector_interval_combo.currentIndexChanged.connect(
             self._on_inspector_interval_changed
         )
@@ -1172,6 +1346,9 @@ class ScopeWindow(QWidget):
         self._inspector_measure_menu_btn = QToolButton()
         self._inspector_measure_menu_btn.setObjectName("scopeMeasurementMenuBtn")
         self._inspector_measure_menu_btn.setText("+ Add Measurement")
+        self._inspector_measure_menu_btn.setToolTip(
+            "Choose which measurement columns appear in the analysis drawer"
+        )
         self._inspector_measure_menu_btn.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -1260,8 +1437,12 @@ class ScopeWindow(QWidget):
         self._overview_inset.setObjectName("scopeOverviewInset")
         self._overview_inset.hide()
         overview_inset_layout = QVBoxLayout(self._overview_inset)
-        overview_inset_layout.setContentsMargins(6, 6, 6, 6)
-        overview_inset_layout.setSpacing(0)
+        overview_inset_layout.setContentsMargins(5, 4, 5, 5)
+        overview_inset_layout.setSpacing(2)
+        self._overview_title_label = QLabel("OVERVIEW")
+        self._overview_title_label.setObjectName("scopeOverviewLabel")
+        self._overview_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overview_inset_layout.addWidget(self._overview_title_label)
         self._overview_plot = pg.PlotWidget()
         self._overview_plot.setObjectName("scopeOverviewPlot")
         self._overview_plot.setFixedSize(148, 82)
@@ -1398,7 +1579,13 @@ class ScopeWindow(QWidget):
         self._toolbar_left_btn.setProperty("accentTone", "blue")
         self._toolbar_left_btn.setCheckable(True)
         self._toolbar_left_btn.setChecked(True)
-        self._toolbar_left_btn.setToolTip("Toggle signals panel (Ctrl+B)")
+        self._toolbar_left_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Toggle Signals Panel",
+                "Show or hide the left signals panel",
+                "Ctrl+B",
+            )
+        )
         self._toolbar_left_btn.toggled.connect(self._on_toolbar_left_toggled)
         toolbar_layout.addWidget(self._toolbar_left_btn)
 
@@ -1407,7 +1594,13 @@ class ScopeWindow(QWidget):
         self._toolbar_cursor_btn.setProperty("accentTone", "green")
         self._toolbar_cursor_btn.setCheckable(True)
         self._toolbar_cursor_btn.setChecked(False)
-        self._toolbar_cursor_btn.setToolTip("Enable cursors")
+        self._toolbar_cursor_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Cursor Tool",
+                "Enable or disable the analysis cursors",
+                "C",
+            )
+        )
         self._toolbar_cursor_btn.toggled.connect(self._on_toolbar_cursor_toggled)
         toolbar_layout.addWidget(self._toolbar_cursor_btn)
 
@@ -1416,7 +1609,13 @@ class ScopeWindow(QWidget):
         self._toolbar_grid_btn.setProperty("accentTone", "cyan")
         self._toolbar_grid_btn.setCheckable(True)
         self._toolbar_grid_btn.setChecked(True)
-        self._toolbar_grid_btn.setToolTip("Toggle grid")
+        self._toolbar_grid_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Toggle Grid",
+                "Show or hide the plot grid",
+                "G",
+            )
+        )
         self._toolbar_grid_btn.toggled.connect(self._on_toolbar_grid_toggled)
         toolbar_layout.addWidget(self._toolbar_grid_btn)
 
@@ -1428,39 +1627,83 @@ class ScopeWindow(QWidget):
 
         self._toolbar_autoscale_btn = QToolButton()
         self._toolbar_autoscale_btn.setObjectName("scopeToolbarActionBtn")
-        self._toolbar_autoscale_btn.setToolTip("Fit view (AutoScale)")
+        self._toolbar_autoscale_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Fit View",
+                "Fit the current plot view to the full data range",
+                "F",
+            )
+        )
         self._toolbar_autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         toolbar_layout.addWidget(self._toolbar_autoscale_btn)
 
         self._toolbar_zoom_in_btn = QToolButton()
         self._toolbar_zoom_in_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_zoom_in_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Zoom In",
+                "Tighten the visible time window",
+            )
+        )
         self._toolbar_zoom_in_btn.clicked.connect(lambda _checked=False: self._step_slider(self._zoom_slider, 8))
         toolbar_layout.addWidget(self._toolbar_zoom_in_btn)
 
         self._toolbar_zoom_out_btn = QToolButton()
         self._toolbar_zoom_out_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_zoom_out_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Zoom Out",
+                "Expand the visible time window",
+            )
+        )
         self._toolbar_zoom_out_btn.clicked.connect(lambda _checked=False: self._step_slider(self._zoom_slider, -8))
         toolbar_layout.addWidget(self._toolbar_zoom_out_btn)
 
         self._toolbar_measure_btn = QToolButton()
         self._toolbar_measure_btn.setObjectName("scopeToolbarMenuBtn")
-        self._toolbar_measure_btn.setToolTip("Measurement columns")
+        self._toolbar_measure_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Measurements",
+                "Expand or collapse the detailed measurements drawer",
+                "M",
+            )
+        )
         self._toolbar_measure_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         toolbar_layout.addWidget(self._toolbar_measure_btn)
 
         self._toolbar_math_btn = QToolButton()
         self._toolbar_math_btn.setObjectName("scopeToolbarActionBtn")
-        self._toolbar_math_btn.setToolTip("Create math signal")
+        self._toolbar_math_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Add Expression",
+                "Create a derived math trace from existing signals",
+                "Ctrl+E",
+            )
+        )
         self._toolbar_math_btn.clicked.connect(self._on_create_math_signal_clicked)
         toolbar_layout.addWidget(self._toolbar_math_btn)
 
         self._toolbar_fft_btn = QToolButton()
         self._toolbar_fft_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_fft_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "FFT",
+                "Switch to FFT analysis mode",
+                "Ctrl+2",
+            )
+        )
         self._toolbar_fft_btn.clicked.connect(lambda _checked=False: self._analysis_tabs.setCurrentIndex(1))
         toolbar_layout.addWidget(self._toolbar_fft_btn)
 
         self._toolbar_compare_btn = QToolButton()
         self._toolbar_compare_btn.setObjectName("scopeToolbarActionBtn")
+        self._toolbar_compare_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Compare",
+                "Switch to run or trace comparison mode",
+                "Ctrl+3",
+            )
+        )
         self._toolbar_compare_btn.clicked.connect(lambda _checked=False: self._analysis_tabs.setCurrentIndex(2))
         toolbar_layout.addWidget(self._toolbar_compare_btn)
 
@@ -1471,14 +1714,25 @@ class ScopeWindow(QWidget):
         toolbar_layout.addWidget(self._toolbar_separator_2)
 
         self._trace_style_menu_btn.setObjectName("scopeToolbarMenuBtn")
-        self._trace_style_menu_btn.setToolTip("Trace style and plot placement")
+        self._trace_style_menu_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Trace Style",
+                "Change trace styling and move the active trace between plots",
+            )
+        )
         self._trace_style_menu_btn.setAutoRaise(False)
         self._trace_style_menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         toolbar_layout.addWidget(self._trace_style_menu_btn)
 
         self._toolbar_copy_btn = QToolButton()
         self._toolbar_copy_btn.setObjectName("scopeToolbarActionBtn")
-        self._toolbar_copy_btn.setToolTip("Copy active plot image")
+        self._toolbar_copy_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Export Snapshot",
+                "Copy the active plot as an image",
+                "Ctrl+Shift+E",
+            )
+        )
         self._toolbar_copy_btn.clicked.connect(
             lambda _checked=False: self._copy_plot_to_clipboard(
                 self._plot_widgets[0] if self._plot_widgets else None
@@ -1490,6 +1744,13 @@ class ScopeWindow(QWidget):
         self._toolbar_right_btn.setObjectName("scopeToolbarActionBtn")
         self._toolbar_right_btn.setCheckable(True)
         self._toolbar_right_btn.setChecked(True)
+        self._toolbar_right_btn.setToolTip(
+            self._compose_scope_action_tooltip(
+                "Toggle Inspector",
+                "Show or hide the right inspector panel",
+                "Ctrl+I",
+            )
+        )
         self._toolbar_right_btn.toggled.connect(lambda checked: self._set_right_panel_visible(bool(checked)))
         toolbar_layout.addWidget(self._toolbar_right_btn)
 
@@ -1513,6 +1774,9 @@ class ScopeWindow(QWidget):
         self._compare_page = self._build_compare_page()
         self._analysis_tabs.addTab(self._fft_page, "FFT")
         self._analysis_tabs.addTab(self._compare_page, "Compare")
+        self._analysis_tabs.setTabToolTip(0, "Time-domain scope view (Ctrl+1)")
+        self._analysis_tabs.setTabToolTip(1, "Frequency-domain FFT analysis (Ctrl+2)")
+        self._analysis_tabs.setTabToolTip(2, "Overlay and delta comparison view (Ctrl+3)")
 
         layout.addWidget(self._scope_toolbar, stretch=0)
         layout.addWidget(self._analysis_tabs, stretch=1)
@@ -1558,18 +1822,23 @@ class ScopeWindow(QWidget):
         self._timeline_dec_btn = QPushButton("◀")
         self._timeline_dec_btn.setObjectName("scopeSliderStepBtn")
         self._timeline_dec_btn.setFixedWidth(24)
+        self._timeline_dec_btn.setToolTip("Pan the visible time window to the left")
         self._timeline_dec_btn.clicked.connect(lambda: self._step_timeline_window(-20))
         viewport_layout.addWidget(self._timeline_dec_btn)
 
         self._timeline_slider = TimeRangeSlider()
         self._timeline_slider.setRange(0, 1000)
         self._timeline_slider.setValues(0, 1000)
+        self._timeline_slider.setToolTip(
+            "Visible time window. Drag handles or use Left/Right arrows to pan."
+        )
         self._timeline_slider.rangeChanged.connect(self._on_timeline_slider_changed)
         viewport_layout.addWidget(self._timeline_slider, stretch=4)
 
         self._timeline_inc_btn = QPushButton("▶")
         self._timeline_inc_btn.setObjectName("scopeSliderStepBtn")
         self._timeline_inc_btn.setFixedWidth(24)
+        self._timeline_inc_btn.setToolTip("Pan the visible time window to the right")
         self._timeline_inc_btn.clicked.connect(lambda: self._step_timeline_window(20))
         viewport_layout.addWidget(self._timeline_inc_btn)
 
@@ -1582,6 +1851,7 @@ class ScopeWindow(QWidget):
         self._zoom_dec_btn = QPushButton("−")
         self._zoom_dec_btn.setObjectName("scopeSliderStepBtn")
         self._zoom_dec_btn.setFixedWidth(24)
+        self._zoom_dec_btn.setToolTip("Decrease zoom and widen the visible time window")
         self._zoom_dec_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, -5))
         viewport_layout.addWidget(self._zoom_dec_btn)
 
@@ -1589,12 +1859,14 @@ class ScopeWindow(QWidget):
         self._zoom_slider.setObjectName("scopeZoomSlider")
         self._zoom_slider.setRange(0, 100)
         self._zoom_slider.setValue(0)
+        self._zoom_slider.setToolTip("Zoom percentage for the current scope viewport")
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
         viewport_layout.addWidget(self._zoom_slider, stretch=3)
 
         self._zoom_inc_btn = QPushButton("+")
         self._zoom_inc_btn.setObjectName("scopeSliderStepBtn")
         self._zoom_inc_btn.setFixedWidth(24)
+        self._zoom_inc_btn.setToolTip("Increase zoom around the current viewport center")
         self._zoom_inc_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, 5))
         viewport_layout.addWidget(self._zoom_inc_btn)
 
@@ -1604,11 +1876,15 @@ class ScopeWindow(QWidget):
         viewport_layout.addWidget(self._zoom_percent_label)
 
         self._autoscale_btn = QPushButton("AutoScale")
+        self._autoscale_btn.setToolTip("Fit the scope viewport to the full available data (F)")
         self._autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         viewport_layout.addWidget(self._autoscale_btn)
         self._measurement_menu_btn = QToolButton()
         self._measurement_menu_btn.setObjectName("scopeMeasurementMenuBtn")
         self._measurement_menu_btn.setText("+ Add Measurement")
+        self._measurement_menu_btn.setToolTip(
+            "Choose which measurement columns appear in the analysis drawer"
+        )
         self._measurement_menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._measurement_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._measurement_menu = QMenu(self._measurement_menu_btn)
@@ -1644,6 +1920,13 @@ class ScopeWindow(QWidget):
         drawer_header_layout.addWidget(self._scope_bottom_drawer_toggle_btn)
         bottom_layout.addWidget(self._scope_bottom_drawer_header, stretch=0)
 
+        self._scope_bottom_resize_handle = BottomDrawerResizeHandle()
+        self._scope_bottom_resize_handle.setToolTip("Drag to resize the analysis drawer")
+        self._scope_bottom_resize_handle.resize_delta_requested.connect(
+            self._on_bottom_drawer_resize_requested
+        )
+        bottom_layout.addWidget(self._scope_bottom_resize_handle, stretch=0)
+
         self._scope_bottom_tab = QWidget()
         self._scope_bottom_tab.setObjectName("scopeBottomDrawerBody")
         drawer_layout = QVBoxLayout(self._scope_bottom_tab)
@@ -1676,15 +1959,20 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.setMaximumHeight(180)
         measure_layout.addWidget(self._scope_bottom_measure_table)
         self._scope_bottom_tabs.addTab(measurements_page, "Measurements")
+        self._scope_bottom_tabs.setTabToolTip(0, "Detailed per-signal measurements")
 
         self._scope_bottom_events = QListWidget()
         self._scope_bottom_events.setObjectName("scopeBottomEventsList")
+        self._scope_bottom_events.setToolTip("Operational events emitted by the scope workspace")
         self._scope_bottom_tabs.addTab(self._scope_bottom_events, "Events")
+        self._scope_bottom_tabs.setTabToolTip(1, "Simulation and workspace events")
 
         self._scope_bottom_console = QPlainTextEdit()
         self._scope_bottom_console.setObjectName("scopeBottomConsole")
         self._scope_bottom_console.setReadOnly(True)
+        self._scope_bottom_console.setToolTip("Technical log output for this scope workspace")
         self._scope_bottom_tabs.addTab(self._scope_bottom_console, "Console")
+        self._scope_bottom_tabs.setTabToolTip(2, "Technical logs and parser messages")
 
         drawer_layout.addWidget(self._scope_bottom_tabs)
         bottom_layout.addWidget(self._scope_bottom_tab, stretch=1)
@@ -1715,6 +2003,7 @@ class ScopeWindow(QWidget):
         layout.addWidget(self._scope_bottom_controls, stretch=0)
         self._scope_bottom_controls.setVisible(True)
         self._scope_bottom_tab.setVisible(self._bottom_drawer_expanded)
+        self._apply_bottom_drawer_height()
 
         self._mapping_label.setVisible(False)
         self._message_label.setVisible(False)
@@ -1724,6 +2013,7 @@ class ScopeWindow(QWidget):
         self._sync_trace_style_controls()
         self._build_scope_actions()
         self._build_scope_menus()
+        self._configure_workspace_accessibility()
         self._on_bottom_drawer_toggled(False)
         self._apply_panel_visibility()
         self._refresh_inspector()
@@ -2237,25 +2527,149 @@ class ScopeWindow(QWidget):
         )
         return True
 
+    @classmethod
+    def _clamp_bottom_drawer_height(cls, height: int | float) -> int:
+        """Clamp the drawer body height to the supported desktop range."""
+        return max(cls.BOTTOM_DRAWER_MIN_HEIGHT, min(cls.BOTTOM_DRAWER_MAX_HEIGHT, int(height)))
+
+    def _apply_bottom_drawer_height(self) -> None:
+        """Apply drawer visibility and height from the persisted state."""
+        if not hasattr(self, "_scope_bottom_tab"):
+            return
+        expanded = bool(self._bottom_drawer_expanded)
+        self._scope_bottom_tab.setVisible(expanded)
+        if hasattr(self, "_scope_bottom_resize_handle"):
+            self._scope_bottom_resize_handle.setVisible(expanded)
+            self._scope_bottom_resize_handle.setEnabled(expanded and self._scope_bottom_drawer_toggle_btn.isEnabled())
+        if expanded:
+            height = self._clamp_bottom_drawer_height(self._bottom_drawer_height)
+            self._bottom_drawer_height = height
+            self._scope_bottom_tab.setMinimumHeight(height)
+            self._scope_bottom_tab.setMaximumHeight(height)
+        else:
+            self._scope_bottom_tab.setMinimumHeight(0)
+            self._scope_bottom_tab.setMaximumHeight(16777215)
+
+    def _serialize_trace_styles(self) -> dict[str, dict[str, object]]:
+        """Export trace-style overrides using JSON-friendly scalar/list types."""
+        serialized: dict[str, dict[str, object]] = {}
+        for signal_name, style in self._trace_styles.items():
+            if not isinstance(style, dict):
+                continue
+            payload: dict[str, object] = {}
+            color_raw = style.get("color")
+            if (
+                isinstance(color_raw, tuple)
+                and len(color_raw) == 3
+                and all(isinstance(channel, (int, float)) for channel in color_raw)
+            ):
+                payload["color"] = [int(channel) for channel in color_raw]
+            width_raw = style.get("width")
+            if isinstance(width_raw, (int, float)):
+                payload["width"] = float(width_raw)
+            if payload:
+                serialized[str(signal_name)] = payload
+        return serialized
+
+    def _deserialize_trace_styles(
+        self,
+        payload: dict[str, object],
+    ) -> dict[str, dict[str, object]]:
+        """Restore trace-style overrides from persisted JSON-like state."""
+        restored: dict[str, dict[str, object]] = {}
+        for signal_name, raw_style in payload.items():
+            if not isinstance(raw_style, dict):
+                continue
+            style: dict[str, object] = {}
+            color_raw = raw_style.get("color")
+            if (
+                isinstance(color_raw, (list, tuple))
+                and len(color_raw) == 3
+                and all(isinstance(channel, (int, float)) for channel in color_raw)
+            ):
+                style["color"] = tuple(int(channel) for channel in color_raw)
+            width_raw = raw_style.get("width")
+            if isinstance(width_raw, (int, float)):
+                style["width"] = max(0.5, float(width_raw))
+            if style:
+                restored[str(signal_name)] = style
+        return restored
+
+    @staticmethod
+    def _deserialize_saved_views(payload: dict[str, object]) -> dict[str, tuple[float, float]]:
+        """Restore saved view extents from JSON-friendly list/tuple pairs."""
+        restored: dict[str, tuple[float, float]] = {}
+        for view_id, raw_range in payload.items():
+            if not (
+                isinstance(raw_range, (list, tuple))
+                and len(raw_range) == 2
+                and isinstance(raw_range[0], (int, float))
+                and isinstance(raw_range[1], (int, float))
+            ):
+                continue
+            restored[str(view_id)] = (float(raw_range[0]), float(raw_range[1]))
+        return restored
+
+    def _restore_visible_signals(self, visible_signal_names: list[str]) -> None:
+        """Restore which traces are currently visible in the left signal tree."""
+        valid_visible = {name for name in visible_signal_names if name in self._stacked_signals}
+        for signal_name in self._stacked_signals:
+            self._stacked_signal_list.set_signal_visible(signal_name, signal_name in valid_visible)
+
+    def _restore_scope_view_state(self, payload: object) -> None:
+        """Restore the timeline viewport state for the Scope tab."""
+        if not isinstance(payload, dict):
+            return
+        low_raw = payload.get("timeline_low")
+        high_raw = payload.get("timeline_high")
+        if not (isinstance(low_raw, int) and isinstance(high_raw, int)):
+            return
+        low = max(0, min(999, int(low_raw)))
+        high = max(low + 1, min(1000, int(high_raw)))
+        self._syncing_bottom_sliders = True
+        try:
+            self._timeline_slider.setValues(low, high)
+        finally:
+            self._syncing_bottom_sliders = False
+        self._apply_bottom_viewport_controls()
+
     def capture_ui_state(self) -> dict[str, object]:
         """Capture scope-specific UI state for workspace/session persistence."""
         self._sync_plot_groups()
         self._capture_analysis_plot_range("fft")
         self._capture_analysis_plot_range("compare")
+        drawer_height = self._bottom_drawer_height
+        if self._bottom_drawer_expanded and hasattr(self, "_scope_bottom_tab"):
+            drawer_height = self._clamp_bottom_drawer_height(self._scope_bottom_tab.height())
         return {
             "left_panel_visible": bool(self._left_panel_visible),
             "right_panel_visible": bool(self._right_panel_visible),
+            "left_panel_width": int(self._left_panel_width),
+            "right_panel_width": int(self._right_panel_width),
             "measurement_keys": self._stacked_measurements.visible_measurement_keys(),
             "plot_groups": dict(self._stacked_plot_groups),
             "cursors_enabled": bool(self._stacked_cursors_enabled),
             "cursor_a": float(self._c1_spin.value()),
             "cursor_b": float(self._c2_spin.value()),
             "active_signal": str(self._stacked_active_signal or ""),
+            "visible_signals": list(self._stacked_signal_list.get_visible_signals()),
             "interval_target": normalize_interval_target(self._stacked_interval_target),
             "signal_axis_targets": dict(self._signal_axis_targets),
             "signal_labels": dict(self._signal_labels),
+            "trace_styles": self._serialize_trace_styles(),
+            "group_collapsed": self._stacked_signal_list.collapsed_groups(),
+            "saved_views": {
+                str(view_id): [float(t_start), float(t_end)]
+                for view_id, (t_start, t_end) in self._saved_views.items()
+            },
+            "scope_view_state": {
+                "timeline_low": int(self._timeline_slider.lowValue()),
+                "timeline_high": int(self._timeline_slider.highValue()),
+            },
             "bottom_drawer_expanded": bool(self._bottom_drawer_expanded),
+            "bottom_drawer_height": int(drawer_height),
             "bottom_drawer_tab": int(self._bottom_drawer_active_tab),
+            "sidebar_tab_index": int(self._sidebar_tabs.currentIndex()),
             "analysis_tab_index": int(self._analysis_tabs.currentIndex()),
             "inspector_snap_mode": str(self._inspector_snap_mode),
             "simulation_state": str(self._simulation_state),
@@ -2270,12 +2684,24 @@ class ScopeWindow(QWidget):
         if not isinstance(state, dict):
             return
 
+        left_width_raw = state.get("left_panel_width")
+        if isinstance(left_width_raw, (int, float)):
+            self._left_panel_width = max(270, min(380, int(left_width_raw)))
+
+        right_width_raw = state.get("right_panel_width")
+        if isinstance(right_width_raw, (int, float)):
+            self._right_panel_width = max(280, min(420, int(right_width_raw)))
+
+        bottom_height_raw = state.get("bottom_drawer_height")
+        if isinstance(bottom_height_raw, (int, float)):
+            self._bottom_drawer_height = self._clamp_bottom_drawer_height(bottom_height_raw)
+
         left_visible_raw = state.get("left_panel_visible")
         if isinstance(left_visible_raw, bool):
             self._left_panel_toggle_btn.blockSignals(True)
             self._left_panel_toggle_btn.setChecked(left_visible_raw)
             self._left_panel_toggle_btn.blockSignals(False)
-            self._on_toggle_left_panel_clicked(left_visible_raw)
+            self._left_panel_visible = left_visible_raw
 
         right_visible_raw = state.get("right_panel_visible")
         if isinstance(right_visible_raw, bool):
@@ -2316,9 +2742,28 @@ class ScopeWindow(QWidget):
                 if str(signal_name).strip() and str(label).strip()
             }
 
+        trace_styles_raw = state.get("trace_styles")
+        if isinstance(trace_styles_raw, dict):
+            self._trace_styles = self._deserialize_trace_styles(trace_styles_raw)
+            self._apply_trace_styles_to_viewer()
+
+        collapsed_groups_raw = state.get("group_collapsed")
+        if isinstance(collapsed_groups_raw, dict):
+            self._stacked_signal_list.set_collapsed_groups(collapsed_groups_raw)
+
+        saved_views_raw = state.get("saved_views")
+        if isinstance(saved_views_raw, dict):
+            self._saved_views = self._deserialize_saved_views(saved_views_raw)
+
         active_signal_raw = state.get("active_signal")
         if isinstance(active_signal_raw, str) and active_signal_raw.strip():
             self._stacked_active_signal = active_signal_raw.strip()
+
+        visible_signals_raw = state.get("visible_signals")
+        if isinstance(visible_signals_raw, list):
+            self._restore_visible_signals(
+                [str(name).strip() for name in visible_signals_raw if str(name).strip()]
+            )
 
         cursors_enabled_raw = state.get("cursors_enabled")
         if isinstance(cursors_enabled_raw, bool):
@@ -2346,6 +2791,12 @@ class ScopeWindow(QWidget):
         drawer_tab_raw = state.get("bottom_drawer_tab")
         if isinstance(drawer_tab_raw, int):
             self._scope_bottom_tabs.setCurrentIndex(max(0, drawer_tab_raw))
+
+        sidebar_tab_raw = state.get("sidebar_tab_index")
+        if isinstance(sidebar_tab_raw, int):
+            self._sidebar_tabs.setCurrentIndex(
+                max(0, min(sidebar_tab_raw, self._sidebar_tabs.count() - 1))
+            )
 
         analysis_tab_raw = state.get("analysis_tab_index")
         if isinstance(analysis_tab_raw, int):
@@ -2379,11 +2830,113 @@ class ScopeWindow(QWidget):
                 self._stacked_active_signal = next(iter(self._stacked_signals))
             self._sync_scope_selector()
             self._refresh_signal_list_metadata()
+            self._refresh_traces_tab()
+            self._refresh_scopes_tab()
             self._sync_trace_style_controls()
             self._rebuild_stacked_plots(self._current_result)
+            self._restore_scope_view_state(state.get("scope_view_state"))
             self._update_stacked_measurements()
             self._refresh_inspector()
             self._refresh_analysis_views()
+        self._refresh_views_tab()
+        self._apply_bottom_drawer_height()
+        self._refresh_status_bar()
+
+    def _focus_signal_filter(self) -> None:
+        """Route keyboard focus to the signal filter and reveal the left panel if needed."""
+        if not self._left_panel_visible:
+            self._left_panel_visible = True
+            self._left_panel_toggle_btn.blockSignals(True)
+            self._left_panel_toggle_btn.setChecked(True)
+            self._left_panel_toggle_btn.blockSignals(False)
+            self._apply_panel_visibility()
+        self._sidebar_tabs.setCurrentIndex(0)
+        self._stacked_signal_list.focus_filter()
+
+    def _configure_workspace_accessibility(self) -> None:
+        """Configure focus traversal, tooltips, and keyboard shortcuts across the scope workspace."""
+        focus_widgets = (
+            self._left_panel_toggle_btn,
+            self._scope_selector_combo,
+            self._create_math_signal_btn,
+            self._sidebar_tabs.tabBar(),
+            self._scopes_list_widget,
+            self._traces_list_widget,
+            self._views_list_widget,
+            self._scope_rename_btn,
+            self._save_view_btn,
+            self._delete_view_btn,
+            self._right_panel_toggle_btn,
+            self._analysis_tabs.tabBar(),
+            self._trace_signal_combo,
+            self._trace_alias_edit,
+            self._trace_color_btn,
+            self._trace_reset_btn,
+            self._inspector_visible_toggle,
+            self._inspector_axis_combo,
+            self._inspector_line_style_combo,
+            self._inspector_snap_combo,
+            self._inspector_interval_combo,
+            self._timeline_slider,
+            self._zoom_slider,
+            self._interval_combo,
+            self._measurement_menu_btn,
+            self._scope_bottom_tabs.tabBar(),
+            self._scope_bottom_measure_table,
+            self._scope_bottom_events,
+            self._scope_bottom_console,
+            self._fft_signal_combo,
+            self._fft_window_combo,
+            self._fft_points_combo,
+            self._fft_scale_combo,
+            self._compare_primary_combo,
+            self._compare_reference_combo,
+            self._compare_mode_combo,
+            self._compare_normalize_toggle,
+        )
+        for widget in focus_widgets:
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        self._focus_filter_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        self._focus_filter_shortcut.activated.connect(self._focus_signal_filter)
+        self._scope_tab_shortcut = QShortcut(QKeySequence("Ctrl+1"), self)
+        self._scope_tab_shortcut.activated.connect(lambda: self._analysis_tabs.setCurrentIndex(0))
+        self._fft_tab_shortcut = QShortcut(QKeySequence("Ctrl+2"), self)
+        self._fft_tab_shortcut.activated.connect(lambda: self._analysis_tabs.setCurrentIndex(1))
+        self._compare_tab_shortcut = QShortcut(QKeySequence("Ctrl+3"), self)
+        self._compare_tab_shortcut.activated.connect(lambda: self._analysis_tabs.setCurrentIndex(2))
+
+        signal_filter = self._stacked_signal_list.findChild(QLineEdit, "signalFilterEdit")
+        tab_chain = [
+            self._left_panel_toggle_btn,
+            self._scope_selector_combo,
+            self._create_math_signal_btn,
+            signal_filter,
+            self._stacked_signal_list,
+            self._sidebar_tabs.tabBar(),
+            self._analysis_tabs.tabBar(),
+            self._timeline_slider,
+            self._zoom_slider,
+            self._interval_combo,
+            self._measurement_menu_btn,
+            self._scope_bottom_tabs.tabBar(),
+            self._scope_bottom_measure_table,
+            self._trace_signal_combo,
+            self._trace_alias_edit,
+            self._trace_color_btn,
+            self._trace_reset_btn,
+            self._inspector_visible_toggle,
+            self._inspector_axis_combo,
+            self._inspector_line_style_combo,
+            self._inspector_snap_combo,
+            self._inspector_interval_combo,
+            self._inspector_measure_menu_btn,
+        ]
+        tab_widgets = [widget for widget in tab_chain if isinstance(widget, QWidget)]
+        for current, next_widget in zip(tab_widgets, tab_widgets[1:]):
+            QWidget.setTabOrder(current, next_widget)
+
+        self._views_list_widget.setTabKeyNavigation(True)
 
     # ------------------------------------------------------------------
     # QWidget overrides
@@ -2621,6 +3174,7 @@ class ScopeWindow(QWidget):
         controls_layout.addWidget(QLabel("Signal"))
         self._fft_signal_combo = QComboBox()
         self._fft_signal_combo.setMinimumWidth(180)
+        self._fft_signal_combo.setToolTip("Choose which visible trace feeds the FFT analysis")
         self._fft_signal_combo.currentIndexChanged.connect(self._on_fft_signal_changed)
         controls_layout.addWidget(self._fft_signal_combo)
         controls_layout.addWidget(QLabel("Window"))
@@ -2629,18 +3183,21 @@ class ScopeWindow(QWidget):
         self._fft_window_combo.addItem("Hamming", "hamming")
         self._fft_window_combo.addItem("Blackman", "blackman")
         self._fft_window_combo.addItem("Rectangular", "rect")
+        self._fft_window_combo.setToolTip("Choose the FFT windowing function")
         self._fft_window_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
         controls_layout.addWidget(self._fft_window_combo)
         controls_layout.addWidget(QLabel("Points"))
         self._fft_points_combo = QComboBox()
         for points in (256, 512, 1024, 2048, 4096):
             self._fft_points_combo.addItem(str(points), points)
+        self._fft_points_combo.setToolTip("Choose the FFT point count")
         self._fft_points_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
         controls_layout.addWidget(self._fft_points_combo)
         controls_layout.addWidget(QLabel("Scale"))
         self._fft_scale_combo = QComboBox()
         self._fft_scale_combo.addItem("dB", "db")
         self._fft_scale_combo.addItem("Linear", "linear")
+        self._fft_scale_combo.setToolTip("Choose the FFT magnitude scale")
         self._fft_scale_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
         controls_layout.addWidget(self._fft_scale_combo)
         controls_layout.addStretch(1)
@@ -2652,7 +3209,7 @@ class ScopeWindow(QWidget):
 
         self._fft_plot = pg.PlotWidget()
         self._fft_plot.setObjectName("scopeAnalysisPlot")
-        self._fft_plot.setBackground("#10151f")
+        self._fft_plot.setBackground(self._scope_plot_palette(LIGHT_THEME)["plot_bg"])
         self._fft_plot.showGrid(x=True, y=True, alpha=0.24)
         self._fft_plot.getPlotItem().setLabel("bottom", "Frequency", units="Hz")
         self._fft_plot.getPlotItem().setLabel("left", "Magnitude")
@@ -2684,20 +3241,24 @@ class ScopeWindow(QWidget):
         controls_layout.addWidget(QLabel("Primary"))
         self._compare_primary_combo = QComboBox()
         self._compare_primary_combo.setMinimumWidth(180)
+        self._compare_primary_combo.setToolTip("Choose the primary trace for comparison")
         self._compare_primary_combo.currentIndexChanged.connect(self._on_compare_primary_changed)
         controls_layout.addWidget(self._compare_primary_combo)
         controls_layout.addWidget(QLabel("Reference"))
         self._compare_reference_combo = QComboBox()
         self._compare_reference_combo.setMinimumWidth(180)
+        self._compare_reference_combo.setToolTip("Choose the reference trace for comparison")
         self._compare_reference_combo.currentIndexChanged.connect(self._on_compare_settings_changed)
         controls_layout.addWidget(self._compare_reference_combo)
         controls_layout.addWidget(QLabel("Mode"))
         self._compare_mode_combo = QComboBox()
         self._compare_mode_combo.addItem("Overlay", "overlay")
         self._compare_mode_combo.addItem("Delta", "delta")
+        self._compare_mode_combo.setToolTip("Switch between overlay and delta comparison")
         self._compare_mode_combo.currentIndexChanged.connect(self._on_compare_settings_changed)
         controls_layout.addWidget(self._compare_mode_combo)
         self._compare_normalize_toggle = QCheckBox("Normalize")
+        self._compare_normalize_toggle.setToolTip("Normalize both traces before comparing them")
         self._compare_normalize_toggle.toggled.connect(self._on_compare_settings_changed)
         controls_layout.addWidget(self._compare_normalize_toggle)
         controls_layout.addStretch(1)
@@ -2709,7 +3270,7 @@ class ScopeWindow(QWidget):
 
         self._compare_plot = pg.PlotWidget()
         self._compare_plot.setObjectName("scopeAnalysisPlot")
-        self._compare_plot.setBackground("#10151f")
+        self._compare_plot.setBackground(self._scope_plot_palette(LIGHT_THEME)["plot_bg"])
         self._compare_plot.showGrid(x=True, y=True, alpha=0.24)
         self._compare_plot.getPlotItem().setLabel("bottom", "Time", units="s")
         self._compare_plot.getPlotItem().setLabel("left", "Value")
@@ -2963,11 +3524,14 @@ class ScopeWindow(QWidget):
     ) -> str:
         lines = [title]
         text = str(description or "").strip()
-        if text:
-            lines.append(text)
         shortcut_text = str(shortcut or "").strip()
+        details: list[str] = []
+        if text:
+            details.append(text)
         if shortcut_text:
-            lines.append(f"Shortcut: {shortcut_text}")
+            details.append(shortcut_text)
+        if details:
+            lines.append("  •  ".join(details))
         return "\n".join(lines)
 
     def _register_scope_action(
@@ -3008,7 +3572,7 @@ class ScopeWindow(QWidget):
             "Run",
             self._on_run_requested,
             shortcut="Space",
-            description="Start or resume the simulation context for this scope",
+            description="Start or resume the simulation context for this scope; pressing Space again pauses it",
         )
         self._register_scope_action(
             "pause",
@@ -3064,6 +3628,7 @@ class ScopeWindow(QWidget):
             "toggle_inspector",
             "Toggle Inspector",
             lambda checked: self._set_right_panel_visible(bool(checked)),
+            shortcut="Ctrl+I",
             description="Show or hide the right inspector panel",
             checkable=True,
             checked=self._right_panel_visible,
@@ -3106,12 +3671,14 @@ class ScopeWindow(QWidget):
             "show_fft_tab",
             "FFT",
             lambda _checked=False: self._analysis_tabs.setCurrentIndex(1),
+            shortcut="Ctrl+2",
             description="Switch to FFT analysis mode",
         )
         self._register_scope_action(
             "show_compare_tab",
             "Compare",
             lambda _checked=False: self._analysis_tabs.setCurrentIndex(2),
+            shortcut="Ctrl+3",
             description="Switch to run or trace comparison mode",
         )
         self._register_scope_action(
@@ -3139,6 +3706,7 @@ class ScopeWindow(QWidget):
             "show_shortcuts",
             "Shortcuts",
             lambda _checked=False: self._show_scope_shortcuts(),
+            shortcut="F1",
             description="Open the scope shortcut reference",
         )
         self._register_scope_action(
@@ -3205,21 +3773,87 @@ class ScopeWindow(QWidget):
         for button, menu in menu_map.items():
             button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
             button.setMenu(menu)
+            self._style_scope_menu(menu)
+
+    def _build_scope_message_box(
+        self,
+        title: str,
+        text: str,
+        *,
+        level: str = "information",
+    ) -> QMessageBox:
+        """Create one scope-themed message box bound to the active theme."""
+        shell = self._scope_shell_palette()
+        box = QMessageBox(self)
+        box.setWindowTitle(str(title))
+        box.setText(str(text))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        icon_map = {
+            "information": QMessageBox.Icon.Information,
+            "warning": QMessageBox.Icon.Warning,
+            "critical": QMessageBox.Icon.Critical,
+        }
+        box.setIcon(icon_map.get(level, QMessageBox.Icon.Information))
+        box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+            }}
+            QMessageBox QLabel {{
+                color: {shell["text"]};
+                min-width: 320px;
+            }}
+            QMessageBox QPushButton {{
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                padding: 5px 14px;
+                min-width: 84px;
+                min-height: 26px;
+                font-weight: 600;
+            }}
+            QMessageBox QPushButton:hover {{
+                background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
+            }}
+        """)
+        return box
+
+    def _show_scope_message(
+        self,
+        title: str,
+        text: str,
+        *,
+        level: str = "information",
+    ) -> int:
+        """Show one theme-aware scope message box."""
+        return self._build_scope_message_box(title, text, level=level).exec()
 
     def _show_scope_shortcuts(self) -> None:
         """Display a compact shortcuts help dialog."""
-        QMessageBox.information(
-            self,
+        self._show_scope_message(
             "Scope Shortcuts",
-            "Space: Run/Pause\nS: Stop\nF: Fit\nC: Toggle cursors\nM: Measurements\nG: Grid\nCtrl+B: Toggle sidebar",
+            "Space: Run/Pause\n"
+            "S: Stop\n"
+            "F: Fit\n"
+            "C: Toggle cursors\n"
+            "M: Measurements\n"
+            "G: Grid\n"
+            "Ctrl+B: Toggle sidebar\n"
+            "Ctrl+I: Toggle inspector\n"
+            "Ctrl+L: Focus signal filter\n"
+            "Ctrl+1/2/3: Switch Scope, FFT, Compare\n"
+            "F1: Show shortcut reference",
+            level="information",
         )
 
     def _show_scope_about(self) -> None:
         """Display scope workbench information."""
-        QMessageBox.information(
-            self,
+        self._show_scope_message(
             "About Scope Workbench",
             "Standalone professional scope workspace for PulsimGui.",
+            level="information",
         )
 
     def _set_simulation_state(self, state: str) -> None:
@@ -3233,6 +3867,10 @@ class ScopeWindow(QWidget):
         self._refresh_status_bar()
 
     def _on_run_requested(self, _checked: bool = False) -> None:
+        sender = self.sender()
+        if isinstance(sender, QAction) and self._simulation_state == "running":
+            self._on_pause_requested()
+            return
         self._set_simulation_state("running")
         self._log_scope_event("Run requested")
 
@@ -3261,10 +3899,11 @@ class ScopeWindow(QWidget):
         self._left_panel_width = 300
         self._right_panel_width = 300
         self._bottom_drawer_expanded = False
+        self._bottom_drawer_height = 196
         self._scope_bottom_drawer_toggle_btn.blockSignals(True)
         self._scope_bottom_drawer_toggle_btn.setChecked(False)
         self._scope_bottom_drawer_toggle_btn.blockSignals(False)
-        self._scope_bottom_tab.setVisible(False)
+        self._apply_bottom_drawer_height()
         self._apply_panel_visibility()
 
     def _set_right_panel_visible(self, visible: bool) -> None:
@@ -3440,7 +4079,7 @@ class ScopeWindow(QWidget):
     def _on_bottom_drawer_toggled(self, checked: bool) -> None:
         """Expand or collapse the detailed bottom drawer."""
         self._bottom_drawer_expanded = bool(checked)
-        self._scope_bottom_tab.setVisible(bool(checked))
+        self._apply_bottom_drawer_height()
         self._scope_bottom_drawer_toggle_btn.blockSignals(True)
         self._scope_bottom_drawer_toggle_btn.setChecked(bool(checked))
         self._scope_bottom_drawer_toggle_btn.blockSignals(False)
@@ -3450,6 +4089,15 @@ class ScopeWindow(QWidget):
     def _on_bottom_tab_changed(self, index: int) -> None:
         """Persist last active drawer tab."""
         self._bottom_drawer_active_tab = int(max(0, index))
+
+    def _on_bottom_drawer_resize_requested(self, delta: int) -> None:
+        """Resize the drawer body from the drag handle."""
+        if not self._bottom_drawer_expanded:
+            return
+        self._bottom_drawer_height = self._clamp_bottom_drawer_height(
+            self._bottom_drawer_height + int(delta)
+        )
+        self._apply_bottom_drawer_height()
 
     def _on_inspector_visible_toggled(self, checked: bool) -> None:
         """Toggle the active signal visibility from the inspector."""
@@ -3472,7 +4120,7 @@ class ScopeWindow(QWidget):
         self._sync_scope_selector()
         self._refresh_inspector()
         self._update_stacked_measurements()
-        self._rebuild_stacked_plots(self._current_result)
+        self._refresh_existing_plot_styles()
 
     def _on_trace_alias_edited(self) -> None:
         """Apply alias edits from the inspector trace section."""
@@ -3613,64 +4261,154 @@ class ScopeWindow(QWidget):
             button.setToolTip(action.toolTip())
 
     @staticmethod
-    def _scope_shell_palette() -> dict[str, str]:
-        """Return scope-local dark shell colors (VirtuScope style)."""
-        return {
-            "window_bg": "#111318",
-            "surface_bg": "#161b27",
-            "panel_bg": "#1a1f2e",
-            "panel_alt": "#1e2438",
-            "header_bg": "#1c2235",
-            "border": "#2a3044",
-            "border_soft": "#2e3a52",
-            "text": "#e2e8f4",
-            "muted": "#7a8aaa",
-            "accent": "#3b82f6",
-            "accent_hover": "#2563eb",
-            "accent_fg": "#ffffff",
-            "card_bg": "#1e2438",
-            "card_border": "#2e3a52",
-        }
+    def _rgba(color: str | QColor, alpha: float) -> str:
+        """Return a CSS rgba() string from a color and alpha."""
+        qcolor = color if isinstance(color, QColor) else QColor(color)
+        channel = int(round(alpha * 255)) if alpha <= 1 else int(alpha)
+        channel = max(0, min(channel, 255))
+        return f"rgba({qcolor.red()}, {qcolor.green()}, {qcolor.blue()}, {channel})"
 
     @staticmethod
-    def _scope_plot_palette() -> dict[str, str]:
-        """Return dark plot colors for contrast against light shell."""
+    def _mix(color_a: str | QColor, color_b: str | QColor, ratio: float) -> str:
+        """Blend two colors and return a hex string."""
+        left = color_a if isinstance(color_a, QColor) else QColor(color_a)
+        right = color_b if isinstance(color_b, QColor) else QColor(color_b)
+        weight = max(0.0, min(float(ratio), 1.0))
+        red = int(round(left.red() * (1.0 - weight) + right.red() * weight))
+        green = int(round(left.green() * (1.0 - weight) + right.green() * weight))
+        blue = int(round(left.blue() * (1.0 - weight) + right.blue() * weight))
+        return QColor(red, green, blue).name()
+
+    def _scope_shell_palette(self, theme: Theme | None = None) -> dict[str, str]:
+        """Return semantic scope tokens derived from the active application theme."""
+        active = theme or self._theme or LIGHT_THEME
+        c = active.colors
+        panel_alt = self._mix(c.panel_background, c.background_alt, 0.55 if active.is_dark else 0.35)
+        secondary_bg = c.secondary if active.is_dark else self._mix(c.secondary, c.background, 0.35)
+        secondary_hover = c.secondary_hover if active.is_dark else self._mix(c.secondary_hover, c.background, 0.25)
         return {
-            "plot_bg": "#0b111c",
-            "plot_axis": "#8ca0ba",
-            "plot_text": "#a9bbd2",
-            "grid_alpha": "0.23",
+            "window_bg": c.background,
+            "surface_bg": c.background_alt,
+            "panel_bg": c.panel_background,
+            "panel_alt": panel_alt,
+            "header_bg": c.panel_header,
+            "border": c.panel_border,
+            "border_soft": c.border,
+            "divider": c.divider,
+            "text": c.foreground,
+            "muted": c.foreground_muted,
+            "accent": c.primary,
+            "accent_hover": c.primary_hover,
+            "accent_fg": c.primary_foreground,
+            "success": c.success,
+            "warning": c.warning,
+            "error": c.error,
+            "info": c.info,
+            "focus": c.input_focus_border,
+            "card_bg": self._mix(c.panel_background, c.background_alt, 0.65 if active.is_dark else 0.45),
+            "card_border": c.panel_border,
+            "top_chrome_bg": self._mix(c.toolbar_background, c.panel_header, 0.32),
+            "top_chrome_border": c.toolbar_border,
+            "toolbar_bg": self._mix(c.toolbar_background, c.panel_header, 0.58),
+            "badge_bg": self._rgba(c.panel_header, 0.82 if active.is_dark else 0.92),
+            "badge_border": self._mix(c.panel_border, c.primary, 0.22),
+            "separator": c.divider,
+            "hover_fill": self._rgba(c.menu_hover, 0.82 if active.is_dark else 1.0),
+            "selection_fill": self._rgba(c.primary, 0.18 if active.is_dark else 0.14),
+            "subtle_fill": self._rgba(c.background_alt, 0.82 if active.is_dark else 0.92),
+            "field_bg": c.input_background,
+            "field_border": c.input_border,
+            "button_bg": secondary_bg,
+            "button_hover_bg": secondary_hover,
+            "button_text": c.secondary_foreground,
+            "menu_bg": c.menu_background,
+            "menu_hover_bg": c.menu_hover,
+            "menu_text": c.foreground,
+            "menu_border": c.panel_border,
+            "menu_separator": c.menu_separator,
+            "transport_bg": self._rgba(secondary_bg, 0.55 if active.is_dark else 0.88),
+            "transport_border": self._rgba(c.border, 0.55 if active.is_dark else 0.95),
+            "transport_hover_bg": self._rgba(c.menu_hover, 0.9 if active.is_dark else 1.0),
+            "transport_hover_border": self._mix(c.panel_border, c.primary, 0.28),
+            "transport_checked_bg": self._rgba(c.primary, 0.18),
+            "transport_checked_border": self._rgba(c.primary, 0.52),
+            "transport_blue_checked_bg": self._rgba(c.primary, 0.22),
+            "transport_blue_checked_border": self._rgba(c.primary, 0.68),
+            "transport_green_checked_bg": self._rgba(c.success, 0.22),
+            "transport_green_checked_border": self._rgba(c.success, 0.66),
+            "transport_cyan_checked_bg": self._rgba(c.info, 0.20),
+            "transport_cyan_checked_border": self._rgba(c.info, 0.64),
+            "overview_bg": self._rgba(c.plot_legend_background, 0.94),
+            "overview_border": c.plot_legend_border,
+            "drawer_handle_bg": self._rgba(c.divider, 0.52),
+            "drawer_handle_top": self._rgba(c.border, 0.56),
+            "drawer_handle_bottom": self._rgba(c.background, 0.25),
+            "status_bar_bg": self._rgba(c.statusbar_background, 0.16 if active.is_dark else 0.12),
+            "plot_copy_bg": self._rgba(c.plot_legend_background, 0.9),
+            "plot_copy_border": c.plot_legend_border,
+            "plot_copy_text": c.plot_text,
+            "sidebar_toggle_off_bg": self._mix(c.input_background, c.border, 0.18 if active.is_dark else 0.08),
+            "sidebar_toggle_off_border": c.input_border,
+            "tooltip_bg": self._rgba(c.menu_background, 0.94),
+            "tooltip_text": c.foreground,
+            "tooltip_muted": c.foreground_muted,
+        }
+
+    def _scope_plot_palette(self, theme: Theme | None = None) -> dict[str, str]:
+        """Return plot-specific tokens derived from the active theme."""
+        active = theme or self._theme or LIGHT_THEME
+        c = active.colors
+        return {
+            "plot_bg": c.plot_background,
+            "plot_axis": c.plot_axis,
+            "plot_text": c.plot_text,
+            "legend_bg": c.plot_legend_background,
+            "legend_border": c.plot_legend_border,
+            "grid_alpha": "0.18" if active.is_dark else "0.28",
+            "header_active_bg": self._mix(c.panel_header, c.primary, 0.12),
+            "header_active_border": self._mix(c.panel_border, c.primary, 0.55),
+            "header_inactive_bg": c.panel_header,
+            "header_inactive_border": c.panel_border,
+            "header_stats_bg": self._rgba(c.background_alt, 0.84),
+            "header_stats_text": c.foreground_muted,
+            "overview_fill": self._rgba(c.primary, 0.14),
+            "overview_border": self._rgba(c.primary, 0.58),
+            "overview_hover_border": self._rgba(self._mix(c.primary, c.foreground, 0.18), 0.84),
         }
 
     def _apply_toolbar_icons(self) -> None:
-        base_color = "#d7deea"
-        running_color = "#96db79" if self._simulation_state == "running" else base_color
-        paused_color = "#f4d35e" if self._simulation_state == "paused" else base_color
-        stopped_color = "#f87171" if self._simulation_state in {"stopped", "error"} else base_color
-        cursor_color = "#96db79" if self._stacked_cursors_enabled else base_color
-        grid_color = "#72cfff" if self._stacked_grid_enabled else base_color
-        inspector_color = "#92a5c9" if self._right_panel_visible else base_color
+        if self._theme is None:
+            return
+        shell = self._scope_shell_palette()
+        base_color = self._theme.colors.icon_default
+        running_color = self._theme.colors.sim_running if self._simulation_state == "running" else base_color
+        paused_color = self._theme.colors.sim_paused if self._simulation_state == "paused" else base_color
+        stopped_color = self._theme.colors.sim_error if self._simulation_state in {"stopped", "error"} else base_color
+        cursor_color = shell["success"] if self._stacked_cursors_enabled else base_color
+        grid_color = shell["info"] if self._stacked_grid_enabled else base_color
+        panel_color = shell["accent"] if self._left_panel_visible else base_color
+        inspector_color = shell["accent"] if self._right_panel_visible else base_color
         self._toolbar_run_btn.setIcon(IconService.get_icon("play", running_color, 14))
         self._toolbar_pause_btn.setIcon(IconService.get_icon("pause", paused_color, 14))
         self._toolbar_stop_btn.setIcon(IconService.get_icon("stop", stopped_color, 14))
-        self._toolbar_step_btn.setIcon(IconService.get_icon("ph.skip-forward", base_color, 14))
-        self._toolbar_left_btn.setIcon(IconService.get_icon("ph.sidebar-simple-fill", "#92a5c9", 14))
-        self._toolbar_cursor_btn.setIcon(IconService.get_icon("ph.crosshair-simple", cursor_color, 14))
-        self._toolbar_grid_btn.setIcon(IconService.get_icon("ph.grid-four", grid_color, 14))
-        self._toolbar_autoscale_btn.setIcon(IconService.get_icon("ph.corners-out", base_color, 14))
+        self._toolbar_step_btn.setIcon(IconService.get_icon("step-forward-filled", base_color, 14))
+        self._toolbar_left_btn.setIcon(IconService.get_icon("panel-left", panel_color, 14))
+        self._toolbar_cursor_btn.setIcon(IconService.get_icon("crosshair-simple", cursor_color, 14))
+        self._toolbar_grid_btn.setIcon(IconService.get_icon("grid-filled", grid_color, 14))
+        self._toolbar_autoscale_btn.setIcon(IconService.get_icon("fit-view", base_color, 14))
         self._toolbar_zoom_in_btn.setIcon(IconService.get_icon("zoom-in", base_color, 14))
         self._toolbar_zoom_out_btn.setIcon(IconService.get_icon("zoom-out", base_color, 14))
-        self._toolbar_measure_btn.setIcon(IconService.get_icon("ph.ruler", base_color, 14))
-        self._toolbar_math_btn.setIcon(IconService.get_icon("ph.function", base_color, 14))
-        self._toolbar_fft_btn.setIcon(IconService.get_icon("ph.waveform", base_color, 14))
+        self._toolbar_measure_btn.setIcon(IconService.get_icon("measurements-filled", base_color, 14))
+        self._toolbar_math_btn.setIcon(IconService.get_icon("math-function", base_color, 14))
+        self._toolbar_fft_btn.setIcon(IconService.get_icon("fft-chart", base_color, 14))
         self._toolbar_compare_btn.setIcon(IconService.get_icon("layers", base_color, 14))
-        self._trace_style_menu_btn.setIcon(IconService.get_icon("ph.waveform", base_color, 14))
-        self._toolbar_copy_btn.setIcon(IconService.get_icon("ph.arrow-square-out", base_color, 14))
-        self._toolbar_right_btn.setIcon(IconService.get_icon("ph.sidebar-simple", inspector_color, 14))
-        self._measurement_menu_btn.setIcon(IconService.get_icon("plus", "#dbe4f5", 13))
+        self._trace_style_menu_btn.setIcon(IconService.get_icon("style-tune", base_color, 14))
+        self._toolbar_copy_btn.setIcon(IconService.get_icon("copy-filled", base_color, 14))
+        self._toolbar_right_btn.setIcon(IconService.get_icon("panel-right", inspector_color, 14))
+        self._measurement_menu_btn.setIcon(IconService.get_icon("plus", base_color, 13))
         if hasattr(self, "_scope_brand_icon"):
             self._scope_brand_icon.setPixmap(
-                IconService.get_icon("ph.wave-sine", "#59c7ff", 16).pixmap(16, 16)
+                IconService.get_icon("brand-wave", shell["accent"], 16).pixmap(16, 16)
             )
         for btn in (
             self._toolbar_run_btn,
@@ -3680,6 +4418,9 @@ class ScopeWindow(QWidget):
             self._toolbar_left_btn,
             self._toolbar_cursor_btn,
             self._toolbar_grid_btn,
+        ):
+            btn.setIconSize(QSize(15, 15))
+        for btn in (
             self._toolbar_autoscale_btn,
             self._toolbar_zoom_in_btn,
             self._toolbar_zoom_out_btn,
@@ -3692,7 +4433,24 @@ class ScopeWindow(QWidget):
             self._toolbar_right_btn,
             self._measurement_menu_btn,
         ):
-            btn.setIconSize(QSize(11, 11))
+            btn.setIconSize(QSize(14, 14))
+        self._apply_panel_toggle_icons()
+
+    def _apply_panel_toggle_icons(self) -> None:
+        if self._theme is None:
+            return
+        left_icon_name = "chevron-left" if self._left_panel_visible else "chevron-right"
+        right_icon_name = "chevron-right" if self._right_panel_visible else "chevron-left"
+        icon_color = self._theme.colors.icon_default
+        self._left_panel_toggle_btn.setIcon(IconService.get_icon(left_icon_name, icon_color, 14))
+        self._right_panel_toggle_btn.setIcon(IconService.get_icon(right_icon_name, icon_color, 14))
+        self._apply_collapsed_rail_icons(icon_color)
+
+    def _apply_collapsed_rail_icons(self, icon_color: str) -> None:
+        """Refresh the collapsed-rail icons to match the active theme."""
+        for button, icon_name in getattr(self, "_collapsed_rail_buttons", []):
+            button.setIcon(IconService.get_icon(icon_name, icon_color, 14))
+            button.setIconSize(QSize(14, 14))
 
     def _sync_toolbar_toggles(self) -> None:
         for btn, checked in (
@@ -3728,25 +4486,43 @@ class ScopeWindow(QWidget):
     def apply_theme(self, theme: Theme) -> None:
         """Apply active theme to scope chrome and stacked display."""
         self._theme = theme
-        shell = self._scope_shell_palette()
+        shell = self._scope_shell_palette(theme)
+        plot_tokens = self._scope_plot_palette(theme)
         self._viewer.apply_theme(theme)
         self._apply_stacked_trace_colors()
         self._stacked_signal_list.apply_theme(theme)
         self._stacked_measurements.apply_theme(theme, cursor_palette=self._cursor_palette())
         self._apply_toolbar_icons()
         self._sync_toolbar_toggles()
+
+        # Update FFT and Compare analysis plot surfaces with theme-derived tokens
+        grid_alpha = 0.24 if theme.is_dark else 0.28
+        for analysis_plot in (
+            getattr(self, "_fft_plot", None),
+            getattr(self, "_compare_plot", None),
+        ):
+            if analysis_plot is None:
+                continue
+            analysis_plot.setBackground(plot_tokens["plot_bg"])
+            analysis_plot.showGrid(x=True, y=True, alpha=grid_alpha)
+            plot_item = analysis_plot.getPlotItem()
+            for axis_name in ("left", "bottom"):
+                axis = plot_item.getAxis(axis_name)
+                axis.setPen(pg.mkPen(theme.colors.plot_axis))
+                axis.setTickPen(pg.mkPen(theme.colors.plot_axis))
+                axis.setTextPen(pg.mkPen(theme.colors.plot_text))
         self.setStyleSheet(f"""
             ScopeWindow {{
                 background-color: {shell["window_bg"]};
             }}
             QWidget#scopeTopChrome {{
-                background-color: #2b3040;
-                border: 1px solid #3a4156;
+                background-color: {shell["top_chrome_bg"]};
+                border: 1px solid {shell["top_chrome_border"]};
                 border-radius: 10px;
             }}
             QWidget#scopeTopMenuRow {{
-                background-color: #2b3040;
-                border-bottom: 1px solid #40495f;
+                background-color: {shell["top_chrome_bg"]};
+                border-bottom: 1px solid {shell["divider"]};
                 border-top-left-radius: 10px;
                 border-top-right-radius: 10px;
                 min-height: 25px;
@@ -3755,13 +4531,13 @@ class ScopeWindow(QWidget):
                 background: transparent;
             }}
             QLabel#scopeBrandLabel {{
-                color: #ecf2ff;
+                color: {shell["text"]};
                 font-size: 9px;
                 font-weight: 700;
                 letter-spacing: 0.3px;
             }}
             QToolButton#scopeMenuTextBtn {{
-                color: #d6deed;
+                color: {shell["menu_text"]};
                 background: transparent;
                 border: none;
                 padding: 0px 5px;
@@ -3769,94 +4545,107 @@ class ScopeWindow(QWidget):
                 font-weight: 500;
             }}
             QToolButton#scopeMenuTextBtn:hover {{
-                color: #ffffff;
-                background-color: rgba(255, 255, 255, 0.08);
+                color: {shell["text"]};
+                background-color: {shell["hover_fill"]};
                 border-radius: 4px;
             }}
             QLabel#scopeVersionLabel {{
-                color: #aab6cc;
+                color: {shell["muted"]};
                 font-size: 8px;
                 font-weight: 600;
             }}
             QWidget#scopeToolbarRow {{
-                background-color: #32394b;
+                background-color: {shell["toolbar_bg"]};
                 border-bottom-left-radius: 10px;
                 border-bottom-right-radius: 10px;
                 min-height: 24px;
             }}
             QLabel#scopeToolbarScopeBadge {{
-                color: #c6d0e2;
+                color: {shell["text"]};
                 font-size: 8px;
                 font-weight: 600;
                 padding: 1px 7px;
-                background-color: rgba(18, 24, 35, 0.30);
-                border: 1px solid rgba(125, 144, 178, 0.22);
+                background-color: {shell["badge_bg"]};
+                border: 1px solid {shell["badge_border"]};
                 border-radius: 8px;
             }}
             QFrame#scopeToolbarSeparator {{
-                background-color: #4d566c;
+                background-color: {shell["separator"]};
                 min-width: 1px;
                 max-width: 1px;
                 border: none;
                 margin: 2px 5px;
             }}
             QToolButton#scopeToolbarTransportBtn {{
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
+                background-color: {shell["transport_bg"]};
+                border: 1px solid {shell["transport_border"]};
+                border-radius: 12px;
+                padding: 0px;
+            }}
+            QToolButton#scopeToolbarActionBtn {{
+                color: {shell["text"]};
                 min-width: 20px;
                 max-width: 20px;
                 min-height: 20px;
                 max-height: 20px;
-                background-color: rgba(34, 40, 54, 0.45);
-                border: 1px solid rgba(130, 145, 172, 0.16);
-                border-radius: 10px;
-                padding: 0px;
-            }}
-            QToolButton#scopeToolbarActionBtn {{
-                min-width: 17px;
-                max-width: 17px;
-                min-height: 17px;
-                max-height: 17px;
                 background-color: transparent;
                 border: 1px solid transparent;
-                border-radius: 3px;
+                border-radius: 4px;
                 padding: 0px;
             }}
             QToolButton#scopeToolbarMenuBtn {{
-                min-width: 18px;
-                max-width: 18px;
-                min-height: 17px;
-                max-height: 17px;
+                color: {shell["text"]};
+                min-width: 20px;
+                max-width: 20px;
+                min-height: 20px;
+                max-height: 20px;
                 background-color: transparent;
                 border: 1px solid transparent;
-                border-radius: 3px;
+                border-radius: 4px;
                 padding: 0px;
             }}
+            QWidget#scopePanelHeaderRow {{
+                background-color: {shell["subtle_fill"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 10px;
+                padding: 0px 8px;
+            }}
+            QLabel#scopePanelHeaderLabel {{
+                color: {shell["text"]};
+                font-size: 12px;
+                font-weight: 700;
+            }}
             QToolButton#scopeToolbarTransportBtn:hover {{
-                border-color: rgba(206, 220, 242, 0.30);
-                background-color: rgba(52, 60, 76, 0.78);
+                border-color: {shell["transport_hover_border"]};
+                background-color: {shell["transport_hover_bg"]};
             }}
             QToolButton#scopeToolbarActionBtn:hover {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border-color: rgba(206, 220, 242, 0.18);
+                background-color: {shell["hover_fill"]};
+                border-color: {shell["transport_hover_border"]};
             }}
             QToolButton#scopeToolbarMenuBtn:hover {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border-color: rgba(206, 220, 242, 0.18);
+                background-color: {shell["hover_fill"]};
+                border-color: {shell["transport_hover_border"]};
             }}
             QToolButton#scopeToolbarTransportBtn:checked {{
-                background-color: rgba(88, 104, 130, 0.28);
-                border-color: rgba(131, 177, 241, 0.48);
+                background-color: {shell["transport_checked_bg"]};
+                border-color: {shell["transport_checked_border"]};
             }}
             QToolButton#scopeToolbarTransportBtn[accentTone="blue"]:checked {{
-                background-color: rgba(93, 146, 224, 0.34);
-                border-color: rgba(131, 177, 241, 0.68);
+                background-color: {shell["transport_blue_checked_bg"]};
+                border-color: {shell["transport_blue_checked_border"]};
             }}
             QToolButton#scopeToolbarTransportBtn[accentTone="green"]:checked {{
-                background-color: rgba(126, 176, 95, 0.32);
-                border-color: rgba(163, 214, 126, 0.65);
+                background-color: {shell["transport_green_checked_bg"]};
+                border-color: {shell["transport_green_checked_border"]};
             }}
             QToolButton#scopeToolbarTransportBtn[accentTone="cyan"]:checked {{
-                background-color: rgba(67, 155, 197, 0.30);
-                border-color: rgba(112, 207, 255, 0.62);
+                background-color: {shell["transport_cyan_checked_bg"]};
+                border-color: {shell["transport_cyan_checked_border"]};
             }}
             QToolButton#scopeToolbarTransportBtn::menu-indicator {{
                 image: none;
@@ -3918,13 +4707,21 @@ class ScopeWindow(QWidget):
                 background-color: {shell["panel_bg"]};
             }}
             QFrame#scopeOverviewInset {{
-                background-color: rgba(25, 30, 40, 0.92);
-                border: 1px solid #4b556d;
+                background-color: {shell["overview_bg"]};
+                border: 1px solid {shell["overview_border"]};
                 border-radius: 10px;
             }}
+            QLabel#scopeOverviewLabel {{
+                color: {shell["muted"]};
+                font-size: 8px;
+                font-weight: 700;
+                letter-spacing: 0.8px;
+                background: transparent;
+                padding: 0;
+            }}
             QWidget#scopeBottomControlBar {{
-                background-color: #2d3241;
-                border: 1px solid #3a4254;
+                background-color: {shell["toolbar_bg"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 12px;
             }}
             QWidget#scopeQuickMetricsRow {{
@@ -3932,21 +4729,21 @@ class ScopeWindow(QWidget):
                 border: none;
             }}
             QLabel#scopeQuickMetricPrimary {{
-                color: #eef3ff;
+                color: {shell["text"]};
                 font-size: 10px;
                 font-weight: 700;
             }}
             QLabel#scopeQuickMetricChip {{
-                color: #d6deef;
+                color: {shell["text"]};
                 font-size: 9px;
                 font-weight: 600;
-                background-color: rgba(18, 23, 33, 0.34);
-                border: 1px solid rgba(112, 126, 152, 0.24);
+                background-color: {shell["subtle_fill"]};
+                border: 1px solid {shell["badge_border"]};
                 border-radius: 8px;
                 padding: 3px 8px;
             }}
             QWidget#scopeBottomControlBar QLabel {{
-                color: #c3cee0;
+                color: {shell["text"]};
                 font-size: 9px;
                 font-weight: 600;
             }}
@@ -3958,47 +4755,54 @@ class ScopeWindow(QWidget):
                 background-color: transparent;
                 border: none;
             }}
+            QWidget#scopeBottomDrawerResizeHandle {{
+                background-color: {shell["drawer_handle_bg"]};
+                border-top: 1px solid {shell["drawer_handle_top"]};
+                border-bottom: 1px solid {shell["drawer_handle_bottom"]};
+                min-height: 6px;
+                max-height: 6px;
+            }}
             QWidget#scopeBottomDrawerBody {{
-                background-color: #262c39;
-                border: 1px solid #3a4254;
+                background-color: {shell["panel_bg"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 8px;
             }}
             QLabel#scopeBottomMeasureTitle {{
-                color: #e5ecfb;
+                color: {shell["text"]};
                 font-size: 10px;
                 font-weight: 700;
             }}
             QLabel#scopeBottomMeasureSummary {{
-                color: #c9d5ec;
+                color: {shell["text"]};
                 font-size: 9px;
                 font-weight: 600;
             }}
             QLabel#scopeBottomMeasureMode {{
-                color: #a9b8d4;
+                color: {shell["muted"]};
                 font-size: 9px;
                 font-weight: 500;
             }}
             QToolButton#scopeBottomDrawerToggleBtn {{
-                background-color: #31394b;
-                color: #dbe4f5;
-                border: 1px solid #46516b;
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 8px;
                 padding: 2px 10px;
                 min-height: 22px;
                 font-weight: 600;
             }}
             QToolButton#scopeBottomDrawerToggleBtn:hover {{
-                background-color: #3a4356;
-                border-color: #6ea6ff;
+                background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
             }}
             QTabWidget#scopeBottomTabs::pane {{
                 border: none;
                 background-color: transparent;
             }}
             QTabWidget#scopeBottomTabs > QTabBar::tab {{
-                background-color: rgba(255,255,255,0.04);
-                color: #b9c4db;
-                border: 1px solid #3a4254;
+                background-color: {shell["card_bg"]};
+                color: {shell["muted"]};
+                border: 1px solid {shell["border"]};
                 border-bottom: none;
                 border-top-left-radius: 7px;
                 border-top-right-radius: 7px;
@@ -4008,48 +4812,48 @@ class ScopeWindow(QWidget):
                 font-weight: 600;
             }}
             QTabWidget#scopeBottomTabs > QTabBar::tab:selected {{
-                background-color: #2b3140;
-                color: #eef3ff;
+                background-color: {self._theme.colors.tab_active};
+                color: {shell["text"]};
             }}
             QTableWidget#scopeBottomMeasureTable {{
-                background-color: #1f2531;
-                alternate-background-color: #232a37;
-                border: 1px solid #384258;
+                background-color: {shell["panel_bg"]};
+                alternate-background-color: {shell["panel_alt"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 6px;
-                gridline-color: #3a455e;
-                color: #dde6f8;
+                gridline-color: {shell["border"]};
+                color: {shell["text"]};
                 font-size: 9px;
             }}
             QTableWidget#scopeBottomMeasureTable QHeaderView::section {{
-                background-color: #2d3447;
-                color: #cdd8ef;
+                background-color: {shell["header_bg"]};
+                color: {shell["muted"]};
                 border: none;
-                border-right: 1px solid #3a455e;
-                border-bottom: 1px solid #3a455e;
+                border-right: 1px solid {shell["border"]};
+                border-bottom: 1px solid {shell["border"]};
                 padding: 3px 6px;
                 font-size: 9px;
                 font-weight: 600;
             }}
             QListWidget#scopeBottomEventsList,
             QPlainTextEdit#scopeBottomConsole {{
-                background-color: #1f2531;
-                color: #dde6f8;
-                border: 1px solid #384258;
+                background-color: {shell["panel_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 6px;
                 font-size: 9px;
             }}
             QWidget#scopeStatusBar {{
-                background-color: rgba(17, 23, 33, 0.28);
-                border-top: 1px solid #3a4254;
+                background-color: {shell["status_bar_bg"]};
+                border-top: 1px solid {shell["border"]};
                 padding-top: 2px;
             }}
             QLabel#scopeStatusLabel {{
-                color: #b9c7df;
+                color: {shell["muted"]};
                 font-size: 9px;
                 font-weight: 600;
             }}
             QLabel#scopeSliderInfoLabel {{
-                color: #dbe4f7;
+                color: {shell["text"]};
                 font-size: 9px;
                 font-weight: 600;
             }}
@@ -4060,24 +4864,24 @@ class ScopeWindow(QWidget):
                 max-height: 22px;
                 padding: 0px;
                 border-radius: 7px;
-                background-color: #262d3b;
-                border: 1px solid #3f4a63;
-                color: #dce6f8;
+                background-color: {shell["button_bg"]};
+                border: 1px solid {shell["border"]};
+                color: {shell["button_text"]};
             }}
             QPushButton#scopeSliderStepBtn:hover {{
-                border-color: #6ea6ff;
+                border-color: {shell["accent"]};
             }}
             QSlider#scopeTimelineSlider::groove:horizontal,
             QSlider#scopeZoomSlider::groove:horizontal {{
                 border: none;
                 height: 5px;
-                background: #3a445c;
+                background: {shell["border"]};
                 border-radius: 2px;
             }}
             QSlider#scopeTimelineSlider::handle:horizontal,
             QSlider#scopeZoomSlider::handle:horizontal {{
-                background: #6ea6ff;
-                border: 1px solid #6ea6ff;
+                background: {shell["accent"]};
+                border: 1px solid {shell["accent"]};
                 width: 14px;
                 margin: -5px 0;
                 border-radius: 7px;
@@ -4100,12 +4904,32 @@ class ScopeWindow(QWidget):
                 padding: 3px 8px;
                 min-height: 24px;
             }}
-            QComboBox:hover, QDoubleSpinBox:hover {{
-                border-color: {shell["accent"]};
-            }}
-            QPushButton {{
+            QLineEdit,
+            QPlainTextEdit {{
                 background-color: {shell["panel_bg"]};
                 color: {shell["text"]};
+                border: 1px solid {shell["border"]};
+                border-radius: 8px;
+                padding: 3px 8px;
+                min-height: 24px;
+            }}
+            QComboBox:hover, QDoubleSpinBox:hover, QLineEdit:hover, QPlainTextEdit:hover {{
+                border-color: {shell["accent"]};
+            }}
+            QToolButton:focus,
+            QPushButton:focus,
+            QComboBox:focus,
+            QDoubleSpinBox:focus,
+            QLineEdit:focus,
+            QListWidget:focus,
+            QTableWidget:focus,
+            QPlainTextEdit:focus {{
+                outline: none;
+                border-color: {shell["focus"]};
+            }}
+            QPushButton {{
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
                 padding: 4px 10px;
@@ -4113,19 +4937,19 @@ class ScopeWindow(QWidget):
                 font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: {shell["panel_alt"]};
+                background-color: {shell["button_hover_bg"]};
                 border-color: {shell["accent"]};
             }}
             QWidget#scopeBottomControlBar QPushButton {{
-                background-color: #31394b;
-                color: #dbe4f5;
-                border: 1px solid #46516b;
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
+                border: 1px solid {shell["border"]};
                 min-height: 22px;
                 padding: 3px 9px;
             }}
             QWidget#scopeBottomControlBar QPushButton:hover {{
-                background-color: #3a4356;
-                border-color: #6ea6ff;
+                background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
             }}
             QPushButton#scopeMathSignalBtn {{
                 background-color: {shell["accent"]};
@@ -4136,9 +4960,9 @@ class ScopeWindow(QWidget):
                 background-color: {shell["accent_hover"]};
             }}
             QPushButton#scopeAddSignalExprBtn {{
-                background-color: #303748;
-                color: #eef3ff;
-                border: 1px solid #46506a;
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 9px;
                 padding: 6px 10px;
                 min-height: 28px;
@@ -4147,39 +4971,38 @@ class ScopeWindow(QWidget):
                 text-align: left;
             }}
             QPushButton#scopeAddSignalExprBtn:hover {{
-                background-color: #384154;
-                border-color: #7eb0ff;
+                background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
             }}
             QToolButton#scopeMeasurementMenuBtn {{
-                background-color: #31394b;
-                color: #dbe4f5;
-                border: 1px solid #46516b;
+                background-color: {shell["button_bg"]};
+                color: {shell["button_text"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 8px;
                 padding: 2px 8px;
                 min-height: 22px;
                 font-weight: 600;
             }}
             QToolButton#scopeMeasurementMenuBtn:hover {{
-                background-color: #3a4356;
-                border-color: #6ea6ff;
+                background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
             }}
             QToolButton#scopeMeasurementMenuBtn::menu-indicator {{
                 image: none;
                 width: 0px;
             }}
             QToolButton#scopePlotCopyBtn {{
-                background-color: rgba(12, 18, 30, 170);
-                color: #d8e4f7;
-                border: 1px solid #28364d;
-                border-radius: 7px;
-                padding: 1px 7px;
-                min-height: 22px;
-                font-size: 10px;
-                font-weight: 600;
+                background-color: {shell["plot_copy_bg"]};
+                border: 1px solid {shell["plot_copy_border"]};
+                border-radius: 6px;
+                padding: 0px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 24px;
+                max-height: 24px;
             }}
             QToolButton#scopePlotCopyBtn:hover {{
                 background-color: {shell["accent"]};
-                color: {shell["accent_fg"]};
                 border-color: {shell["accent"]};
             }}
             QMenu {{
@@ -4223,7 +5046,7 @@ class ScopeWindow(QWidget):
                 border-radius: 10px;
             }}
             QWidget#scopeRightControlBar QLabel {{
-                color: {shell["muted"]};
+                color: {shell["text"]};
                 font-size: 11px;
                 font-weight: 600;
             }}
@@ -4233,16 +5056,16 @@ class ScopeWindow(QWidget):
                 border: none;
             }}
             QFrame#scopeInspectorSection {{
-                background-color: #202736;
-                border: 1px solid #394158;
+                background-color: {shell["panel_alt"]};
+                border: 1px solid {shell["border"]};
                 border-radius: 10px;
             }}
             QToolButton#scopeInspectorSectionBtn {{
-                color: #e5ecfb;
+                color: {shell["text"]};
                 background-color: transparent;
                 border: none;
                 padding: 7px 10px;
-                font-size: 10px;
+                font-size: 11px;
                 font-weight: 700;
                 text-align: left;
             }}
@@ -4251,12 +5074,12 @@ class ScopeWindow(QWidget):
                 border: none;
             }}
             QFrame#scopeRightPanel QLabel {{
-                color: #cfdbf0;
+                color: {shell["text"]};
                 font-size: 10px;
                 font-weight: 600;
             }}
             QFrame#scopeRightPanel QCheckBox {{
-                color: #dbe4f5;
+                color: {shell["text"]};
                 font-size: 10px;
                 font-weight: 600;
             }}
@@ -4271,29 +5094,40 @@ class ScopeWindow(QWidget):
                 font-size: 11px;
             }}
             QComboBox {{
-                background-color: {shell["panel_bg"]};
+                background-color: {shell["field_bg"]};
                 color: {shell["text"]};
-                border: 1px solid {shell["border"]};
+                border: 1px solid {shell["field_border"]};
                 border-radius: 7px;
                 padding: 3px 8px;
                 min-height: 24px;
                 font-size: 11px;
             }}
+            QComboBox QAbstractItemView {{
+                background-color: {shell["menu_bg"]};
+                color: {shell["menu_text"]};
+                border: 1px solid {shell["menu_border"]};
+                selection-background-color: {shell["menu_hover_bg"]};
+                selection-color: {shell["menu_text"]};
+                outline: none;
+            }}
         """)
         self._timeline_slider.set_theme_colors(
-            track_bg=QColor("#3a445c"),
-            track_border=QColor("#4a5672"),
-            selected_fill=QColor("#6ea6ff"),
-            handle_fill=QColor("#2b3140"),
-            handle_border=QColor("#7eb0ff"),
+            track_bg=QColor(shell["subtle_fill"]),
+            track_border=QColor(shell["border"]),
+            selected_fill=QColor(shell["accent"]),
+            handle_fill=QColor(shell["field_bg"]),
+            handle_border=QColor(shell["focus"]),
         )
 
-        # ── Force-dark overrides on child panels ──────────────────────────
-        # These win over the panels' own apply_theme() because they are
-        # applied AFTER, targeting the exact same widget objectNames.
-        self._stacked_signal_list.apply_scope_dark_overrides(shell)
-        self._stacked_measurements.apply_scope_dark_overrides(shell)
-        self._apply_dark_sidebar_tabs(shell)
+        self._stacked_signal_list.apply_scope_theme_overrides(shell)
+        self._stacked_measurements.apply_scope_theme_overrides(shell)
+        self._apply_scope_sidebar_overrides(shell)
+        self._apply_scope_popup_theme(shell)
+
+        # Refresh icon-only copy buttons created during plot rebuild
+        for _btn in self.findChildren(QToolButton, "scopePlotCopyBtn"):
+            _btn.setIcon(IconService.get_icon("copy-filled", shell["plot_copy_text"], 13))
+            _btn.setIconSize(QSize(13, 13))
 
         self._sync_trace_style_controls()
         self._refresh_signal_list_metadata()
@@ -4303,8 +5137,8 @@ class ScopeWindow(QWidget):
         self._refresh_title()
         self._rebuild_stacked_plots(self._current_result)
 
-    def _apply_dark_sidebar_tabs(self, shell: dict) -> None:
-        """Apply dark VirtuScope styling to the sidebar tab widget and lists."""
+    def _apply_scope_sidebar_overrides(self, shell: dict[str, str]) -> None:
+        """Apply scope-specific sidebar styling derived from the active theme."""
         if not hasattr(self, "_sidebar_tabs"):
             return
         bg = shell["panel_bg"]
@@ -4314,7 +5148,7 @@ class ScopeWindow(QWidget):
         text = shell["text"]
         muted = shell["muted"]
         accent = shell["accent"]
-        card = shell.get("card_bg", "#1e2438")
+        card = shell["card_bg"]
 
         self._sidebar_tabs.setStyleSheet(f"""
             QTabWidget#scopeSidebarTabs::pane {{
@@ -4336,7 +5170,7 @@ class ScopeWindow(QWidget):
                 border-bottom: 2px solid {accent};
             }}
             QTabWidget#scopeSidebarTabs > QTabBar::tab:hover:!selected {{
-                background-color: rgba(255,255,255,0.05);
+                background-color: {shell["hover_fill"]};
                 color: {text};
             }}
         """)
@@ -4345,9 +5179,10 @@ class ScopeWindow(QWidget):
         list_style = f"""
             QListWidget {{
                 background-color: {surface};
-                border: none;
+                border: 1px solid transparent;
                 color: {text};
                 outline: none;
+                border-radius: 8px;
             }}
             QListWidget::item {{
                 padding: 5px 8px;
@@ -4356,10 +5191,13 @@ class ScopeWindow(QWidget):
                 color: {text};
             }}
             QListWidget::item:selected {{
-                background-color: rgba(59, 130, 246, 0.22);
+                background-color: {shell["selection_fill"]};
             }}
             QListWidget::item:hover {{
-                background-color: rgba(255,255,255,0.05);
+                background-color: {shell["hover_fill"]};
+            }}
+            QListWidget:focus {{
+                border-color: {accent};
             }}
         """
         for lw in (
@@ -4381,7 +5219,7 @@ class ScopeWindow(QWidget):
                 font-size: 10px;
             }}
             QPushButton:hover {{
-                background-color: {shell.get("panel_alt", "#1e2438")};
+                background-color: {shell["panel_alt"]};
                 border-color: {accent};
                 color: {text};
             }}
@@ -4389,7 +5227,6 @@ class ScopeWindow(QWidget):
         for btn in (self._save_view_btn, self._delete_view_btn):
             btn.setStyleSheet(btn_style)
 
-        # Re-apply dark to the stacked sidebar container itself
         self._stacked_sidebar.setStyleSheet(f"""
             QWidget#scopeLeftPanel,
             QWidget#scopeLeftPanel > QWidget {{
@@ -4439,7 +5276,7 @@ class ScopeWindow(QWidget):
                 border-radius: 8px;
             }}
             QToolButton#scopeCollapsedRailBtn:hover {{
-                background-color: rgba(59,130,246,0.18);
+                background-color: {shell["selection_fill"]};
                 border-color: {accent};
                 color: {text};
             }}
@@ -4454,9 +5291,80 @@ class ScopeWindow(QWidget):
             QPushButton#scopePanelToggleBtn:hover {{
                 color: {text};
                 border-color: {accent};
-                background-color: rgba(255,255,255,0.07);
+                background-color: {shell["hover_fill"]};
             }}
         """)
+
+    def _scope_menu_stylesheet(self, shell: dict[str, str]) -> str:
+        """Return a shared stylesheet for scope-owned popup menus."""
+        return f"""
+            QMenu {{
+                background-color: {shell["menu_bg"]};
+                color: {shell["menu_text"]};
+                border: 1px solid {shell["menu_border"]};
+                border-radius: 8px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 6px 12px;
+                border-radius: 6px;
+            }}
+            QMenu::item:selected {{
+                background-color: {shell["menu_hover_bg"]};
+                color: {shell["menu_text"]};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {shell["menu_separator"]};
+                margin: 4px 6px;
+            }}
+        """
+
+    def _style_scope_menu(self, menu: QMenu) -> None:
+        """Apply the active scope menu styling to one menu instance."""
+        if self._theme is None:
+            return
+        menu.setStyleSheet(self._scope_menu_stylesheet(self._scope_shell_palette()))
+
+    def _apply_scope_popup_theme(self, shell: dict[str, str]) -> None:
+        """Apply explicit theme styling to menus and combo popup views."""
+        menu_style = self._scope_menu_stylesheet(shell)
+        combo_popup_style = f"""
+            QListView {{
+                background-color: {shell["menu_bg"]};
+                color: {shell["menu_text"]};
+                border: 1px solid {shell["menu_border"]};
+                outline: none;
+                padding: 4px;
+            }}
+            QListView::item {{
+                padding: 5px 8px;
+                border-radius: 6px;
+            }}
+            QListView::item:selected {{
+                background-color: {shell["menu_hover_bg"]};
+                color: {shell["menu_text"]};
+            }}
+            QListView::item:hover {{
+                background-color: {shell["hover_fill"]};
+                color: {shell["menu_text"]};
+            }}
+        """
+        for menu in (
+            self._trace_style_menu,
+            self._measurement_menu,
+            self._file_menu,
+            self._view_menu,
+            self._simulation_menu,
+            self._tools_menu,
+            self._window_menu,
+            self._help_menu,
+        ):
+            menu.setStyleSheet(menu_style)
+        for combo in self.findChildren(QComboBox):
+            view = combo.view()
+            if view is not None:
+                view.setStyleSheet(combo_popup_style)
 
     def _apply_stacked_cursor_positions(self, c1: float, c2: float) -> None:
         if len(self._stacked_time) == 0:
@@ -4499,10 +5407,18 @@ class ScopeWindow(QWidget):
                 widget.deleteLater()
         self._plot_widgets.clear()
         self._plot_widgets_by_group.clear()
+        self._plot_trace_items_by_signal.clear()
+        self._plot_group_signals_by_leader.clear()
+        self._plot_header_refs.clear()
+        self._plot_overlay_layouts_by_group.clear()
         self._plot_right_view_boxes.clear()
         self._stacked_cursor_lines.clear()
         self._stacked_hover_items.clear()
         self._stacked_plot_interaction_refs.clear()
+
+    def _clear_stacked_display_cache(self) -> None:
+        """Invalidate cached decimated traces when sampled data changes."""
+        self._stacked_decimation_cache.clear()
 
     def _trace_palette(self) -> list[tuple[int, int, int]]:
         if (
@@ -4549,6 +5465,42 @@ class ScopeWindow(QWidget):
             return max(0.5, float(width))
         return self._default_trace_width
 
+    def _resolve_trace_color(self, signal_name: str) -> tuple[int, int, int]:
+        """Resolve the final display color for one signal trace."""
+        override = self._trace_style_color(signal_name)
+        if override is not None:
+            return override
+        viewer_color = self._stacked_signal_list.get_signal_color(signal_name)
+        if viewer_color is not None:
+            return viewer_color
+        return self._default_trace_color(signal_name)
+
+    def _plot_group_primary_signal(self, group_signal_names: list[str]) -> str:
+        """Resolve which signal drives the group header and active styling."""
+        if self._stacked_active_signal in group_signal_names:
+            return str(self._stacked_active_signal)
+        return group_signal_names[0]
+
+    def _decimated_trace_for_signal(
+        self,
+        signal_name: str,
+        values: np.ndarray,
+        *,
+        max_points: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return cached decimated samples for one signal and display budget."""
+        cache_key = (signal_name, int(max_points))
+        cached = self._stacked_decimation_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        trace = self._decimate_stacked_for_display(
+            self._stacked_time,
+            values,
+            max_points=max_points,
+        )
+        self._stacked_decimation_cache[cache_key] = trace
+        return trace
+
     @staticmethod
     def _rgb_to_hex(color: tuple[int, int, int]) -> str:
         return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
@@ -4562,6 +5514,124 @@ class ScopeWindow(QWidget):
             override = self._trace_style_color(signal_name)
             if override is not None:
                 self._stacked_signal_list.set_signal_color(signal_name, override)
+        self._refresh_existing_plot_styles()
+
+    def _refresh_existing_plot_styles(self) -> None:
+        """Update trace pens, plot headers, and overview placement without rebuilding plots."""
+        if not self._plot_group_signals_by_leader:
+            return
+        shell = self._scope_shell_palette()
+        plot_tokens = self._scope_plot_palette()
+        for group_leader, group_signal_names in self._plot_group_signals_by_leader.items():
+            if not group_signal_names:
+                continue
+            primary_signal_name = self._plot_group_primary_signal(group_signal_names)
+            primary_color = self._resolve_trace_color(primary_signal_name)
+            hex_color = self._rgb_to_hex(primary_color)
+            is_active = self._stacked_active_signal in group_signal_names
+            sig_stats = self._stacked_signal_stats.get(primary_signal_name, {})
+
+            for signal_name in group_signal_names:
+                trace = self._plot_trace_items_by_signal.get(signal_name)
+                if trace is None:
+                    continue
+                color = self._resolve_trace_color(signal_name)
+                line_width = self._trace_style_width(signal_name)
+                if signal_name == self._stacked_active_signal:
+                    line_width = min(8.0, line_width + 0.35)
+                pen = pg.mkPen(color=color, width=line_width)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                trace.setPen(pen)
+
+            refs = self._plot_header_refs.get(group_leader, {})
+            title_label = refs.get("title_label")
+            subtitle_label = refs.get("subtitle_label")
+            stats_label = refs.get("stats_label")
+            overlay_badge = refs.get("overlay_badge")
+            color_chip = refs.get("color_chip")
+            panel = refs.get("panel")
+            header_widget = refs.get("header_widget")
+            if isinstance(title_label, QLabel):
+                title_label.setText(self._display_signal_name(primary_signal_name))
+                title_weight = "700" if is_active else "600"
+                title_label.setStyleSheet(
+                    f"color: {hex_color}; font-weight: {title_weight}; font-size: 12px;"
+                )
+            if isinstance(subtitle_label, QLabel):
+                axis_badge = self._axis_badge_text(primary_signal_name)
+                subtitle_text = f"Axis {axis_badge}"
+                if len(group_signal_names) > 1:
+                    overlay_names = [
+                        self._display_signal_name(name)
+                        for name in group_signal_names
+                        if name != primary_signal_name
+                    ]
+                    overlay_preview = ", ".join(overlay_names[:2])
+                    if len(overlay_names) > 2:
+                        overlay_preview = f"{overlay_preview}, ..."
+                    subtitle_text = f"Axis {axis_badge}  •  Overlay: {overlay_preview}"
+                subtitle_label.setText(subtitle_text)
+                subtitle_label.setStyleSheet(
+                    f"color: {shell['muted']}; font-size: 9px; font-weight: 600; letter-spacing: 0.2px;"
+                )
+            if isinstance(stats_label, QLabel):
+                if sig_stats:
+                    fmt = "{:.4g}"
+                    stats_label.setText(
+                        f"RMS: {fmt.format(sig_stats.get('rms', 0))}  "
+                        f"Peak: {fmt.format(sig_stats.get('max', 0))}  "
+                        f"Avg: {fmt.format(sig_stats.get('mean', 0))}"
+                    )
+                    stats_label.show()
+                    stats_label.setStyleSheet(
+                        f"color: {plot_tokens['header_stats_text']}; font-size: 9px; font-family: monospace; font-weight: 600; "
+                        f"background-color: {plot_tokens['header_stats_bg']}; border-radius: 8px; padding: 2px 6px;"
+                    )
+                else:
+                    stats_label.hide()
+            if isinstance(overlay_badge, QLabel):
+                overlay_badge.setVisible(len(group_signal_names) > 1)
+                if len(group_signal_names) > 1:
+                    overlay_badge.setText(f"+{len(group_signal_names) - 1}")
+                    overlay_badge.setStyleSheet(
+                        f"color: {shell['text']}; font-size: 9px; font-weight: 700; "
+                        f"background-color: rgba({primary_color[0]}, {primary_color[1]}, {primary_color[2]}, 0.22); "
+                        f"border: 1px solid rgba({primary_color[0]}, {primary_color[1]}, {primary_color[2]}, 0.34); "
+                        "border-radius: 8px; padding: 1px 6px;"
+                    )
+            if isinstance(color_chip, QLabel):
+                color_chip.setStyleSheet(
+                    f"background-color: {hex_color}; border-radius: 4px; border: 1px solid {shell['transport_border']};"
+                )
+            if isinstance(panel, QFrame):
+                panel.setStyleSheet(
+                    f"""
+                    QFrame {{
+                        background-color: {shell["panel_bg"]};
+                        border: 1px solid {shell["border"]};
+                        border-left: 2px solid {hex_color};
+                        border-radius: 10px;
+                    }}
+                    """
+                )
+            if isinstance(header_widget, QWidget):
+                header_bg = plot_tokens["header_active_bg"] if is_active else plot_tokens["header_inactive_bg"]
+                header_border = plot_tokens["header_active_border"] if is_active else plot_tokens["header_inactive_border"]
+                header_widget.setStyleSheet(
+                    f"background-color: {header_bg}; border-radius: 8px; margin: 0; border: 1px solid {header_border};"
+                )
+
+        target_group = self._selected_plot_group_leader
+        if target_group in self._plot_overlay_layouts_by_group:
+            overlay_layout = self._plot_overlay_layouts_by_group[target_group]
+            overlay_layout.addWidget(
+                self._overview_inset,
+                0,
+                0,
+                alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
+            )
+            self._overview_inset.show()
         all_colors = {
             name: color
             for name in self._stacked_signals
@@ -4924,7 +5994,7 @@ class ScopeWindow(QWidget):
         self._prune_trace_style(signal_name)
         self._apply_trace_styles_to_viewer()
         self._set_trace_controls_for_signal(signal_name)
-        self._rebuild_stacked_plots(self._current_result)
+        self._refresh_existing_plot_styles()
         self._refresh_inspector()
 
     def _pick_trace_color_for_signal(self, signal_name: str) -> None:
@@ -4950,7 +6020,6 @@ class ScopeWindow(QWidget):
         self._apply_trace_styles_to_viewer()
         self._apply_stacked_trace_colors()
         self._set_trace_controls_for_signal(signal_name)
-        self._rebuild_stacked_plots(self._current_result)
         self._refresh_inspector()
 
     def _reset_trace_style_for_signal(self, signal_name: str) -> None:
@@ -4960,7 +6029,6 @@ class ScopeWindow(QWidget):
         self._apply_trace_styles_to_viewer()
         self._apply_stacked_trace_colors()
         self._set_trace_controls_for_signal(signal_name)
-        self._rebuild_stacked_plots(self._current_result)
         self._refresh_inspector()
 
     def _reset_all_trace_styles(self) -> None:
@@ -4970,7 +6038,6 @@ class ScopeWindow(QWidget):
         self._apply_trace_styles_to_viewer()
         self._apply_stacked_trace_colors()
         self._sync_trace_style_controls()
-        self._rebuild_stacked_plots(self._current_result)
         self._refresh_inspector()
 
     def _prune_trace_style(self, signal_name: str) -> None:
@@ -5053,8 +6120,13 @@ class ScopeWindow(QWidget):
             self._stacked_signal_list.setVisible(True)
             self._stacked_sidebar.setMinimumWidth(270)
             self._stacked_sidebar.setMaximumWidth(380)
-            self._left_panel_toggle_btn.setText("◀")
-            self._left_panel_toggle_btn.setToolTip("Collapse left panel")
+            self._left_panel_toggle_btn.setToolTip(
+                self._compose_scope_action_tooltip(
+                    "Collapse Signals Panel",
+                    "Hide the left signals panel and keep only the compact rail",
+                    "Ctrl+B",
+                )
+            )
             if hasattr(self, "_sidebar_tabs"):
                 self._sidebar_tabs.setVisible(True)
             if hasattr(self, "_collapsed_rail"):
@@ -5069,8 +6141,13 @@ class ScopeWindow(QWidget):
             self._stacked_signal_list.setVisible(False)
             self._stacked_sidebar.setMinimumWidth(self._collapsed_panel_width)
             self._stacked_sidebar.setMaximumWidth(self._collapsed_panel_width)
-            self._left_panel_toggle_btn.setText("▶")
-            self._left_panel_toggle_btn.setToolTip("Expand left panel")
+            self._left_panel_toggle_btn.setToolTip(
+                self._compose_scope_action_tooltip(
+                    "Expand Signals Panel",
+                    "Restore the full left signals panel",
+                    "Ctrl+B",
+                )
+            )
             if hasattr(self, "_sidebar_tabs"):
                 self._sidebar_tabs.setVisible(False)
             if hasattr(self, "_collapsed_rail"):
@@ -5082,21 +6159,32 @@ class ScopeWindow(QWidget):
             self._stacked_right_panel.setMinimumWidth(280)
             self._stacked_right_panel.setMaximumWidth(420)
             self._stacked_right_panel.setVisible(True)
-            self._right_panel_toggle_btn.setText("▶")
-            self._right_panel_toggle_btn.setToolTip("Collapse inspector")
+            self._right_panel_toggle_btn.setToolTip(
+                self._compose_scope_action_tooltip(
+                    "Collapse Inspector Panel",
+                    "Hide the right inspector panel to free more plot space",
+                    "Ctrl+I",
+                )
+            )
             right = self._right_panel_width
         else:
             self._stacked_right_panel.setMinimumWidth(0)
             self._stacked_right_panel.setMaximumWidth(0)
             self._stacked_right_panel.setVisible(False)
-            self._right_panel_toggle_btn.setText("◀")
-            self._right_panel_toggle_btn.setToolTip("Expand inspector")
+            self._right_panel_toggle_btn.setToolTip(
+                self._compose_scope_action_tooltip(
+                    "Expand Inspector Panel",
+                    "Restore the full right inspector panel",
+                    "Ctrl+I",
+                )
+            )
             right = 0
 
         total = max(self.width(), 1200)
         center = max(500, total - left - right - 24)
         target_sizes = [left, center, right]
         self._start_panel_animation(target_sizes)
+        self._apply_panel_toggle_icons()
         self._sync_toolbar_toggles()
 
     def _start_panel_animation(self, target_sizes: list[int]) -> None:
@@ -5161,15 +6249,22 @@ class ScopeWindow(QWidget):
         if hasattr(self, "_toolbar_scope_label"):
             self._toolbar_scope_label.setText(self._display_signal_name(signal_name))
         self._selected_plot_group_leader = self._plot_group_leader(signal_name)
-        self._stacked_signal_list.set_signal_visible(signal_name, True)
-        self._rebuild_stacked_plots(self._current_result)
-        self._update_stacked_measurements()
-        self._refresh_inspector()
+        if signal_name not in self._stacked_signal_list.get_visible_signals():
+            self._stacked_signal_list.set_signal_visible(signal_name, True)
+            self._rebuild_stacked_plots(self._current_result)
+            self._update_stacked_measurements()
+            self._refresh_inspector()
+            return
+        self._on_stacked_signal_selected(signal_name)
 
     def _on_create_math_signal_clicked(self) -> None:
         available_signals = list(self._stacked_signals.keys())
         if not available_signals:
-            QMessageBox.information(self, "Math Signal", "No signals available to derive math traces.")
+            self._show_scope_message(
+                "Math Signal",
+                "No signals available to derive math traces.",
+                level="information",
+            )
             return
 
         preferred_signal = self._scope_selector_combo.currentText().strip()
@@ -5183,6 +6278,7 @@ class ScopeWindow(QWidget):
             time_values=self._stacked_time,
             default_signal=preferred_signal,
             theme=self._theme,
+            scope_theme=self._scope_shell_palette(),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5191,7 +6287,7 @@ class ScopeWindow(QWidget):
         try:
             self._create_math_signal_from_config(config)
         except Exception as exc:
-            QMessageBox.warning(self, "Math Signal", str(exc))
+            self._show_scope_message("Math Signal", str(exc), level="warning")
 
     def _create_math_signal_from_config(self, config: dict[str, object]) -> str:
         """Create one derived trace from a validated dialog configuration."""
@@ -5361,8 +6457,10 @@ class ScopeWindow(QWidget):
         self._sync_scope_selector()
         self._sync_trace_style_controls()
         if rebuild:
-            self._rebuild_stacked_plots(self._current_result)
+            self._refresh_existing_plot_styles()
         self._update_stacked_measurements()
+        self._refresh_inspector()
+        self._refresh_analysis_views()
 
     def _on_group_plot_wheel(self, view_box: pg.ViewBox, ev, group_leader: str) -> bool:
         """Handle wheel zoom with axis selection on the hovered/selected plot."""
@@ -5490,6 +6588,8 @@ class ScopeWindow(QWidget):
         self._measurement_menu_btn.setEnabled(has_data)
         self._inspector_measure_menu_btn.setEnabled(has_data)
         self._scope_bottom_drawer_toggle_btn.setEnabled(has_data)
+        if hasattr(self, "_scope_bottom_resize_handle"):
+            self._scope_bottom_resize_handle.setEnabled(has_data and self._bottom_drawer_expanded)
         self._sync_scope_action_states()
 
     @staticmethod
@@ -5663,6 +6763,7 @@ class ScopeWindow(QWidget):
             self._stacked_time = np.array([], dtype=float)
             self._stacked_signals = {}
             self._stacked_signal_stats = {}
+            self._clear_stacked_display_cache()
             self._stacked_plot_groups = {}
             self._signal_axis_targets = {}
             self._signal_units = {}
@@ -5684,6 +6785,9 @@ class ScopeWindow(QWidget):
             self._refresh_quick_metrics()
             self._refresh_status_bar()
             self._refresh_analysis_views()
+            self._refresh_scopes_tab()
+            self._refresh_traces_tab()
+            self._refresh_views_tab()
             return
 
         time = np.asarray(result.time, dtype=float)
@@ -5697,6 +6801,7 @@ class ScopeWindow(QWidget):
             self._stacked_time = np.array([], dtype=float)
             self._stacked_signals = {}
             self._stacked_signal_stats = {}
+            self._clear_stacked_display_cache()
             self._stacked_plot_groups = {}
             self._signal_axis_targets = {}
             self._signal_units = {}
@@ -5722,6 +6827,7 @@ class ScopeWindow(QWidget):
 
         self._stacked_time = time
         self._stacked_signals = valid_signals
+        self._clear_stacked_display_cache()
         self._signal_axis_targets = {
             name: self._signal_axis_targets.get(name, "left")
             for name in valid_signals
@@ -5775,6 +6881,9 @@ class ScopeWindow(QWidget):
         self._refresh_quick_metrics()
         self._refresh_status_bar()
         self._refresh_analysis_views()
+        self._refresh_scopes_tab()
+        self._refresh_traces_tab()
+        self._refresh_views_tab()
 
     def _sync_scope_selector(self) -> None:
         names = list(self._stacked_signals.keys())
@@ -5847,6 +6956,7 @@ class ScopeWindow(QWidget):
         self._rebuild_stacked_plots(self._current_result)
         self._update_stacked_measurements()
         self._refresh_inspector()
+        self._refresh_traces_tab()
 
     def _on_stacked_signal_selected(self, signal_name: str) -> None:
         if signal_name in self._stacked_signals:
@@ -5859,6 +6969,7 @@ class ScopeWindow(QWidget):
                 self._trace_signal_combo.setCurrentIndex(combo_index)
                 self._trace_signal_combo.blockSignals(False)
             self._set_trace_controls_for_signal(signal_name)
+            self._refresh_existing_plot_styles()
             self._update_stacked_measurements()
             self._refresh_inspector()
             self._refresh_analysis_views()
@@ -6013,9 +7124,10 @@ class ScopeWindow(QWidget):
         primary_signal_name: str | None = None,
     ) -> str:
         """Build hover tooltip HTML for one or multiple traces in the same plot."""
+        shell = self._scope_shell_palette()
         rows: list[str] = [
             (
-                "<span style='color:#9ca3af;'>t</span> = "
+                f"<span style='color:{shell['tooltip_muted']};'>t</span> = "
                 f"<span style='font-weight:600'>{self._format_time_display(cursor_time)}</span>"
             )
         ]
@@ -6030,7 +7142,7 @@ class ScopeWindow(QWidget):
             )
         return (
             "<div style='padding:4px 6px; border-radius:6px; "
-            "background:rgba(20,20,20,0.78); color:#f4f4f4; font-size:10px;'>"
+            f"background:{shell['tooltip_bg']}; color:{shell['tooltip_text']}; font-size:10px;'>"
             + "<br/>".join(rows)
             + "</div>"
         )
@@ -6173,7 +7285,6 @@ class ScopeWindow(QWidget):
             return
 
         time = self._stacked_time
-        palette = self._trace_palette()
         first_plot: pg.PlotWidget | None = None
         visible = set(self._stacked_signal_list.get_visible_signals())
         visible_signal_names = [
@@ -6215,21 +7326,11 @@ class ScopeWindow(QWidget):
             if self._selected_plot_group_leader in grouped_signals
             else group_items[0][0]
         )
-        signal_order = list(self._stacked_signals.keys())
         points_per_signal = self._stacked_target_points_per_signal(len(visible_signal_names))
 
         for idx, (group_leader, group_signal_names) in enumerate(group_items):
-            if self._stacked_active_signal in group_signal_names:
-                primary_signal_name = str(self._stacked_active_signal)
-            else:
-                primary_signal_name = group_signal_names[0]
-
-            primary_color = self._trace_style_color(primary_signal_name)
-            if primary_color is None:
-                primary_color = self._stacked_signal_list.get_signal_color(primary_signal_name)
-            if primary_color is None:
-                color_index = signal_order.index(primary_signal_name)
-                primary_color = palette[color_index % len(palette)]
+            primary_signal_name = self._plot_group_primary_signal(group_signal_names)
+            primary_color = self._resolve_trace_color(primary_signal_name)
             r, g, b = primary_color
             hex_color = f"#{r:02x}{g:02x}{b:02x}"
 
@@ -6382,17 +7483,12 @@ class ScopeWindow(QWidget):
                 values = self._stacked_signals.get(signal_name)
                 if values is None:
                     continue
-                t_trace, plot_values = self._decimate_stacked_for_display(
-                    time,
+                t_trace, plot_values = self._decimated_trace_for_signal(
+                    signal_name,
                     values,
                     max_points=points_per_signal,
                 )
-                color = self._trace_style_color(signal_name)
-                if color is None:
-                    color = self._stacked_signal_list.get_signal_color(signal_name)
-                if color is None:
-                    color_index = signal_order.index(signal_name)
-                    color = palette[color_index % len(palette)]
+                color = self._resolve_trace_color(signal_name)
                 line_width = self._trace_style_width(signal_name)
                 if signal_name == self._stacked_active_signal:
                     line_width = min(8.0, line_width + 0.35)
@@ -6419,6 +7515,7 @@ class ScopeWindow(QWidget):
                         skipFiniteCheck=True,
                     )
                 self._configure_stacked_trace_performance(trace, len(t_trace))
+                self._plot_trace_items_by_signal[signal_name] = trace
                 hover_series.append((signal_name, values, color))
 
             if self._stacked_cursors_enabled:
@@ -6452,8 +7549,8 @@ class ScopeWindow(QWidget):
             plot_overlay_layout.addWidget(plot, 0, 0)
             copy_plot_btn = QToolButton(plot_container)
             copy_plot_btn.setObjectName("scopePlotCopyBtn")
-            copy_plot_btn.setText("Copy")
-            copy_plot_btn.setToolTip("Copy this plot image to clipboard")
+            copy_plot_btn.setText("")
+            copy_plot_btn.setToolTip("Copy plot to clipboard")
             copy_plot_btn.clicked.connect(
                 lambda _checked=False, target_plot=plot: self._copy_plot_to_clipboard(target_plot)
             )
@@ -6474,6 +7571,17 @@ class ScopeWindow(QWidget):
 
             panel_layout.addWidget(plot_container)
             self._plot_widgets_by_group[group_leader] = plot
+            self._plot_group_signals_by_leader[group_leader] = list(group_signal_names)
+            self._plot_overlay_layouts_by_group[group_leader] = plot_overlay_layout
+            self._plot_header_refs[group_leader] = {
+                "panel": panel,
+                "header_widget": header_widget,
+                "color_chip": color_chip,
+                "title_label": title_label,
+                "subtitle_label": subtitle_label,
+                "stats_label": stats_lbl if sig_stats else None,
+                "overlay_badge": overlay_badge if len(group_signal_names) > 1 else None,
+            }
 
             # --- Apply theming ---
             shell = self._scope_shell_palette()
@@ -6494,9 +7602,15 @@ class ScopeWindow(QWidget):
                 y=self._stacked_grid_enabled,
                 alpha=0.23,
             )
+            if item.legend is not None:
+                item.legend.setBrush(pg.mkBrush(QColor(plot_colors["legend_bg"])))
+                item.legend.setPen(pg.mkPen(QColor(plot_colors["legend_border"])))
+                item.legend.setLabelTextColor(QColor(plot_colors["plot_text"]))
+            copy_plot_btn.setIcon(IconService.get_icon("copy-filled", shell["plot_copy_text"], 13))
+            copy_plot_btn.setIconSize(QSize(13, 13))
 
-            header_bg = "#253046" if is_active else "#202839"
-            header_border = "#3e506f" if is_active else shell["border_soft"]
+            header_bg = plot_colors["header_active_bg"] if is_active else plot_colors["header_inactive_bg"]
+            header_border = plot_colors["header_active_border"] if is_active else plot_colors["header_inactive_border"]
             title_weight = "700" if is_active else "600"
             title_label.setStyleSheet(
                 f"color: {hex_color}; font-weight: {title_weight}; font-size: 12px;"
@@ -6512,8 +7626,8 @@ class ScopeWindow(QWidget):
                 )
             if sig_stats:
                 stats_lbl.setStyleSheet(
-                    f"color: {shell['muted']}; font-size: 9px; font-family: monospace; font-weight: 600; "
-                    "background-color: rgba(10, 14, 22, 0.35); border-radius: 8px; padding: 2px 6px;"
+                    f"color: {plot_colors['header_stats_text']}; font-size: 9px; font-family: monospace; font-weight: 600; "
+                    f"background-color: {plot_colors['header_stats_bg']}; border-radius: 8px; padding: 2px 6px;"
                 )
             panel.setStyleSheet(
                 f"""
@@ -6585,6 +7699,7 @@ class ScopeWindow(QWidget):
     def _build_plot_context_menu(self, group_leader: str) -> QMenu:
         """Build a scope-aware context menu for one plot pane."""
         menu = QMenu(self)
+        self._style_scope_menu(menu)
         group_signals = self._plot_group_signal_names(group_leader)
         active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
         self._selected_plot_group_leader = group_leader
@@ -6676,6 +7791,7 @@ class ScopeWindow(QWidget):
             return
 
         menu = QMenu(self)
+        self._style_scope_menu(menu)
 
         if item.data(Qt.ItemDataRole.UserRole) == "__group_header__":
             leader = str(item.data(Qt.ItemDataRole.UserRole + 1) or "").strip()
@@ -6829,21 +7945,44 @@ class ScopeWindow(QWidget):
         """Update the saved views list widget."""
         if not hasattr(self, "_views_list_widget"):
             return
+        selected_view_id = self._selected_saved_view_id()
+        self._views_list_widget.blockSignals(True)
         self._views_list_widget.clear()
         for view_id, (t_start, t_end) in self._saved_views.items():
-            self._views_list_widget.addItem(f"{view_id}: {t_start:.4g}s \u2192 {t_end:.4g}s")
+            item = QListWidgetItem(self._format_saved_view_label(view_id, t_start, t_end))
+            item.setData(Qt.ItemDataRole.UserRole, view_id)
+            item.setToolTip(f"Restore saved viewport '{view_id}'")
+            self._views_list_widget.addItem(item)
+        restored_selection = False
+        if self._views_list_widget.count() > 0:
+            for row in range(self._views_list_widget.count()):
+                item = self._views_list_widget.item(row)
+                if item is None:
+                    continue
+                if item.data(Qt.ItemDataRole.UserRole) == selected_view_id:
+                    self._views_list_widget.setCurrentItem(item)
+                    restored_selection = True
+                    break
+            if not restored_selection:
+                self._views_list_widget.setCurrentRow(0)
+        self._views_list_widget.blockSignals(False)
+        self._on_saved_view_selection_changed(self._views_list_widget.currentItem(), None)
 
     def _on_save_view_clicked(self) -> None:
         """Save the current visible time window as a named view."""
         name, ok = QInputDialog.getText(self, "Save View", "View name:")
         if not ok or not name.strip():
             return
-        sizes = self._stacked_splitter.sizes()
         t_arr = self._stacked_time
         if len(t_arr) < 2:
             return
-        t_start = float(t_arr[0])
-        t_end = float(t_arr[-1])
+        t_min = float(t_arr[0])
+        t_max = float(t_arr[-1])
+        span = max(t_max - t_min, 1e-15)
+        low_unit = self._timeline_slider.lowValue()
+        high_unit = self._timeline_slider.highValue()
+        t_start = t_min + span * (low_unit / 1000.0)
+        t_end = t_min + span * (high_unit / 1000.0)
         view_id = name.strip()
         self._saved_views[view_id] = (t_start, t_end)
         self._refresh_views_tab()
@@ -6853,14 +7992,89 @@ class ScopeWindow(QWidget):
         """Restore a saved view's time window."""
         if view_id not in self._saved_views:
             return
-        _t_start, _t_end = self._saved_views[view_id]
-        # Rebuild plots with the saved view context (time window restored via sliders)
-        self._rebuild_stacked_plots(self._current_result)
+        t_start, t_end = self._saved_views[view_id]
+        if self._set_timeline_range_from_times(t_start, t_end):
+            self._log_scope_event(f"Saved view restored: {view_id}")
 
     def _on_delete_view_clicked(self, view_id: str) -> None:
         """Delete a saved view."""
+        if view_id not in self._saved_views:
+            return
         self._saved_views.pop(view_id, None)
         self._refresh_views_tab()
+        self._log_scope_event(f"Saved view deleted: {view_id}")
+
+    @staticmethod
+    def _format_saved_view_label(view_id: str, t_start: float, t_end: float) -> str:
+        """Build the list label used for one saved viewport preset."""
+        return (
+            f"{view_id}: {ScopeWindow._format_time_display(t_start)}"
+            f" \u2192 {ScopeWindow._format_time_display(t_end)}"
+        )
+
+    @staticmethod
+    def _saved_view_id_from_item(item: QListWidgetItem | None) -> str | None:
+        """Extract the saved-view identifier stored on one list item."""
+        if item is None:
+            return None
+        view_id = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(view_id, str) and view_id.strip():
+            return view_id.strip()
+        return None
+
+    def _selected_saved_view_id(self) -> str | None:
+        """Return the currently selected saved view id, if any."""
+        if not hasattr(self, "_views_list_widget"):
+            return None
+        return self._saved_view_id_from_item(self._views_list_widget.currentItem())
+
+    def _on_saved_view_selection_changed(
+        self,
+        current: QListWidgetItem | None,
+        _previous: QListWidgetItem | None,
+    ) -> None:
+        """Keep the saved-view action row aligned with the current selection."""
+        selected_view_id = self._saved_view_id_from_item(current)
+        self._delete_view_btn.setEnabled(bool(selected_view_id))
+
+    def _on_view_list_item_activated(self, item: QListWidgetItem) -> None:
+        """Apply the saved viewport when the user activates a list entry."""
+        view_id = self._saved_view_id_from_item(item)
+        if view_id:
+            self._on_apply_view_clicked(view_id)
+
+    def _on_delete_selected_view_clicked(self) -> None:
+        """Delete the saved viewport currently selected in the Views tab."""
+        view_id = self._selected_saved_view_id()
+        if view_id:
+            self._on_delete_view_clicked(view_id)
+
+    def _set_timeline_range_from_times(self, start: float, end: float) -> bool:
+        """Apply a saved time window to the timeline and zoom controls."""
+        if len(self._stacked_time) < 2:
+            return False
+        t_min = float(self._stacked_time[0])
+        t_max = float(self._stacked_time[-1])
+        span = max(t_max - t_min, 1e-15)
+        start = min(max(float(start), t_min), t_max)
+        end = min(max(float(end), t_min), t_max)
+        if end <= start:
+            end = min(t_max, start + (span / 1000.0))
+        low = int(round(((start - t_min) / span) * 1000.0))
+        high = int(round(((end - t_min) / span) * 1000.0))
+        low = min(999, max(0, low))
+        high = min(1000, max(low + 1, high))
+        window_fraction = max(0.05, min(1.0, (end - start) / span))
+        zoom_percent = int(round(((1.0 - window_fraction) / 0.95) * 100.0))
+        zoom_percent = min(100, max(0, zoom_percent))
+        self._syncing_bottom_sliders = True
+        try:
+            self._timeline_slider.setValues(low, high)
+            self._zoom_slider.setValue(zoom_percent)
+        finally:
+            self._syncing_bottom_sliders = False
+        self._apply_bottom_viewport_controls()
+        return True
 
     def _on_scope_renamed(self) -> None:
         """Rename the current scope via dialog."""
@@ -6883,14 +8097,15 @@ class ScopeWindow(QWidget):
         """Refresh the overview thumbnail plot with current data."""
         if not hasattr(self, "_overview_plot"):
             return
+        plot_tokens = self._scope_plot_palette()
         self._overview_plot.clear()
         self._overview_plot.addItem(self._overview_region)
-        self._overview_plot.setBackground("#171c25")
+        self._overview_plot.setBackground(plot_tokens["plot_bg"])
         overview_item = self._overview_plot.getPlotItem()
         overview_item.showGrid(x=False, y=False)
-        self._overview_region.setBrush(QBrush(QColor(110, 166, 255, 34)))
-        region_pen = pg.mkPen(QColor(145, 190, 255, 180), width=1.0)
-        hover_pen = pg.mkPen(QColor(173, 209, 255, 220), width=1.0)
+        self._overview_region.setBrush(QBrush(QColor(plot_tokens["overview_fill"])))
+        region_pen = pg.mkPen(QColor(plot_tokens["overview_border"]), width=1.0)
+        hover_pen = pg.mkPen(QColor(plot_tokens["overview_hover_border"]), width=1.0)
         for line in self._overview_region.lines:
             line.setPen(region_pen)
             line.setHoverPen(hover_pen)

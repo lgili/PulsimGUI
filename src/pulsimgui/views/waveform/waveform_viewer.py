@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_types import PostProcessingResult
 from pulsimgui.services.simulation_service import SimulationResult
-from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.services.theme_service import LIGHT_THEME, Theme, ThemeService
 from pulsimgui.views.waveform.post_processing_panel import PostProcessingPanel
 
 # Maximum points to display before decimation kicks in
@@ -136,127 +136,70 @@ class MeasurementsPanel(QFrame):
         cursor_colors: tuple[str, str] | None = None,
     ) -> None:
         """Apply modern styling."""
-        if theme is None:
-            self.setStyleSheet("""
-            QFrame#MeasurementsPanelRoot {
-                background-color: #f9fafb;
-                border: 1px solid #e5e7eb;
+        c = (theme if theme is not None else LIGHT_THEME).colors
+        self.setStyleSheet(f"""
+            QFrame#MeasurementsPanelRoot {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
                 border-radius: 10px;
-            }
-            QGroupBox {
+            }}
+            QGroupBox {{
                 font-weight: 600;
                 font-size: 10px;
-                color: #374151;
-                border: 1px solid #e5e7eb;
+                color: {c.foreground};
+                border: 1px solid {c.panel_border};
                 border-radius: 8px;
                 margin-top: 12px;
                 padding-top: 10px;
-                background-color: #ffffff;
-            }
-            QGroupBox::title {
+                background-color: {c.background};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 12px;
                 padding: 0 7px;
-                background-color: #ffffff;
-            }
-            QTableWidget {
-                background-color: #ffffff;
-                alternate-background-color: #f8fafc;
-                border: 1px solid #e5e7eb;
+                background-color: {c.background};
+            }}
+            QTableWidget {{
+                background-color: {c.background};
+                alternate-background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
                 border-radius: 8px;
-                gridline-color: #e5e7eb;
-                color: #111827;
+                gridline-color: {c.divider};
+                color: {c.foreground};
                 font-size: 10px;
-            }
-            QHeaderView::section {
-                background-color: #f3f4f6;
-                color: #374151;
+            }}
+            QHeaderView::section {{
+                background-color: {c.panel_background};
+                color: {c.foreground};
                 border: none;
-                border-right: 1px solid #e5e7eb;
-                border-bottom: 1px solid #e5e7eb;
+                border-right: 1px solid {c.divider};
+                border-bottom: 1px solid {c.divider};
                 padding: 4px 6px;
                 font-size: 10px;
                 font-weight: 600;
-            }
-            """)
-            muted_color = "#6b7280"
-            accent_colors = {
-                "cursor_1": "#dc2626",
-                "cursor_2": "#2563eb",
-                "delta": "#059669",
-                "frequency": "#7c3aed",
-                "stat_min": "#0891b2",
-                "stat_max": "#dc2626",
-                "stat_mean": "#374151",
-                "stat_rms": "#7c3aed",
-                "stat_pkpk": "#059669",
-            }
-            separator_color = "#e5e7eb"
-        else:
-            c = theme.colors
-            self.setStyleSheet(f"""
-                QFrame#MeasurementsPanelRoot {{
-                    background-color: {c.panel_background};
-                    border: 1px solid {c.panel_border};
-                    border-radius: 10px;
-                }}
-                QGroupBox {{
-                    font-weight: 600;
-                    font-size: 10px;
-                    color: {c.foreground};
-                    border: 1px solid {c.panel_border};
-                    border-radius: 8px;
-                    margin-top: 12px;
-                    padding-top: 10px;
-                    background-color: {c.background};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: 12px;
-                    padding: 0 7px;
-                    background-color: {c.background};
-                }}
-                QTableWidget {{
-                    background-color: {c.background};
-                    alternate-background-color: {c.panel_background};
-                    border: 1px solid {c.panel_border};
-                    border-radius: 8px;
-                    gridline-color: {c.divider};
-                    color: {c.foreground};
-                    font-size: 10px;
-                }}
-                QHeaderView::section {{
-                    background-color: {c.panel_background};
-                    color: {c.foreground};
-                    border: none;
-                    border-right: 1px solid {c.divider};
-                    border-bottom: 1px solid {c.divider};
-                    padding: 4px 6px;
-                    font-size: 10px;
-                    font-weight: 600;
-                }}
-                QTableCornerButton::section {{
-                    background-color: {c.panel_background};
-                    border: none;
-                    border-right: 1px solid {c.divider};
-                    border-bottom: 1px solid {c.divider};
-                }}
-            """)
-            muted_color = c.foreground_muted
-            cursor_1 = cursor_colors[0] if cursor_colors is not None else c.error
-            cursor_2 = cursor_colors[1] if cursor_colors is not None else c.primary
-            accent_colors = {
-                "cursor_1": cursor_1,
-                "cursor_2": cursor_2,
-                "delta": c.success,
-                "frequency": c.info,
-                "stat_min": c.info,
-                "stat_max": c.error,
-                "stat_mean": c.foreground,
-                "stat_rms": c.primary,
-                "stat_pkpk": c.success,
-            }
-            separator_color = c.divider
+            }}
+            QTableCornerButton::section {{
+                background-color: {c.panel_background};
+                border: none;
+                border-right: 1px solid {c.divider};
+                border-bottom: 1px solid {c.divider};
+            }}
+        """)
+        muted_color = c.foreground_muted
+        cursor_1 = cursor_colors[0] if cursor_colors is not None else c.error
+        cursor_2 = cursor_colors[1] if cursor_colors is not None else c.primary
+        accent_colors = {
+            "cursor_1": cursor_1,
+            "cursor_2": cursor_2,
+            "delta": c.success,
+            "frequency": c.info,
+            "stat_min": c.info,
+            "stat_max": c.error,
+            "stat_mean": c.foreground,
+            "stat_rms": c.primary,
+            "stat_pkpk": c.success,
+        }
+        separator_color = c.divider
 
         for label in self._muted_labels:
             label.setStyleSheet(f"color: {muted_color}; font-size: 10px;")
@@ -562,14 +505,9 @@ class MeasurementsPanel(QFrame):
         self._cursor_palette = cursor_colors
         self._apply_styles(theme, cursor_colors=cursor_colors)
 
-    def apply_scope_dark_overrides(self, shell: dict) -> None:
-        """Apply forced-dark scope theme to the measurements panel.
-
-        *shell* is the dict returned by ``ScopeWindow._scope_shell_palette()``.
-        Called from ``ScopeWindow.apply_theme()`` after the regular
-        ``apply_theme()`` so these styles always win in the scope context.
-        """
-        accent = shell.get("accent", "#3b82f6")
+    def apply_scope_theme_overrides(self, shell: dict[str, str]) -> None:
+        """Apply scope-specific theming derived from the active application theme."""
+        accent = shell.get("accent", LIGHT_THEME.colors.primary)
         self.setStyleSheet(f"""
             QFrame#MeasurementsPanelRoot {{
                 background-color: {shell["panel_bg"]};
@@ -636,24 +574,27 @@ class MeasurementsPanel(QFrame):
                 border-radius: 3px;
             }}
         """)
-        # Re-apply accent label colors for dark
         for label, accent_role in self._accent_labels.items():
             color = {
-                "cursor_1": "#f87171",
+                "cursor_1": shell.get("error", LIGHT_THEME.colors.error),
                 "cursor_2": accent,
-                "delta": "#34d399",
-                "frequency": "#818cf8",
-                "stat_min": "#22d3ee",
-                "stat_max": "#f87171",
+                "delta": shell.get("success", LIGHT_THEME.colors.success),
+                "frequency": shell.get("info", LIGHT_THEME.colors.info),
+                "stat_min": shell.get("info", LIGHT_THEME.colors.info),
+                "stat_max": shell.get("error", LIGHT_THEME.colors.error),
                 "stat_mean": shell["text"],
                 "stat_rms": accent,
-                "stat_pkpk": "#34d399",
+                "stat_pkpk": shell.get("success", LIGHT_THEME.colors.success),
             }.get(accent_role, shell["text"])
             label.setStyleSheet(f"{self._value_style_base} color: {color};")
         for label in self._muted_labels:
             label.setStyleSheet(f"color: {shell['muted']}; font-size: 10px;")
         if hasattr(self, "_multi_table"):
             self._multi_table.viewport().update()
+
+    def apply_scope_dark_overrides(self, shell: dict) -> None:
+        """Backward-compatible alias for older scope callers."""
+        self.apply_scope_theme_overrides(shell)
 
 
 class SignalListItem(QListWidgetItem):
@@ -750,6 +691,7 @@ class SignalRowWidget(QFrame):
         self._syncing = False
         self.setObjectName("SignalListRowCard")
         self.setMinimumHeight(26)
+        self.setToolTip(signal_name)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -758,16 +700,19 @@ class SignalRowWidget(QFrame):
         self._toggle = QCheckBox()
         self._toggle.setObjectName("signalRowToggle")
         self._toggle.setText("")
+        self._toggle.setToolTip("Show or hide this trace")
         self._toggle.toggled.connect(self._on_toggled)
         layout.addWidget(self._toggle, stretch=0)
 
         self._chip = QLabel()
         self._chip.setObjectName("signalRowChip")
         self._chip.setFixedSize(10, 10)
+        self._chip.setToolTip(signal_name)
         layout.addWidget(self._chip, stretch=0)
 
         self._label = QLabel(signal_name)
         self._label.setObjectName("signalRowLabel")
+        self._label.setToolTip(signal_name)
         layout.addWidget(self._label, stretch=1)
 
         self._axis_button = QToolButton()
@@ -796,6 +741,8 @@ class SignalRowWidget(QFrame):
 
     def set_label_text(self, text: str) -> None:
         self._label.setText(text)
+        self._label.setToolTip(text)
+        self.setToolTip(text)
 
     def set_axis_badge(self, badge: str) -> None:
         text = str(badge or "").strip().upper() or "L"
@@ -841,6 +788,8 @@ class GroupHeaderWidget(QFrame):
         self._signal_count = signal_count
         self._collapsed = collapsed
         self._group_visible = True
+        self._collapse_icon_color = LIGHT_THEME.colors.foreground_muted
+        self._visible_icon_color = LIGHT_THEME.colors.foreground_muted
         self.setObjectName("SignalListGroupCard")
         self.setMinimumHeight(34)
 
@@ -880,16 +829,24 @@ class GroupHeaderWidget(QFrame):
     def leader(self) -> str:
         return self._leader
 
+    def set_icon_colors(self, collapse_color: str, visibility_color: str) -> None:
+        """Update icon colors so group actions track the active theme."""
+        self._collapse_icon_color = str(collapse_color)
+        self._visible_icon_color = str(visibility_color)
+        self.set_collapsed(self._collapsed)
+        self.set_group_visible(self._group_visible)
+
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = bool(collapsed)
         icon_name = "chevron-right" if self._collapsed else "chevron-down"
-        self._collapse_btn.setIcon(IconService.get_icon(icon_name, "#9aa8c5", 12))
+        self._collapse_btn.setIcon(IconService.get_icon(icon_name, self._collapse_icon_color, 12))
         self._collapse_btn.setIconSize(QSize(12, 12))
+        self._collapse_btn.setToolTip("Expand group" if self._collapsed else "Collapse group")
 
     def set_group_visible(self, visible: bool) -> None:
         self._group_visible = bool(visible)
         icon_name = "eye" if visible else "eye-off"
-        self._visible_btn.setIcon(IconService.get_icon(icon_name, "#a9b8d4", 12))
+        self._visible_btn.setIcon(IconService.get_icon(icon_name, self._visible_icon_color, 12))
         self._visible_btn.setIconSize(QSize(12, 12))
         self._visible_btn.setToolTip("Hide group" if visible else "Show group")
 
@@ -969,6 +926,8 @@ class SignalListPanel(QFrame):
         self._root_layout: QVBoxLayout | None = None
         self._header_row: QWidget | None = None
         self._theme: Theme | None = None
+        self._group_collapse_icon_color = LIGHT_THEME.colors.foreground_muted
+        self._group_visibility_icon_color = LIGHT_THEME.colors.foreground_muted
         self._group_headers: dict[str, GroupHeaderListItem] = {}
         self._group_children: dict[str, list[str]] = {}
         self._collapsed_groups: dict[str, bool] = {}
@@ -1002,11 +961,15 @@ class SignalListPanel(QFrame):
         self._filter_edit.setPlaceholderText("Filter signals…")
         self._filter_edit.setObjectName("signalFilterEdit")
         self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.setToolTip("Filter signals by name, alias, or group")
+        self._filter_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._filter_edit.textChanged.connect(self._on_filter_changed)
         layout.addWidget(self._filter_edit)
 
         # Signal list
         self._list_widget = SignalListWidget()
+        self._list_widget.setToolTip("Available traces for plotting and measurement")
+        self._list_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._list_widget.setDragEnabled(True)
         self._list_widget.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self._list_widget.setSelectionMode(
@@ -1134,7 +1097,7 @@ class SignalListPanel(QFrame):
         if self._theme is not None:
             header.setForeground(QColor(self._theme.colors.foreground_muted))
         else:
-            header.setForeground(QColor("#6b7280"))
+            header.setForeground(QColor(LIGHT_THEME.colors.foreground_muted))
 
     def set_signals_with_groups(
         self,
@@ -1201,6 +1164,10 @@ class SignalListPanel(QFrame):
             signal_count,
             self._collapsed_groups.get(leader, False),
         )
+        widget.set_icon_colors(
+            self._group_collapse_icon_color,
+            self._group_visibility_icon_color,
+        )
         widget.clicked.connect(self._toggle_group_collapsed)
         widget.visibility_requested.connect(self._set_group_visibility)
         item.setText("")
@@ -1236,6 +1203,24 @@ class SignalListPanel(QFrame):
             return
         self._collapsed_groups[leader] = not self._collapsed_groups.get(leader, False)
         self._apply_group_filter(self._filter_edit.text() if hasattr(self, "_filter_edit") else "")
+
+    def collapsed_groups(self) -> dict[str, bool]:
+        """Return the current persisted collapse state for each signal group."""
+        return dict(self._collapsed_groups)
+
+    def set_collapsed_groups(self, collapsed_groups: dict[str, bool]) -> None:
+        """Apply persisted collapse state for known and future group leaders."""
+        self._collapsed_groups = {
+            str(leader): bool(collapsed)
+            for leader, collapsed in collapsed_groups.items()
+            if str(leader).strip()
+        }
+        self._apply_group_filter(self._filter_edit.text() if hasattr(self, "_filter_edit") else "")
+
+    def focus_filter(self) -> None:
+        """Move keyboard focus to the incremental search field."""
+        self._filter_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._filter_edit.selectAll()
 
     def _set_group_visibility(self, leader: str, visible: bool) -> None:
         names = self._group_children.get(leader, [])
@@ -1276,6 +1261,16 @@ class SignalListPanel(QFrame):
         widget.set_collapsed(self._collapsed_groups.get(leader, False))
         widget.set_group_visible(self._group_all_visible(leader))
 
+    def _apply_group_widget_icon_colors(self, collapse_color: str, visibility_color: str) -> None:
+        """Refresh group-header icons after theme changes."""
+        self._group_collapse_icon_color = str(collapse_color)
+        self._group_visibility_icon_color = str(visibility_color)
+        for widget in self._group_widgets.values():
+            widget.set_icon_colors(
+                self._group_collapse_icon_color,
+                self._group_visibility_icon_color,
+            )
+
     def set_trace_palette(self, palette: list[tuple[int, int, int]]) -> None:
         """Update signal color palette and refresh existing list colors."""
         self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
@@ -1285,13 +1280,8 @@ class SignalListPanel(QFrame):
             if row is not None:
                 row.set_color(item.color)
 
-    def apply_scope_dark_overrides(self, shell: dict) -> None:
-        """Apply forced-dark scope theme to the signal list panel.
-
-        *shell* is the dict returned by ``ScopeWindow._scope_shell_palette()``.
-        This is called from ``ScopeWindow.apply_theme()`` AFTER the regular
-        ``apply_theme()`` so it always wins regardless of the app theme.
-        """
+    def apply_scope_theme_overrides(self, shell: dict[str, str]) -> None:
+        """Apply scope-specific theming derived from the active application theme."""
         self.setStyleSheet(f"""
             QFrame#SignalListPanelRoot {{
                 background-color: {shell["panel_alt"]};
@@ -1299,7 +1289,7 @@ class SignalListPanel(QFrame):
                 border-radius: 12px;
             }}
             QFrame#SignalListGroupCard {{
-                background-color: rgba(14, 20, 30, 0.42);
+                background-color: {shell["subtle_fill"]};
                 border: 1px solid {shell["border_soft"]};
                 border-radius: 10px;
             }}
@@ -1325,7 +1315,7 @@ class SignalListPanel(QFrame):
                 border-radius: 8px;
             }}
             QFrame#SignalListRowCard:hover {{
-                background-color: rgba(255, 255, 255, 0.04);
+                background-color: {shell["hover_fill"]};
             }}
             QLabel#signalRowLabel {{
                 color: {shell["text"]};
@@ -1336,7 +1326,7 @@ class SignalListPanel(QFrame):
                 color: {shell["muted"]};
                 font-size: 9px;
                 font-weight: 700;
-                background-color: rgba(11, 17, 28, 0.55);
+                background-color: {shell["field_bg"]};
                 border: 1px solid {shell["border_soft"]};
                 border-radius: 7px;
                 padding: 1px 6px;
@@ -1352,8 +1342,8 @@ class SignalListPanel(QFrame):
                 width: 28px;
                 height: 15px;
                 border-radius: 7px;
-                background-color: #252b3b;
-                border: 1px solid #364052;
+                background-color: {shell["sidebar_toggle_off_bg"]};
+                border: 1px solid {shell["sidebar_toggle_off_border"]};
             }}
             QCheckBox#signalRowToggle::indicator:checked {{
                 background-color: {shell["accent"]};
@@ -1374,14 +1364,14 @@ class SignalListPanel(QFrame):
                 color: {shell["text"]};
             }}
             QListWidget::item:selected {{
-                background-color: rgba(59, 130, 246, 0.16);
+                background-color: {shell["selection_fill"]};
                 color: {shell["text"]};
             }}
             QListWidget::item:hover {{
-                background-color: rgba(255, 255, 255, 0.04);
+                background-color: {shell["hover_fill"]};
             }}
             QLineEdit#signalFilterEdit {{
-                background-color: rgba(11, 17, 28, 0.55);
+                background-color: {shell["field_bg"]};
                 color: {shell["text"]};
                 border: 1px solid {shell["border_soft"]};
                 border-radius: 8px;
@@ -1395,14 +1385,19 @@ class SignalListPanel(QFrame):
         self._header_label.setStyleSheet(
             f"font-weight: 700; font-size: 11px; color: {shell['text']};"
         )
+        self._apply_group_widget_icon_colors(shell["muted"], shell["muted"])
         # Re-colour group/category header rows as dark cards
         for i in range(self._list_widget.count()):
             item = self._list_widget.item(i)
             if item is not None and item.data(Qt.ItemDataRole.UserRole) in (
                 "__category_header__", "__group_header__"
             ):
-                item.setBackground(QColor(shell.get("surface_bg", "#161b27")))
-                item.setForeground(QColor(shell.get("muted", "#7a8aaa")))
+                item.setBackground(QColor(shell.get("surface_bg", LIGHT_THEME.colors.background_alt)))
+                item.setForeground(QColor(shell.get("muted", LIGHT_THEME.colors.foreground_muted)))
+
+    def apply_scope_dark_overrides(self, shell: dict) -> None:
+        """Backward-compatible alias for older scope callers."""
+        self.apply_scope_theme_overrides(shell)
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme to the signal list panel surfaces."""
@@ -1502,6 +1497,7 @@ class SignalListPanel(QFrame):
                 border-color: {c.input_focus_border};
             }}
         """)
+        self._apply_group_widget_icon_colors(c.foreground_muted, c.foreground_muted)
         self._header_label.setStyleSheet(f"font-weight: 600; color: {c.foreground};")
         for i in range(self._list_widget.count()):
             item = self._list_widget.item(i)
@@ -1774,7 +1770,7 @@ class WaveformViewer(QWidget):
         self._plot_widget.setLabel("left", "Value")
         self._plot_widget.setLabel("bottom", "Time", units="s")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self._plot_widget.setBackground("w")
+        self._plot_widget.setBackground(LIGHT_THEME.colors.plot_background)
 
         view_box = self._plot_widget.getViewBox()
         view_box.setMouseMode(pg.ViewBox.RectMode)
@@ -1785,8 +1781,8 @@ class WaveformViewer(QWidget):
         self._stats_overlay = pg.TextItem(
             text="",
             anchor=(1, 0),
-            color="#374151",
-            fill=pg.mkBrush(255, 255, 255, 200),
+            color=LIGHT_THEME.colors.plot_text,
+            fill=pg.mkBrush(QColor(LIGHT_THEME.colors.plot_legend_background)),
         )
         self._stats_overlay.setFont(pg.QtGui.QFont("Courier New", 10))
         self._stats_overlay.setZValue(100)
@@ -1797,7 +1793,7 @@ class WaveformViewer(QWidget):
         self._hover_vline = pg.InfiniteLine(
             angle=90,
             movable=False,
-            pen=pg.mkPen(color="#6b7280", width=1, style=Qt.PenStyle.DashLine),
+            pen=pg.mkPen(color=LIGHT_THEME.colors.plot_axis, width=1, style=Qt.PenStyle.DashLine),
         )
         self._hover_vline.setZValue(90)
         self._hover_vline.setVisible(False)
@@ -1806,7 +1802,7 @@ class WaveformViewer(QWidget):
         self._hover_tooltip = pg.TextItem(
             text="",
             anchor=(0, 1),
-            fill=pg.mkBrush(30, 30, 30, 215),
+            fill=pg.mkBrush(QColor(LIGHT_THEME.colors.plot_legend_background)),
         )
         self._hover_tooltip.setFont(pg.QtGui.QFont("Courier New", 9))
         self._hover_tooltip.setZValue(101)
@@ -1818,7 +1814,7 @@ class WaveformViewer(QWidget):
 
         # Legend
         self._legend = self._plot_widget.addLegend(offset=(12, 10))
-        self._legend.setLabelTextColor("#111827")
+        self._legend.setLabelTextColor(LIGHT_THEME.colors.plot_text)
 
         plot_layout.addWidget(self._plot_widget)
 
@@ -2220,6 +2216,7 @@ class WaveformViewer(QWidget):
         self._refresh_signal_list_colors()
         self._signal_list_panel.apply_theme(theme)
         self._measurements_panel.apply_theme(theme, cursor_palette=self._cursor_palette)
+        self._post_processing_panel.apply_theme(theme)
 
         self.setStyleSheet(f"""
             QWidget#WaveformViewerRoot {{
@@ -2278,26 +2275,18 @@ class WaveformViewer(QWidget):
         if self._cursor2 is not None:
             self._cursor2.set_color(self._cursor_palette[1])
 
-        # Update stats overlay colors for the new theme
+        # Update stats overlay colors derived from the active theme
         if self._stats_overlay is not None:
-            is_dark = getattr(theme, "is_dark", False)
-            if is_dark:
-                self._stats_overlay.setColor(c.plot_text)
-                self._stats_overlay.fill = pg.mkBrush(30, 30, 30, 210)
-            else:
-                self._stats_overlay.setColor(c.plot_axis)
-                self._stats_overlay.fill = pg.mkBrush(255, 255, 255, 210)
+            plot_bg = QColor(c.plot_background)
+            self._stats_overlay.setColor(c.plot_text)
+            self._stats_overlay.fill = pg.mkBrush(plot_bg.red(), plot_bg.green(), plot_bg.blue(), 210)
             self._stats_overlay.update()
 
-        # Update hover tooltip colors for the new theme
+        # Update hover tooltip colors derived from the active theme
         if self._hover_tooltip is not None:
-            is_dark = getattr(theme, "is_dark", False)
-            if is_dark:
-                self._hover_tooltip.setColor("#e5e7eb")
-                self._hover_tooltip.fill = pg.mkBrush(24, 24, 24, 220)
-            else:
-                self._hover_tooltip.setColor("#1f2937")
-                self._hover_tooltip.fill = pg.mkBrush(255, 255, 255, 220)
+            legend_bg = QColor(c.plot_legend_background)
+            self._hover_tooltip.setColor(c.plot_text)
+            self._hover_tooltip.fill = pg.mkBrush(legend_bg.red(), legend_bg.green(), legend_bg.blue(), 220)
             self._hover_tooltip.update()
         if self._hover_vline is not None:
             self._hover_vline.setPen(pg.mkPen(color=c.plot_axis, width=1, style=Qt.PenStyle.DashLine))

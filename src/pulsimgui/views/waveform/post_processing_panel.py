@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.services.backend_types import PostProcessingResult
+from pulsimgui.services.theme_service import LIGHT_THEME, Theme
 from pulsimgui.views.widgets import StatusBanner
 
 
@@ -37,7 +38,9 @@ class PostProcessingPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("PostProcessingPanel")
         self._capability_enabled = True
+        self._theme: Theme = LIGHT_THEME
         self._setup_ui()
+        self.apply_theme(self._theme)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -184,11 +187,95 @@ class PostProcessingPanel(QFrame):
         layout.addWidget(self._spectral_summary_label)
 
         self._spectral_plot = pg.PlotWidget()
+        self._spectral_plot.setObjectName("postProcessingSpectralPlot")
         self._spectral_plot.setLabel("left", "Amplitude")
         self._spectral_plot.setLabel("bottom", "Frequency", units="Hz")
         self._spectral_plot.showGrid(x=True, y=True, alpha=0.25)
         layout.addWidget(self._spectral_plot, 1)
         return page
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply the active application theme to the analysis panel."""
+        self._theme = theme
+        c = theme.colors
+        self._status.apply_theme(theme)
+
+        self.setStyleSheet(f"""
+            QFrame#PostProcessingPanel {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
+                border-radius: 10px;
+            }}
+            QLabel#postProcessingTitle {{
+                color: {c.foreground};
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QFrame#PostProcessingPanel QLabel {{
+                color: {c.foreground};
+            }}
+            QFrame#PostProcessingPanel QComboBox,
+            QFrame#PostProcessingPanel QDoubleSpinBox,
+            QFrame#PostProcessingPanel QSpinBox,
+            QFrame#PostProcessingPanel QPushButton {{
+                background-color: {c.input_background};
+                color: {c.foreground};
+                border: 1px solid {c.input_border};
+                border-radius: 7px;
+                padding: 4px 8px;
+                min-height: 24px;
+            }}
+            QFrame#PostProcessingPanel QComboBox:hover,
+            QFrame#PostProcessingPanel QDoubleSpinBox:hover,
+            QFrame#PostProcessingPanel QSpinBox:hover,
+            QFrame#PostProcessingPanel QPushButton:hover {{
+                border-color: {c.input_focus_border};
+            }}
+            QFrame#PostProcessingPanel QListWidget,
+            QFrame#PostProcessingPanel QTableWidget {{
+                background-color: {c.background};
+                alternate-background-color: {c.panel_background};
+                color: {c.foreground};
+                border: 1px solid {c.panel_border};
+                border-radius: 8px;
+                gridline-color: {c.divider};
+            }}
+            QFrame#PostProcessingPanel QListWidget::item:selected,
+            QFrame#PostProcessingPanel QTableWidget::item:selected {{
+                background-color: {c.tree_item_selected};
+                color: {c.foreground};
+            }}
+            QFrame#PostProcessingPanel QListWidget::item:hover,
+            QFrame#PostProcessingPanel QTableWidget::item:hover {{
+                background-color: {c.tree_item_hover};
+            }}
+            QFrame#PostProcessingPanel QHeaderView::section {{
+                background-color: {c.panel_header};
+                color: {c.foreground_muted};
+                border: none;
+                border-right: 1px solid {c.divider};
+                border-bottom: 1px solid {c.divider};
+                padding: 4px 6px;
+                font-weight: 600;
+            }}
+            QFrame#PostProcessingPanel QComboBox QAbstractItemView {{
+                background-color: {c.menu_background};
+                color: {c.foreground};
+                border: 1px solid {c.panel_border};
+                selection-background-color: {c.menu_hover};
+                selection-color: {c.foreground};
+            }}
+        """)
+
+        plot_bg = c.plot_background
+        self._spectral_plot.setBackground(plot_bg)
+        self._spectral_plot.showGrid(x=True, y=True, alpha=0.18 if theme.is_dark else 0.28)
+        plot_item = self._spectral_plot.getPlotItem()
+        for axis_name in ("left", "bottom"):
+            axis = plot_item.getAxis(axis_name)
+            axis.setPen(pg.mkPen(c.plot_axis))
+            axis.setTickPen(pg.mkPen(c.plot_axis))
+            axis.setTextPen(pg.mkPen(c.plot_text))
 
     def _build_power_result_page(self) -> QWidget:
         page = QWidget()

@@ -388,6 +388,7 @@ class StatusBanner(QWidget):
         super().__init__(parent)
         self._status_type = status_type
         self._text = text
+        self._theme: Theme | None = None
 
         self._setup_ui()
         self._apply_style()
@@ -411,6 +412,44 @@ class StatusBanner(QWidget):
     def _apply_style(self) -> None:
         """Apply the style based on status type."""
         style = self._STYLES.get(self._status_type, self._STYLES["info"])
+        if self._theme is not None:
+            c = self._theme.colors
+            style = {
+                "success": {
+                    "bg": c.success_background,
+                    "border": c.success,
+                    "text": c.success,
+                    "icon": "check",
+                    "icon_color": c.success,
+                },
+                "error": {
+                    "bg": c.error_background,
+                    "border": c.error,
+                    "text": c.error,
+                    "icon": "error",
+                    "icon_color": c.error,
+                },
+                "warning": {
+                    "bg": c.warning_background,
+                    "border": c.warning,
+                    "text": c.warning,
+                    "icon": "warning",
+                    "icon_color": c.warning,
+                },
+                "info": {
+                    "bg": c.info_background,
+                    "border": c.info,
+                    "text": c.info,
+                    "icon": "info",
+                    "icon_color": c.info,
+                },
+            }.get(self._status_type, {
+                "bg": c.info_background,
+                "border": c.info,
+                "text": c.info,
+                "icon": "info",
+                "icon_color": c.info,
+            })
 
         # Set icon
         icon = IconService.get_icon(style["icon"], style["icon_color"])
@@ -439,6 +478,11 @@ class StatusBanner(QWidget):
     def setStatusType(self, status_type: str) -> None:
         """Set the status type and update styling."""
         self._status_type = status_type
+        self._apply_style()
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Apply one theme-aware semantic palette to the banner."""
+        self._theme = theme
         self._apply_style()
 
     @classmethod
