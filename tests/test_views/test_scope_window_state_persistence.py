@@ -17,6 +17,12 @@ def test_main_window_persists_scope_ui_state_on_close(monkeypatch, qapp) -> None
 
         scope_window = window._open_scope_window(scope)
         scope_window._on_toggle_left_panel_clicked(False)
+        scope_window._sidebar_tabs.setCurrentIndex(2)
+        scope_window._left_panel_width = 344
+        scope_window._right_panel_width = 296
+        scope_window._on_bottom_drawer_toggled(True)
+        scope_window._on_bottom_drawer_resize_requested(36)
+        resized_height = scope_window._bottom_drawer_height
         scope_window._on_measurement_key_toggled("rms", False)
         scope_window.close()
 
@@ -24,10 +30,20 @@ def test_main_window_persists_scope_ui_state_on_close(monkeypatch, qapp) -> None
         state = window._project.scope_windows[component_id]
         assert isinstance(state.ui_state, dict)
         assert state.ui_state["left_panel_visible"] is False
+        assert state.ui_state["left_panel_width"] == 344
+        assert state.ui_state["right_panel_width"] == 296
+        assert state.ui_state["sidebar_tab_index"] == 2
+        assert state.ui_state["bottom_drawer_expanded"] is True
+        assert state.ui_state["bottom_drawer_height"] == resized_height
         assert "rms" not in state.ui_state["measurement_keys"]
 
         reopened = window._open_scope_window(scope, update_state=False)
         assert reopened._left_panel_visible is False
+        assert reopened._left_panel_width == 344
+        assert reopened._right_panel_width == 296
+        assert reopened._sidebar_tabs.currentIndex() == 2
+        assert reopened._bottom_drawer_expanded is True
+        assert reopened._bottom_drawer_height == resized_height
         assert "rms" not in reopened._stacked_measurements.visible_measurement_keys()
         assert isinstance(window._project.scope_workspace_state, dict)
     finally:

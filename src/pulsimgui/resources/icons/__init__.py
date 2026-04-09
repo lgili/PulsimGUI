@@ -40,6 +40,8 @@ ICON_MAP = {
     "stop": "ph.stop",
     "pause": "ph.pause",
     "square": "ph.stop",
+    "step-forward": "ph.skip-forward",
+    "step-forward-filled": "ph.skip-forward-fill",
 
     # Navigation
     "chevron-right": "ph.caret-right",
@@ -52,6 +54,9 @@ ICON_MAP = {
     "settings": "ph.gear",
     "menu": "ph.list",
     "sidebar": "ph.sidebar-simple",
+    "sidebar-filled": "ph.sidebar-simple-fill",
+    "panel-left": "mdi6.page-layout-sidebar-left",
+    "panel-right": "mdi6.page-layout-sidebar-right",
     "x": "ph.x",
     "plus": "ph.plus",
     "minus": "ph.minus",
@@ -67,6 +72,7 @@ ICON_MAP = {
     "activity": "ph.activity",  # Measurements
     "tool": "ph.wrench",  # Misc
     "grid": "ph.grid-four",  # Grid
+    "grid-filled": "ph.grid-four-fill",  # Dense grid icon for compact toolbars
     "wire": "ph.path",  # Schematic wire tool
     "hand": "ph.hand",  # Selection/hand tool
     "rotate-cw": "ph.arrow-clockwise",  # Rotate clockwise
@@ -77,6 +83,7 @@ ICON_MAP = {
 
     # Status bar icons
     "crosshairs": "ph.crosshair",
+    "crosshair-simple": "ph.crosshair-simple",
     "zoom": "ph.magnifying-glass",
     "selection": "ph.selection",
     "cursor": "ph.cursor",
@@ -95,7 +102,17 @@ ICON_MAP = {
     "layers": "ph.stack",
     "table": "ph.table",
     "wave": "ph.wave-sine",
+    "waveform": "ph.waveform",
+    "fit-view": "ph.corners-out",
+    "measurements": "ph.ruler",
+    "measurements-filled": "ph.ruler-fill",
+    "math": "ph.function",
+    "math-function": "mdi6.function-variant",
+    "fft-chart": "mdi6.chart-bell-curve-cumulative",
+    "brand-wave": "ph.wave-sine",
     "sliders-horizontal": "ph.sliders-horizontal",
+    "style-tune": "mdi6.tune-variant",
+    "copy-filled": "ph.copy-fill",
     "lock": "ph.lock",
     "unlock": "ph.lock-open",
     "eye": "ph.eye",

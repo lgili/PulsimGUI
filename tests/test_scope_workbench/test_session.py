@@ -8,6 +8,10 @@ from pulsimgui.scope_workbench import (
     DEFAULT_MEASUREMENT_KEYS,
     INTERVAL_TARGETS,
     ScopeSampleBatch,
+    ScopeSelectionState,
+    ScopeCursorState,
+    ScopeMeasurementState,
+    ScopePanelState,
     ScopeSignalDescriptor,
     ScopeWorkbenchSession,
     ScopeWorkspaceState,
@@ -251,6 +255,124 @@ def test_interval_target_survives_workspace_roundtrip() -> None:
     payload = session.export_state_dict()
     restored = ScopeWorkspaceState.from_dict(payload)
     assert restored.scopes[0].interval_target == "full"
+
+
+def test_scope_state_roundtrips_nested_selection_cursor_measurement_and_panel_models() -> None:
+    session = ScopeWorkbenchSession("ws-nested")
+    scope_id = session.active_scope_id
+    session.set_scope_signals(scope_id, ["V(out)", "I(L)"])
+    session.set_scope_selection(
+        scope_id,
+        active_signal_id="V(out)",
+        selected_signal_ids=["V(out)", "I(L)"],
+        active_plot_group_id="V(out)",
+        active_saved_view_id="view-9",
+    )
+    session.set_scope_cursors(
+        scope_id,
+        enabled=True,
+        cursor_a=1e-6,
+        cursor_b=2e-6,
+        y1=4.2,
+        y2=5.1,
+        snap_mode="edges",
+    )
+    session.set_scope_measurements(scope_id, ["rms", "max"])
+    session.set_scope_interval_target(scope_id, "window")
+    session.set_scope_measurement_target(scope_id, "V(out)")
+    session.set_scope_panel_state(
+        scope_id,
+        left_panel_visible=False,
+        right_panel_visible=True,
+        bottom_drawer_expanded=True,
+        left_panel_width=312,
+        right_panel_width=288,
+        bottom_drawer_height=220,
+        sidebar_tab_index=2,
+        analysis_tab_index=1,
+        bottom_drawer_tab_index=0,
+    )
+
+    restored = ScopeWorkspaceState.from_dict(session.export_state_dict())
+    scope = restored.scopes[0]
+
+    assert isinstance(scope.selection_state, ScopeSelectionState)
+    assert scope.selection_state.active_signal_id == "V(out)"
+    assert scope.selection_state.selected_signal_ids == ["V(out)", "I(L)"]
+    assert scope.selection_state.active_plot_group_id == "V(out)"
+    assert scope.selection_state.active_saved_view_id == "view-9"
+    assert isinstance(scope.cursor_state, ScopeCursorState)
+    assert scope.cursor_state.enabled is True
+    assert scope.cursor_state.cursor_a == 1e-6
+    assert scope.cursor_state.cursor_b == 2e-6
+    assert scope.cursor_state.y1 == 4.2
+    assert scope.cursor_state.y2 == 5.1
+    assert scope.cursor_state.snap_mode == "edges"
+    assert isinstance(scope.measurement_state, ScopeMeasurementState)
+    assert scope.measurement_state.measurement_keys == ["rms", "max"]
+    assert scope.measurement_state.interval_target == "window"
+    assert scope.measurement_state.target_signal_id == "V(out)"
+    assert isinstance(scope.panel_state, ScopePanelState)
+    assert scope.panel_state.left_panel_visible is False
+    assert scope.panel_state.bottom_drawer_expanded is True
+    assert scope.panel_state.left_panel_width == 312
+    assert scope.panel_state.analysis_tab_index == 1
+    assert scope.measurement_keys == ["rms", "max"]
+    assert scope.interval_target == "window"
+    assert scope.cursors_enabled is True
+
+
+def test_scope_view_state_from_legacy_flat_payload_builds_nested_state_models() -> None:
+    restored = ScopeWorkspaceState.from_dict(
+        {
+            "workspace_id": "ws-legacy-flat",
+            "scopes": [
+                {
+                    "scope_id": "scope-1",
+                    "name": "Scope 1",
+                    "signal_keys": ["V(out)"],
+                    "measurement_keys": ["rms"],
+                    "cursors_enabled": True,
+                    "cursor_a": 1e-6,
+                    "cursor_b": 2e-6,
+                    "interval_target": "between_cursors",
+                    "active_signal": "V(out)",
+                    "left_panel_visible": False,
+                    "bottom_drawer_expanded": True,
+                    "analysis_tab_index": 2,
+                }
+            ],
+        }
+    )
+
+    scope = restored.scopes[0]
+    assert scope.selection_state.active_signal_id == "V(out)"
+    assert scope.cursor_state.enabled is True
+    assert scope.cursor_state.cursor_a == 1e-6
+    assert scope.measurement_state.interval_target == "a_to_b"
+    assert scope.panel_state.left_panel_visible is False
+    assert scope.panel_state.bottom_drawer_expanded is True
+    assert scope.panel_state.analysis_tab_index == 2
+
+
+def test_session_scope_copies_do_not_share_nested_state_references() -> None:
+    session = ScopeWorkbenchSession("ws-copy")
+    scope_id = session.active_scope_id
+    session.set_scope_selection(scope_id, active_signal_id="V(out)", selected_signal_ids=["V(out)"])
+    session.set_scope_cursors(scope_id, enabled=True, cursor_a=1e-6, cursor_b=2e-6, snap_mode="peaks")
+    session.set_scope_panel_state(scope_id, left_panel_visible=False)
+
+    copy_scope = session.get_scope(scope_id)
+    copy_scope.selection_state.active_signal_id = "I(L)"
+    copy_scope.selection_state.selected_signal_ids.append("I(L)")
+    copy_scope.cursor_state.snap_mode = "edges"
+    copy_scope.panel_state.left_panel_visible = True
+
+    original = session.get_scope(scope_id)
+    assert original.selection_state.active_signal_id == "V(out)"
+    assert original.selection_state.selected_signal_ids == ["V(out)"]
+    assert original.cursor_state.snap_mode == "peaks"
+    assert original.panel_state.left_panel_visible is False
 
 
 def test_legacy_interval_target_aliases_normalize_on_roundtrip() -> None:

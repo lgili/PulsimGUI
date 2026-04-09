@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -71,22 +73,22 @@ from pulsimgui.views.waveform.waveform_viewer import (
 from .bindings import ScopeChannelBinding, ScopeSignal
 
 
-_MATH_BINARY_OPS: dict[type[ast.operator], Callable[[object, object], object]] = {
-    ast.Add: lambda left, right: left + right,
-    ast.Sub: lambda left, right: left - right,
-    ast.Mult: lambda left, right: left * right,
-    ast.Div: lambda left, right: left / right,
-    ast.Pow: lambda left, right: left ** right,
+_MATH_BINARY_OPS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
+    ast.Add: lambda left, right: left + right,  # type: ignore[operator]
+    ast.Sub: lambda left, right: left - right,  # type: ignore[operator]
+    ast.Mult: lambda left, right: left * right,  # type: ignore[operator]
+    ast.Div: lambda left, right: left / right,  # type: ignore[operator]
+    ast.Pow: lambda left, right: left ** right,  # type: ignore[operator]
 }
-_MATH_UNARY_OPS: dict[type[ast.unaryop], Callable[[object], object]] = {
+_MATH_UNARY_OPS: dict[type[ast.unaryop], Callable[[Any], Any]] = {
     ast.UAdd: lambda value: value,
-    ast.USub: lambda value: -value,
+    ast.USub: lambda value: -value,  # type: ignore[operator]
 }
 _MATH_ALLOWED_NAMES = frozenset({"A", "B", "t"})
 _MATH_ALLOWED_CALLS = frozenset({"abs", "sqrt", "square", "derivative", "integral", "moving_avg", "avg"})
 
 
-def _math_moving_average(values: object, window: object) -> np.ndarray:
+def _math_moving_average(values: Any, window: Any) -> np.ndarray:
     array = np.asarray(values, dtype=float)
     kernel_size = int(round(float(window)))
     if kernel_size < 2:
@@ -128,7 +130,7 @@ def _math_validate_ast(node: ast.AST) -> None:
     raise ValueError("Unsupported expression syntax")
 
 
-def _math_eval_ast(node: ast.AST, env: dict[str, object], time: np.ndarray) -> object:
+def _math_eval_ast(node: ast.AST, env: Mapping[str, Any], time: np.ndarray) -> Any:
     if isinstance(node, ast.Expression):
         return _math_eval_ast(node.body, env, time)
     if isinstance(node, ast.BinOp):
@@ -141,10 +143,13 @@ def _math_eval_ast(node: ast.AST, env: dict[str, object], time: np.ndarray) -> o
     if isinstance(node, ast.Name):
         return env[node.id]
     if isinstance(node, ast.Constant):
-        return float(node.value)
+        val = node.value
+        if not isinstance(val, (int, float)):
+            raise ValueError("Only numeric constants are supported")
+        return float(val)
     if isinstance(node, ast.Call):
         func_name = node.func.id if isinstance(node.func, ast.Name) else ""
-        args = [_math_eval_ast(arg, env, time) for arg in node.args]
+        args: list[Any] = [_math_eval_ast(arg, env, time) for arg in node.args]
         if func_name == "abs":
             return np.abs(args[0])
         if func_name == "sqrt":
@@ -161,7 +166,7 @@ def _math_eval_ast(node: ast.AST, env: dict[str, object], time: np.ndarray) -> o
     raise ValueError("Unsupported expression syntax")
 
 
-def _evaluate_math_expression(formula: str, env: dict[str, object], time: np.ndarray) -> np.ndarray:
+def _evaluate_math_expression(formula: str, env: Mapping[str, Any], time: np.ndarray) -> np.ndarray:
     expression = str(formula or "").strip()
     if not expression:
         raise ValueError("Expression cannot be empty")
@@ -860,8 +865,8 @@ class ScopeWindow(QWidget):
     STACKED_MAX_DISPLAY_POINTS = 10000
     STACKED_TOTAL_POINT_BUDGET = 24000
     STACKED_MIN_POINTS_PER_SIGNAL = 1200
-    BOTTOM_DRAWER_MIN_HEIGHT = 132
-    BOTTOM_DRAWER_MAX_HEIGHT = 320
+    BOTTOM_DRAWER_MIN_HEIGHT = 60
+    BOTTOM_DRAWER_MAX_HEIGHT = 360
 
     def __init__(
         self,
@@ -895,11 +900,12 @@ class ScopeWindow(QWidget):
         self._stacked_decimation_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
         self._stacked_active_signal: str | None = None
         self._math_signal_counter = 0
+        self._overview_enabled = False
         self._stacked_cursors_enabled = False
-        self._left_panel_visible = True
-        self._right_panel_visible = True
-        self._left_panel_width = 300
-        self._right_panel_width = 300
+        self._left_panel_visible = False
+        self._right_panel_visible = False
+        self._left_panel_width = 220
+        self._right_panel_width = 232
         self._collapsed_panel_width = 64
         self._stacked_grid_enabled = True
         self._stacked_cursor_lines: list[tuple[pg.InfiniteLine, pg.InfiniteLine]] = []
@@ -921,7 +927,8 @@ class ScopeWindow(QWidget):
         self._signal_units: dict[str, str] = {}
         self._inspector_snap_mode: str = "none"
         self._bottom_drawer_expanded = False
-        self._bottom_drawer_height = 196
+        self._bottom_drawer_height = 132
+        self._bottom_drawer_user_height = False
         self._bottom_drawer_active_tab = 0
         self._bottom_events: list[str] = []
         self._simulation_state: str = "ready"
@@ -1032,7 +1039,7 @@ class ScopeWindow(QWidget):
         selector_layout.setSpacing(6)
         self._scope_selector_hint = QLabel("Active Scope")
         self._scope_selector_hint.setObjectName("scopeSidebarHint")
-        selector_layout.addWidget(self._scope_selector_hint, stretch=0)
+        self._scope_selector_hint.setVisible(False)
         self._scope_selector_combo = QComboBox()
         self._scope_selector_combo.setObjectName("scopeSidebarScopeCombo")
         self._scope_selector_combo.setMinimumWidth(130)
@@ -1132,6 +1139,7 @@ class ScopeWindow(QWidget):
         _scopes_btn_layout.addStretch(1)
         _scopes_tab_layout.addWidget(_scopes_btn_row, stretch=0)
         self._sidebar_tabs.addTab(_scopes_tab_widget, "Scopes")
+        self._sidebar_tabs.setTabVisible(1, False)
 
         # Tab 2: Traces
         _traces_tab_widget = QWidget()
@@ -1462,10 +1470,10 @@ class ScopeWindow(QWidget):
         self._stacked_splitter.setCollapsible(0, False)
         self._stacked_splitter.setCollapsible(1, False)
         self._stacked_splitter.setCollapsible(2, False)
-        self._stacked_splitter.setStretchFactor(0, 2)
-        self._stacked_splitter.setStretchFactor(1, 7)
-        self._stacked_splitter.setStretchFactor(2, 2)
-        self._stacked_splitter.setSizes([300, 900, 0])
+        self._stacked_splitter.setStretchFactor(0, 1)
+        self._stacked_splitter.setStretchFactor(1, 10)
+        self._stacked_splitter.setStretchFactor(2, 1)
+        self._stacked_splitter.setSizes([220, 1120, 232])
         self._stacked_splitter.splitterMoved.connect(self._on_splitter_moved)
 
         self._mapping_label = QLabel()
@@ -1784,14 +1792,14 @@ class ScopeWindow(QWidget):
         self._scope_bottom_controls = QWidget()
         self._scope_bottom_controls.setObjectName("scopeBottomControlBar")
         bottom_layout = QVBoxLayout(self._scope_bottom_controls)
-        bottom_layout.setContentsMargins(8, 5, 8, 5)
-        bottom_layout.setSpacing(5)
+        bottom_layout.setContentsMargins(4, 3, 4, 3)
+        bottom_layout.setSpacing(3)
 
         self._scope_quick_metrics_row = QWidget()
         self._scope_quick_metrics_row.setObjectName("scopeQuickMetricsRow")
         quick_layout = QHBoxLayout(self._scope_quick_metrics_row)
         quick_layout.setContentsMargins(0, 0, 0, 0)
-        quick_layout.setSpacing(8)
+        quick_layout.setSpacing(4)
         self._quick_metric_signal = QLabel("No signal")
         self._quick_metric_signal.setObjectName("scopeQuickMetricPrimary")
         self._quick_metric_rms = QLabel("RMS —")
@@ -1816,13 +1824,12 @@ class ScopeWindow(QWidget):
         self._scope_bottom_viewport_row.setObjectName("scopeBottomViewportRow")
         viewport_layout = QHBoxLayout(self._scope_bottom_viewport_row)
         viewport_layout.setContentsMargins(0, 0, 0, 0)
-        viewport_layout.setSpacing(6)
+        viewport_layout.setSpacing(2)
 
-        viewport_layout.addWidget(QLabel("Timeline"))
         self._timeline_dec_btn = QPushButton("◀")
         self._timeline_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_dec_btn.setFixedWidth(24)
-        self._timeline_dec_btn.setToolTip("Pan the visible time window to the left")
+        self._timeline_dec_btn.setFixedWidth(20)
+        self._timeline_dec_btn.setToolTip("Pan left")
         self._timeline_dec_btn.clicked.connect(lambda: self._step_timeline_window(-20))
         viewport_layout.addWidget(self._timeline_dec_btn)
 
@@ -1830,28 +1837,27 @@ class ScopeWindow(QWidget):
         self._timeline_slider.setRange(0, 1000)
         self._timeline_slider.setValues(0, 1000)
         self._timeline_slider.setToolTip(
-            "Visible time window. Drag handles or use Left/Right arrows to pan."
+            "Timeline — drag handles to set visible window; scroll to pan."
         )
         self._timeline_slider.rangeChanged.connect(self._on_timeline_slider_changed)
-        viewport_layout.addWidget(self._timeline_slider, stretch=4)
+        viewport_layout.addWidget(self._timeline_slider, stretch=5)
 
         self._timeline_inc_btn = QPushButton("▶")
         self._timeline_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_inc_btn.setFixedWidth(24)
-        self._timeline_inc_btn.setToolTip("Pan the visible time window to the right")
+        self._timeline_inc_btn.setFixedWidth(20)
+        self._timeline_inc_btn.setToolTip("Pan right")
         self._timeline_inc_btn.clicked.connect(lambda: self._step_timeline_window(20))
         viewport_layout.addWidget(self._timeline_inc_btn)
 
         self._timeline_range_label = QLabel("-- to --")
         self._timeline_range_label.setObjectName("scopeSliderInfoLabel")
-        self._timeline_range_label.setMinimumWidth(132)
+        self._timeline_range_label.setMinimumWidth(0)
         viewport_layout.addWidget(self._timeline_range_label)
 
-        viewport_layout.addWidget(QLabel("Zoom"))
         self._zoom_dec_btn = QPushButton("−")
         self._zoom_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_dec_btn.setFixedWidth(24)
-        self._zoom_dec_btn.setToolTip("Decrease zoom and widen the visible time window")
+        self._zoom_dec_btn.setFixedWidth(20)
+        self._zoom_dec_btn.setToolTip("Zoom out")
         self._zoom_dec_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, -5))
         viewport_layout.addWidget(self._zoom_dec_btn)
 
@@ -1859,24 +1865,25 @@ class ScopeWindow(QWidget):
         self._zoom_slider.setObjectName("scopeZoomSlider")
         self._zoom_slider.setRange(0, 100)
         self._zoom_slider.setValue(0)
-        self._zoom_slider.setToolTip("Zoom percentage for the current scope viewport")
+        self._zoom_slider.setToolTip("Zoom — scroll on plot or drag to zoom in/out")
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
         viewport_layout.addWidget(self._zoom_slider, stretch=3)
 
         self._zoom_inc_btn = QPushButton("+")
         self._zoom_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_inc_btn.setFixedWidth(24)
-        self._zoom_inc_btn.setToolTip("Increase zoom around the current viewport center")
+        self._zoom_inc_btn.setFixedWidth(20)
+        self._zoom_inc_btn.setToolTip("Zoom in")
         self._zoom_inc_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, 5))
         viewport_layout.addWidget(self._zoom_inc_btn)
 
         self._zoom_percent_label = QLabel("0%")
         self._zoom_percent_label.setObjectName("scopeSliderInfoLabel")
-        self._zoom_percent_label.setMinimumWidth(34)
+        self._zoom_percent_label.setMinimumWidth(28)
+        self._zoom_percent_label.setMaximumWidth(38)
         viewport_layout.addWidget(self._zoom_percent_label)
 
-        self._autoscale_btn = QPushButton("AutoScale")
-        self._autoscale_btn.setToolTip("Fit the scope viewport to the full available data (F)")
+        self._autoscale_btn = QPushButton("Fit")
+        self._autoscale_btn.setToolTip("Fit viewport to full data range (F)")
         self._autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         viewport_layout.addWidget(self._autoscale_btn)
         self._measurement_menu_btn = QToolButton()
@@ -1903,14 +1910,14 @@ class ScopeWindow(QWidget):
         drawer_header_layout.setSpacing(8)
         self._scope_bottom_measure_title = QLabel("Analysis Drawer")
         self._scope_bottom_measure_title.setObjectName("scopeBottomMeasureTitle")
-        drawer_header_layout.addWidget(self._scope_bottom_measure_title)
+        self._scope_bottom_measure_title.setVisible(False)
         self._scope_bottom_measure_summary = QLabel("Scope: Full Range  |  Δt: —  |  f: —")
         self._scope_bottom_measure_summary.setObjectName("scopeBottomMeasureSummary")
         drawer_header_layout.addWidget(self._scope_bottom_measure_summary)
         drawer_header_layout.addStretch(1)
         self._scope_bottom_measure_mode = QLabel("Sample based")
         self._scope_bottom_measure_mode.setObjectName("scopeBottomMeasureMode")
-        drawer_header_layout.addWidget(self._scope_bottom_measure_mode)
+        self._scope_bottom_measure_mode.setVisible(False)
         self._scope_bottom_drawer_toggle_btn = QToolButton()
         self._scope_bottom_drawer_toggle_btn.setObjectName("scopeBottomDrawerToggleBtn")
         self._scope_bottom_drawer_toggle_btn.setCheckable(True)
@@ -1918,7 +1925,10 @@ class ScopeWindow(QWidget):
         self._scope_bottom_drawer_toggle_btn.setText("Expand")
         self._scope_bottom_drawer_toggle_btn.toggled.connect(self._on_bottom_drawer_toggled)
         drawer_header_layout.addWidget(self._scope_bottom_drawer_toggle_btn)
-        bottom_layout.addWidget(self._scope_bottom_drawer_header, stretch=0)
+        _vp_layout = self._scope_bottom_viewport_row.layout()
+        if _vp_layout is not None:
+            _vp_layout.addWidget(self._scope_bottom_drawer_toggle_btn)
+        self._scope_bottom_drawer_header.setVisible(False)
 
         self._scope_bottom_resize_handle = BottomDrawerResizeHandle()
         self._scope_bottom_resize_handle.setToolTip("Drag to resize the analysis drawer")
@@ -1931,7 +1941,7 @@ class ScopeWindow(QWidget):
         self._scope_bottom_tab.setObjectName("scopeBottomDrawerBody")
         drawer_layout = QVBoxLayout(self._scope_bottom_tab)
         drawer_layout.setContentsMargins(0, 0, 0, 0)
-        drawer_layout.setSpacing(4)
+        drawer_layout.setSpacing(2)
 
         self._scope_bottom_tabs = QTabWidget()
         self._scope_bottom_tabs.setObjectName("scopeBottomTabs")
@@ -1940,7 +1950,7 @@ class ScopeWindow(QWidget):
         measurements_page = QWidget()
         measure_layout = QVBoxLayout(measurements_page)
         measure_layout.setContentsMargins(0, 0, 0, 0)
-        measure_layout.setSpacing(4)
+        measure_layout.setSpacing(2)
 
         self._scope_bottom_measure_table = QTableWidget(0, 0)
         self._scope_bottom_measure_table.setObjectName("scopeBottomMeasureTable")
@@ -1950,14 +1960,19 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._scope_bottom_measure_table.horizontalHeader().setMinimumSectionSize(54)
         self._scope_bottom_measure_table.horizontalHeader().setDefaultSectionSize(84)
-        self._scope_bottom_measure_table.horizontalHeader().setFixedHeight(20)
+        self._scope_bottom_measure_table.horizontalHeader().setFixedHeight(16)
         self._scope_bottom_measure_table.verticalHeader().setVisible(False)
         self._scope_bottom_measure_table.setShowGrid(True)
         self._scope_bottom_measure_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scope_bottom_measure_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scope_bottom_measure_table.setMinimumHeight(86)
-        self._scope_bottom_measure_table.setMaximumHeight(180)
-        measure_layout.addWidget(self._scope_bottom_measure_table)
+        self._scope_bottom_measure_table.setMinimumHeight(0)
+        self._scope_bottom_measure_table.setMaximumHeight(16777215)
+        self._scope_bottom_measure_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        measure_layout.addWidget(self._scope_bottom_measure_table, stretch=0)
+        measure_layout.addStretch(1)
         self._scope_bottom_tabs.addTab(measurements_page, "Measurements")
         self._scope_bottom_tabs.setTabToolTip(0, "Detailed per-signal measurements")
 
@@ -1973,6 +1988,9 @@ class ScopeWindow(QWidget):
         self._scope_bottom_console.setToolTip("Technical log output for this scope workspace")
         self._scope_bottom_tabs.addTab(self._scope_bottom_console, "Console")
         self._scope_bottom_tabs.setTabToolTip(2, "Technical logs and parser messages")
+        self._scope_bottom_tabs.setTabVisible(1, False)
+        self._scope_bottom_tabs.setTabVisible(2, False)
+        self._scope_bottom_tabs.tabBar().setVisible(False)
 
         drawer_layout.addWidget(self._scope_bottom_tabs)
         bottom_layout.addWidget(self._scope_bottom_tab, stretch=1)
@@ -2004,6 +2022,7 @@ class ScopeWindow(QWidget):
         self._scope_bottom_controls.setVisible(True)
         self._scope_bottom_tab.setVisible(self._bottom_drawer_expanded)
         self._apply_bottom_drawer_height()
+        self._fit_bottom_measurements_geometry(grow_window=False)
 
         self._mapping_label.setVisible(False)
         self._message_label.setVisible(False)
@@ -2537,6 +2556,8 @@ class ScopeWindow(QWidget):
         if not hasattr(self, "_scope_bottom_tab"):
             return
         expanded = bool(self._bottom_drawer_expanded)
+        if hasattr(self, "_scope_quick_metrics_row"):
+            self._scope_quick_metrics_row.setVisible(not expanded)
         self._scope_bottom_tab.setVisible(expanded)
         if hasattr(self, "_scope_bottom_resize_handle"):
             self._scope_bottom_resize_handle.setVisible(expanded)
@@ -2549,6 +2570,57 @@ class ScopeWindow(QWidget):
         else:
             self._scope_bottom_tab.setMinimumHeight(0)
             self._scope_bottom_tab.setMaximumHeight(16777215)
+
+    def _bottom_measure_table_content_height(self) -> int:
+        """Return the exact table height needed to display current rows without dead space."""
+        if not hasattr(self, "_scope_bottom_measure_table"):
+            return 0
+        table = self._scope_bottom_measure_table
+        rows = table.rowCount()
+        header_height = table.horizontalHeader().height() or 20
+        frame_height = table.frameWidth() * 2
+        if rows <= 0:
+            return header_height + frame_height + 26
+        rows_height = sum(table.rowHeight(row) for row in range(rows))
+        return header_height + frame_height + rows_height + 2
+
+    def _preferred_bottom_drawer_height(self) -> int:
+        """Return the body height that best fits the current bottom measurements table."""
+        table_height = self._bottom_measure_table_content_height()
+        # Tab container/frame overhead around the table page.
+        return self._clamp_bottom_drawer_height(table_height + 8)
+
+    def _grow_window_for_bottom_drawer(self, extra_height: int) -> None:
+        """Grow the window when the drawer needs more room for many signals."""
+        delta = int(extra_height)
+        if delta <= 0:
+            return
+        target_height = self.height() + delta
+        if self.isVisible():
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen is not None:
+                target_height = min(screen.availableGeometry().height(), target_height)
+        if target_height > self.height():
+            self.resize(max(self.width(), self.minimumWidth()), max(target_height, self.minimumHeight()))
+
+    def _fit_bottom_measurements_geometry(self, *, grow_window: bool) -> None:
+        """Synchronize the bottom table and drawer height to the current row count."""
+        if not hasattr(self, "_scope_bottom_measure_table"):
+            return
+        table_height = self._bottom_measure_table_content_height()
+        self._scope_bottom_measure_table.setFixedHeight(table_height)
+
+        current_height = self._clamp_bottom_drawer_height(self._bottom_drawer_height)
+        required_height = self._preferred_bottom_drawer_height()
+        if self._bottom_drawer_user_height:
+            target_height = max(current_height, required_height)
+        else:
+            target_height = required_height
+        if grow_window and self._bottom_drawer_expanded and target_height > current_height:
+            self._grow_window_for_bottom_drawer(target_height - current_height)
+        self._bottom_drawer_height = target_height
+        if self._bottom_drawer_expanded:
+            self._apply_bottom_drawer_height()
 
     def _serialize_trace_styles(self) -> dict[str, dict[str, object]]:
         """Export trace-style overrides using JSON-friendly scalar/list types."""
@@ -2686,29 +2758,16 @@ class ScopeWindow(QWidget):
 
         left_width_raw = state.get("left_panel_width")
         if isinstance(left_width_raw, (int, float)):
-            self._left_panel_width = max(270, min(380, int(left_width_raw)))
+            self._left_panel_width = max(208, min(380, int(left_width_raw)))
 
         right_width_raw = state.get("right_panel_width")
         if isinstance(right_width_raw, (int, float)):
-            self._right_panel_width = max(280, min(420, int(right_width_raw)))
+            self._right_panel_width = max(220, min(420, int(right_width_raw)))
 
         bottom_height_raw = state.get("bottom_drawer_height")
         if isinstance(bottom_height_raw, (int, float)):
             self._bottom_drawer_height = self._clamp_bottom_drawer_height(bottom_height_raw)
-
-        left_visible_raw = state.get("left_panel_visible")
-        if isinstance(left_visible_raw, bool):
-            self._left_panel_toggle_btn.blockSignals(True)
-            self._left_panel_toggle_btn.setChecked(left_visible_raw)
-            self._left_panel_toggle_btn.blockSignals(False)
-            self._left_panel_visible = left_visible_raw
-
-        right_visible_raw = state.get("right_panel_visible")
-        if isinstance(right_visible_raw, bool):
-            self._right_panel_toggle_btn.blockSignals(True)
-            self._right_panel_toggle_btn.setChecked(right_visible_raw)
-            self._right_panel_toggle_btn.blockSignals(False)
-            self._right_panel_visible = right_visible_raw
+            self._bottom_drawer_user_height = True
 
         measurement_keys_raw = state.get("measurement_keys")
         if isinstance(measurement_keys_raw, list):
@@ -3894,12 +3953,13 @@ class ScopeWindow(QWidget):
 
     def _reset_scope_layout(self) -> None:
         """Restore the default panel and drawer layout."""
-        self._left_panel_visible = True
-        self._right_panel_visible = True
-        self._left_panel_width = 300
-        self._right_panel_width = 300
+        self._left_panel_visible = False
+        self._right_panel_visible = False
+        self._left_panel_width = 220
+        self._right_panel_width = 232
         self._bottom_drawer_expanded = False
-        self._bottom_drawer_height = 196
+        self._bottom_drawer_height = 132
+        self._bottom_drawer_user_height = False
         self._scope_bottom_drawer_toggle_btn.blockSignals(True)
         self._scope_bottom_drawer_toggle_btn.setChecked(False)
         self._scope_bottom_drawer_toggle_btn.blockSignals(False)
@@ -4078,7 +4138,15 @@ class ScopeWindow(QWidget):
 
     def _on_bottom_drawer_toggled(self, checked: bool) -> None:
         """Expand or collapse the detailed bottom drawer."""
+        was_expanded = self._bottom_drawer_expanded
+        previous_body_height = self._scope_bottom_tab.height() if hasattr(self, "_scope_bottom_tab") else 0
         self._bottom_drawer_expanded = bool(checked)
+        if self._bottom_drawer_expanded:
+            self._fit_bottom_measurements_geometry(grow_window=was_expanded)
+            if not was_expanded:
+                self._grow_window_for_bottom_drawer(
+                    max(0, self._bottom_drawer_height - previous_body_height)
+                )
         self._apply_bottom_drawer_height()
         self._scope_bottom_drawer_toggle_btn.blockSignals(True)
         self._scope_bottom_drawer_toggle_btn.setChecked(bool(checked))
@@ -4094,6 +4162,7 @@ class ScopeWindow(QWidget):
         """Resize the drawer body from the drag handle."""
         if not self._bottom_drawer_expanded:
             return
+        self._bottom_drawer_user_height = True
         self._bottom_drawer_height = self._clamp_bottom_drawer_height(
             self._bottom_drawer_height + int(delta)
         )
@@ -4730,21 +4799,21 @@ class ScopeWindow(QWidget):
             }}
             QLabel#scopeQuickMetricPrimary {{
                 color: {shell["text"]};
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 700;
             }}
             QLabel#scopeQuickMetricChip {{
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
                 background-color: {shell["subtle_fill"]};
                 border: 1px solid {shell["badge_border"]};
                 border-radius: 8px;
-                padding: 3px 8px;
+                padding: 2px 6px;
             }}
             QWidget#scopeBottomControlBar QLabel {{
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QWidget#scopeBottomViewportRow {{
@@ -4787,8 +4856,8 @@ class ScopeWindow(QWidget):
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
-                padding: 2px 10px;
-                min-height: 22px;
+                padding: 1px 8px;
+                min-height: 20px;
                 font-weight: 600;
             }}
             QToolButton#scopeBottomDrawerToggleBtn:hover {{
@@ -4806,9 +4875,9 @@ class ScopeWindow(QWidget):
                 border-bottom: none;
                 border-top-left-radius: 7px;
                 border-top-right-radius: 7px;
-                padding: 5px 10px;
-                margin-right: 4px;
-                font-size: 9px;
+                padding: 4px 8px;
+                margin-right: 3px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QTabWidget#scopeBottomTabs > QTabBar::tab:selected {{
@@ -4822,7 +4891,7 @@ class ScopeWindow(QWidget):
                 border-radius: 6px;
                 gridline-color: {shell["border"]};
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 8px;
             }}
             QTableWidget#scopeBottomMeasureTable QHeaderView::section {{
                 background-color: {shell["header_bg"]};
@@ -4830,8 +4899,8 @@ class ScopeWindow(QWidget):
                 border: none;
                 border-right: 1px solid {shell["border"]};
                 border-bottom: 1px solid {shell["border"]};
-                padding: 3px 6px;
-                font-size: 9px;
+                padding: 2px 5px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QListWidget#scopeBottomEventsList,
@@ -4849,21 +4918,22 @@ class ScopeWindow(QWidget):
             }}
             QLabel#scopeStatusLabel {{
                 color: {shell["muted"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QLabel#scopeSliderInfoLabel {{
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QPushButton#scopeSliderStepBtn {{
-                min-width: 22px;
-                max-width: 22px;
-                min-height: 22px;
-                max-height: 22px;
+                min-width: 20px;
+                max-width: 20px;
+                min-height: 18px;
+                max-height: 18px;
                 padding: 0px;
-                border-radius: 7px;
+                font-size: 8px;
+                border-radius: 6px;
                 background-color: {shell["button_bg"]};
                 border: 1px solid {shell["border"]};
                 color: {shell["button_text"]};
@@ -4944,8 +5014,8 @@ class ScopeWindow(QWidget):
                 background-color: {shell["button_bg"]};
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
-                min-height: 22px;
-                padding: 3px 9px;
+                min-height: 20px;
+                padding: 2px 8px;
             }}
             QWidget#scopeBottomControlBar QPushButton:hover {{
                 background-color: {shell["button_hover_bg"]};
@@ -4979,8 +5049,8 @@ class ScopeWindow(QWidget):
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
-                padding: 2px 8px;
-                min-height: 22px;
+                padding: 1px 7px;
+                min-height: 20px;
                 font-weight: 600;
             }}
             QToolButton#scopeMeasurementMenuBtn:hover {{
@@ -5623,7 +5693,7 @@ class ScopeWindow(QWidget):
                 )
 
         target_group = self._selected_plot_group_leader
-        if target_group in self._plot_overlay_layouts_by_group:
+        if self._overview_enabled and target_group in self._plot_overlay_layouts_by_group:
             overlay_layout = self._plot_overlay_layouts_by_group[target_group]
             overlay_layout.addWidget(
                 self._overview_inset,
@@ -5632,6 +5702,8 @@ class ScopeWindow(QWidget):
                 alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
             )
             self._overview_inset.show()
+        elif hasattr(self, "_overview_inset"):
+            self._overview_inset.hide()
         all_colors = {
             name: color
             for name in self._stacked_signals
@@ -5675,7 +5747,7 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.setRowCount(len(table_data))
 
         for row, signal_name in enumerate(table_data.keys()):
-            self._scope_bottom_measure_table.setRowHeight(row, 22)
+            self._scope_bottom_measure_table.setRowHeight(row, 18)
             signal_item = QTableWidgetItem(self._display_signal_name(signal_name))
             signal_color = self._stacked_signal_list.get_signal_color(signal_name)
             if signal_color is not None:
@@ -5689,10 +5761,7 @@ class ScopeWindow(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._scope_bottom_measure_table.setItem(row, col, item)
 
-        content_rows = max(1, len(table_data))
-        target_height = 20 + (content_rows * 22) + 8
-        target_height = max(74, min(138, target_height))
-        self._scope_bottom_measure_table.setFixedHeight(target_height)
+        self._fit_bottom_measurements_geometry(grow_window=True)
 
         scope_text = self._measurement_scope_label()
         if dt is None:
@@ -6118,7 +6187,7 @@ class ScopeWindow(QWidget):
             self._left_sidebar_actions_row.setVisible(True)
             self._create_math_signal_btn.setVisible(True)
             self._stacked_signal_list.setVisible(True)
-            self._stacked_sidebar.setMinimumWidth(270)
+            self._stacked_sidebar.setMinimumWidth(208)
             self._stacked_sidebar.setMaximumWidth(380)
             self._left_panel_toggle_btn.setToolTip(
                 self._compose_scope_action_tooltip(
@@ -6156,7 +6225,7 @@ class ScopeWindow(QWidget):
 
         if self._right_panel_visible:
             self._right_header_label.setVisible(True)
-            self._stacked_right_panel.setMinimumWidth(280)
+            self._stacked_right_panel.setMinimumWidth(220)
             self._stacked_right_panel.setMaximumWidth(420)
             self._stacked_right_panel.setVisible(True)
             self._right_panel_toggle_btn.setToolTip(
@@ -7382,15 +7451,8 @@ class ScopeWindow(QWidget):
             axis_badge = self._axis_badge_text(primary_signal_name)
             subtitle_text = f"Axis {axis_badge}"
             if len(group_signal_names) > 1:
-                overlay_names = [
-                    self._display_signal_name(name)
-                    for name in group_signal_names
-                    if name != primary_signal_name
-                ]
-                overlay_preview = ", ".join(overlay_names[:2])
-                if len(overlay_names) > 2:
-                    overlay_preview = f"{overlay_preview}, ..."
-                subtitle_text = f"Axis {axis_badge}  •  Overlay: {overlay_preview}"
+                extra = len(group_signal_names) - 1
+                subtitle_text = f"Axis {axis_badge}  •  +{extra} overlaid"
             subtitle_label = QLabel(subtitle_text)
             subtitle_label.setObjectName("scopePlotHeaderMeta")
             title_stack_layout.addWidget(subtitle_label)
@@ -7447,9 +7509,6 @@ class ScopeWindow(QWidget):
                 first_plot = plot
             else:
                 plot.setXLink(first_plot)
-
-            if len(group_signal_names) > 1:
-                item.addLegend(offset=(8, 8))
 
             right_view_box: ScopePlotViewBox | None = None
             if group_right_signal_names:
@@ -7561,13 +7620,7 @@ class ScopeWindow(QWidget):
                 alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
             )
             if group_leader == overview_target_leader:
-                plot_overlay_layout.addWidget(
-                    self._overview_inset,
-                    0,
-                    0,
-                    alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
-                )
-                self._overview_inset.show()
+                self._overview_inset.hide()
 
             panel_layout.addWidget(plot_container)
             self._plot_widgets_by_group[group_leader] = plot
@@ -7602,10 +7655,6 @@ class ScopeWindow(QWidget):
                 y=self._stacked_grid_enabled,
                 alpha=0.23,
             )
-            if item.legend is not None:
-                item.legend.setBrush(pg.mkBrush(QColor(plot_colors["legend_bg"])))
-                item.legend.setPen(pg.mkPen(QColor(plot_colors["legend_border"])))
-                item.legend.setLabelTextColor(QColor(plot_colors["plot_text"]))
             copy_plot_btn.setIcon(IconService.get_icon("copy-filled", shell["plot_copy_text"], 13))
             copy_plot_btn.setIconSize(QSize(13, 13))
 
@@ -7671,6 +7720,8 @@ class ScopeWindow(QWidget):
     def _format_signal_label(self, binding: ScopeChannelBinding, signal: ScopeSignal, index: int) -> str:
         if len(binding.signals) == 1:
             signal_label = signal.label or signal.signal_key or binding.display_name
+            if signal_label == binding.channel_label or signal_label == binding.display_name:
+                return signal_label
             return f"{binding.channel_label}: {signal_label}"
         suffix = signal.label or f"Signal {index + 1}"
         return f"{binding.display_name}/{suffix}"
@@ -8095,8 +8146,11 @@ class ScopeWindow(QWidget):
     # ------------------------------------------------------------------
     def _refresh_overview_plot(self) -> None:
         """Refresh the overview thumbnail plot with current data."""
-        if not hasattr(self, "_overview_plot"):
+        if not hasattr(self, "_overview_plot") or not self._overview_enabled:
+            if hasattr(self, "_overview_inset"):
+                self._overview_inset.hide()
             return
+        self._overview_inset.hide()
         plot_tokens = self._scope_plot_palette()
         self._overview_plot.clear()
         self._overview_plot.addItem(self._overview_region)

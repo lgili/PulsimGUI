@@ -283,3 +283,83 @@ def test_scope_wheel_zoom_mask_uses_expected_axes() -> None:
     assert ScopeWindow._wheel_zoom_mask(Qt.KeyboardModifier.NoModifier) == (False, True)
     assert ScopeWindow._wheel_zoom_mask(Qt.KeyboardModifier.ShiftModifier) == (True, False)
     assert ScopeWindow._wheel_zoom_mask(Qt.KeyboardModifier.ControlModifier) == (True, True)
+
+
+def test_plot_group_selection_updates_active_context_without_rebuild(monkeypatch, qapp) -> None:
+    """Switching the active plot group should not rebuild all plots when structure is unchanged."""
+    window = ScopeWindow("scope-group-perf-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._split_all_plot_groups()
+        rebuilds: list[bool] = []
+        monkeypatch.setattr(window, "_rebuild_stacked_plots", lambda *_args, **_kwargs: rebuilds.append(True))
+
+        window._on_group_plot_selected("S2")
+
+        assert window._stacked_active_signal == "S2"
+        assert window._selected_plot_group_leader == "S2"
+        assert rebuilds == []
+    finally:
+        window.close()
+
+
+def test_signal_alias_updates_plot_header_without_rebuild(monkeypatch, qapp) -> None:
+    """Alias edits should refresh visible plot chrome without forcing a full plot rebuild."""
+    window = ScopeWindow("scope-group-perf-2", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=2)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+        rebuilds: list[bool] = []
+        monkeypatch.setattr(window, "_rebuild_stacked_plots", lambda *_args, **_kwargs: rebuilds.append(True))
+
+        window._set_signal_alias("S1", "Alias S1")
+
+        title_label = window._plot_header_refs["S1"]["title_label"]
+        assert title_label.text() == "Alias S1"
+        assert rebuilds == []
+    finally:
+        window.close()
+
+
+def test_trace_width_refreshes_existing_plot_item_without_rebuild(monkeypatch, qapp) -> None:
+    """Trace-width edits should restyle the current PlotDataItem in place."""
+    window = ScopeWindow("scope-group-perf-3", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=2)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+        trace = window._plot_trace_items_by_signal["S1"]
+        before_width = trace.opts["pen"].widthF()
+        rebuilds: list[bool] = []
+        monkeypatch.setattr(window, "_rebuild_stacked_plots", lambda *_args, **_kwargs: rebuilds.append(True))
+
+        window._set_trace_width_for_signal("S1", 4.0)
+
+        assert window._plot_trace_items_by_signal["S1"].opts["pen"].widthF() > before_width
+        assert rebuilds == []
+    finally:
+        window.close()
+
+
+def test_decimated_trace_cache_reuses_signal_projection(qapp) -> None:
+    """Repeated decimation requests for the same signal and point budget should reuse the cached projection."""
+    window = ScopeWindow("scope-group-perf-4", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=2, sample_count=256)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        before_cache_size = len(window._stacked_decimation_cache)
+
+        first = window._decimated_trace_for_signal("S1", window._stacked_signals["S1"], max_points=32)
+        second = window._decimated_trace_for_signal("S1", window._stacked_signals["S1"], max_points=32)
+
+        assert first[0] is second[0]
+        assert first[1] is second[1]
+        assert len(window._stacked_decimation_cache) == before_cache_size + 1
+    finally:
+        window.close()

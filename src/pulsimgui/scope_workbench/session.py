@@ -9,6 +9,10 @@ from .models import (
     DEFAULT_MEASUREMENT_KEYS,
     INTERVAL_TARGETS,
     SavedView,
+    ScopeCursorState,
+    ScopeMeasurementState,
+    ScopePanelState,
+    ScopeSelectionState,
     ScopeViewState,
     ScopeWorkspaceState,
     normalize_interval_target,
@@ -27,9 +31,9 @@ class ScopeWorkbenchSession:
         if state is None:
             state = ScopeWorkspaceState(workspace_id=workspace_id)
 
-        self._workspace = replace(state, workspace_id=workspace_id)
+        self._workspace = self._clone_workspace(replace(state, workspace_id=workspace_id))
         self._scopes_by_id: dict[str, ScopeViewState] = {
-            scope.scope_id: replace(scope) for scope in self._workspace.scopes if scope.scope_id
+            scope.scope_id: self._clone_scope(scope) for scope in self._workspace.scopes if scope.scope_id
         }
         if not self._scopes_by_id:
             default_scope = ScopeViewState(scope_id="scope-1", name="Scope 1")
@@ -55,14 +59,14 @@ class ScopeWorkbenchSession:
 
     def list_scopes(self) -> list[ScopeViewState]:
         """Return scopes ordered by insertion."""
-        return [replace(scope) for scope in self._workspace.scopes]
+        return [self._clone_scope(scope) for scope in self._workspace.scopes]
 
     def get_scope(self, scope_id: str) -> ScopeViewState:
         """Return a copy of scope state."""
         scope = self._scopes_by_id.get(scope_id)
         if scope is None:
             raise KeyError(f"Unknown scope id: {scope_id}")
-        return replace(scope)
+        return self._clone_scope(scope)
 
     def add_scope(self, name: str | None = None) -> ScopeViewState:
         """Create a new scope with generated ID."""
@@ -79,7 +83,7 @@ class ScopeWorkbenchSession:
         self._scopes_by_id[scope_id] = scope
         self._workspace.scopes.append(scope)
         self._workspace.active_scope_id = scope_id
-        return replace(scope)
+        return self._clone_scope(scope)
 
     def ensure_scope(self, scope_id: str, name: str | None = None) -> ScopeViewState:
         """Ensure one scope exists with the explicit identifier."""
@@ -100,7 +104,7 @@ class ScopeWorkbenchSession:
         self._scopes_by_id[clean_id] = scope
         self._workspace.scopes.append(scope)
         self._workspace.active_scope_id = clean_id
-        return replace(scope)
+        return self._clone_scope(scope)
 
     def remove_scope(self, scope_id: str) -> None:
         """Remove an existing scope and keep workspace valid."""
@@ -143,7 +147,12 @@ class ScopeWorkbenchSession:
         target.cursors_enabled = source.cursors_enabled
         target.cursor_a = source.cursor_a
         target.cursor_b = source.cursor_b
-        return replace(target)
+        target.selection_state = ScopeSelectionState.from_dict(source.selection_state.to_dict())
+        target.cursor_state = ScopeCursorState.from_dict(source.cursor_state.to_dict())
+        target.measurement_state = ScopeMeasurementState.from_dict(source.measurement_state.to_dict())
+        target.panel_state = ScopePanelState.from_dict(source.panel_state.to_dict())
+        target.saved_views = [SavedView.from_dict(view.to_dict()) for view in source.saved_views]
+        return self._clone_scope(target)
 
     def rename_scope(self, scope_id: str, name: str) -> None:
         """Rename an existing scope."""
@@ -213,12 +222,19 @@ class ScopeWorkbenchSession:
         enabled: bool,
         cursor_a: float | None = None,
         cursor_b: float | None = None,
+        y1: float | None = None,
+        y2: float | None = None,
+        snap_mode: str | None = None,
     ) -> None:
         """Persist cursor state for one scope."""
         scope = self._require_scope(scope_id)
         scope.cursors_enabled = bool(enabled)
         scope.cursor_a = float(cursor_a) if isinstance(cursor_a, (int, float)) else None
         scope.cursor_b = float(cursor_b) if isinstance(cursor_b, (int, float)) else None
+        scope.cursor_state.y1 = float(y1) if isinstance(y1, (int, float)) else None
+        scope.cursor_state.y2 = float(y2) if isinstance(y2, (int, float)) else None
+        if snap_mode is not None:
+            scope.cursor_state.snap_mode = str(snap_mode).strip().lower() or "none"
 
     def set_scope_interval_target(self, scope_id: str, target: str) -> None:
         """Set interval target for statistics computation in one scope."""
@@ -227,6 +243,79 @@ class ScopeWorkbenchSession:
         if normalized not in INTERVAL_TARGETS:
             raise ValueError(f"Invalid interval target: {target!r}. Must be one of {INTERVAL_TARGETS}")
         scope.interval_target = normalized
+
+    def set_scope_selection(
+        self,
+        scope_id: str,
+        *,
+        active_signal_id: str | None = None,
+        selected_signal_ids: list[str] | None = None,
+        active_plot_group_id: str | None = None,
+        active_saved_view_id: str | None = None,
+    ) -> None:
+        """Persist synchronized tree/plot/inspector selection for one scope."""
+        scope = self._require_scope(scope_id)
+        if selected_signal_ids is not None:
+            scope.selection_state.selected_signal_ids = [
+                str(value).strip()
+                for value in selected_signal_ids
+                if str(value).strip()
+            ]
+        if active_signal_id is not None:
+            cleaned = str(active_signal_id).strip() or None
+            scope.selection_state.active_signal_id = cleaned
+            if cleaned and cleaned not in scope.selection_state.selected_signal_ids:
+                scope.selection_state.selected_signal_ids.insert(0, cleaned)
+        if active_plot_group_id is not None:
+            scope.selection_state.active_plot_group_id = str(active_plot_group_id).strip() or None
+        if active_saved_view_id is not None:
+            scope.selection_state.active_saved_view_id = str(active_saved_view_id).strip() or None
+        if (
+            scope.measurement_state.target_signal_id is None
+            and scope.selection_state.active_signal_id is not None
+        ):
+            scope.measurement_state.target_signal_id = scope.selection_state.active_signal_id
+
+    def set_scope_panel_state(
+        self,
+        scope_id: str,
+        *,
+        left_panel_visible: bool | None = None,
+        right_panel_visible: bool | None = None,
+        bottom_drawer_expanded: bool | None = None,
+        left_panel_width: int | None = None,
+        right_panel_width: int | None = None,
+        bottom_drawer_height: int | None = None,
+        sidebar_tab_index: int | None = None,
+        analysis_tab_index: int | None = None,
+        bottom_drawer_tab_index: int | None = None,
+    ) -> None:
+        """Persist per-scope panel and tab ownership."""
+        scope = self._require_scope(scope_id)
+        panel_state = scope.panel_state
+        if left_panel_visible is not None:
+            panel_state.left_panel_visible = bool(left_panel_visible)
+        if right_panel_visible is not None:
+            panel_state.right_panel_visible = bool(right_panel_visible)
+        if bottom_drawer_expanded is not None:
+            panel_state.bottom_drawer_expanded = bool(bottom_drawer_expanded)
+        if isinstance(left_panel_width, int):
+            panel_state.left_panel_width = left_panel_width
+        if isinstance(right_panel_width, int):
+            panel_state.right_panel_width = right_panel_width
+        if isinstance(bottom_drawer_height, int):
+            panel_state.bottom_drawer_height = bottom_drawer_height
+        if isinstance(sidebar_tab_index, int):
+            panel_state.sidebar_tab_index = max(0, sidebar_tab_index)
+        if isinstance(analysis_tab_index, int):
+            panel_state.analysis_tab_index = max(0, analysis_tab_index)
+        if isinstance(bottom_drawer_tab_index, int):
+            panel_state.bottom_drawer_tab_index = max(0, bottom_drawer_tab_index)
+
+    def set_scope_measurement_target(self, scope_id: str, signal_id: str | None) -> None:
+        """Persist which trace drives measurement summaries for one scope."""
+        scope = self._require_scope(scope_id)
+        scope.measurement_state.target_signal_id = str(signal_id).strip() or None if signal_id else None
 
     def add_saved_view(
         self,
@@ -269,7 +358,7 @@ class ScopeWorkbenchSession:
     def list_saved_views(self, scope_id: str) -> list[SavedView]:
         """Return saved views for a scope."""
         scope = self._require_scope(scope_id)
-        return [replace(v) for v in scope.saved_views]
+        return [SavedView.from_dict(v.to_dict()) for v in scope.saved_views]
 
     def set_signal_catalog(self, signals: list[ScopeSignalDescriptor]) -> None:
         """Replace available signal catalog published by host."""
@@ -281,13 +370,13 @@ class ScopeWorkbenchSession:
 
     def export_state(self) -> ScopeWorkspaceState:
         """Return workspace snapshot for persistence/export."""
-        scopes = [replace(scope) for scope in self._workspace.scopes]
-        return ScopeWorkspaceState(
+        workspace = ScopeWorkspaceState(
             workspace_id=self.workspace_id,
-            scopes=scopes,
+            scopes=[self._clone_scope(scope) for scope in self._workspace.scopes],
             active_scope_id=self._workspace.active_scope_id,
             sidebar_collapsed=self._workspace.sidebar_collapsed,
         )
+        return self._clone_workspace(workspace)
 
     def export_state_dict(self) -> dict[str, object]:
         """Serialize workspace snapshot to plain dictionary."""
@@ -315,3 +404,13 @@ class ScopeWorkbenchSession:
         if scope is None:
             raise KeyError(f"Unknown scope id: {scope_id}")
         return scope
+
+    @staticmethod
+    def _clone_scope(scope: ScopeViewState) -> ScopeViewState:
+        """Deep-clone one scope state through the serialized contract."""
+        return ScopeViewState.from_dict(scope.to_dict())
+
+    @staticmethod
+    def _clone_workspace(state: ScopeWorkspaceState) -> ScopeWorkspaceState:
+        """Deep-clone workspace state through the serialized contract."""
+        return ScopeWorkspaceState.from_dict(state.to_dict())
