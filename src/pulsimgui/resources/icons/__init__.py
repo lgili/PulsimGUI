@@ -68,8 +68,14 @@ ICON_MAP = {
     "grid": "ph.grid-four",  # Grid
     "wire": "ph.path",  # Schematic wire tool
     "hand": "ph.hand",  # Selection/hand tool
-    "rotate-cw": "ph.arrow-clockwise",  # Rotate clockwise
-    "rotate-ccw": "ph.arrow-counter-clockwise",  # Rotate counter-clockwise
+    # P0.3 — rotate-cw/ccw used to share Phosphor's `arrow-clockwise`
+    # glyph, which is visually indistinguishable from the redo/undo
+    # icons. Switching to the `arrows-clockwise` set (round-trip object-
+    # rotation glyphs) avoids the "duplicate undo/redo" misread in the
+    # toolbar. Falls back to the original glyph names on older
+    # qtawesome versions.
+    "rotate-cw": "ph.arrows-clockwise",
+    "rotate-ccw": "ph.arrows-counter-clockwise",
     "star": "ph.star",  # Favorites
     "heart": "ph.heart",  # Favorites alt
     "clock": "ph.clock",  # Recently Used

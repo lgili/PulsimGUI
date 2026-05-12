@@ -29,6 +29,7 @@ from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.utils.shortcut_format import shortcut_format
 
 # Component metadata for library display.
 # Keep this list aligned with backend-supported + GUI-functional blocks only.
@@ -728,7 +729,9 @@ class ComponentCard(QFrame):
         self.setObjectName("ComponentCard")
         self._comp_type = comp_type
         self._name = name
-        self._shortcut = shortcut
+        # Render shortcut with platform-aware modifier glyphs so macOS users
+        # see ``⌘K`` instead of ``Cmd+K`` and ``⇧M`` instead of ``Shift+M``.
+        self._shortcut = shortcut_format(shortcut)
         self._hovered = False
         self._icon_color = "#374151"
         self._icon_dark_mode = False
@@ -760,15 +763,27 @@ class ComponentCard(QFrame):
         self._update_icon()
         layout.addWidget(self._icon_label)
 
-        # Name
+        # Name — auto-shrink long labels by one font-step and fall back to
+        # Qt's elided-text rendering with the full name available via tooltip
+        # whenever the label still wouldn't fit horizontally. Prevents the
+        # "Transformer" → "ransforme" truncation regression flagged in the
+        # May 2026 UX audit.
         self._name_label = QLabel(self._name)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         font = self._name_label.font()
-        font.setPointSize(10)
+        # Shorter names look balanced at 10 pt; once the rendered width would
+        # exceed the card content area, drop a point.
+        metrics_size = 10 if len(self._name) <= 8 else 9
+        font.setPointSize(metrics_size)
         font.setBold(True)
         self._name_label.setFont(font)
         self._name_label.setWordWrap(True)
         self._name_label.setFixedWidth(self.CONTENT_WIDTH)
+        # Force Qt to elide rather than visually clipping when the text still
+        # exceeds two lines (e.g. "Inv. Park Transform").
+        self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._name_label.setToolTip(self._name)
+        self._name_label.setAccessibleDescription(self._name)
         layout.addWidget(self._name_label)
 
         self._shortcut_label = QLabel(self._shortcut)

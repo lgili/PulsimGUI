@@ -295,6 +295,111 @@ class ModifiedWidget(IconLabel):
         self.setModified(self._is_modified)
 
 
+class SolverPill(QWidget):
+    """Glanceable status-bar pill showing the active integrator, dt, and
+    linear solver, color-coded by last-run convergence health.
+
+    Visual states:
+        idle      — gray, no badge        (no simulation has run yet)
+        success   — green tint            (last run converged cleanly)
+        recovered — amber tint            (last run needed retries / fallback)
+        failed    — red tint              (last run did not converge)
+    """
+
+    clicked = Signal()
+
+    STATE_IDLE = "idle"
+    STATE_SUCCESS = "success"
+    STATE_RECOVERED = "recovered"
+    STATE_FAILED = "failed"
+
+    _STATE_PALETTE: dict[str, tuple[str, str]] = {
+        # (background, text)
+        STATE_IDLE:     ("rgba(107, 114, 128, 0.14)", "#6b7280"),
+        STATE_SUCCESS:  ("rgba(34, 197, 94, 0.18)",   "#16a34a"),
+        STATE_RECOVERED:("rgba(245, 158, 11, 0.20)",  "#d97706"),
+        STATE_FAILED:   ("rgba(239, 68, 68, 0.22)",   "#dc2626"),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SolverPill")
+        self._integrator = "—"
+        self._dt = ""
+        self._linear_solver = ""
+        self._adaptive = False
+        self._state = self.STATE_IDLE
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(0)
+        self._label = QLabel("—")
+        self._label.setObjectName("SolverPillLabel")
+        font = self._label.font()
+        font.setPointSize(max(8, font.pointSize() - 1))
+        font.setBold(True)
+        self._label.setFont(font)
+        layout.addWidget(self._label)
+
+        self._apply_state_style()
+        self.setToolTip("Click to open Simulation Settings")
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_solver(self, integrator: str, dt: str = "", linear_solver: str = "",
+                   adaptive: bool = False) -> None:
+        """Update the displayed solver triple."""
+        self._integrator = integrator or "—"
+        self._dt = dt or ""
+        self._linear_solver = linear_solver or ""
+        self._adaptive = bool(adaptive)
+        self._render_label()
+
+    def set_state(self, state: str) -> None:
+        """Set the visual health state of the pill."""
+        if state not in self._STATE_PALETTE:
+            state = self.STATE_IDLE
+        if state != self._state:
+            self._state = state
+            self._apply_state_style()
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _render_label(self) -> None:
+        parts: list[str] = [self._integrator]
+        if self._dt:
+            parts.append(f"dt={self._dt}")
+        if self._linear_solver:
+            parts.append(self._linear_solver)
+        if self._adaptive:
+            parts.append("adaptive")
+        self._label.setText(" · ".join(parts))
+
+    def _apply_state_style(self) -> None:
+        bg, fg = self._STATE_PALETTE[self._state]
+        self.setStyleSheet(
+            f"#SolverPill {{ background: {bg}; border-radius: 8px; }} "
+            f"#SolverPillLabel {{ color: {fg}; padding: 0 2px; }}"
+        )
+
+    def mousePressEvent(self, event) -> None:  # pragma: no cover - Qt event
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def apply_theme(self, theme: Theme) -> None:
+        """Refresh palette mapping for dark / light theme switching."""
+        # Theme-token integration is wave-2; for now keep the
+        # semantic-color palette stable across themes (the contrast
+        # holds up on both backgrounds we ship).
+        self._apply_state_style()
+
+
 class SimulationStatusWidget(IconLabel):
     """Widget showing simulation status."""
 
