@@ -42,6 +42,14 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.GOTO_LABEL, "name": "Goto", "shortcut": ""},
         {"type": ComponentType.FROM_LABEL, "name": "From", "shortcut": ""},
     ],
+    "Three-Phase / Vector Control": [
+        {"type": ComponentType.CLARKE_TRANSFORM, "name": "Clarke", "shortcut": ""},
+        {"type": ComponentType.INVERSE_CLARKE_TRANSFORM, "name": "Inv. Clarke", "shortcut": ""},
+        {"type": ComponentType.PARK_TRANSFORM, "name": "Park", "shortcut": ""},
+        {"type": ComponentType.INVERSE_PARK_TRANSFORM, "name": "Inv. Park", "shortcut": ""},
+        {"type": ComponentType.PLL, "name": "PLL", "shortcut": ""},
+        {"type": ComponentType.SVM, "name": "SVM", "shortcut": ""},
+    ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
     ],
@@ -83,4 +91,11 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.GOTO_LABEL, "Goto Label", ["goto", "net", "label"]),
     (ComponentType.FROM_LABEL, "From Label", ["from", "net", "label"]),
     (ComponentType.THERMAL_SCOPE, "Thermal Scope", ["thermal", "temp", "temperature"]),
+    # Three-phase / vector control (Pulsim Phase 28)
+    (ComponentType.CLARKE_TRANSFORM, "Clarke Transform", ["clarke", "abc", "alpha", "beta", "three phase", "3 phase"]),
+    (ComponentType.INVERSE_CLARKE_TRANSFORM, "Inverse Clarke", ["inverse clarke", "alpha beta abc", "iclarke"]),
+    (ComponentType.PARK_TRANSFORM, "Park Transform", ["park", "dq", "dq0", "rotating", "three phase"]),
+    (ComponentType.INVERSE_PARK_TRANSFORM, "Inverse Park", ["inverse park", "ipark", "dq abc"]),
+    (ComponentType.PLL, "PLL", ["pll", "phase lock", "grid sync", "synchronization"]),
+    (ComponentType.SVM, "SVM", ["svm", "space vector", "svpwm", "modulation", "inverter"]),
 ]

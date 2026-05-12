@@ -95,6 +95,14 @@ class ComponentType(Enum):
     SATURABLE_INDUCTOR = auto()
     COUPLED_INDUCTOR = auto()
 
+    # Three-phase / vector control (Pulsim Phase 28)
+    CLARKE_TRANSFORM = auto()
+    INVERSE_CLARKE_TRANSFORM = auto()
+    PARK_TRANSFORM = auto()
+    INVERSE_PARK_TRANSFORM = auto()
+    PLL = auto()
+    SVM = auto()
+
     # Pre-configured networks
     SNUBBER_RC = auto()
 
@@ -436,6 +444,13 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.C_BLOCK,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
+    # Three-phase / vector control
+    ComponentType.CLARKE_TRANSFORM,
+    ComponentType.INVERSE_CLARKE_TRANSFORM,
+    ComponentType.PARK_TRANSFORM,
+    ComponentType.INVERSE_PARK_TRANSFORM,
+    ComponentType.PLL,
+    ComponentType.SVM,
 }
 
 THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
@@ -480,6 +495,13 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.SAMPLE_HOLD,
         ComponentType.STATE_MACHINE,
         ComponentType.C_BLOCK,
+        # Three-phase / vector control
+        ComponentType.CLARKE_TRANSFORM,
+        ComponentType.INVERSE_CLARKE_TRANSFORM,
+        ComponentType.PARK_TRANSFORM,
+        ComponentType.INVERSE_PARK_TRANSFORM,
+        ComponentType.PLL,
+        ComponentType.SVM,
     }
 )
 CONTROL_SAMPLE_TIME_COMPONENT_TYPE_NAMES: frozenset[str] = frozenset(
@@ -815,6 +837,53 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # Pre-configured networks
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
+
+    # Three-phase / vector control (Pulsim Phase 28)
+    # Clarke (abc → αβγ): 3 inputs + 3 channel outputs (channels via metadata)
+    ComponentType.CLARKE_TRANSFORM: [
+        Pin(0, "A", -35, -20),
+        Pin(1, "B", -35, 0),
+        Pin(2, "C", -35, 20),
+        Pin(3, "ALPHA", 35, -20),
+        Pin(4, "BETA", 35, 0),
+        Pin(5, "GAMMA", 35, 20),
+    ],
+    ComponentType.INVERSE_CLARKE_TRANSFORM: [
+        Pin(0, "ALPHA", -35, -20),
+        Pin(1, "BETA", -35, 0),
+        Pin(2, "GAMMA", -35, 20),
+        Pin(3, "A", 35, -20),
+        Pin(4, "B", 35, 0),
+        Pin(5, "C", 35, 20),
+    ],
+    # Park (αβ + θ → dq): nodes [alpha, beta], θ via metadata
+    ComponentType.PARK_TRANSFORM: [
+        Pin(0, "ALPHA", -35, -15),
+        Pin(1, "BETA", -35, 15),
+        Pin(2, "D", 35, -15),
+        Pin(3, "Q", 35, 15),
+    ],
+    ComponentType.INVERSE_PARK_TRANSFORM: [
+        Pin(0, "D", -35, -15),
+        Pin(1, "Q", -35, 15),
+        Pin(2, "ALPHA", 35, -15),
+        Pin(3, "BETA", 35, 15),
+    ],
+    # Single-phase PLL: 1 input → θ, ω, lock_error channels
+    ComponentType.PLL: [
+        Pin(0, "IN", -35, 0),
+        Pin(1, "THETA", 35, -15),
+        Pin(2, "OMEGA", 35, 0),
+        Pin(3, "ERR", 35, 15),
+    ],
+    # SVM (αβ → 3 duties)
+    ComponentType.SVM: [
+        Pin(0, "ALPHA", -35, -15),
+        Pin(1, "BETA", -35, 15),
+        Pin(2, "DA", 35, -20),
+        Pin(3, "DB", 35, 0),
+        Pin(4, "DC", 35, 20),
+    ],
 }
 
 
@@ -1199,6 +1268,43 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.SNUBBER_RC: {
         "resistance": 100.0,
         "capacitance": 100e-9,
+    },
+
+    # Three-phase / vector control (Pulsim Phase 28)
+    # Clarke / inverse-Clarke have no numeric parameters.
+    ComponentType.CLARKE_TRANSFORM: {
+        "sample_time": 0.0,
+    },
+    ComponentType.INVERSE_CLARKE_TRANSFORM: {
+        "sample_time": 0.0,
+    },
+    # Park reads θ (and optionally α / β) from a channel — set via
+    # the parameters panel: "theta_from_channel: PLL.theta", etc.
+    ComponentType.PARK_TRANSFORM: {
+        "theta_from_channel": "",
+        "alpha_from_channel": "",
+        "beta_from_channel": "",
+        "sample_time": 0.0,
+    },
+    ComponentType.INVERSE_PARK_TRANSFORM: {
+        "theta_from_channel": "",
+        "d_from_channel": "",
+        "q_from_channel": "",
+        "sample_time": 0.0,
+    },
+    # Single-phase PLL: PI loop on q-axis projection.
+    ComponentType.PLL: {
+        "kp": 200.0,
+        "ki": 2000.0,
+        "f_nominal_hz": 60.0,
+        "sample_time": 0.0,
+    },
+    # Space-Vector Modulation: takes (α, β) refs (channel) + V_dc.
+    ComponentType.SVM: {
+        "v_dc": 200.0,
+        "alpha_from_channel": "",
+        "beta_from_channel": "",
+        "sample_time": 0.0,
     },
 }
 

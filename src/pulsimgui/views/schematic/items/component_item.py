@@ -1616,6 +1616,13 @@ class SimpleBlockItem(BlockComponentItem):
             ComponentType.DELAY_BLOCK: "T",
             ComponentType.SAMPLE_HOLD: "S/H",
             ComponentType.STATE_MACHINE: "FSM",
+            # Three-phase / vector control
+            ComponentType.CLARKE_TRANSFORM: "Clarke",
+            ComponentType.INVERSE_CLARKE_TRANSFORM: "Clarke⁻¹",
+            ComponentType.PARK_TRANSFORM: "Park",
+            ComponentType.INVERSE_PARK_TRANSFORM: "Park⁻¹",
+            ComponentType.PLL: "PLL",
+            ComponentType.SVM: "SVM",
         }
         return labels.get(self._component.type, "?")
 
@@ -1672,6 +1679,67 @@ class SampleHoldItem(SimpleBlockItem):
 class StateMachineItem(SimpleBlockItem):
     """Graphics item that renders state machine visuals."""
     ACCENT_COLOR = QColor(180, 100, 150)
+
+
+# =============================================================================
+# Three-phase / vector control (Pulsim Phase 28)
+# =============================================================================
+
+
+class ClarkeTransformItem(SimpleBlockItem):
+    """Clarke transform (abc → αβγ)."""
+
+    ACCENT_COLOR = QColor(124, 58, 237)  # Purple
+
+
+class InverseClarkeTransformItem(SimpleBlockItem):
+    """Inverse Clarke transform (αβγ → abc)."""
+
+    ACCENT_COLOR = QColor(139, 92, 246)
+
+
+class ParkTransformItem(SimpleBlockItem):
+    """Park transform (αβ → dq with θ)."""
+
+    ACCENT_COLOR = QColor(91, 33, 182)
+
+    def _get_value_text(self) -> str:
+        theta = self._component.parameters.get("theta_from_channel", "")
+        return f"θ={theta}" if theta else "θ=?"
+
+
+class InversePArkTransformItem(SimpleBlockItem):  # legacy typo guard
+    pass
+
+
+class InverseParkTransformItem(SimpleBlockItem):
+    """Inverse Park transform (dq → αβ with θ)."""
+
+    ACCENT_COLOR = QColor(109, 40, 217)
+
+    def _get_value_text(self) -> str:
+        theta = self._component.parameters.get("theta_from_channel", "")
+        return f"θ={theta}" if theta else "θ=?"
+
+
+class PLLItem(SimpleBlockItem):
+    """Single-phase PLL (sine → θ, ω, lock_error)."""
+
+    ACCENT_COLOR = QColor(67, 56, 202)  # Indigo
+
+    def _get_value_text(self) -> str:
+        f_nom = self._component.parameters.get("f_nominal_hz", 60.0)
+        return f"f={f_nom:g} Hz"
+
+
+class SVMItem(SimpleBlockItem):
+    """Space-Vector Modulation (αβ → 3 half-bridge duties)."""
+
+    ACCENT_COLOR = QColor(190, 24, 93)  # Pink
+
+    def _get_value_text(self) -> str:
+        v_dc = self._component.parameters.get("v_dc", 1.0)
+        return f"V_DC={v_dc:g} V"
 
 
 class VoltageProbeItem(ComponentItem):
@@ -2106,6 +2174,14 @@ def create_component_item(component: Component) -> ComponentItem:
         # Magnetic
         ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,
         ComponentType.COUPLED_INDUCTOR: CoupledInductorItem,
+
+        # Three-phase / vector control (Pulsim Phase 28)
+        ComponentType.CLARKE_TRANSFORM: ClarkeTransformItem,
+        ComponentType.INVERSE_CLARKE_TRANSFORM: InverseClarkeTransformItem,
+        ComponentType.PARK_TRANSFORM: ParkTransformItem,
+        ComponentType.INVERSE_PARK_TRANSFORM: InverseParkTransformItem,
+        ComponentType.PLL: PLLItem,
+        ComponentType.SVM: SVMItem,
 
         # Pre-configured networks
         ComponentType.SNUBBER_RC: SnubberRCItem,
