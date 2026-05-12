@@ -153,11 +153,24 @@ class MainWindow(QMainWindow):
         self._schematic_view = SchematicView(self._schematic_scene)
         self._hierarchy_bar = HierarchyBar()
 
+        # Wave-1 P1.2 — Run Bar slots above the schematic so users see
+        # the primary simulation controls without scanning the toolbar.
+        from pulsimgui.views.widgets.run_bar import RunBar, wire_run_bar_to_service
+        self._run_bar = RunBar(self)
+        wire_run_bar_to_service(
+            self._run_bar,
+            self._simulation_service,
+            run_callback=self._on_run_from_run_bar,
+            pause_callback=self._on_pause_from_run_bar,
+            stop_callback=self._on_stop_from_run_bar,
+        )
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._hierarchy_bar)
+        layout.addWidget(self._run_bar)
         layout.addWidget(self._schematic_view)
         self.setCentralWidget(central)
 
@@ -515,30 +528,49 @@ class MainWindow(QMainWindow):
         self._toolbar.setMovable(False)
         self._toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.addToolBar(self._toolbar)
+        self._toolbar_groups: list[QFrame] = []
 
-        # File actions with icons
-        self._toolbar.addAction(self.action_new)
-        self._toolbar.addAction(self.action_open)
-        self._toolbar.addAction(self.action_save)
-        self._toolbar.addSeparator()
-
-        # Edit actions
-        self._toolbar.addAction(self.action_undo)
-        self._toolbar.addAction(self.action_redo)
-        self._toolbar.addSeparator()
-
-        # Zoom actions
-        self._toolbar.addAction(self.action_zoom_in)
-        self._toolbar.addAction(self.action_zoom_out)
-        self._toolbar.addAction(self.action_zoom_fit)
-        self._toolbar.addSeparator()
-
-        # Left tool selectors
-        self._toolbar.addAction(self.action_wire_tool)
-        self._toolbar.addAction(self.action_hand_tool)
-        self._toolbar.addSeparator()
-        self._toolbar.addAction(self.action_rotate_ccw)
-        self._toolbar.addAction(self.action_rotate_cw)
+        self._toolbar.addWidget(
+            self._create_toolbar_group(
+                "ToolbarGroup",
+                (
+                    self.action_new,
+                    self.action_open,
+                    self.action_save,
+                ),
+            )
+        )
+        self._toolbar.addWidget(
+            self._create_toolbar_group(
+                "ToolbarGroup",
+                (
+                    self.action_undo,
+                    self.action_redo,
+                ),
+            )
+        )
+        self._toolbar.addWidget(
+            self._create_toolbar_group(
+                "ToolbarGroup",
+                (
+                    self.action_zoom_in,
+                    self.action_zoom_out,
+                    self.action_zoom_fit,
+                ),
+            )
+        )
+        self._toolbar.addWidget(
+            self._create_toolbar_group(
+                "ToolbarGroup",
+                (
+                    self.action_quick_add,
+                    self.action_wire_tool,
+                    self.action_hand_tool,
+                    self.action_rotate_ccw,
+                    self.action_rotate_cw,
+                ),
+            )
+        )
 
         # Add flexible spacer
         spacer = QWidget()
@@ -546,24 +578,35 @@ class MainWindow(QMainWindow):
         self._toolbar.addWidget(spacer)
 
         # Simulation actions grouped on the right for faster recognition
-        self._simulation_toolbar_group = QFrame(self._toolbar)
-        self._simulation_toolbar_group.setObjectName("SimulationToolbarGroup")
-        sim_layout = QHBoxLayout(self._simulation_toolbar_group)
-        sim_layout.setContentsMargins(8, 4, 8, 4)
-        sim_layout.setSpacing(2)
-        for action in (
-            self.action_run,
-            self.action_pause,
-            self.action_stop,
-            self.action_dc_op,
-            self.action_ac,
-        ):
-            button = QToolButton(self._simulation_toolbar_group)
+        self._simulation_toolbar_group = self._create_toolbar_group(
+            "SimulationToolbarGroup",
+            (
+                self.action_run,
+                self.action_pause,
+                self.action_stop,
+                self.action_dc_op,
+                self.action_ac,
+            ),
+        )
+        self._toolbar.addWidget(self._simulation_toolbar_group)
+
+    def _create_toolbar_group(self, object_name: str, actions: tuple[QAction, ...]) -> QWidget:
+        """Create one compact visual toolbar cluster for related actions."""
+        from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton
+
+        group = QFrame(self._toolbar)
+        group.setObjectName(object_name)
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+        for action in actions:
+            button = QToolButton(group)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setAutoRaise(True)
             button.setDefaultAction(action)
-            sim_layout.addWidget(button)
-        self._toolbar.addWidget(self._simulation_toolbar_group)
+            layout.addWidget(button)
+        self._toolbar_groups.append(group)
+        return group
 
     def _create_status_bar(self) -> None:
         """Create the status bar with icons."""
@@ -576,6 +619,7 @@ class MainWindow(QMainWindow):
             SimulationStatusWidget,
             ZoomWidget,
         )
+        from pulsimgui.views.widgets.status_widgets import SolverPill
 
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
@@ -614,6 +658,14 @@ class MainWindow(QMainWindow):
         self._sim_status_widget = SimulationStatusWidget()
         self._sim_status_widget.setMinimumWidth(210)
         status_bar.addPermanentWidget(self._sim_status_widget)
+
+        # Solver pill (Phase wave-1, item P1.3): glanceable
+        # integrator + dt + linear-solver + adaptive readout. Clicking it
+        # opens the Simulation Settings dialog.
+        self._solver_pill = SolverPill()
+        self._solver_pill.clicked.connect(self._on_solver_pill_clicked)
+        status_bar.addPermanentWidget(self._solver_pill)
+        self._refresh_solver_pill()
 
         # Modified indicator with icon
         self._modified_widget = ModifiedWidget()
@@ -672,9 +724,17 @@ class MainWindow(QMainWindow):
         # Keep schematic-first startup layout: waveform panel opens on demand.
         self.waveform_dock.hide()
 
-        # Add toggle actions to panels menu
-        self.panels_menu.addAction(self.library_dock.toggleViewAction())
-        self.panels_menu.addAction(self.waveform_dock.toggleViewAction())
+        # Add explicit toggle actions so hidden docks can always be restored reliably.
+        self.action_toggle_component_library = self._create_dock_toggle_action(
+            "Component Library",
+            self.library_dock,
+        )
+        self.action_toggle_waveform_panel = self._create_dock_toggle_action(
+            "Waveform Viewer",
+            self.waveform_dock,
+        )
+        self.panels_menu.addAction(self.action_toggle_component_library)
+        self.panels_menu.addAction(self.action_toggle_waveform_panel)
 
     def _connect_signals(self) -> None:
         """Connect signals and slots."""
@@ -731,6 +791,32 @@ class MainWindow(QMainWindow):
         self._hierarchy_service.breadcrumb_updated.connect(self._on_breadcrumb_updated)
         self._hierarchy_bar.navigate_up.connect(self._hierarchy_service.ascend)
         self._hierarchy_bar.navigate_to_level.connect(self._hierarchy_service.navigate_to_level)
+
+    def _create_dock_toggle_action(self, label: str, dock: QDockWidget) -> QAction:
+        """Create a stable checkable menu action for one dock widget."""
+        action = QAction(label, self)
+        action.setCheckable(True)
+        action.setChecked(dock.isVisible())
+        action.toggled.connect(lambda checked, target=dock: self._set_dock_visible(target, checked))
+        dock.visibilityChanged.connect(
+            lambda visible, target_action=action: self._sync_dock_toggle_action(target_action, visible)
+        )
+        return action
+
+    @staticmethod
+    def _sync_dock_toggle_action(action: QAction, visible: bool) -> None:
+        """Keep one panel toggle action synchronized with dock visibility."""
+        action.blockSignals(True)
+        action.setChecked(bool(visible))
+        action.blockSignals(False)
+
+    def _set_dock_visible(self, dock: QDockWidget, visible: bool) -> None:
+        """Show or hide one dock widget explicitly."""
+        if visible:
+            dock.show()
+            dock.raise_()
+        else:
+            dock.hide()
 
     def _update_simulation_actions(self) -> None:
         """Enable or disable simulation actions based on backend readiness."""
@@ -817,6 +903,16 @@ class MainWindow(QMainWindow):
         self.properties_dock.hide()
         # Keep waveform/scope dock closed on startup for consistent first view.
         self.waveform_dock.hide()
+        if hasattr(self, "action_toggle_component_library"):
+            self._sync_dock_toggle_action(
+                self.action_toggle_component_library,
+                self.library_dock.isVisible(),
+            )
+        if hasattr(self, "action_toggle_waveform_panel"):
+            self._sync_dock_toggle_action(
+                self.action_toggle_waveform_panel,
+                self.waveform_dock.isVisible(),
+            )
 
     def _apply_theme(self) -> None:
         """Apply the current theme from settings."""
@@ -870,6 +966,34 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_simulation_toolbar_group"):
             return
         colors = self._theme_service.current_theme.colors
+        shared_group_style = (
+            f"""
+            QFrame#ToolbarGroup {{
+                border: 1px solid {colors.border};
+                border-radius: 11px;
+                background-color: {colors.panel_background};
+            }}
+            QFrame#ToolbarGroup QToolButton {{
+                border-radius: 8px;
+                padding: 6px 8px;
+                margin: 1px;
+            }}
+            QFrame#ToolbarGroup QToolButton:hover {{
+                background-color: {colors.menu_hover};
+                border: 1px solid {colors.border};
+            }}
+            QFrame#ToolbarGroup QToolButton:checked {{
+                background-color: {colors.primary}24;
+                border: 1px solid {colors.primary}66;
+                color: {colors.primary};
+            }}
+            """
+        )
+        for group in getattr(self, "_toolbar_groups", []):
+            if group is self._simulation_toolbar_group:
+                continue
+            group.setStyleSheet(shared_group_style)
+
         self._simulation_toolbar_group.setStyleSheet(
             f"""
             QFrame#SimulationToolbarGroup {{
@@ -938,6 +1062,7 @@ class MainWindow(QMainWindow):
             self.action_zoom_in: "zoom-in",
             self.action_zoom_out: "zoom-out",
             self.action_zoom_fit: "maximize",
+            self.action_quick_add: "plus",
             self.action_wire_tool: "wire",
             self.action_hand_tool: "hand",
             self.action_rotate_ccw: "rotate-ccw",
@@ -1784,8 +1909,20 @@ class MainWindow(QMainWindow):
             self._update_title()
             self._update_modified_indicator()
             self.statusBar().showMessage(f"Opened: {path}", 3000)
+            # P0.2 — auto-fit the schematic so the user immediately sees the
+            # whole circuit instead of having to manually press F-to-fit.
+            # Defer one event-loop tick so the scene's bounding rect reflects
+            # the just-loaded components (otherwise we fit to an empty rect).
+            self._schedule_auto_fit_view()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
+
+    def _schedule_auto_fit_view(self) -> None:
+        """Defer ``zoom_to_fit`` until after the scene has settled."""
+        view = getattr(self, "_schematic_view", None)
+        if view is None or not hasattr(view, "zoom_to_fit"):
+            return
+        QTimer.singleShot(0, view.zoom_to_fit)
 
     def _on_save(self) -> None:
         """Save the current project."""
@@ -1898,6 +2035,13 @@ class MainWindow(QMainWindow):
             component.id: self._component_state_snapshot(component)
             for component in circuit.components.values()
         }
+        self._update_schematic_empty_state()
+
+    def _update_schematic_empty_state(self) -> None:
+        """Show onboarding hint only when the active circuit is still empty."""
+        circuit = self._current_circuit()
+        is_empty = not circuit.components and not circuit.wires
+        self._schematic_view.set_empty_state_visible(is_empty)
 
     def _on_about(self) -> None:
         """Show about dialog."""
@@ -3117,6 +3261,22 @@ class MainWindow(QMainWindow):
         event.accept()
 
     # Simulation handlers
+    # ------------------------------------------------------------------
+    # P1.2 — Run Bar callbacks (delegate to the existing action handlers
+    # so the run/pause/stop logic stays centralised in one place).
+    # ------------------------------------------------------------------
+
+    def _on_run_from_run_bar(self) -> None:
+        self.action_run.trigger()
+
+    def _on_pause_from_run_bar(self) -> None:
+        if self.action_pause.isEnabled():
+            self.action_pause.trigger()
+
+    def _on_stop_from_run_bar(self) -> None:
+        if self.action_stop.isEnabled():
+            self.action_stop.trigger()
+
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
         if not self._sim_progress_active:
@@ -3213,11 +3373,54 @@ class MainWindow(QMainWindow):
             self._project.mark_dirty()
             self._update_title()
             self._update_modified_indicator()
+            self._refresh_solver_pill()
 
         dialog.settings_applied.connect(apply_dialog_settings)
 
         if dialog.exec():
             apply_dialog_settings()
+
+    # ------------------------------------------------------------------
+    # P1.3 — Solver pill helpers
+    # ------------------------------------------------------------------
+
+    def _on_solver_pill_clicked(self) -> None:
+        """Open the simulation-settings dialog (focused on the Solver tab if
+        possible)."""
+        self._on_simulation_settings()
+
+    def _refresh_solver_pill(self) -> None:
+        """Re-read the current solver triple from the simulation service and
+        push it into the status-bar pill."""
+        pill = getattr(self, "_solver_pill", None)
+        if pill is None:
+            return
+        try:
+            settings = self._simulation_service.settings
+        except Exception:
+            return
+        integrator = str(getattr(settings, "integrator", "") or "—")
+        # dt may be on settings.dt, settings.fixed_dt, or settings.timestep —
+        # try in priority order without breaking on missing attributes.
+        dt_value = None
+        for attr in ("dt", "fixed_dt", "timestep"):
+            value = getattr(settings, attr, None)
+            if value not in (None, 0, 0.0):
+                dt_value = float(value)
+                break
+        if dt_value is None:
+            dt_text = ""
+        elif dt_value >= 1.0:
+            dt_text = f"{dt_value:g}s"
+        elif dt_value >= 1e-3:
+            dt_text = f"{dt_value * 1e3:g}ms"
+        elif dt_value >= 1e-6:
+            dt_text = f"{dt_value * 1e6:g}µs"
+        else:
+            dt_text = f"{dt_value * 1e9:g}ns"
+        linear_solver = str(getattr(settings, "linear_solver", "") or "")
+        adaptive = bool(getattr(settings, "adaptive_timestep", False))
+        pill.set_solver(integrator, dt_text, linear_solver, adaptive)
 
     def _on_parameter_sweep(self) -> None:
         """Open the parameter sweep configuration dialog."""
@@ -3361,6 +3564,7 @@ class MainWindow(QMainWindow):
 
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
+        pill = getattr(self, "_solver_pill", None)
         if result.is_valid:
             # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
@@ -3371,11 +3575,24 @@ class MainWindow(QMainWindow):
                 5000,
             )
             self._latest_electrical_result = self._result_with_probe_signals(result)
+            # P1.3 — surface convergence health on the solver pill.
+            if pill is not None:
+                stats = getattr(result, "statistics", {}) or {}
+                retries = (
+                    stats.get("timestep_retries")
+                    or stats.get("fallback_steps")
+                    or stats.get("recovery_steps")
+                    or 0
+                )
+                state = pill.STATE_SUCCESS if not retries else pill.STATE_RECOVERED
+                pill.set_state(state)
         else:
             QMessageBox.warning(
                 self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
             )
             self._latest_electrical_result = None
+            if pill is not None:
+                pill.set_state(pill.STATE_FAILED)
 
         self._update_scope_results()
 
