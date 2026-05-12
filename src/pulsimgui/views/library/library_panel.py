@@ -44,6 +44,7 @@ COMPONENT_META: dict[ComponentType, dict[str, str]] = {
 CATEGORY_COLORS = {
     "Circuit": "#0f766e",
     "Signal & Control": "#2563eb",
+    "Three-Phase / Vector Control": "#7c3aed",
     "Thermal": "#ea580c",
 }
 
@@ -716,6 +717,11 @@ class ComponentCard(QFrame):
 
     clicked = Signal(ComponentType)
     double_clicked = Signal(ComponentType)
+    CARD_WIDTH = 84
+    CARD_HEIGHT = 88
+    ICON_SIZE = 46
+    READABLE_COLUMN_WIDTH = 96
+    CONTENT_WIDTH = 64
 
     def __init__(self, comp_type: ComponentType, name: str, shortcut: str, parent=None):
         super().__init__(parent)
@@ -732,8 +738,9 @@ class ComponentCard(QFrame):
         self._name_color = "#374151"
         self._badge_bg = "rgba(107, 114, 128, 0.16)"
         self._badge_text = "#6b7280"
+        self._filtered_out = False
 
-        self.setFixedSize(76, 92)
+        self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setMouseTracking(True)
 
@@ -742,14 +749,14 @@ class ComponentCard(QFrame):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 6, 4, 5)
-        layout.setSpacing(3)
+        layout.setContentsMargins(6, 6, 6, 4)
+        layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Icon
         self._icon_label = QLabel()
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon_label.setFixedSize(48, 48)
+        self._icon_label.setFixedSize(self.CONTENT_WIDTH, self.ICON_SIZE)
         self._update_icon()
         layout.addWidget(self._icon_label)
 
@@ -757,9 +764,11 @@ class ComponentCard(QFrame):
         self._name_label = QLabel(self._name)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         font = self._name_label.font()
-        font.setPointSize(9)
+        font.setPointSize(10)
+        font.setBold(True)
         self._name_label.setFont(font)
         self._name_label.setWordWrap(True)
+        self._name_label.setFixedWidth(self.CONTENT_WIDTH)
         layout.addWidget(self._name_label)
 
         self._shortcut_label = QLabel(self._shortcut)
@@ -767,7 +776,7 @@ class ComponentCard(QFrame):
         self._shortcut_label.setVisible(bool(self._shortcut))
         self._shortcut_label.setObjectName("ComponentShortcutBadge")
         badge_font = self._shortcut_label.font()
-        badge_font.setPointSize(7)
+        badge_font.setPointSize(8)
         badge_font.setBold(True)
         self._shortcut_label.setFont(badge_font)
         self._shortcut_label.setStyleSheet(
@@ -779,7 +788,7 @@ class ComponentCard(QFrame):
     def _update_icon(self):
         pixmap = create_component_icon(
             self._comp_type,
-            48,
+            self.ICON_SIZE,
             self._icon_color,
             dark_mode=self._icon_dark_mode,
         )
@@ -899,7 +908,7 @@ class ComponentCard(QFrame):
         # Create drag pixmap
         pixmap = create_component_icon(
             self._comp_type,
-            48,
+            self.ICON_SIZE,
             self._icon_color,
             dark_mode=self._icon_dark_mode,
         )
@@ -928,6 +937,7 @@ class CategorySection(QWidget):
         self._color_bar: QFrame | None = None
         self._toggle_btn: QToolButton | None = None
         self._count_label: QLabel | None = None
+        self._column_count = 3
 
         self._setup_ui()
 
@@ -941,8 +951,8 @@ class CategorySection(QWidget):
         self._header.setObjectName("CategoryHeader")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self._header)
-        header_layout.setContentsMargins(8, 5, 8, 5)
-        header_layout.setSpacing(7)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setSpacing(6)
 
         # Color indicator
         self._color_bar = QFrame()
@@ -954,7 +964,7 @@ class CategorySection(QWidget):
         self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         font = self._title_label.font()
         font.setBold(True)
-        font.setPointSize(10)
+        font.setPointSize(11)
         self._title_label.setFont(font)
         header_layout.addWidget(self._title_label)
 
@@ -1000,11 +1010,7 @@ class CategorySection(QWidget):
         self._cards.append(card)
         if self._count_label is not None:
             self._count_label.setText(str(len(self._cards)))
-
-        # Add to grid (3 columns)
-        row = (len(self._cards) - 1) // 3
-        col = (len(self._cards) - 1) % 3
-        self._grid_layout.addWidget(card, row, col)
+        self._rebuild_grid()
 
     def _toggle_expanded(self) -> None:
         self._expanded = not self._expanded
@@ -1037,6 +1043,29 @@ class CategorySection(QWidget):
         for card in self._cards:
             card.set_icon_theme_mode(dark_mode)
 
+    def _card_columns_for_width(self, available_width: int) -> int:
+        spacing = max(self._grid_layout.horizontalSpacing(), 0)
+        margins = self._grid_layout.contentsMargins()
+        usable_width = max(available_width - margins.left() - margins.right(), 0)
+        card_width = ComponentCard.READABLE_COLUMN_WIDTH
+        if usable_width <= 0:
+            return 3
+        columns = max(1, int((usable_width + spacing) / (card_width + spacing)))
+        return min(columns, 4)
+
+    def _rebuild_grid(self) -> None:
+        while self._grid_layout.count():
+            self._grid_layout.takeAt(0)
+        visible_cards = [card for card in self._cards if not card._filtered_out]
+        self._column_count = self._card_columns_for_width(
+            self._grid_container.width() or self.width() or (ComponentCard.CARD_WIDTH * 3)
+        )
+        for index, card in enumerate(visible_cards):
+            row = index // self._column_count
+            col = index % self._column_count
+            self._grid_layout.addWidget(card, row, col)
+        self._grid_container.updateGeometry()
+
     def _refresh_header_style(self, theme: Theme | None = None) -> None:
         """Apply styles to section header and color accent bar."""
         if self._color_bar is not None:
@@ -1056,7 +1085,7 @@ class CategorySection(QWidget):
         if self._count_label is not None:
             self._count_label.setStyleSheet(
                 f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
-                "border-radius: 6px; padding: 0 6px; font-size: 10px;"
+                "border-radius: 6px; padding: 0 6px; font-size: 10px; font-weight: 600;"
             )
         if self._toggle_btn is not None:
             self._toggle_btn.setStyleSheet(
@@ -1074,6 +1103,7 @@ class CategorySection(QWidget):
             card.set_icon_theme_mode(theme.is_dark)
             card.set_icon_color(icon_color)
             card.apply_theme(theme)
+        self._rebuild_grid()
 
     def filter_components(self, search_text: str) -> bool:
         """Filter components by search text. Returns True if any visible."""
@@ -1083,6 +1113,7 @@ class CategorySection(QWidget):
 
         for card in self._cards:
             visible = not search_text or search_lower in card._name.lower()
+            card._filtered_out = not visible
             card.setVisible(visible)
             if visible:
                 any_visible = True
@@ -1099,7 +1130,15 @@ class CategorySection(QWidget):
             else:
                 self._count_label.setText(str(len(self._cards)))
         self.setVisible(any_visible or not search_text)
+        self._rebuild_grid()
         return any_visible
+
+    def resizeEvent(self, event):
+        """Reflow cards when the section width changes."""
+        super().resizeEvent(event)
+        new_columns = self._card_columns_for_width(self._grid_container.width() or self.width())
+        if new_columns != self._column_count:
+            self._rebuild_grid()
 
 
 class LibraryPanel(QWidget):
@@ -1133,35 +1172,31 @@ class LibraryPanel(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
 
-        title_row = QWidget()
-        title_row.setObjectName("LibraryTitleRow")
-        title_layout = QHBoxLayout(title_row)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(6)
+        search_row = QWidget()
+        search_row.setObjectName("LibrarySearchRow")
+        search_layout = QHBoxLayout(search_row)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(6)
 
-        title = QLabel("Component Library")
-        title.setObjectName("LibraryPanelTitle")
-        title_layout.addWidget(title)
-        title_layout.addStretch()
-
-        self._summary_label = QLabel("")
-        self._summary_label.setObjectName("LibrarySummaryLabel")
-        title_layout.addWidget(self._summary_label)
-        layout.addWidget(title_row)
-
-        # Search bar
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Search component or function...")
+        self._search_edit.setPlaceholderText("Search components...")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         search_icon = IconService.get_icon("search", "#9ca3af", 16)
         self._search_action = self._search_edit.addAction(
             search_icon, QLineEdit.ActionPosition.LeadingPosition
         )
-        layout.addWidget(self._search_edit)
+        search_layout.addWidget(self._search_edit, 1)
+
+        self._summary_label = QLabel("")
+        self._summary_label.setObjectName("LibrarySummaryLabel")
+        self._summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._summary_label.setMinimumWidth(84)
+        search_layout.addWidget(self._summary_label)
+        layout.addWidget(search_row)
 
         # Scroll area for categories
         scroll = QScrollArea()
@@ -1255,24 +1290,13 @@ class LibraryPanel(QWidget):
             QWidget#LibraryPanelRoot {{
                 background-color: {c.panel_background};
             }}
-            QWidget#LibraryTitleRow {{
-                background-color: {c.panel_header};
-                border: 1px solid {c.panel_border};
-                border-radius: 10px;
-                padding: 5px 8px;
-            }}
-            QLabel#LibraryPanelTitle {{
-                color: {c.foreground};
-                font-weight: 600;
-                font-size: 13px;
-            }}
             QLabel#LibrarySummaryLabel {{
                 color: {c.foreground_muted};
                 background-color: {c.tree_item_hover};
                 border-radius: 7px;
                 padding: 2px 8px;
                 font-size: 10px;
-                font-weight: 500;
+                font-weight: 600;
             }}
             QWidget#LibraryContentRoot {{
                 background-color: {c.panel_background};
@@ -1281,7 +1305,7 @@ class LibraryPanel(QWidget):
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 10px;
-                padding: 8px 10px;
+                padding: 7px 10px;
                 color: {c.foreground};
             }}
             QLineEdit:focus {{

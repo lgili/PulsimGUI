@@ -1,4 +1,4 @@
 """PulsimGui - Cross-platform GUI for Pulsim power electronics simulator."""
 
-__version__ = "0.7.4"
+__version__ = "0.8.0"
 __author__ = "Luiz Gili"
