@@ -36,7 +36,10 @@ class IconLabel(QWidget):
         # Text label - single line, no wrap, with elision
         self._text_label = QLabel(text)
         self._text_label.setWordWrap(False)
-        self._text_label.setMaximumWidth(250)  # Limit width to prevent overflow
+        # v0.8.4 — bumped from 250 to 360 so the GUI + backend version pair
+        # (e.g. ``PulsimGui 0.8.4  ·  Backend Pulsim 0.9.0``) renders
+        # without truncating "0.9.0" mid-segment.
+        self._text_label.setMaximumWidth(360)
         layout.addWidget(self._text_label)
 
     def _update_icon(self) -> None:

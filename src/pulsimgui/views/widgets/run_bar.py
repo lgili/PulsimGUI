@@ -292,14 +292,37 @@ class RunBar(QFrame):
             self.STATE_FAILED: "rgba(239, 68, 68, 0.95)",
         }
         accent = accents[self._state]
-        # The bar itself stays transparent so it blends with the host
-        # toolbar / status bar background; only the progress chunk
-        # carries a state color.
+        # The primary-action button picks up a semantic tint while the
+        # secondary buttons stay muted. This makes the user's eye land
+        # on the right action without forcing them to read three button
+        # labels every time the state changes.
+        is_idle = self._state == self.STATE_IDLE
+        is_running = self._state == self.STATE_RUNNING
+        is_paused = self._state == self.STATE_PAUSED
+        is_completed = self._state == self.STATE_COMPLETED
+
+        run_bg = "rgba(34, 197, 94, 0.20)" if (is_idle or is_completed) else "transparent"
+        run_fg = "#16a34a" if (is_idle or is_completed) else "rgba(120,120,120,0.55)"
+        pause_fg = "#1d4ed8" if is_running else "rgba(120,120,120,0.45)"
+        stop_fg = "#b91c1c" if (is_running or is_paused) else "rgba(120,120,120,0.45)"
+
         self.setStyleSheet(
             "#RunBar { background: transparent; }"
             f"#RunBarProgress::chunk {{ background: {accent}; border-radius: 4px; }}"
             "#RunBarProgress { background: rgba(107, 114, 128, 0.18); "
             "border: 0px; border-radius: 4px; }"
+            "#RunBarBtn_run, #RunBarBtn_pause, #RunBarBtn_stop {"
+            "  padding: 4px 14px; border-radius: 6px; font-weight: 600;"
+            "}"
+            f"#RunBarBtn_run {{ background: {run_bg}; color: {run_fg}; }}"
+            "#RunBarBtn_run:hover:enabled { background: rgba(34, 197, 94, 0.30); }"
+            f"#RunBarBtn_pause {{ color: {pause_fg}; }}"
+            "#RunBarBtn_pause:hover:enabled { background: rgba(59, 130, 246, 0.18); }"
+            f"#RunBarBtn_stop {{ color: {stop_fg}; }}"
+            "#RunBarBtn_stop:hover:enabled { background: rgba(220, 38, 38, 0.18); }"
+            "#RunBarBtn_run:disabled, #RunBarBtn_pause:disabled, #RunBarBtn_stop:disabled {"
+            "  color: rgba(120,120,120,0.35); background: transparent;"
+            "}"
         )
 
     @staticmethod

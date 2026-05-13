@@ -763,27 +763,45 @@ class ComponentCard(QFrame):
         self._update_icon()
         layout.addWidget(self._icon_label)
 
-        # Name — auto-shrink long labels by one font-step and fall back to
-        # Qt's elided-text rendering with the full name available via tooltip
-        # whenever the label still wouldn't fit horizontally. Prevents the
-        # "Transformer" → "ransforme" truncation regression flagged in the
-        # May 2026 UX audit.
-        self._name_label = QLabel(self._name)
+        # Name — pick the largest font size whose rendered width fits
+        # inside the card's content area, then fall back to Qt's elided
+        # text if even the smallest tested size still overflows.
+        #
+        # v0.8.1 used a heuristic based on len(name), but glyph widths
+        # are not linear with character count: "Transformer" (11 chars,
+        # mostly wide glyphs) overflowed at 9 pt even though "Saturable"
+        # (also 9 chars) fit fine at 10 pt. Measuring with QFontMetrics
+        # is the only way to be consistent across themes and DPIs.
+        from PySide6.QtGui import QFontMetrics
+
+        self._name_label = QLabel("", self)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        font = self._name_label.font()
-        # Shorter names look balanced at 10 pt; once the rendered width would
-        # exceed the card content area, drop a point.
-        metrics_size = 10 if len(self._name) <= 8 else 9
-        font.setPointSize(metrics_size)
-        font.setBold(True)
-        self._name_label.setFont(font)
-        self._name_label.setWordWrap(True)
+        self._name_label.setWordWrap(False)
         self._name_label.setFixedWidth(self.CONTENT_WIDTH)
-        # Force Qt to elide rather than visually clipping when the text still
-        # exceeds two lines (e.g. "Inv. Park Transform").
         self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self._name_label.setToolTip(self._name)
         self._name_label.setAccessibleDescription(self._name)
+
+        chosen_font = self._name_label.font()
+        chosen_font.setBold(True)
+        for trial_size in (10, 9, 8):
+            chosen_font.setPointSize(trial_size)
+            metrics = QFontMetrics(chosen_font)
+            if metrics.horizontalAdvance(self._name) <= self.CONTENT_WIDTH - 4:
+                # Whole name fits cleanly at this size; render verbatim.
+                self._name_label.setFont(chosen_font)
+                self._name_label.setText(self._name)
+                break
+        else:
+            # Even at 8 pt the name overflows — render with an ellipsis
+            # rather than clipping both ends of the string.
+            self._name_label.setFont(chosen_font)
+            metrics = QFontMetrics(chosen_font)
+            elided = metrics.elidedText(
+                self._name, Qt.TextElideMode.ElideRight,
+                self.CONTENT_WIDTH - 4,
+            )
+            self._name_label.setText(elided)
         layout.addWidget(self._name_label)
 
         self._shortcut_label = QLabel(self._shortcut)

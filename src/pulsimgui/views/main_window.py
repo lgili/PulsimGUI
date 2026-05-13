@@ -656,7 +656,11 @@ class MainWindow(QMainWindow):
 
         # Simulation status with icon
         self._sim_status_widget = SimulationStatusWidget()
-        self._sim_status_widget.setMinimumWidth(210)
+        # v0.8.4 — the status text now renders both the GUI version and
+        # the backend version explicitly (e.g.
+        # ``PulsimGui 0.8.4  ·  Backend Pulsim 0.9.0``) so the segment
+        # needs more horizontal room than the 210 px we shipped at v0.8.1.
+        self._sim_status_widget.setMinimumWidth(340)
         status_bar.addPermanentWidget(self._sim_status_widget)
 
         # Solver pill (Phase wave-1, item P1.3): glanceable
@@ -833,13 +837,20 @@ class MainWindow(QMainWindow):
         self.action_parameter_sweep.setEnabled(backend_ready and not is_running)
 
     def _update_backend_status(self, info: BackendInfo | None = None) -> None:
-        """Refresh the status bar text to describe backend state."""
+        """Refresh the status bar text to describe backend state.
+
+        Renders both the GUI version (so users can identify the build
+        they're running) and the active Pulsim backend version with an
+        explicit "Backend" prefix — the v0.8.x labels used to show just
+        "Pulsim 0.9.0" which read as the app version and confused users
+        upgrading from earlier point releases.
+        """
         backend_info = info or self._simulation_service.backend_info
         backend_ready = self._simulation_service.is_backend_ready
         self._update_simulation_actions()
         if backend_ready:
             if not self._simulation_service.is_running:
-                self._sim_status_widget.setStatus(backend_info.label())
+                self._sim_status_widget.setStatus(self._format_status_label(backend_info))
             return
         warning = (
             self._simulation_service.backend_issue_message
@@ -847,6 +858,29 @@ class MainWindow(QMainWindow):
         )
         self._sim_status_widget.setStatus(f"Backend unavailable: {warning}", is_error=True)
         self._sim_progress.setVisible(False)
+
+    @staticmethod
+    def _format_status_label(backend_info: BackendInfo) -> str:
+        """Compose the segmented status-bar label: GUI version · backend.
+
+        Renders as ``PulsimGui 0.8.3  ·  Backend Pulsim 0.9.0`` so the
+        user can distinguish the GUI build they're running from the
+        Pulsim runtime version the GUI depends on.
+        """
+        try:
+            from pulsimgui import __version__ as gui_version
+        except Exception:
+            gui_version = ""
+        raw = (backend_info.label() or "").strip()
+        if not raw:
+            backend_label = "Backend unknown"
+        elif raw.lower().startswith("backend"):
+            backend_label = raw
+        else:
+            backend_label = f"Backend {raw}"
+        if gui_version:
+            return f"PulsimGui {gui_version}  ·  {backend_label}"
+        return backend_label
 
     def _sync_thermal_service_context(self) -> None:
         """Keep thermal analysis service aligned with active backend and settings."""
