@@ -2038,10 +2038,22 @@ class MainWindow(QMainWindow):
         self._update_schematic_empty_state()
 
     def _update_schematic_empty_state(self) -> None:
-        """Show onboarding hint only when the active circuit is still empty."""
+        """Show onboarding hint only when the active circuit is still empty.
+
+        The schematic view's empty-state overlay is an opt-in feature
+        only present on builds that include the canvas-side widget.
+        Probing with ``hasattr`` here keeps older / minimal builds
+        bootable — without this guard the v0.8.1 / v0.8.2 release
+        bundles crashed at startup because the cherry-pick that added
+        the caller never picked up the corresponding view-side
+        ``set_empty_state_visible`` method.
+        """
+        view = getattr(self, "_schematic_view", None)
+        if view is None or not hasattr(view, "set_empty_state_visible"):
+            return
         circuit = self._current_circuit()
         is_empty = not circuit.components and not circuit.wires
-        self._schematic_view.set_empty_state_visible(is_empty)
+        view.set_empty_state_visible(is_empty)
 
     def _on_about(self) -> None:
         """Show about dialog."""
