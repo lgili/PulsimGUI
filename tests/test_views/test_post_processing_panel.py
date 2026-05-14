@@ -9,6 +9,7 @@ from pulsimgui.services.backend_types import (
     PostProcessingJobResult,
     PostProcessingResult,
 )
+from pulsimgui.services.theme_service import DARK_THEME, LIGHT_THEME
 from pulsimgui.views.waveform.post_processing_panel import PostProcessingPanel
 from pulsimgui.views.waveform.waveform_viewer import WaveformViewer
 
@@ -71,6 +72,25 @@ def test_post_processing_panel_switches_to_spectral_results_stack(qapp) -> None:
         panel.close()
 
 
+def test_post_processing_panel_apply_theme_updates_surface_and_plot(qapp) -> None:
+    panel = PostProcessingPanel()
+    try:
+        panel.apply_theme(LIGHT_THEME)
+        light_style = panel.styleSheet()
+        light_bg = panel._spectral_plot.backgroundBrush().color().name()
+
+        panel.apply_theme(DARK_THEME)
+        dark_style = panel.styleSheet()
+        dark_bg = panel._spectral_plot.backgroundBrush().color().name()
+
+        assert LIGHT_THEME.colors.panel_background in light_style
+        assert DARK_THEME.colors.panel_background in dark_style
+        assert light_style != dark_style
+        assert light_bg != dark_bg
+    finally:
+        panel.close()
+
+
 def test_waveform_viewer_post_sidebar_hidden_and_toggleable(qapp) -> None:
     viewer = WaveformViewer()
     try:
@@ -93,5 +113,21 @@ def test_waveform_viewer_disables_toggle_when_capability_missing(qapp) -> None:
         assert not viewer._post_panel_toggle_btn.isEnabled()
         assert "requires backend" in viewer._post_panel_toggle_btn.toolTip().lower()
         assert viewer._right_panel_tabs.isHidden()
+    finally:
+        viewer.close()
+
+
+def test_waveform_viewer_propagates_theme_to_post_processing_panel(qapp) -> None:
+    viewer = WaveformViewer()
+    try:
+        viewer.apply_theme(LIGHT_THEME)
+        light_style = viewer._post_processing_panel.styleSheet()
+
+        viewer.apply_theme(DARK_THEME)
+        dark_style = viewer._post_processing_panel.styleSheet()
+
+        assert LIGHT_THEME.colors.panel_background in light_style
+        assert DARK_THEME.colors.panel_background in dark_style
+        assert light_style != dark_style
     finally:
         viewer.close()

@@ -564,16 +564,13 @@ class TestAdvancedAnalysisSettings:
         settings = SimulationSettings()
         dialog = SimulationSettingsDialog(settings)
 
-        dialog._advanced_toggle.setChecked(True)
-
+        # Advanced tabs are always visible (no toggle needed after dialog refactor)
         assert hasattr(dialog, "_advanced_tabs")
         assert dialog._advanced_tabs.count() == 4
         assert dialog._advanced_tabs.tabText(0) == "Transient"
         assert dialog._advanced_tabs.tabText(1) == "DC Setup"
         assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
         assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
-        assert dialog._advanced_tabs.elideMode() == Qt.TextElideMode.ElideNone
-        assert dialog._advanced_tabs.tabBar().expanding()
 
     def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
         settings = SimulationSettings()

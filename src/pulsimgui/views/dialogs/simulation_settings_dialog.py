@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -94,68 +95,293 @@ class SimulationSettingsDialog(QDialog):
 
         self.setObjectName("simulationSettingsDialog")
         self.setWindowTitle("Simulation Settings")
-        self.setMinimumSize(780, 620)
+        self.setMinimumSize(700, 520)
 
         self._setup_ui()
         self._load_settings()
         self._apply_dialog_style()
 
     def _setup_ui(self) -> None:
-        """Set up the dialog UI."""
+        """Set up the dialog UI with PLECS-style nav + content layout."""
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setObjectName("simSettingsScrollArea")
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        root_layout.addWidget(scroll_area)
+        # ── Main split: nav sidebar | content pages ───────────────────────
+        main_widget = QWidget()
+        main_widget.setObjectName("simSettingsMain")
+        main_layout = QHBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        root_layout.addWidget(main_widget, 1)
 
-        scroll_content = QWidget()
-        scroll_content.setObjectName("simSettingsScrollContent")
-        scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(0)
-        scroll_area.setWidget(scroll_content)
+        # Left navigation sidebar
+        self._nav_panel = QFrame()
+        self._nav_panel.setObjectName("simSettingsNav")
+        self._nav_panel.setFixedWidth(154)
+        nav_layout = QVBoxLayout(self._nav_panel)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(0)
 
-        self._panel = QFrame()
-        self._panel.setObjectName("simSettingsPanel")
-        self._panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        panel_layout = QVBoxLayout(self._panel)
-        panel_layout.setContentsMargins(16, 14, 16, 14)
-        panel_layout.setSpacing(10)
-        scroll_layout.addWidget(self._panel)
-        scroll_layout.addStretch()
+        nav_title = QLabel("Simulation\nSettings")
+        nav_title.setObjectName("simNavTitle")
+        nav_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        nav_title.setContentsMargins(14, 16, 10, 12)
+        nav_layout.addWidget(nav_title)
 
-        title = QLabel("Simulation Settings")
-        title.setObjectName("dialogTitle")
-        panel_layout.addWidget(title)
+        self._nav_buttons: list[QPushButton] = []
+        for i, label in enumerate(("General", "Solver", "Output", "Events", "Advanced")):
+            btn = QPushButton(label)
+            btn.setObjectName("simNavBtn")
+            btn.setCheckable(True)
+            btn.setFlat(True)
+            btn.clicked.connect(partial(self._on_nav_clicked, i))
+            nav_layout.addWidget(btn)
+            self._nav_buttons.append(btn)
 
-        subtitle = QLabel("Configure solver and simulation behavior.")
-        subtitle.setObjectName("dialogSubtitle")
-        panel_layout.addWidget(subtitle)
+        nav_layout.addStretch()
+        main_layout.addWidget(self._nav_panel)
+
+        nav_sep = QFrame()
+        nav_sep.setObjectName("simNavSeparator")
+        nav_sep.setFrameShape(QFrame.Shape.VLine)
+        nav_sep.setFixedWidth(1)
+        main_layout.addWidget(nav_sep)
+
+        # Right stacked content pages
+        self._content_stack = QStackedWidget()
+        self._content_stack.setObjectName("simSettingsContent")
+        self._content_stack.addWidget(self._wrap_page(self._build_general_page()))
+        self._content_stack.addWidget(self._wrap_page(self._build_solver_page()))
+        self._content_stack.addWidget(self._wrap_page(self._build_output_page()))
+        self._content_stack.addWidget(self._wrap_page(self._build_events_page()))
+        self._content_stack.addWidget(self._build_advanced_page())
+        main_layout.addWidget(self._content_stack, 1)
+
+        # ── Footer ────────────────────────────────────────────────────────
+        footer_widget = QWidget()
+        footer_widget.setObjectName("simSettingsFooter")
+        footer_container = QVBoxLayout(footer_widget)
+        footer_container.setContentsMargins(16, 6, 16, 8)
+        footer_container.setSpacing(0)
+        footer_container.addLayout(self._create_footer())
+        root_layout.addWidget(footer_widget)
+
+        self._connect_cross_page_signals()
+        self._on_nav_clicked(0)
+        self._apply_capability_gates()
+
+    @staticmethod
+    def _wrap_page(content: QWidget) -> QScrollArea:
+        """Wrap a page widget in a scroll area."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(content)
+        return scroll
+
+    def _on_nav_clicked(self, index: int) -> None:
+        self._content_stack.setCurrentIndex(index)
+        for i, btn in enumerate(self._nav_buttons):
+            btn.blockSignals(True)
+            btn.setChecked(i == index)
+            btn.blockSignals(False)
+
+    def _connect_cross_page_signals(self) -> None:
+        self._t_stop_edit.value_changed.connect(lambda _: self._update_effective_step())
+        self._t_start_edit.value_changed.connect(lambda _: self._update_effective_step())
+
+    def _build_general_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("General")
+        title.setObjectName("simPageTitle")
+        layout.addWidget(title)
+
+        preset_section = QLabel("QUICK PRESETS")
+        preset_section.setObjectName("simSectionLabel")
+        layout.addWidget(preset_section)
+
+        layout.addLayout(self._create_preset_cards())
 
         if self._backend_info is not None or self._backend_warning:
-            panel_layout.addWidget(self._create_backend_banner())
+            backend_section = QLabel("BACKEND")
+            backend_section.setObjectName("simSectionLabel")
+            layout.addWidget(backend_section)
+            layout.addWidget(self._create_backend_banner())
 
-        panel_layout.addWidget(self._create_divider())
+        layout.addStretch()
+        return page
 
-        panel_layout.addWidget(self._create_section_label("PRESETS"))
-        panel_layout.addLayout(self._create_preset_cards())
-        panel_layout.addWidget(self._create_divider())
+    def _build_solver_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
 
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(10)
-        content_layout.addWidget(self._create_solver_time_card(), 1)
-        content_layout.addWidget(self._create_events_output_card(), 1)
-        panel_layout.addLayout(content_layout)
+        title = QLabel("Solver")
+        title.setObjectName("simPageTitle")
+        layout.addWidget(title)
 
-        panel_layout.addWidget(self._create_advanced_section())
-        panel_layout.addWidget(self._create_divider())
-        panel_layout.addLayout(self._create_footer())
-        self._apply_capability_gates()
+        form = self._create_form_layout()
+
+        self._solver_combo = QComboBox()
+        for label_text, value in self._INTEGRATION_OPTIONS:
+            self._solver_combo.addItem(label_text, value)
+        self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
+        form.addRow("Integration method:", self._solver_combo)
+
+        self._step_mode_combo = QComboBox()
+        self._step_mode_combo.addItem("Fixed step", "fixed")
+        self._step_mode_combo.addItem("Variable step", "variable")
+        form.addRow("Step mode:", self._step_mode_combo)
+
+        self._solver_desc = QLabel("")
+        self._solver_desc.setObjectName("fieldHint")
+        self._solver_desc.setWordWrap(True)
+        form.addRow("", self._solver_desc)
+
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setObjectName("formSeparator")
+        form.addRow(sep1)
+
+        self._t_start_edit = SILineEdit("s")
+        form.addRow("Start time:", self._t_start_edit)
+
+        self._t_step_edit = SILineEdit("s")
+        form.addRow("Step size:", self._t_step_edit)
+
+        self._t_stop_edit = SILineEdit("s")
+        form.addRow("Stop time:", self._t_stop_edit)
+
+        self._max_step_edit = SILineEdit("s")
+        form.addRow("Max step:", self._max_step_edit)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setObjectName("formSeparator")
+        form.addRow(sep2)
+
+        self._rel_tol_spin = QDoubleSpinBox()
+        self._rel_tol_spin.setDecimals(8)
+        self._rel_tol_spin.setRange(1e-10, 1e-1)
+        self._rel_tol_spin.setValue(1e-4)
+        self._rel_tol_spin.setSingleStep(1e-5)
+        self._rel_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        form.addRow("Relative tolerance:", self._rel_tol_spin)
+
+        self._abs_tol_spin = QDoubleSpinBox()
+        self._abs_tol_spin.setDecimals(10)
+        self._abs_tol_spin.setRange(1e-12, 1e-3)
+        self._abs_tol_spin.setValue(1e-6)
+        self._abs_tol_spin.setSingleStep(1e-7)
+        self._abs_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        form.addRow("Absolute tolerance:", self._abs_tol_spin)
+
+        layout.addLayout(form)
+        layout.addStretch()
+        return page
+
+    def _build_output_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("Output")
+        title.setObjectName("simPageTitle")
+        layout.addWidget(title)
+
+        form = self._create_form_layout()
+
+        self._output_points_spin = QSpinBox()
+        self._output_points_spin.setRange(100, 1_000_000)
+        self._output_points_spin.setSingleStep(1000)
+        self._output_points_spin.setValue(10_000)
+        self._output_points_spin.valueChanged.connect(self._update_effective_step)
+        form.addRow("Output points:", self._output_points_spin)
+
+        self._effective_step_label = QLabel("-")
+        self._effective_step_label.setObjectName("effectiveStepValue")
+        form.addRow("Effective step:", self._effective_step_label)
+
+        layout.addLayout(form)
+
+        dur_section = QLabel("DURATION PRESETS")
+        dur_section.setObjectName("simSectionLabel")
+        layout.addWidget(dur_section)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for name, duration in self._DURATION_PRESETS:
+            chip = QPushButton(name)
+            chip.setObjectName("presetChip")
+            chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            chip.clicked.connect(partial(self._set_duration_preset, duration))
+            chips.addWidget(chip)
+        chips.addStretch()
+        layout.addLayout(chips)
+
+        layout.addStretch()
+        return page
+
+    def _build_events_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("Events")
+        title.setObjectName("simPageTitle")
+        layout.addWidget(title)
+
+        form = self._create_form_layout()
+
+        self._enable_events_check = QCheckBox("Enable simulation event detection")
+        self._enable_events_check.setChecked(True)
+        form.addRow(self._enable_events_check)
+
+        self._max_step_retries_spin = QSpinBox()
+        self._max_step_retries_spin.setRange(0, 100)
+        self._max_step_retries_spin.setValue(8)
+        form.addRow("Max step retries:", self._max_step_retries_spin)
+
+        layout.addLayout(form)
+        layout.addStretch()
+        return page
+
+    def _build_advanced_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 10)
+        layout.setSpacing(14)
+
+        title = QLabel("Advanced")
+        title.setObjectName("simPageTitle")
+        layout.addWidget(title)
+
+        self._advanced_tabs = QTabWidget()
+        self._advanced_tabs.setObjectName("advancedTabs")
+        self._advanced_tabs.setDocumentMode(True)
+        self._advanced_tabs.setUsesScrollButtons(True)
+        self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        for content, label in (
+            (self._create_newton_card(), "Transient"),
+            (self._create_dc_card(), "DC Setup"),
+            (self._create_thermal_card(), "Thermal & Losses"),
+            (self._create_frequency_card(), "Frequency Analysis"),
+        ):
+            tab_scroll = QScrollArea()
+            tab_scroll.setWidgetResizable(True)
+            tab_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            tab_scroll.setWidget(content)
+            self._advanced_tabs.addTab(tab_scroll, label)
+        layout.addWidget(self._advanced_tabs, 1)
+        return page
 
     def _create_section_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -1254,47 +1480,105 @@ class SimulationSettingsDialog(QDialog):
             f" {52 if is_dark_theme else 34})"
         )
 
+        nav_hover = (
+            f"rgba({primary_q.red()}, {primary_q.green()}, {primary_q.blue()}, 18)"
+        )
+        nav_active = (
+            f"rgba({primary_q.red()}, {primary_q.green()}, {primary_q.blue()}, 32)"
+        )
+
         self.setStyleSheet(
             f"""
 QDialog#simulationSettingsDialog {{
     background-color: {bg};
 }}
 
-QScrollArea#simSettingsScrollArea,
-QWidget#simSettingsScrollContent {{
-    background-color: transparent;
+/* ── Navigation sidebar ── */
+QFrame#simSettingsNav {{
+    background-color: {bg};
     border: none;
 }}
 
-QScrollArea#simSettingsScrollArea::corner {{
-    background: transparent;
-}}
-
-QFrame#simSettingsPanel {{
-    background-color: {panel};
-    border: 1px solid {border};
-    border-radius: 12px;
-    background-clip: padding;
-}}
-
-QLabel#dialogTitle {{
+QLabel#simNavTitle {{
     color: {text};
-    font-size: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.35;
+}}
+
+QPushButton#simNavBtn {{
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    color: {muted};
+    font-size: 12px;
+    font-weight: 550;
+    text-align: left;
+    padding: 8px 12px 8px 11px;
+    min-height: 32px;
+    border-radius: 0px;
+}}
+
+QPushButton#simNavBtn:hover {{
+    background-color: {nav_hover};
+    color: {text};
+}}
+
+QPushButton#simNavBtn:checked {{
+    background-color: {nav_active};
+    border-left: 3px solid {primary};
+    color: {text};
+    font-weight: 650;
+}}
+
+QFrame#simNavSeparator {{
+    border: none;
+    background-color: {border};
+    min-width: 1px;
+    max-width: 1px;
+}}
+
+/* ── Content area ── */
+QStackedWidget#simSettingsContent,
+QScrollArea,
+QWidget#simSettingsMain {{
+    background-color: {panel};
+    border: none;
+}}
+
+QScrollArea > QWidget > QWidget {{
+    background-color: {panel};
+}}
+
+QLabel#simPageTitle {{
+    color: {text};
+    font-size: 15px;
     font-weight: 700;
 }}
 
-QLabel#dialogSubtitle {{
+QLabel#simSectionLabel {{
     color: {muted};
-    font-size: 11px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
 }}
 
-QFrame#simDivider {{
+QFrame#formSeparator {{
     border: none;
     min-height: 1px;
     max-height: 1px;
     background-color: {border};
+    margin-top: 2px;
+    margin-bottom: 2px;
 }}
 
+/* ── Footer ── */
+QWidget#simSettingsFooter {{
+    background-color: {panel};
+    border-top: 1px solid {border};
+}}
+
+/* ── Legacy section label (keep for compat) ── */
 QLabel#sectionLabel {{
     color: {muted};
     font-size: 11px;
@@ -1392,34 +1676,28 @@ QFrame#advancedBody {{
 
 QTabWidget#advancedTabs::pane {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-top: none;
     background-color: {card_bg};
-    top: -1px;
 }}
 
 QTabWidget#advancedTabs QTabBar::tab {{
-    background-color: {chip_bg};
-    border: 1px solid {border};
-    border-bottom: none;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
+    background-color: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
     padding: 6px 14px;
-    margin-right: 2px;
+    margin-right: 4px;
     color: {muted};
-    min-height: 22px;
-    min-width: 130px;
     font-size: 11px;
-    font-weight: 650;
+    font-weight: 600;
 }}
 
 QTabWidget#advancedTabs QTabBar::tab:selected {{
-    background-color: {card_bg};
     color: {text};
-    border-color: {focus};
+    border-bottom: 2px solid {primary};
+    font-weight: 700;
 }}
 
 QTabWidget#advancedTabs QTabBar::tab:hover {{
-    border-color: {focus};
     color: {text};
 }}
 
@@ -1472,12 +1750,15 @@ QPushButton#cancelButton,
 QPushButton#applyButton {{
     background-color: {chip_bg};
     border: 1px solid {border};
-    border-radius: 9px;
+    border-radius: 7px;
     background-clip: padding;
     color: {text};
-    min-height: 30px;
-    min-width: 84px;
-    font-weight: 650;
+    min-height: 24px;
+    max-height: 28px;
+    min-width: 64px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 12px;
 }}
 
 QPushButton#cancelButton:hover,
@@ -1488,12 +1769,15 @@ QPushButton#applyButton:hover {{
 QPushButton#runButton {{
     background-color: {primary};
     border: 1px solid {primary};
-    border-radius: 9px;
+    border-radius: 7px;
     background-clip: padding;
     color: {primary_fg};
-    min-height: 30px;
-    min-width: 126px;
+    min-height: 24px;
+    max-height: 28px;
+    min-width: 80px;
+    font-size: 11px;
     font-weight: 700;
+    padding: 2px 16px;
 }}
 
 QPushButton#runButton:hover {{

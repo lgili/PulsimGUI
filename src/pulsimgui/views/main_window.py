@@ -48,6 +48,7 @@ from pulsimgui.models.component import (
     pin_connection_domain,
 )
 from pulsimgui.models.project import Project
+from pulsimgui.scope_workbench import ScopeWorkspaceState, ScopeWorkbenchSession
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
     create_subcircuit_from_selection,
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
+        self._scope_workbench_session = self._build_scope_workbench_session()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
@@ -1512,6 +1514,124 @@ class MainWindow(QMainWindow):
         self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
+        self._reset_scope_workbench_session()
+        self._restore_saved_scope_windows()
+
+    def _build_scope_workbench_session(self) -> ScopeWorkbenchSession:
+        """Build standalone scope workspace session from project persistence."""
+        raw_state = self._project.scope_workspace_state
+        workspace_state = (
+            ScopeWorkspaceState.from_dict(raw_state)
+            if isinstance(raw_state, dict)
+            else None
+        )
+        return ScopeWorkbenchSession("project-main", state=workspace_state)
+
+    def _reset_scope_workbench_session(self) -> None:
+        """Reset standalone scope workspace session for current project."""
+        self._scope_workbench_session = self._build_scope_workbench_session()
+
+    def _persist_scope_workspace_state(self, *, mark_dirty: bool) -> None:
+        """Persist standalone workspace snapshot back into project model."""
+        self._project.scope_workspace_state = self._scope_workbench_session.export_state_dict()
+        if mark_dirty:
+            self._project.mark_dirty()
+            self._update_modified_indicator()
+
+    def _sync_open_scope_window_states(self) -> None:
+        """Snapshot currently open scope windows into project/session state."""
+        if not self._scope_windows:
+            self._persist_scope_workspace_state(mark_dirty=False)
+            return
+        circuit = self._current_circuit()
+        for scope_id, window in list(self._scope_windows.items()):
+            state = self._project.scope_state_for(scope_id)
+            state.is_open = True
+            state.geometry = list(window.capture_geometry_state())
+            state.ui_state = window.capture_ui_state()
+            component = self._get_component_by_id(scope_id, circuit)
+            if component is None:
+                continue
+            self._sync_scope_session_for_component(component, window=window)
+        self._persist_scope_workspace_state(mark_dirty=False)
+
+    def _scope_signal_keys_from_bindings(self, component) -> list[str]:
+        """Collect unique bound signal keys for one scope component."""
+        bindings = build_scope_channel_bindings(component, self._current_circuit())
+        keys: list[str] = []
+        seen: set[str] = set()
+        for binding in bindings:
+            for signal in binding.signals:
+                key = str(signal.signal_key or "").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                keys.append(key)
+        return keys
+
+    def _sync_scope_session_for_component(self, component, window: ScopeWindow | None = None) -> None:
+        """Mirror scope component/window state into standalone session model."""
+        scope_id = str(component.id)
+        self._scope_workbench_session.ensure_scope(scope_id, component.name)
+        self._scope_workbench_session.set_scope_signals(
+            scope_id,
+            self._scope_signal_keys_from_bindings(component),
+        )
+
+        if window is not None:
+            ui_state = window.capture_ui_state()
+            self._scope_workbench_session.set_scope_measurements(
+                scope_id,
+                [str(key) for key in ui_state.get("measurement_keys", [])],
+            )
+            self._scope_workbench_session.set_scope_plot_groups(
+                scope_id,
+                {
+                    str(signal_name): str(leader_name)
+                    for signal_name, leader_name in ui_state.get("plot_groups", {}).items()
+                    if str(signal_name).strip() and str(leader_name).strip()
+                }
+                if isinstance(ui_state.get("plot_groups"), dict)
+                else {},
+            )
+            self._scope_workbench_session.set_scope_cursors(
+                scope_id,
+                enabled=bool(ui_state.get("cursors_enabled", False)),
+                cursor_a=(
+                    float(ui_state["cursor_a"])
+                    if isinstance(ui_state.get("cursor_a"), (int, float))
+                    else None
+                ),
+                cursor_b=(
+                    float(ui_state["cursor_b"])
+                    if isinstance(ui_state.get("cursor_b"), (int, float))
+                    else None
+                ),
+            )
+            self._scope_workbench_session.set_sidebar_collapsed(
+                not bool(ui_state.get("left_panel_visible", True))
+            )
+        self._scope_workbench_session.set_active_scope(scope_id)
+
+    def _restore_saved_scope_windows(self) -> None:
+        """Reopen scope windows that were persisted as open in the project state."""
+        if not self._project.scope_windows:
+            return
+        circuit = self._current_circuit()
+        previous = self._suppress_scope_state
+        self._suppress_scope_state = True
+        try:
+            for scope_id, state in self._project.scope_windows.items():
+                if not state.is_open:
+                    continue
+                component = self._get_component_by_id(scope_id, circuit)
+                if component is None:
+                    continue
+                if component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+                    continue
+                self._open_scope_window(component, geometry=state.geometry, update_state=False)
+        finally:
+            self._suppress_scope_state = previous
 
     def _apply_project_simulation_settings_to_service(self) -> None:
         """Mirror project transient settings into the runtime simulation service."""
@@ -1751,6 +1871,7 @@ class MainWindow(QMainWindow):
             return
         self._close_all_scope_windows(persist_state=False)
         self._project = Project()
+        self._reset_scope_workbench_session()
         self._latest_electrical_result = None
         self._latest_thermal_waveform = None
         self._command_stack.clear()
@@ -1857,6 +1978,7 @@ class MainWindow(QMainWindow):
     def _on_save(self) -> None:
         """Save the current project."""
         self._apply_simulation_service_settings_to_project()
+        self._sync_open_scope_window_states()
         if self._project.path is None:
             self._on_save_as()
         else:
@@ -1872,6 +1994,7 @@ class MainWindow(QMainWindow):
     def _on_save_as(self) -> None:
         """Save the project with a new name."""
         self._apply_simulation_service_settings_to_project()
+        self._sync_open_scope_window_states()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
@@ -1898,6 +2021,7 @@ class MainWindow(QMainWindow):
             return
         self._close_all_scope_windows(persist_state=False)
         self._project = Project()
+        self._reset_scope_workbench_session()
         self._latest_electrical_result = None
         self._latest_thermal_waveform = None
         self._command_stack.clear()
@@ -2301,6 +2425,8 @@ class MainWindow(QMainWindow):
         window = self._scope_windows.get(comp_id)
         if window is not None:
             window.close()
+        self._scope_workbench_session.discard_scope(comp_id)
+        self._persist_scope_workspace_state(mark_dirty=False)
         if comp_id in self._project.scope_windows:
             del self._project.scope_windows[comp_id]
             self._project.mark_dirty()
@@ -2735,12 +2861,17 @@ class MainWindow(QMainWindow):
 
     def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
         """Persist window state whenever a scope window closes."""
-        self._scope_windows.pop(component_id, None)
+        window = self._scope_windows.pop(component_id, None)
         if self._suppress_scope_state:
             return
         state = self._project.scope_state_for(component_id)
         state.is_open = False
         state.geometry = list(geometry)
+        state.ui_state = window.capture_ui_state() if window is not None else None
+        component = self._get_component_by_id(component_id, self._current_circuit())
+        if component is not None:
+            self._sync_scope_session_for_component(component, window=window)
+            self._persist_scope_workspace_state(mark_dirty=False)
         self._project.mark_dirty()
         self._update_modified_indicator()
 
@@ -2871,21 +3002,30 @@ class MainWindow(QMainWindow):
         window.set_bindings(build_scope_channel_bindings(component, circuit))
 
         target_geometry = geometry
+        target_ui_state: dict[str, object] | None = None
+        state = self._project.scope_windows.get(comp_id)
+        if state and isinstance(state.ui_state, dict):
+            target_ui_state = dict(state.ui_state)
         if target_geometry is None:
-            state = self._project.scope_windows.get(comp_id)
             if state and state.geometry:
                 target_geometry = state.geometry
         window.apply_geometry_state(target_geometry)
         window.apply_simulation_result(self._scope_result_for_component(component))
+        if target_ui_state is not None:
+            window.apply_ui_state(target_ui_state)
 
         window.show()
         window.raise_()
         window.activateWindow()
 
+        self._sync_scope_session_for_component(component, window=window)
+        self._persist_scope_workspace_state(mark_dirty=False)
+
         if update_state and not self._suppress_scope_state:
             state = self._project.scope_state_for(comp_id)
             state.is_open = True
             state.geometry = list(window.capture_geometry_state())
+            state.ui_state = window.capture_ui_state()
             self._project.mark_dirty()
             self._update_modified_indicator()
         return window
@@ -2915,6 +3055,8 @@ class MainWindow(QMainWindow):
             window.set_component_name(component.name)
             window.set_bindings(build_scope_channel_bindings(component, circuit))
             window.apply_simulation_result(self._scope_result_for_component(component))
+            self._sync_scope_session_for_component(component, window=window)
+        self._persist_scope_workspace_state(mark_dirty=False)
 
     def _scope_result_for_component(self, component) -> SimulationResult | None:
         if component.type == ComponentType.THERMAL_SCOPE:
