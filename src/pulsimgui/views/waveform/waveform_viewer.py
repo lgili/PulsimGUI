@@ -555,9 +555,243 @@ class SignalListItem(QListWidgetItem):
 
     def set_visible(self, visible: bool) -> None:
         """Set visibility state."""
-        self.setCheckState(
-            Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked
+        self._visible = bool(visible)
+
+
+class GroupHeaderListItem(QListWidgetItem):
+    """List item used as collapsible group header in the signal panel."""
+
+    def __init__(self, leader: str, display: str, signal_count: int, collapsed: bool = False):
+        super().__init__()
+        self._leader = leader
+        self._display = display
+        self._signal_count = signal_count
+        self._collapsed = collapsed
+        self.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self.setData(Qt.ItemDataRole.UserRole, "__group_header__")
+        self.setData(Qt.ItemDataRole.UserRole + 1, leader)
+        self.set_collapsed(collapsed)
+
+    @property
+    def leader(self) -> str:
+        return self._leader
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        self.setText("")
+
+
+class SignalRowWidget(QFrame):
+    """Visual row for one signal inside the list panel."""
+
+    clicked = Signal(str)
+    double_clicked = Signal(str)
+    visibility_toggled = Signal(str, bool)
+    axis_badge_clicked = Signal(str)
+
+    def __init__(self, signal_name: str, color: tuple[int, int, int], parent=None):
+        super().__init__(parent)
+        self._signal_name = signal_name
+        self._color = color
+        self._axis_badge = "L"
+        self._syncing = False
+        self.setObjectName("SignalListRowCard")
+        self.setMinimumHeight(22)
+        self.setToolTip(signal_name)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(7, 2, 7, 2)
+        layout.setSpacing(6)
+
+        self._toggle = QCheckBox()
+        self._toggle.setObjectName("signalRowToggle")
+        self._toggle.setText("")
+        self._toggle.setToolTip("Show or hide this trace")
+        self._toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self._toggle, stretch=0)
+
+        self._chip = QLabel()
+        self._chip.setObjectName("signalRowChip")
+        self._chip.setFixedSize(10, 10)
+        self._chip.setToolTip(signal_name)
+        layout.addWidget(self._chip, stretch=0)
+
+        self._label = QLabel(signal_name)
+        self._label.setObjectName("signalRowLabel")
+        self._label.setToolTip(signal_name)
+        layout.addWidget(self._label, stretch=1)
+
+        self._axis_button = QToolButton()
+        self._axis_button.setObjectName("signalRowAxisBadge")
+        self._axis_button.setText(self._axis_badge)
+        self._axis_button.setAutoRaise(True)
+        self._axis_button.setToolTip("Cycle axis target")
+        self._axis_button.setFixedWidth(22)
+        self._axis_button.clicked.connect(self._on_axis_badge_clicked)
+        layout.addWidget(self._axis_button, stretch=0)
+
+        self._update_color()
+
+    def _update_color(self) -> None:
+        r, g, b = self._color
+        self._chip.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border-radius: 4px; border: 1px solid rgba(255,255,255,0.14);"
         )
+
+    def signal_name(self) -> str:
+        return self._signal_name
+
+    def set_color(self, color: tuple[int, int, int]) -> None:
+        self._color = color
+        self._update_color()
+
+    def set_label_text(self, text: str) -> None:
+        self._label.setText(text)
+        self._label.setToolTip(text)
+        self.setToolTip(text)
+
+    def set_axis_badge(self, badge: str) -> None:
+        text = str(badge or "").strip().upper() or "L"
+        self._axis_badge = text
+        self._axis_button.setText(text)
+
+    def set_visible_state(self, visible: bool) -> None:
+        self._syncing = True
+        try:
+            self._toggle.setChecked(bool(visible))
+        finally:
+            self._syncing = False
+
+    def _on_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self.visibility_toggled.emit(self._signal_name, bool(checked))
+
+    def _on_axis_badge_clicked(self) -> None:
+        self.axis_badge_clicked.emit(self._signal_name)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._signal_name)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit(self._signal_name)
+        super().mouseDoubleClickEvent(event)
+
+
+class GroupHeaderWidget(QFrame):
+    """Visual card header for one group of signals."""
+
+    clicked = Signal(str)
+    visibility_requested = Signal(str, bool)
+
+    def __init__(self, leader: str, display: str, signal_count: int, collapsed: bool, parent=None):
+        super().__init__(parent)
+        self._leader = leader
+        self._display = display
+        self._signal_count = signal_count
+        self._collapsed = collapsed
+        self._group_visible = True
+        self._collapse_icon_color = LIGHT_THEME.colors.foreground_muted
+        self._visible_icon_color = LIGHT_THEME.colors.foreground_muted
+        self.setObjectName("SignalListGroupCard")
+        self.setMinimumHeight(28)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(7, 4, 7, 4)
+        layout.setSpacing(6)
+
+        self._collapse_btn = QToolButton()
+        self._collapse_btn.setObjectName("signalGroupCollapseBtn")
+        self._collapse_btn.setAutoRaise(True)
+        self._collapse_btn.clicked.connect(self._emit_clicked)
+        layout.addWidget(self._collapse_btn, stretch=0)
+
+        title_stack = QWidget()
+        title_layout = QVBoxLayout(title_stack)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(0)
+        self._title_label = QLabel(display)
+        self._title_label.setObjectName("signalGroupTitle")
+        title_layout.addWidget(self._title_label)
+        suffix = "signal" if signal_count == 1 else "signals"
+        self._meta_label = QLabel(f"{signal_count} {suffix}")
+        self._meta_label.setObjectName("signalGroupMeta")
+        title_layout.addWidget(self._meta_label)
+        layout.addWidget(title_stack, stretch=1)
+
+        self._visible_btn = QToolButton()
+        self._visible_btn.setObjectName("signalGroupActionBtn")
+        self._visible_btn.setAutoRaise(True)
+        self._visible_btn.clicked.connect(self._toggle_group_visibility)
+        layout.addWidget(self._visible_btn, stretch=0)
+
+        self.set_collapsed(collapsed)
+        self.set_group_visible(True)
+
+    @property
+    def leader(self) -> str:
+        return self._leader
+
+    def set_icon_colors(self, collapse_color: str, visibility_color: str) -> None:
+        """Update icon colors so group actions track the active theme."""
+        self._collapse_icon_color = str(collapse_color)
+        self._visible_icon_color = str(visibility_color)
+        self.set_collapsed(self._collapsed)
+        self.set_group_visible(self._group_visible)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        icon_name = "chevron-right" if self._collapsed else "chevron-down"
+        self._collapse_btn.setIcon(IconService.get_icon(icon_name, self._collapse_icon_color, 12))
+        self._collapse_btn.setIconSize(QSize(12, 12))
+        self._collapse_btn.setToolTip("Expand group" if self._collapsed else "Collapse group")
+
+    def set_group_visible(self, visible: bool) -> None:
+        self._group_visible = bool(visible)
+        icon_name = "eye" if visible else "eye-off"
+        self._visible_btn.setIcon(IconService.get_icon(icon_name, self._visible_icon_color, 12))
+        self._visible_btn.setIconSize(QSize(12, 12))
+        self._visible_btn.setToolTip("Hide group" if visible else "Show group")
+
+    def _emit_clicked(self) -> None:
+        self.clicked.emit(self._leader)
+
+    def _toggle_group_visibility(self) -> None:
+        self.visibility_requested.emit(self._leader, not self._group_visible)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._leader)
+        super().mousePressEvent(event)
+
+
+class SignalListWidget(QListWidget):
+    """List widget that emits explicit MIME payloads for signal drag/drop."""
+
+    def mimeData(self, items: list[QListWidgetItem]) -> QMimeData | None:  # type: ignore[override]
+        mime = super().mimeData(items)
+        signal_name = next(
+            (
+                item.signal_name
+                for item in items
+                if hasattr(item, "signal_name") and str(item.signal_name).strip()
+            ),
+            "",
+        )
+        if not signal_name:
+            return mime
+        if mime is None:
+            mime = QMimeData()
+        mime.setText(signal_name)
+        mime.setData(SIGNAL_MIME_TYPE, signal_name.encode("utf-8"))
+        return mime
 
 
 class SignalListPanel(QFrame):
@@ -740,6 +974,128 @@ class SignalListPanel(QFrame):
         self._trace_palette = palette[:] if palette else TRACE_COLORS.copy()
         for index, item in enumerate(self._signal_items.values()):
             item.color = self._trace_palette[index % len(self._trace_palette)]
+            row = self._signal_widgets.get(item.signal_name)
+            if row is not None:
+                row.set_color(item.color)
+
+    def apply_scope_theme_overrides(self, shell: dict[str, str]) -> None:
+        """Apply scope-specific theming derived from the active application theme."""
+        self.setStyleSheet(f"""
+            QFrame#SignalListPanelRoot {{
+                background-color: {shell["panel_alt"]};
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 12px;
+            }}
+            QFrame#SignalListGroupCard {{
+                background-color: {shell["subtle_fill"]};
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 10px;
+            }}
+            QLabel#signalGroupTitle {{
+                color: {shell["text"]};
+                font-size: 10px;
+                font-weight: 700;
+            }}
+            QLabel#signalGroupMeta {{
+                color: {shell["muted"]};
+                font-size: 8px;
+                font-weight: 600;
+            }}
+            QToolButton#signalGroupCollapseBtn,
+            QToolButton#signalGroupActionBtn {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+            }}
+            QFrame#SignalListRowCard {{
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+            }}
+            QFrame#SignalListRowCard:hover {{
+                background-color: {shell["hover_fill"]};
+            }}
+            QLabel#signalRowLabel {{
+                color: {shell["text"]};
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QToolButton#signalRowAxisBadge {{
+                color: {shell["muted"]};
+                font-size: 8px;
+                font-weight: 700;
+                background-color: {shell["field_bg"]};
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 7px;
+                padding: 1px 5px;
+            }}
+            QToolButton#signalRowAxisBadge:hover {{
+                color: {shell["text"]};
+                border-color: {shell["accent"]};
+            }}
+            QCheckBox#signalRowToggle {{
+                spacing: 0px;
+            }}
+            QCheckBox#signalRowToggle::indicator {{
+                width: 24px;
+                height: 13px;
+                border-radius: 7px;
+                background-color: {shell["sidebar_toggle_off_bg"]};
+                border: 1px solid {shell["sidebar_toggle_off_border"]};
+            }}
+            QCheckBox#signalRowToggle::indicator:checked {{
+                background-color: {shell["accent"]};
+                border: 1px solid {shell["accent"]};
+            }}
+            QListWidget {{
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+                color: {shell["text"]};
+                outline: none;
+                padding: 2px 0px;
+            }}
+            QListWidget::item {{
+                padding: 4px 6px;
+                border-radius: 8px;
+                margin: 1px 0px;
+                color: {shell["text"]};
+            }}
+            QListWidget::item:selected {{
+                background-color: {shell["selection_fill"]};
+                color: {shell["text"]};
+            }}
+            QListWidget::item:hover {{
+                background-color: {shell["hover_fill"]};
+            }}
+            QLineEdit#signalFilterEdit {{
+                background-color: {shell["field_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["border_soft"]};
+                border-radius: 8px;
+                padding: 4px 8px;
+                font-size: 9px;
+            }}
+            QLineEdit#signalFilterEdit:focus {{
+                border-color: {shell["accent"]};
+            }}
+        """)
+        self._header_label.setStyleSheet(
+            f"font-weight: 700; font-size: 11px; color: {shell['text']};"
+        )
+        self._apply_group_widget_icon_colors(shell["muted"], shell["muted"])
+        # Re-colour group/category header rows as dark cards
+        for i in range(self._list_widget.count()):
+            item = self._list_widget.item(i)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) in (
+                "__category_header__", "__group_header__"
+            ):
+                item.setBackground(QColor(shell.get("surface_bg", LIGHT_THEME.colors.background_alt)))
+                item.setForeground(QColor(shell.get("muted", LIGHT_THEME.colors.foreground_muted)))
+
+    def apply_scope_dark_overrides(self, shell: dict) -> None:
+        """Backward-compatible alias for older scope callers."""
+        self.apply_scope_theme_overrides(shell)
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme to the signal list panel surfaces."""
@@ -750,6 +1106,64 @@ class SignalListPanel(QFrame):
                 background-color: {c.panel_background};
                 border: 1px solid {c.panel_border};
                 border-radius: 10px;
+            }}
+            QFrame#SignalListGroupCard {{
+                background-color: {c.panel_background};
+                border: 1px solid {c.panel_border};
+                border-radius: 10px;
+            }}
+            QLabel#signalGroupTitle {{
+                color: {c.foreground};
+                font-size: 10px;
+                font-weight: 700;
+            }}
+            QLabel#signalGroupMeta {{
+                color: {c.foreground_muted};
+                font-size: 8px;
+                font-weight: 600;
+            }}
+            QToolButton#signalGroupCollapseBtn,
+            QToolButton#signalGroupActionBtn {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+            }}
+            QFrame#SignalListRowCard {{
+                background-color: transparent;
+                border: none;
+                border-radius: 8px;
+            }}
+            QFrame#SignalListRowCard:hover {{
+                background-color: {c.tree_item_hover};
+            }}
+            QLabel#signalRowLabel {{
+                color: {c.foreground};
+                font-size: 9px;
+                font-weight: 600;
+            }}
+            QToolButton#signalRowAxisBadge {{
+                color: {c.foreground_muted};
+                font-size: 8px;
+                font-weight: 700;
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+                border-radius: 7px;
+                padding: 1px 5px;
+            }}
+            QToolButton#signalRowAxisBadge:hover {{
+                color: {c.foreground};
+                border-color: {c.input_focus_border};
+            }}
+            QCheckBox#signalRowToggle::indicator {{
+                width: 24px;
+                height: 13px;
+                border-radius: 7px;
+                background-color: {c.input_background};
+                border: 1px solid {c.input_border};
+            }}
+            QCheckBox#signalRowToggle::indicator:checked {{
+                background-color: {c.primary};
+                border: 1px solid {c.primary};
             }}
             QListWidget {{
                 background-color: {c.background};

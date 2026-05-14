@@ -690,20 +690,18 @@ class ScopeWindow(QWidget):
             ("grid", "Traces", "Traces — per-signal color / style overrides", 2),
             ("eye", "Views", "Views — saved zoom / time-window presets", 3),
         ):
-            # QToolButton with ToolButtonTextUnderIcon clips the label
-            # to the icon column's width, which kept truncating the
-            # last letter ("Signals" → "Signal"). We compose the
-            # button by hand: a frameless QToolButton owns the click,
-            # but the icon + label are explicit QLabels inside a
-            # vertical layout so we own the text-rendering rules.
+            # QToolButton + hand-composed icon/label widget. The text
+            # uses QFontMetrics to enforce its own minimum width so
+            # Qt's layout engine can't squeeze "Signals" into the
+            # icon column (which kept clipping the last letter).
+            from PySide6.QtGui import QFontMetrics
             _rail_btn = QToolButton()
             _rail_btn.setObjectName("scopeCollapsedRailBtn")
             _rail_btn.setToolTip(_rail_tooltip)
-            _rail_btn.setFixedSize(QSize(80, 52))
             _rail_btn.setProperty("scopeIconName", _rail_icon)
 
             _rail_box = QVBoxLayout(_rail_btn)
-            _rail_box.setContentsMargins(0, 4, 0, 4)
+            _rail_box.setContentsMargins(2, 4, 2, 4)
             _rail_box.setSpacing(2)
             _rail_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -718,10 +716,23 @@ class ScopeWindow(QWidget):
 
             _rail_text = QLabel(_rail_label, _rail_btn)
             _rail_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _rail_text.setTextFormat(Qt.TextFormat.PlainText)
+            _rail_text.setWordWrap(False)
             _rail_text_font = _rail_text.font()
             _rail_text_font.setPointSize(8)
             _rail_text.setFont(_rail_text_font)
+            # Force a minimum width >= the ideal text width so Qt
+            # doesn't elide. 4 px on each side as padding.
+            _metrics = QFontMetrics(_rail_text_font)
+            _ideal_w = _metrics.horizontalAdvance(_rail_label) + 8
+            _rail_text.setMinimumWidth(_ideal_w)
             _rail_box.addWidget(_rail_text)
+
+            # The button's fixed size now derives from the longest
+            # label so "Traces" / "Signals" / "Scopes" / "Views" all
+            # fit without truncation regardless of font metrics.
+            _btn_w = max(_ideal_w + 4, 86)
+            _rail_btn.setFixedSize(QSize(_btn_w, 54))
 
             def _make_rail_handler(tab_idx: int) -> Callable[[], None]:
                 def _handler() -> None:
@@ -6723,12 +6734,22 @@ class ScopeWindow(QWidget):
         """
         card = QFrame()
         card.setObjectName("scopeEmptyStateCard")
-        card.setMinimumWidth(520)
-        card.setMaximumWidth(640)
+        # Wider min so the body wraps cleanly on its longest line
+        # ("...stream into this canvas.") without the last word
+        # being clipped under a tall but narrow card.
+        card.setMinimumWidth(560)
+        card.setMaximumWidth(680)
         v = QVBoxLayout(card)
-        v.setContentsMargins(28, 24, 28, 24)
-        v.setSpacing(10)
-        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.setContentsMargins(32, 24, 32, 24)
+        v.setSpacing(12)
+        # NB: no layout-level AlignCenter here. The previous version
+        # used `v.setAlignment(AlignCenter)` which shrank every child
+        # widget to its natural content width, so the body label
+        # collapsed to the title's width (335 px) and wrapped into
+        # three lines — the third line ("waveforms will stream
+        # into this canvas.") was then clipped by the fixed card
+        # height. Letting the labels expand to the full card width
+        # gives the body enough room to wrap into two lines.
 
         title = QLabel("No signals yet")
         title.setObjectName("scopeEmptyStateTitle")

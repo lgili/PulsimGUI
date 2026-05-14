@@ -20,6 +20,16 @@ def _sample_result(signal_count: int = 3, sample_count: int = 24) -> SimulationR
     return SimulationResult(time=time, signals=signals, statistics={})
 
 
+def _mixed_scale_result(sample_count: int = 128) -> SimulationResult:
+    time = [idx * 1e-5 for idx in range(sample_count)]
+    signals = {
+        "Vsw": [12.0 if (idx % 2 == 0) else 0.0 for idx in range(sample_count)],
+        "Vout": [1.2 + 0.6 * (idx / sample_count) for idx in range(sample_count)],
+        "IL": [0.4 + 0.15 * ((idx % 10) / 10.0) for idx in range(sample_count)],
+    }
+    return SimulationResult(time=time, signals=signals, statistics={})
+
+
 def test_scope_can_overlay_signals_on_same_plot(qapp) -> None:
     """Assigning a signal to another signal's group should reduce plot count."""
     window = ScopeWindow("scope-group-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
@@ -54,6 +64,142 @@ def test_scope_split_all_groups_restores_dedicated_plots(qapp) -> None:
             assert window._plot_group_leader(signal_name) == signal_name
     finally:
         window.close()
+
+
+def test_scope_drag_mapping_can_overlay_hidden_signal_into_target_plot(qapp) -> None:
+    """Dropping a hidden signal onto a plot target should show and overlay it."""
+    window = ScopeWindow("scope-group-drop-overlay", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._split_all_plot_groups()
+
+        window._stacked_signal_list.set_signal_visible("S2", False)
+        window._on_stacked_signal_visibility_changed("S2", False)
+        assert "S2" not in window._stacked_signal_list.get_visible_signals()
+        assert len(window._plot_widgets) == 2
+
+        applied = window._apply_dragged_signal_mapping("S2", target_group_leader="S1")
+        assert applied is True
+        assert "S2" in window._stacked_signal_list.get_visible_signals()
+        assert window._plot_group_leader("S2") == "S1"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_drag_mapping_can_place_signal_in_dedicated_pane(qapp) -> None:
+    """Dropping on workspace area should move signal to a dedicated pane."""
+    window = ScopeWindow("scope-group-drop-pane", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+        assert len(window._plot_widgets) == 1
+
+        applied = window._apply_dragged_signal_mapping("S2", target_group_leader=None)
+        assert applied is True
+        assert window._plot_group_leader("S2") == "S2"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_drag_drop_handler_selects_signal_and_creates_dedicated_pane(qapp) -> None:
+    """Workspace drop handler should move the signal and synchronize active selection."""
+    window = ScopeWindow("scope-group-drop-handler", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        applied = window._handle_signal_drop_request("S2", None)
+
+        assert applied is True
+        assert window._stacked_active_signal == "S2"
+        assert window._plot_group_leader("S2") == "S2"
+        assert len(window._plot_widgets) == 2
+    finally:
+        window.close()
+
+
+def test_scope_can_render_right_axis_for_overlay_group(qapp) -> None:
+    """Assigning a trace to the right axis should create a real secondary viewbox."""
+    window = ScopeWindow("scope-group-right-axis", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        window._set_signal_axis_target("S2", "right")
+
+        assert len(window._plot_widgets) == 1
+        assert len(window._plot_right_view_boxes) == 1
+        assert window._plot_widgets[0].getPlotItem().getAxis("right").isVisible()
+    finally:
+        window.close()
+
+
+def test_scope_auto_separates_mixed_scale_or_unit_traces(qapp) -> None:
+    """Default composition should avoid overlaying traces that are hard to read together."""
+    window = ScopeWindow("scope-group-auto-separate", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _mixed_scale_result()
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        leaders = {name: window._plot_group_leader(name) for name in result.signals}
+        assert leaders["IL"] == "IL"
+        assert len(set(leaders.values())) >= 2
+    finally:
+        window.close()
+
+
+def test_manual_plot_group_override_survives_refresh_after_auto_composition(qapp) -> None:
+    """User plot reassignment should not be undone by later sidebar refreshes."""
+    window = ScopeWindow("scope-group-manual-preserve", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _mixed_scale_result()
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._set_signal_plot_group("Vout", "Vsw")
+
+        window._refresh_stacked_sidebar(result)
+
+        assert window._plot_group_leader("Vout") == "Vsw"
+        assert window._plot_composition_overridden is True
+    finally:
+        window.close()
+
+
+def test_scope_ui_state_roundtrip_restores_plot_groups(qapp) -> None:
+    """Captured UI state should restore per-signal plot-group mapping."""
+    source = ScopeWindow("scope-group-state-source", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    target = ScopeWindow("scope-group-state-target", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _sample_result(signal_count=3)
+        source._current_result = result
+        source._refresh_stacked_sidebar(result)
+        source._split_all_plot_groups()
+        source._set_signal_plot_group("S2", "S1")
+        source._set_signal_plot_group("S3", "S3")
+        state = source.capture_ui_state()
+
+        target._current_result = result
+        target._refresh_stacked_sidebar(result)
+        target._rebuild_stacked_plots(result)
+        target.apply_ui_state(state)
+
+        assert target._plot_group_leader("S2") == "S1"
+        assert target._plot_group_leader("S3") == "S3"
+    finally:
+        source.close()
+        target.close()
 
 
 def test_scope_exposes_copy_button_per_plot(qapp) -> None:
