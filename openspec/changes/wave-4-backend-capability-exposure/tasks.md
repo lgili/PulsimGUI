@@ -58,11 +58,19 @@
       `set_result` repopulates / clears, default sort is total descending).
 
 ### 1.5 Convergence diagnostics deep-dive
-- [ ] 1.5.1 Extend `convergence_diagnostics_dialog.py` with three new sub-views:
-      Per-iteration residual chart, Per-variable convergence table, Linear-solver fallback chain list.
-- [ ] 1.5.2 Reads `ConvergenceHistory` / `IterationRecord` / `PerVariableConvergence` /
-      `FallbackTraceEntry` / `LinearSolverTelemetry` from the latest `BackendTelemetry`.
-- [ ] 1.5.3 Tests: dialog renders all three sub-views from a synthetic telemetry blob.
+- [x] 1.5.1 Per-iteration residual chart + per-variable convergence table already shipped
+      in the prior `convergence_diagnostics_dialog.py` (Iteration History + Problematic
+      Variables tabs). Wave-4 adds a fifth tab — "Linear Solver" — listing the active
+      strategy plus the catalog of known fallback strategies, with the active one
+      highlighted by a green ● bullet.
+- [~] 1.5.2 Reads `ConvergenceInfo.strategy_used` + `failure_reason` directly. The full
+      per-iteration `FallbackTraceEntry` / `LinearSolverTelemetry` types are **deferred** —
+      Pulsim does not yet expose them at the Python boundary; the new tab is structured
+      so those records can be appended as a sub-table when the runtime ships them.
+- [x] 1.5.3 Tests: extended the existing dialog suite to assert the new tab is present
+      (test_dialog_has_five_tabs) and to verify the active-strategy bullet is correctly
+      marked (test_linear_solver_tab_highlights_active_strategy). Existing 14 dialog
+      tests still pass.
 
 ### 1.6 Advanced solver knobs
 - [ ] 1.6.1 Add an "Advanced" tab to `simulation_settings_dialog.py`.
