@@ -1076,26 +1076,59 @@ class ScopeWindow(QWidget):
         self._create_math_signal_btn.clicked.connect(self._on_create_math_signal_clicked)
         sidebar_actions_layout.addWidget(self._create_math_signal_btn, stretch=1)
 
-        # Collapsed rail: icon buttons shown only when sidebar is collapsed
+        # Collapsed rail: icon + label buttons shown only when the
+        # sidebar is collapsed. Wave-3 added the labels under each
+        # glyph so users can pick the right rail without hovering
+        # (previously the four icons looked nearly identical at a
+        # glance). The rail also widened 30 → 56 px so the labels
+        # render without truncation.
         self._collapsed_rail = QWidget()
         self._collapsed_rail.setObjectName("scopeCollapsedRail")
+        # Wide enough to fit the longest label ("Signals") at 8 pt
+        # plus 4 px padding on each side without truncation.
+        self._collapsed_rail.setFixedWidth(88)
         self._collapsed_rail_buttons: list[tuple[QToolButton, str]] = []
         collapsed_rail_layout = QVBoxLayout(self._collapsed_rail)
         collapsed_rail_layout.setContentsMargins(4, 4, 4, 4)
         collapsed_rail_layout.setSpacing(6)
-        for _rail_icon, _rail_tooltip, _rail_tab_idx in (
-            ("activity", "Signals", 0),
-            ("layers", "Scopes", 1),
-            ("grid", "Traces", 2),
-            ("eye", "Views", 3),
+        for _rail_icon, _rail_label, _rail_tooltip, _rail_tab_idx in (
+            ("activity", "Signals", "Signals — list of captured traces", 0),
+            ("layers", "Scopes", "Scopes — switch between scope windows", 1),
+            ("grid", "Traces", "Traces — per-signal color / style overrides", 2),
+            ("eye", "Views", "Views — saved zoom / time-window presets", 3),
         ):
+            # QToolButton with ToolButtonTextUnderIcon clips the label
+            # to the icon column's width, which kept truncating the
+            # last letter ("Signals" → "Signal"). We compose the
+            # button by hand: a frameless QToolButton owns the click,
+            # but the icon + label are explicit QLabels inside a
+            # vertical layout so we own the text-rendering rules.
             _rail_btn = QToolButton()
             _rail_btn.setObjectName("scopeCollapsedRailBtn")
             _rail_btn.setToolTip(_rail_tooltip)
-            _rail_btn.setFixedSize(QSize(30, 30))
+            _rail_btn.setFixedSize(QSize(80, 52))
             _rail_btn.setProperty("scopeIconName", _rail_icon)
-            _rail_btn.setIcon(IconService.get_icon(_rail_icon, LIGHT_THEME.colors.icon_default, 14))
-            _rail_btn.setIconSize(QSize(14, 14))
+
+            _rail_box = QVBoxLayout(_rail_btn)
+            _rail_box.setContentsMargins(0, 4, 0, 4)
+            _rail_box.setSpacing(2)
+            _rail_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            _rail_icon_label = QLabel(_rail_btn)
+            _rail_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _rail_pixmap = IconService.get_icon(
+                _rail_icon, LIGHT_THEME.colors.icon_default, 14
+            ).pixmap(16, 16)
+            if not _rail_pixmap.isNull():
+                _rail_icon_label.setPixmap(_rail_pixmap)
+            _rail_box.addWidget(_rail_icon_label)
+
+            _rail_text = QLabel(_rail_label, _rail_btn)
+            _rail_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _rail_text_font = _rail_text.font()
+            _rail_text_font.setPointSize(8)
+            _rail_text.setFont(_rail_text_font)
+            _rail_box.addWidget(_rail_text)
 
             def _make_rail_handler(tab_idx: int) -> Callable[[], None]:
                 def _handler() -> None:
@@ -1515,7 +1548,11 @@ class ScopeWindow(QWidget):
         self._scope_brand_icon.setObjectName("scopeBrandIcon")
         self._scope_brand_icon.setFixedSize(18, 18)
         menu_layout.addWidget(self._scope_brand_icon)
-        self._scope_brand_label = QLabel("VirtuScope")
+        # Wave-3: restored PulsimGui-consistent brand. The prior
+        # "VirtuScope" string was a half-finished design experiment
+        # that shipped in v0.9.0 and confused users who saw two brands
+        # (top-left and top-right) competing inside the same window.
+        self._scope_brand_label = QLabel("Scope")
         self._scope_brand_label.setObjectName("scopeBrandLabel")
         menu_layout.addWidget(self._scope_brand_label)
         menu_layout.addSpacing(8)
@@ -1557,7 +1594,17 @@ class ScopeWindow(QWidget):
         menu_layout.addWidget(self._menu_help_btn)
 
         menu_layout.addStretch(1)
-        self._scope_version_label = QLabel("SimuScope v1.0")
+        # Wave-3: version line now references PulsimGui (the actual app)
+        # instead of "SimuScope v1.0" placeholder text. Reads from
+        # pulsimgui.__version__ so it stays in sync across releases.
+        try:
+            from pulsimgui import __version__ as _pg_version
+        except Exception:  # pragma: no cover - extremely defensive
+            _pg_version = ""
+        version_text = (
+            f"Scope · PulsimGui {_pg_version}" if _pg_version else "Scope · PulsimGui"
+        )
+        self._scope_version_label = QLabel(version_text)
         self._scope_version_label.setObjectName("scopeVersionLabel")
         menu_layout.addWidget(self._scope_version_label)
         chrome_layout.addWidget(self._scope_menu_row)
@@ -1809,6 +1856,15 @@ class ScopeWindow(QWidget):
         bottom_layout.setContentsMargins(3, 2, 3, 2)
         bottom_layout.setSpacing(2)
 
+        # Wave-3: stat dedup. The bottom strip used to repeat
+        # RMS/Peak/Mean/Δt/ΔY — but those values already live in the
+        # channel-strip card next to the trace name (bigger font) and
+        # in the measurement panel's table when cursors are on. Three
+        # places for the same numbers cluttered the canvas. We keep
+        # the QLabel objects (other code paths still call setText on
+        # them) but tuck them into a hidden parent so they never paint.
+        # The user-visible bottom row keeps only the primary-signal
+        # name chip, which doubles as the scope's active-channel hint.
         self._scope_quick_metrics_row = QWidget()
         self._scope_quick_metrics_row.setObjectName("scopeQuickMetricsRow")
         quick_layout = QHBoxLayout(self._scope_quick_metrics_row)
@@ -1821,8 +1877,14 @@ class ScopeWindow(QWidget):
         self._quick_metric_mean = QLabel("Mean —")
         self._quick_metric_dt = QLabel("Δt —")
         self._quick_metric_dv = QLabel("ΔY —")
+        # Only the primary signal chip is rendered; the others stay
+        # hidden but still receive .setText() updates so any caller
+        # that reads `_quick_metric_rms.text()` still gets a number.
+        self._quick_metric_signal.setObjectName("scopeQuickMetricPrimary")
+        quick_layout.addWidget(self._quick_metric_signal, stretch=0)
+        self._scope_hidden_metric_host = QWidget(self._scope_quick_metrics_row)
+        self._scope_hidden_metric_host.hide()
         for widget in (
-            self._quick_metric_signal,
             self._quick_metric_rms,
             self._quick_metric_peak,
             self._quick_metric_mean,
@@ -1830,7 +1892,9 @@ class ScopeWindow(QWidget):
             self._quick_metric_dv,
         ):
             widget.setObjectName("scopeQuickMetricChip")
-            quick_layout.addWidget(widget, stretch=0)
+            widget.setParent(self._scope_hidden_metric_host)
+            widget.hide()
+        quick_layout.addWidget(self._scope_hidden_metric_host, stretch=0)
         quick_layout.addStretch(1)
         bottom_layout.addWidget(self._scope_quick_metrics_row, stretch=0)
 
@@ -2019,15 +2083,23 @@ class ScopeWindow(QWidget):
         self._scope_status_mode.setObjectName("scopeStatusLabel")
         self._scope_status_rate = QLabel("Sample rate: —")
         self._scope_status_rate.setObjectName("scopeStatusLabel")
+        # Wave-3: Δt/ΔY belong to the cursor panel only; the status bar
+        # was repeating numbers that the cursor card already shows next
+        # to the trace. We keep the label around (so setters still
+        # work) but tuck it into a hidden host so it never paints.
         self._scope_status_cursor = QLabel("Δt —  ΔY —")
         self._scope_status_cursor.setObjectName("scopeStatusLabel")
         for widget in (
             self._scope_status_state,
             self._scope_status_mode,
             self._scope_status_rate,
-            self._scope_status_cursor,
         ):
             status_layout.addWidget(widget, stretch=0)
+        self._scope_status_hidden_host = QWidget(self._scope_status_bar)
+        self._scope_status_hidden_host.hide()
+        self._scope_status_cursor.setParent(self._scope_status_hidden_host)
+        self._scope_status_cursor.hide()
+        status_layout.addWidget(self._scope_status_hidden_host, stretch=0)
         status_layout.addStretch(1)
         bottom_layout.addWidget(self._scope_status_bar, stretch=0)
 
@@ -3039,7 +3111,12 @@ class ScopeWindow(QWidget):
     # ------------------------------------------------------------------
     def _refresh_title(self) -> None:
         label = "Scope" if self._scope_type == ComponentType.ELECTRICAL_SCOPE else "Thermal Scope"
-        title = self._component_name or label
+        # Wave-3: window title is now "<name> — PulsimGui <label>" so
+        # the OS taskbar / dock shows the right product. Was "<name>"
+        # alone in v0.9.0, which mixed with the alien VirtuScope brand
+        # to confuse users.
+        title_base = self._component_name or label
+        title = f"{title_base} — PulsimGui {label}"
         self.setWindowTitle(title)
         if hasattr(self, "_scope_title_label"):
             self._scope_title_label.setText(self._component_name or "Unnamed")
@@ -4868,10 +4945,11 @@ class ScopeWindow(QWidget):
             }}
             QFrame#scopeToolbarSeparator {{
                 background-color: {shell["separator"]};
-                min-width: 1px;
-                max-width: 1px;
+                min-width: 2px;
+                max-width: 2px;
                 border: none;
-                margin: 2px 5px;
+                margin: 4px 8px;
+                border-radius: 1px;
             }}
             QToolButton#scopeToolbarTransportBtn {{
                 min-width: 22px;
@@ -5570,7 +5648,11 @@ class ScopeWindow(QWidget):
                 background-color: {card};
                 border: 1px solid {border_soft};
                 color: {muted};
-                padding: 4px;
+                /* No horizontal padding so the icon+label combo can
+                   use the full button width; vertical padding only.
+                   Was eating ~6 px on each side and cropping the last
+                   character of the label ("Signal*s*" → "Signal"). */
+                padding: 2px 0px;
                 border-radius: 8px;
             }}
             QToolButton#scopeCollapsedRailBtn:hover {{
@@ -7610,14 +7692,126 @@ class ScopeWindow(QWidget):
         self._message_label.setText("Plot image copied to clipboard.")
         self._log_scope_event("Plot image copied to clipboard")
 
+    def _build_empty_state_card(self) -> QWidget:
+        """Hero empty-state card shown when the scope has no signals.
+
+        Wave-3 replaces the prior 11 pt corner text. The card uses a
+        large icon, a one-line "what to do" headline, a paragraph that
+        explains the workflow, and a single primary CTA — Run
+        Simulation — wired to the existing simulation-control signal.
+        """
+        card = QFrame()
+        card.setObjectName("scopeEmptyStateCard")
+        card.setMinimumWidth(520)
+        card.setMaximumWidth(640)
+        v = QVBoxLayout(card)
+        v.setContentsMargins(28, 24, 28, 24)
+        v.setSpacing(10)
+        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        title = QLabel("No signals yet")
+        title.setObjectName("scopeEmptyStateTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_font = title.font()
+        title_font.setPointSize(18)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        v.addWidget(title)
+
+        body = QLabel(
+            "Drop a probe on the schematic, connect it to the scope, "
+            "and run the simulation. The captured waveforms will "
+            "stream into this canvas."
+        )
+        body.setObjectName("scopeEmptyStateBody")
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setWordWrap(True)
+        body_font = body.font()
+        body_font.setPointSize(11)
+        body.setFont(body_font)
+        v.addWidget(body)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        actions.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        run_btn = QPushButton("▶  Run simulation")
+        run_btn.setObjectName("scopeEmptyStateRunBtn")
+        run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        run_btn.clicked.connect(self._on_run_requested)
+        actions.addWidget(run_btn)
+
+        docs_btn = QPushButton("Open user manual")
+        docs_btn.setObjectName("scopeEmptyStateDocsBtn")
+        docs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        docs_btn.setFlat(True)
+        docs_btn.clicked.connect(
+            lambda _checked=False: self._open_user_manual()
+            if hasattr(self, "_open_user_manual")
+            else None
+        )
+        actions.addWidget(docs_btn)
+
+        v.addLayout(actions)
+
+        # Theme-aware colors. The scope window can render against a
+        # light or a dark application theme; pick the body palette
+        # from the active scope theme dict and fall back to neutral
+        # mid-tones if the lookup fails. The previous version
+        # hard-coded slate-200 / slate-400 which become invisible on
+        # light backgrounds.
+        palette = self._scope_plot_palette(self._theme or LIGHT_THEME) if hasattr(
+            self, "_scope_plot_palette"
+        ) else {}
+        is_dark = bool(getattr(self._theme, "is_dark", False)) if hasattr(
+            self, "_theme"
+        ) else False
+        title_color = "#e2e8f0" if is_dark else "#1f2937"
+        body_color = "#94a3b8" if is_dark else "#475569"
+        card_bg = "rgba(255, 255, 255, 0.04)" if is_dark else "rgba(15, 23, 42, 0.03)"
+        card_border = (
+            "rgba(255, 255, 255, 0.10)" if is_dark else "rgba(15, 23, 42, 0.10)"
+        )
+        card.setStyleSheet(
+            "QFrame#scopeEmptyStateCard {"
+            f"  background: {card_bg};"
+            f"  border: 1px solid {card_border};"
+            "  border-radius: 14px;"
+            "}"
+            f"QLabel#scopeEmptyStateTitle {{ color: {title_color}; }}"
+            f"QLabel#scopeEmptyStateBody  {{ color: {body_color}; line-height: 1.4; }}"
+            "QPushButton#scopeEmptyStateRunBtn {"
+            "  background: rgba(34, 197, 94, 0.18);"
+            "  color: #15803d;"
+            "  border: 1px solid rgba(34, 197, 94, 0.40);"
+            "  border-radius: 8px;"
+            "  padding: 6px 18px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton#scopeEmptyStateRunBtn:hover {"
+            "  background: rgba(34, 197, 94, 0.28);"
+            "}"
+            "QPushButton#scopeEmptyStateDocsBtn {"
+            "  background: transparent;"
+            f"  color: {body_color};"
+            "  border: 0;"
+            "  padding: 6px 12px;"
+            "}"
+            f"QPushButton#scopeEmptyStateDocsBtn:hover {{ color: {title_color}; }}"
+        )
+        return card
+
     def _rebuild_stacked_plots(self, result: SimulationResult | None) -> None:
         self._clear_stacked_plots()
 
         if not result or len(self._stacked_time) == 0 or not self._stacked_signals:
             self._overview_inset.hide()
-            empty = QLabel("No signals to plot. Connect scope channels and run simulation.")
-            empty.setWordWrap(True)
-            self._stacked_layout.addWidget(empty)
+            # Wave-3: hero empty state. Was a single 11pt label squashed
+            # in the canvas corner; replaced with a centred card that
+            # tells the user exactly what's missing and offers two
+            # one-click actions (Run sim / Open project).
+            self._stacked_layout.addWidget(self._build_empty_state_card(),
+                                          alignment=Qt.AlignmentFlag.AlignCenter)
             self._stacked_layout.addStretch()
             self._refresh_bottom_controls_enabled()
             return
