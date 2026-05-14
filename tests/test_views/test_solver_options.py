@@ -564,13 +564,16 @@ class TestAdvancedAnalysisSettings:
         settings = SimulationSettings()
         dialog = SimulationSettingsDialog(settings)
 
-        # Advanced tabs are always visible (no toggle needed after dialog refactor)
+        # Advanced tabs are always visible (no toggle needed after dialog refactor).
+        # Wave-4 sub-A 1.6 added a fifth tab ("Solver Stack") for the new
+        # advanced solver-stack knobs.
         assert hasattr(dialog, "_advanced_tabs")
-        assert dialog._advanced_tabs.count() == 4
+        assert dialog._advanced_tabs.count() == 5
         assert dialog._advanced_tabs.tabText(0) == "Transient"
         assert dialog._advanced_tabs.tabText(1) == "DC Setup"
         assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
         assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
+        assert dialog._advanced_tabs.tabText(4) == "Solver Stack"
 
     def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
         settings = SimulationSettings()

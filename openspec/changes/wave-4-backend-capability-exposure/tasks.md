@@ -94,8 +94,9 @@
       attributes.
 
 ### 1.7 Release sub-wave A
-- [ ] 1.7.1 Bump PulsimGui `0.9.2 → 0.10.0`.
-- [ ] 1.7.2 Tag `v0.10.0`, push, monitor.
+- [x] 1.7.1 Bump PulsimGui `0.9.2 → 0.10.0` (`src/pulsimgui/__init__.py` + `pyproject.toml`).
+- [x] 1.7.2 Tag `v0.10.0`, push, monitor. Full suite green except the same pre-existing
+      `test_ctrl_b_shortcut_toggles_left_panel` flake documented since v0.9.1.
 
 ## 2. Sub-wave B — new analysis modes (ship as v0.11.0)
 
