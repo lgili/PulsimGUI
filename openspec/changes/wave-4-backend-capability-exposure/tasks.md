@@ -1,12 +1,17 @@
 ## 1. Sub-wave A — GUI-only plumbing (ship as v0.10.0)
 
 ### 1.1 FMU 2.0 export
-- [ ] 1.1.1 Add `File ▸ Export ▸ FMU 2.0…` action in `main_window.py`.
-- [ ] 1.1.2 Create `src/pulsimgui/views/dialogs/fmu_export_dialog.py` (model name, output dir,
-      model type (co-sim / model-exchange), GUID/author metadata, "Open output folder" button).
-- [ ] 1.1.3 Wire the dialog to `pulsim.fmu.export` via a new `services/export_service.export_fmu()` helper.
-- [ ] 1.1.4 Surface backend exceptions in a clear error dialog (no silent failures).
-- [ ] 1.1.5 Tests: dialog renders, validates required fields, success path writes a fake `.fmu` file.
+- [x] 1.1.1 Add `File ▸ Export ▸ FMU 2.0…` action in `main_window.py`.
+- [x] 1.1.2 Create `src/pulsimgui/views/dialogs/fmu_export_dialog.py` (model name, output path,
+      integration step, optional output-node selector). FMI 2.0 co-sim only; the runtime API
+      does not yet expose model-exchange or GUID overrides.
+- [x] 1.1.3 Wire the dialog to `pulsim.fmu.export` via a new `PulsimBackend.export_fmu()` +
+      `SimulationService.export_fmu()` helper pair (kept on the backend adapter, not the
+      ExportService, so circuit conversion stays in the simulation pipeline).
+- [x] 1.1.4 Surface backend exceptions in a clear error dialog (no silent failures).
+- [x] 1.1.5 Tests: 8 unit tests cover default model name, button gating, browse-extension
+      handling, output-list collection, settings-collection roundtrip, capability gate,
+      backend-error path, and ".fmu" extension auto-append.
 
 ### 1.2 C99 real-time controller codegen
 - [ ] 1.2.1 Add `File ▸ Export ▸ C99 controller…` action.

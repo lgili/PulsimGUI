@@ -635,6 +635,48 @@ class ACSettings:
 
 
 @dataclass
+class FmuExportSettings:
+    """Settings for FMU 2.0 co-simulation export.
+
+    Attributes:
+        out_path: Absolute target path for the ``.fmu`` archive.
+        dt: Fixed-step integration period inside the FMU (seconds).
+        model_name: Human-readable model name. Defaults to the output stem.
+        outputs: Names of circuit nodes to expose as FMI outputs.
+        inputs: Names of FMI input variables.
+        cc: C compiler. Defaults to ``cc`` from PATH.
+    """
+
+    out_path: str
+    dt: float
+    model_name: str = ""
+    outputs: tuple[str, ...] = ()
+    inputs: tuple[str, ...] = ()
+    cc: str = ""
+
+
+@dataclass
+class FmuExportResult:
+    """Summary returned after a successful FMU export.
+
+    Mirrors :class:`pulsim.fmu.FmuExportSummary` but keeps the GUI layer
+    independent of the runtime's concrete dataclass.
+    """
+
+    path: str
+    model_name: str
+    model_identifier: str
+    guid: str
+    fmi_version: str
+    state_size: int
+    input_size: int
+    output_size: int
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    files_in_archive: tuple[str, ...] = ()
+
+
+@dataclass
 class ThermalSettings:
     """Settings for thermal simulation.
 
@@ -679,4 +721,6 @@ __all__ = [
     "DCSettings",
     "ACSettings",
     "ThermalSettings",
+    "FmuExportSettings",
+    "FmuExportResult",
 ]

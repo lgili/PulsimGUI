@@ -37,6 +37,12 @@ from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
 from pulsimgui.services.backend_types import (
+    FmuExportResult as BackendFmuExportResult,
+)
+from pulsimgui.services.backend_types import (
+    FmuExportSettings,
+)
+from pulsimgui.services.backend_types import (
     FrequencyAnalysisResult as BackendFrequencyAnalysisResult,
 )
 from pulsimgui.services.backend_types import (
@@ -2668,6 +2674,28 @@ class SimulationService(QObject):
             copy_result=True,
             cooperative_yield=True,
         )
+
+    def export_fmu(
+        self,
+        project,
+        settings: FmuExportSettings,
+    ) -> BackendFmuExportResult:
+        """Export the active project's circuit as a FMI 2.0 co-simulation FMU.
+
+        Synchronous wrapper around :py:meth:`SimulationBackend.export_fmu`.
+        The caller (typically the File ▸ Export ▸ FMU... dialog) is
+        responsible for displaying progress and surfacing exceptions.
+
+        Raises:
+            NotImplementedError: backend does not support FMU export.
+            RuntimeError: backend reported a circuit conversion or
+                export failure.
+        """
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.export_fmu(circuit_data, settings)
 
     def convert_gui_circuit_cached(self, project) -> dict:
         """Convert GUI circuit using cache-optimized worker semantics.
