@@ -14,10 +14,14 @@
       backend-error path, and ".fmu" extension auto-append.
 
 ### 1.2 C99 real-time controller codegen
-- [ ] 1.2.1 Add `File ▸ Export ▸ C99 controller…` action.
-- [ ] 1.2.2 Create `c99_export_dialog.py` (output dir, target prefix, discretization choice, sample-rate).
-- [ ] 1.2.3 Wire to `pulsim.codegen.generate` via `export_service.export_c99()`.
-- [ ] 1.2.4 Tests: dialog renders, smoke-write of a stub controller.
+- [x] 1.2.1 Add `File ▸ Export ▸ C99 controller…` action.
+- [x] 1.2.2 Create `c99_export_dialog.py` (output dir, discretization step, operating-point
+      time, target combobox seeded with `c99` only — ARM/Zynq targets are deferred per the
+      runtime docstring).
+- [x] 1.2.3 Wire to `pulsim.codegen.generate` via `PulsimBackend.export_c99` +
+      `SimulationService.export_c99`.
+- [x] 1.2.4 Tests: 5 unit tests (button gating, browse, settings roundtrip, capability
+      gate, backend-error path).
 
 ### 1.3 Monte-Carlo sweep upgrade
 - [ ] 1.3.1 Extend `parameter_sweep_dialog.py` with a tab/page for "Monte-Carlo" alongside

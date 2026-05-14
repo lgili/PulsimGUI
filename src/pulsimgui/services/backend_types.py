@@ -677,6 +677,42 @@ class FmuExportResult:
 
 
 @dataclass
+class C99CodegenSettings:
+    """Settings for real-time C99 controller codegen.
+
+    Attributes:
+        out_dir: Target directory for the generated ``.c`` / ``.h`` files.
+        dt: Fixed-step discretization period (seconds).
+        target: Code generator target ID. Only ``"c99"`` is supported today.
+        t_op: Time at which to linearize the operating point.
+    """
+
+    out_dir: str
+    dt: float
+    target: str = "c99"
+    t_op: float = 0.0
+
+
+@dataclass
+class C99CodegenResult:
+    """Summary returned after a successful C99 codegen call.
+
+    Mirrors :class:`pulsim.codegen.CodegenSummary` but keeps the GUI
+    layer independent of the runtime dataclass.
+    """
+
+    out_dir: str
+    target: str
+    state_size: int
+    input_size: int
+    output_size: int
+    stability_radius: float
+    rom_estimate_bytes: int
+    ram_estimate_bytes: int
+    files_written: tuple[str, ...] = ()
+
+
+@dataclass
 class ThermalSettings:
     """Settings for thermal simulation.
 
@@ -723,4 +759,6 @@ __all__ = [
     "ThermalSettings",
     "FmuExportSettings",
     "FmuExportResult",
+    "C99CodegenSettings",
+    "C99CodegenResult",
 ]
