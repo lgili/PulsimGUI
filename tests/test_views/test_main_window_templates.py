@@ -175,7 +175,109 @@ def test_waveform_dock_starts_hidden(qapp) -> None:
     window = MainWindow()
     try:
         assert window.waveform_dock.isHidden()
-        assert not window.waveform_dock.toggleViewAction().isChecked()
+        assert not window.action_toggle_waveform_panel.isChecked()
+    finally:
+        window.close()
+
+
+def test_component_library_panel_action_restores_hidden_dock(qapp) -> None:
+    """Panels menu action should reliably restore the component library dock."""
+    window = MainWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        window.library_dock.hide()
+        qapp.processEvents()
+
+        assert window.library_dock.isHidden()
+        assert not window.action_toggle_component_library.isChecked()
+
+        window.action_toggle_component_library.trigger()
+        qapp.processEvents()
+
+        assert window.library_dock.isVisible()
+        assert window.action_toggle_component_library.isChecked()
+    finally:
+        window.close()
+
+
+def test_waveform_panel_action_restores_hidden_dock(qapp) -> None:
+    """Panels menu action should reliably restore the waveform dock."""
+    window = MainWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        assert window.waveform_dock.isHidden()
+        assert not window.action_toggle_waveform_panel.isChecked()
+
+        window.action_toggle_waveform_panel.trigger()
+        qapp.processEvents()
+
+        assert window.waveform_dock.isVisible()
+        assert window.action_toggle_waveform_panel.isChecked()
+    finally:
+        window.close()
+
+
+def test_empty_schematic_shows_center_hint_on_startup(qapp) -> None:
+    """The editor should explain the first action when the circuit is empty.
+
+    Wave-2 (v0.9.0+) replaced the legacy text-only empty-state with the
+    full WelcomeOverlay surface; this test now asserts the welcome
+    overlay renders at startup and that the legacy text card stays
+    hidden so the two don't stack.
+    """
+    window = MainWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        # Welcome overlay should be visible immediately.
+        welcome = window._schematic_view._welcome_overlay
+        assert welcome is not None
+        assert welcome.isVisible()
+
+        # Legacy empty-state frame must stay hidden once the welcome
+        # overlay is installed; otherwise we'd render two onboarding
+        # surfaces stacked on top of each other.
+        legacy = window._schematic_view._empty_state_frame
+        assert legacy is not None
+        assert not legacy.isVisible()
+    finally:
+        window.close()
+
+
+def test_empty_schematic_hint_hides_after_add_and_returns_for_new_project(monkeypatch, qapp) -> None:
+    """The welcome overlay should disappear once the user starts drawing
+    and reappear when a new empty project is created."""
+    window = MainWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        welcome = window._schematic_view._welcome_overlay
+        assert welcome is not None and welcome.isVisible()
+
+        window._add_component_at(ComponentType.RESISTOR, 0.0, 0.0)
+        qapp.processEvents()
+        assert not welcome.isVisible()
+
+        monkeypatch.setattr(window, "_check_save", lambda: True)
+        window._on_new_project()
+        qapp.processEvents()
+        assert welcome.isVisible()
+    finally:
+        window.close()
+
+
+def test_main_toolbar_uses_visual_groups_for_primary_actions(qapp) -> None:
+    """Toolbar should expose grouped action clusters instead of one flat strip."""
+    window = MainWindow()
+    try:
+        assert len(window._toolbar_groups) >= 5
+        object_names = {group.objectName() for group in window._toolbar_groups}
+        assert "ToolbarGroup" in object_names
+        assert "SimulationToolbarGroup" in object_names
     finally:
         window.close()
 

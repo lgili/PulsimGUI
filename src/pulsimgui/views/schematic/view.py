@@ -18,7 +18,16 @@ from PySide6.QtGui import (
     QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsView, QLineEdit, QMenu
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsItem,
+    QGraphicsView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QVBoxLayout,
+)
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
@@ -292,6 +301,14 @@ class SchematicView(QGraphicsView):
 
         # Enable drag-and-drop
         self.setAcceptDrops(True)
+        self._theme: Theme | None = None
+        self._empty_state_frame: QFrame | None = None
+        self._empty_state_title: QLabel | None = None
+        self._empty_state_body: QLabel | None = None
+        # Wave-2 — full welcome overlay; replaces the text-only empty state
+        # whenever the host wires it up via set_welcome_overlay().
+        self._welcome_overlay = None  # type: ignore[assignment]
+        self._create_empty_state_overlay()
 
     @property
     def schematic_scene(self) -> SchematicScene:
@@ -345,6 +362,7 @@ class SchematicView(QGraphicsView):
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme colors for canvas overlays and dark-mode rendering."""
+        self._theme = theme
         self.set_dark_mode(theme.is_dark)
         PinHighlightItem.PIN_GLOW_COLOR = QColor(theme.colors.overlay_pin_highlight)
         AlignmentGuidesItem.GUIDE_COLOR = QColor(theme.colors.overlay_alignment_guides)
@@ -352,6 +370,7 @@ class SchematicView(QGraphicsView):
         ComponentDropPreviewItem.PREVIEW_BORDER = QColor(theme.colors.overlay_drop_preview_border)
         if self._drop_preview is not None:
             self._drop_preview.update()
+        self._apply_empty_state_theme(theme)
 
     def zoom_in(self) -> None:
         """Zoom in by one step."""
@@ -509,6 +528,135 @@ class SchematicView(QGraphicsView):
         """Handle the Qt resizeEvent callback."""
         super().resizeEvent(event)
         self._position_alias_editor()
+        self._position_empty_state_overlay()
+
+    def _create_empty_state_overlay(self) -> None:
+        """Create a small centered overlay describing the first action."""
+        frame = QFrame(self.viewport())
+        frame.setObjectName("SchematicEmptyState")
+        frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        frame.hide()
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(6)
+
+        title = QLabel("Start your schematic", frame)
+        title.setObjectName("SchematicEmptyStateTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_font = title.font()
+        title_font.setPointSize(20)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        body = QLabel(
+            "Drag components here from the library.\n"
+            "Press Ctrl+K to quick-add a component.\n"
+            "Use the mouse wheel to zoom and middle-drag to pan.",
+            frame,
+        )
+        body.setObjectName("SchematicEmptyStateBody")
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setWordWrap(True)
+        body_font = body.font()
+        body_font.setPointSize(11)
+        body_font.setWeight(body_font.Weight.Medium)
+        body.setFont(body_font)
+
+        layout.addWidget(title)
+        layout.addWidget(body)
+
+        self._empty_state_frame = frame
+        self._empty_state_title = title
+        self._empty_state_body = body
+        self._apply_empty_state_theme(self._theme)
+        self._position_empty_state_overlay()
+
+    def _apply_empty_state_theme(self, theme: Theme | None) -> None:
+        """Theme the empty-state card without competing with the canvas."""
+        if self._empty_state_frame is None:
+            return
+        if theme is None:
+            self._empty_state_frame.setStyleSheet("")
+            return
+        c = theme.colors
+        card_bg = QColor(c.panel_background)
+        border = QColor(c.panel_border)
+        if theme.is_dark:
+            card_bg.setAlpha(232)
+        else:
+            card_bg.setAlpha(244)
+        self._empty_state_frame.setStyleSheet(
+            f"""
+            QFrame#SchematicEmptyState {{
+                background-color: rgba({card_bg.red()}, {card_bg.green()}, {card_bg.blue()}, {card_bg.alpha()});
+                border: 1px solid {border.name()};
+                border-radius: 14px;
+            }}
+            QLabel#SchematicEmptyStateTitle {{
+                color: {c.foreground};
+            }}
+            QLabel#SchematicEmptyStateBody {{
+                color: {c.foreground_muted};
+                line-height: 1.35;
+            }}
+            """
+        )
+
+    def _position_empty_state_overlay(self) -> None:
+        """Keep the empty-state card centered inside the viewport."""
+        viewport = self.viewport()
+        # Welcome overlay (wave-2) takes precedence over the legacy text card.
+        if self._welcome_overlay is not None:
+            pref_w, pref_h = self._welcome_overlay.preferred_size()
+            width = min(pref_w, max(420, viewport.width() - 120))
+            height = min(pref_h, max(280, viewport.height() - 120))
+            self._welcome_overlay.resize(width, height)
+            x = max((viewport.width() - width) // 2, 24)
+            y = max((viewport.height() - height) // 2 - 20, 24)
+            self._welcome_overlay.move(x, y)
+        if self._empty_state_frame is None:
+            return
+        width = min(360, max(260, viewport.width() - 120))
+        self._empty_state_frame.resize(width, self._empty_state_frame.sizeHint().height())
+        x = max((viewport.width() - self._empty_state_frame.width()) // 2, 24)
+        y = max((viewport.height() - self._empty_state_frame.height()) // 2 - 40, 24)
+        self._empty_state_frame.move(x, y)
+
+    def set_empty_state_visible(self, visible: bool) -> None:
+        """Show the centered onboarding hint when the current circuit is empty."""
+        # Welcome overlay (when present) replaces the legacy text card.
+        if self._welcome_overlay is not None:
+            self._position_empty_state_overlay()
+            self._welcome_overlay.setVisible(visible)
+            self._welcome_overlay.raise_()
+            # Hide the legacy frame so the two don't stack.
+            if self._empty_state_frame is not None:
+                self._empty_state_frame.setVisible(False)
+            return
+        if self._empty_state_frame is None:
+            return
+        self._position_empty_state_overlay()
+        self._empty_state_frame.setVisible(visible)
+
+    def set_welcome_overlay(self, overlay) -> None:
+        """Adopt a WelcomeOverlay widget as the canvas empty state.
+
+        The overlay is reparented to the viewport, and its visibility +
+        position from then on are managed by ``set_empty_state_visible``
+        + ``_position_empty_state_overlay``.
+        """
+        if self._welcome_overlay is overlay:
+            return
+        if self._welcome_overlay is not None:
+            self._welcome_overlay.setParent(None)
+            self._welcome_overlay.deleteLater()
+        self._welcome_overlay = overlay
+        if overlay is None:
+            return
+        overlay.setParent(self.viewport())
+        overlay.hide()
+        self._position_empty_state_overlay()
 
     def _update_cursor(self) -> None:
         """Update cursor based on current tool."""

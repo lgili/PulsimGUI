@@ -2593,8 +2593,35 @@ class SimulationService(QObject):
         self.progress.emit(value, message)
 
     def _on_data_point(self, time: float, signals: dict) -> None:
-        """Handle data point from worker."""
+        """Handle data point from worker.
+
+        Wave-2 progress-estimator: many backends never call the
+        ``progress`` callback so the Run Bar's progress segment stays
+        at 0 %. Every data point that flows through here carries the
+        current simulation time ``t``; comparing it to the configured
+        ``tstop`` produces a perfectly reasonable progress estimate
+        without any backend cooperation. Throttled to ~10 Hz so we
+        don't spam the GUI thread with one signal per timestep.
+        """
         self.data_point.emit(time, signals)
+        try:
+            import time as _time
+            now = _time.perf_counter()
+            last = getattr(self, "_last_progress_emit_t", 0.0)
+            if now - last >= 0.1:  # 10 Hz
+                self._last_progress_emit_t = now
+                t_stop = float(getattr(self._settings, "tstop", 0.0) or 0.0)
+                t_start = float(getattr(self._settings, "tstart", 0.0) or 0.0)
+                span = t_stop - t_start
+                if span > 0.0 and time >= t_start:
+                    raw = (time - t_start) / span
+                    # Clamp at 99 % so the final 100 % only arrives with
+                    # the official simulation_finished signal.
+                    percent = max(0.0, min(99.0, raw * 100.0))
+                    self.progress.emit(percent, f"t = {time:.4g} s")
+        except Exception:
+            # Estimator must never crash the data-point pipe.
+            pass
 
     def _on_finished(self, result: SimulationResult) -> None:
         """Handle simulation completion."""
