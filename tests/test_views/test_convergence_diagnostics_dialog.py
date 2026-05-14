@@ -130,16 +130,35 @@ class TestConvergenceDiagnosticsDialog:
 
         assert dialog.windowTitle() == "Convergence Diagnostics"
 
-    def test_dialog_has_four_tabs(self, qtbot, converged_info):
-        """Dialog should have Summary, History, Variables, and Suggestions tabs."""
+    def test_dialog_has_five_tabs(self, qtbot, converged_info):
+        """Dialog has Summary, History, Variables, Suggestions, Linear Solver tabs."""
         dialog = ConvergenceDiagnosticsDialog(converged_info)
         qtbot.addWidget(dialog)
 
-        assert dialog._tabs.count() == 4
+        assert dialog._tabs.count() == 5
         assert dialog._tabs.tabText(0) == "Summary"
         assert dialog._tabs.tabText(1) == "Iteration History"
         assert dialog._tabs.tabText(2) == "Problematic Variables"
         assert dialog._tabs.tabText(3) == "Suggestions"
+        assert dialog._tabs.tabText(4) == "Linear Solver"
+
+    def test_linear_solver_tab_highlights_active_strategy(self, qtbot, failed_info):
+        """Wave-4 sub-A 1.5: Linear Solver tab marks active strategy with ●."""
+        dialog = ConvergenceDiagnosticsDialog(failed_info)
+        qtbot.addWidget(dialog)
+
+        linear_tab = dialog._tabs.widget(4)
+        # Walk the labels — the active row's bullet should be ●.
+        from PySide6.QtWidgets import QLabel
+
+        bullets = [
+            child.text()
+            for child in linear_tab.findChildren(QLabel)
+            if child.text() in ("●", "○")
+        ]
+        assert "●" in bullets, "Active strategy bullet must be present"
+        # Exactly one active marker.
+        assert bullets.count("●") == 1
 
 
 class TestSuggestionEngine:
