@@ -463,6 +463,25 @@ class MainWindow(QMainWindow):
         )
         self.action_losses_dashboard.triggered.connect(self._on_show_losses_dashboard)
 
+        # Wave-4 sub-B — new analysis modes.
+        self.action_fra = QAction("FRA (Frequency Response)…", self)
+        self.action_fra.setToolTip(
+            "Closed-loop empirical Bode plot via Simulator.run_fra"
+        )
+        self.action_fra.triggered.connect(self._on_show_fra)
+
+        self.action_periodic_ss = QAction("Periodic Steady-State…", self)
+        self.action_periodic_ss.setToolTip(
+            "Find the periodic orbit of a switching converter via shooting"
+        )
+        self.action_periodic_ss.triggered.connect(self._on_show_periodic_ss)
+
+        self.action_harmonic_balance = QAction("Harmonic Balance…", self)
+        self.action_harmonic_balance.setToolTip(
+            "Solve the spectrum directly via harmonic balance"
+        )
+        self.action_harmonic_balance.triggered.connect(self._on_show_harmonic_balance)
+
         # Quick add action
         self.action_quick_add = QAction("&Quick Add Component...", self)
         self.action_quick_add.setShortcut(QKeySequence("Ctrl+K"))
@@ -554,6 +573,11 @@ class MainWindow(QMainWindow):
         sim_menu.addAction(self.action_parameter_sweep)
         sim_menu.addAction(self.action_thermal_viewer)
         sim_menu.addAction(self.action_losses_dashboard)
+        sim_menu.addSeparator()
+        # Wave-4 sub-B — new analysis modes.
+        sim_menu.addAction(self.action_fra)
+        sim_menu.addAction(self.action_periodic_ss)
+        sim_menu.addAction(self.action_harmonic_balance)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_sim_settings)
 
@@ -3746,6 +3770,68 @@ class MainWindow(QMainWindow):
 
         dialog = LossesDashboardDialog(result, parent=self)
         dialog.exec()
+
+    # ------------------------------------------------------------------
+    # Wave-4 sub-B analysis-mode handlers
+    # ------------------------------------------------------------------
+    def _on_show_fra(self) -> None:
+        """Open the Frequency Response Analysis dialog (wave-4 sub-B 2.1)."""
+        if not self._guard_analysis_action("fra", "FRA"):
+            return
+        from pulsimgui.views.dialogs.analysis_modes_dialogs import FraDialog
+
+        FraDialog(self._simulation_service, self._project, parent=self).exec()
+
+    def _on_show_periodic_ss(self) -> None:
+        """Open the Periodic Steady-State dialog (wave-4 sub-B 2.2)."""
+        if not self._guard_analysis_action(
+            "periodic_steady_state", "Periodic Steady-State"
+        ):
+            return
+        from pulsimgui.views.dialogs.analysis_modes_dialogs import (
+            PeriodicSteadyStateDialog,
+        )
+
+        PeriodicSteadyStateDialog(
+            self._simulation_service, self._project, parent=self
+        ).exec()
+
+    def _on_show_harmonic_balance(self) -> None:
+        """Open the Harmonic Balance dialog (wave-4 sub-B 2.3)."""
+        if not self._guard_analysis_action("harmonic_balance", "Harmonic Balance"):
+            return
+        from pulsimgui.views.dialogs.analysis_modes_dialogs import (
+            HarmonicBalanceDialog,
+        )
+
+        HarmonicBalanceDialog(
+            self._simulation_service, self._project, parent=self
+        ).exec()
+
+    def _guard_analysis_action(self, capability: str, label: str) -> bool:
+        """Common guard for the new sub-B analysis menu actions."""
+        if self._project is None:
+            QMessageBox.warning(
+                self, "No project", f"Open or create a project before running {label}."
+            )
+            return False
+        circuit = self._current_circuit()
+        if circuit is None or not circuit.components:
+            QMessageBox.information(
+                self,
+                "No components",
+                f"Add components to the schematic before running {label}.",
+            )
+            return False
+        if not self._simulation_service.has_capability(capability):
+            QMessageBox.warning(
+                self,
+                f"{label} unavailable",
+                f"The active simulation backend does not support {label}. "
+                "Upgrade Pulsim to 0.9.0 or newer.",
+            )
+            return False
+        return True
 
     def _on_simulation_state_changed(self, state: SimulationState) -> None:
         """Handle simulation state change."""

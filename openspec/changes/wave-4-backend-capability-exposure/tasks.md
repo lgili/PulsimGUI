@@ -101,32 +101,45 @@
 ## 2. Sub-wave B — new analysis modes (ship as v0.11.0)
 
 ### 2.1 FRA (Frequency Response Analysis)
-- [ ] 2.1.1 Add `Simulation ▸ FRA…` action.
-- [ ] 2.1.2 Create `fra_dialog.py` (start/stop freq, points/decade, perturbation amplitude,
-      probe selection, output type magnitude/phase).
-- [ ] 2.1.3 Wire to `Simulator.run_fra` via `simulation_service.run_fra()`.
-- [ ] 2.1.4 Result view: reuse `BodePlotDialog` axes, overlay via `fra_overlay` helper.
-- [ ] 2.1.5 Export FRA result to CSV via existing `export_fra_csv` / `export_fra_json`.
-- [ ] 2.1.6 Tests: dialog roundtrip, run on a synthetic plant, result renders.
+- [x] 2.1.1 Added `Simulation ▸ FRA (Frequency Response)…` action.
+- [x] 2.1.2 `FraDialog` in `views/dialogs/analysis_modes_dialogs.py` (start/stop freq,
+      points/decade, scale, perturbation amplitude, source, measurement nodes).
+- [x] 2.1.3 Wired to `Simulator.run_fra` via `PulsimBackend.run_fra` +
+      `SimulationService.run_fra`. Capability gate (`"fra"`) introspects
+      `Simulator.run_fra` on the active backend.
+- [ ] 2.1.4 Result view: rich Bode-overlay viewer **deferred** — the dialog shows a text
+      summary (first frequency point + total transient steps) so users can drive the
+      sweep today. Follow-up commit will plug `FraResult` into the existing BodePlotDialog
+      axes via the `fra_overlay` helper.
+- [ ] 2.1.5 CSV/JSON export of FRA result **deferred** — needs an `export_fra_csv`
+      wrapper next to the existing FRA service hook.
+- [x] 2.1.6 3 unit tests in `test_analysis_modes_dialogs.py` (settings collection, capability
+      gate, backend-failure surfacing as QMessageBox.warning).
 
 ### 2.2 Periodic Steady-State (shooting)
-- [ ] 2.2.1 Add `Simulation ▸ Periodic Steady-State…` action.
-- [ ] 2.2.2 Create `periodic_ss_dialog.py` (period guess, Newton tol, max shooting iterations,
-      use-IC checkbox).
-- [ ] 2.2.3 Wire to `PeriodicSteadyStateOptions/Result`.
-- [ ] 2.2.4 Result view: single-period waveform inset + ripple metrics summary.
-- [ ] 2.2.5 Tests: convergence on a synthetic buck, divergence path surfaces a clear error.
+- [x] 2.2.1 Added `Simulation ▸ Periodic Steady-State…` action.
+- [x] 2.2.2 `PeriodicSteadyStateDialog` (period, Newton tol, max iterations, relaxation,
+      store-last-transient checkbox).
+- [x] 2.2.3 Wired to `Simulator.run_periodic_shooting` via `PulsimBackend.run_periodic_steady_state`
+      + `SimulationService.run_periodic_steady_state`.
+- [ ] 2.2.4 Single-period waveform inset + ripple metrics summary **deferred** to a
+      follow-up — the dialog reports iteration count + final residual today.
+- [x] 2.2.5 2 unit tests (settings collection, convergence-failure warning).
 
 ### 2.3 Harmonic Balance
-- [ ] 2.3.1 Add `Simulation ▸ Harmonic Balance…` action.
-- [ ] 2.3.2 Create `harmonic_balance_dialog.py` (fundamental freq, harmonics count, balancing tol).
-- [ ] 2.3.3 Wire to `HarmonicBalanceOptions/Result`.
-- [ ] 2.3.4 Result view: spectrum chart with magnitude/phase per harmonic.
-- [ ] 2.3.5 Tests: roundtrip on a synthetic rectifier circuit.
+- [x] 2.3.1 Added `Simulation ▸ Harmonic Balance…` action.
+- [x] 2.3.2 `HarmonicBalanceDialog` (period, samples per period, max iterations, balancing
+      tolerance, relaxation, initialize-from-transient checkbox).
+- [x] 2.3.3 Wired to `Simulator.run_harmonic_balance` via `PulsimBackend.run_harmonic_balance`
+      + `SimulationService.run_harmonic_balance`.
+- [ ] 2.3.4 Spectrum bar chart **deferred** — the dialog reports iteration count, final
+      residual, and sample count today.
+- [x] 2.3.5 2 unit tests (settings collection, backend-exception critical path).
 
 ### 2.4 Release sub-wave B
-- [ ] 2.4.1 Bump PulsimGui `0.10.x → 0.11.0`.
-- [ ] 2.4.2 Tag `v0.11.0`, push, monitor.
+- [x] 2.4.1 Bump PulsimGui `0.10.0 → 0.11.0`.
+- [x] 2.4.2 Tag `v0.11.0`, push, monitor. Full suite green except the same pre-existing
+      `test_ctrl_b_shortcut_toggles_left_panel` flake documented since v0.9.1.
 
 ## 3. Sub-wave C — palette + magnetics + Pulsim pybind (ship as v0.12.0 + Pulsim v0.10.0)
 

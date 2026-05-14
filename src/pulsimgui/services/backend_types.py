@@ -677,6 +677,101 @@ class FmuExportResult:
 
 
 @dataclass
+class FraSettings:
+    """Settings for closed-loop Frequency Response Analysis (wave-4 sub-B 2.1).
+
+    Maps onto :class:`pulsim.FraOptions`. ``perturbation_source`` is the
+    component name to inject the perturbation into; ``measurement_nodes``
+    is the list of nodes to record.
+    """
+
+    f_start: float = 1.0
+    f_stop: float = 1e6
+    points_per_decade: int = 10
+    scale: str = "decade"  # decade / linear
+    perturbation_amplitude: float = 0.01
+    perturbation_phase: float = 0.0
+    perturbation_source: str = ""
+    measurement_nodes: tuple[str, ...] = ()
+    samples_per_cycle: int = 64
+    n_cycles: int = 4
+    discard_cycles: int = 1
+
+
+@dataclass
+class FraResultEntry:
+    """Per-frequency FRA result."""
+
+    frequency: float
+    magnitude_db: float
+    phase_deg: float
+
+
+@dataclass
+class FraResult:
+    """Aggregated FRA result (GUI-side mirror)."""
+
+    success: bool = False
+    failure_reason: str = ""
+    wall_seconds: float = 0.0
+    total_transient_steps: int = 0
+    frequencies: tuple[float, ...] = ()
+    entries: tuple[FraResultEntry, ...] = ()
+
+
+@dataclass
+class PeriodicSteadyStateSettings:
+    """Settings for shooting-based periodic steady-state (wave-4 sub-B 2.2).
+
+    Maps onto :class:`pulsim.PeriodicSteadyStateOptions`.
+    """
+
+    period: float = 1e-3
+    max_iterations: int = 50
+    tolerance: float = 1e-6
+    relaxation: float = 1.0
+    store_last_transient: bool = True
+
+
+@dataclass
+class PeriodicSteadyStateResult:
+    """Aggregated periodic-steady-state result (GUI-side mirror)."""
+
+    success: bool = False
+    message: str = ""
+    iterations: int = 0
+    residual_norm: float = 0.0
+    diagnostic: str = ""
+
+
+@dataclass
+class HarmonicBalanceSettings:
+    """Settings for harmonic balance (wave-4 sub-B 2.3).
+
+    Maps onto :class:`pulsim.HarmonicBalanceOptions`.
+    """
+
+    period: float = 1e-3
+    num_samples: int = 64
+    max_iterations: int = 50
+    tolerance: float = 1e-6
+    relaxation: float = 1.0
+    initialize_from_transient: bool = True
+
+
+@dataclass
+class HarmonicBalanceResult:
+    """Aggregated harmonic balance result (GUI-side mirror)."""
+
+    success: bool = False
+    message: str = ""
+    iterations: int = 0
+    residual_norm: float = 0.0
+    diagnostic: str = ""
+    sample_count: int = 0
+
+
+@dataclass
 class C99CodegenSettings:
     """Settings for real-time C99 controller codegen.
 
@@ -761,4 +856,12 @@ __all__ = [
     "FmuExportResult",
     "C99CodegenSettings",
     "C99CodegenResult",
+    # Sub-wave B — analysis modes
+    "FraSettings",
+    "FraResult",
+    "FraResultEntry",
+    "PeriodicSteadyStateSettings",
+    "PeriodicSteadyStateResult",
+    "HarmonicBalanceSettings",
+    "HarmonicBalanceResult",
 ]

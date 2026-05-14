@@ -32,10 +32,17 @@ from pulsimgui.services.backend_types import (
     FmuExportResult,
     FmuExportSettings,
     FosterStage,
+    FraResult,
+    FraResultEntry,
+    FraSettings,
     FrequencyAnalysisResult,
+    HarmonicBalanceResult,
+    HarmonicBalanceSettings,
     HarmonicEntry,
     IterationRecord,
     LossBreakdown,
+    PeriodicSteadyStateResult,
+    PeriodicSteadyStateSettings,
     PostProcessingJobResult,
     PostProcessingResult,
     ProblematicVariable,
@@ -283,18 +290,31 @@ class SimulationBackend(Protocol):
         circuit_data: dict,
         settings: C99CodegenSettings,
     ) -> C99CodegenResult:
-        """Generate deployable C99 controller code from the active circuit.
+        """Generate deployable C99 controller code from the active circuit."""
+        ...
 
-        Args:
-            circuit_data: Serialised circuit definition.
-            settings: C99 codegen configuration.
+    def run_fra(
+        self,
+        circuit_data: dict,
+        settings: FraSettings,
+    ) -> FraResult:
+        """Run closed-loop Frequency Response Analysis (wave-4 sub-B 2.1)."""
+        ...
 
-        Returns:
-            C99CodegenResult describing the produced files + matrices.
+    def run_periodic_steady_state(
+        self,
+        circuit_data: dict,
+        settings: PeriodicSteadyStateSettings,
+    ) -> PeriodicSteadyStateResult:
+        """Solve for the periodic orbit via shooting (wave-4 sub-B 2.2)."""
+        ...
 
-        Raises:
-            NotImplementedError: backend does not support codegen.
-        """
+    def run_harmonic_balance(
+        self,
+        circuit_data: dict,
+        settings: HarmonicBalanceSettings,
+    ) -> HarmonicBalanceResult:
+        """Solve for the spectrum via harmonic balance (wave-4 sub-B 2.3)."""
         ...
 
 
@@ -636,6 +656,39 @@ class PlaceholderBackend(SimulationBackend):
             "runtime (pip install pulsim) to enable this feature."
         )
 
+    # ------------------------------------------------------------------
+    # Wave-4 sub-B placeholder stubs.
+    # ------------------------------------------------------------------
+    def run_fra(
+        self,
+        circuit_data: dict,
+        settings: FraSettings,
+    ) -> FraResult:  # pragma: no cover - placeholder path
+        return FraResult(
+            success=False,
+            failure_reason="FRA is not available in demo mode. Install Pulsim.",
+        )
+
+    def run_periodic_steady_state(
+        self,
+        circuit_data: dict,
+        settings: PeriodicSteadyStateSettings,
+    ) -> PeriodicSteadyStateResult:  # pragma: no cover - placeholder path
+        return PeriodicSteadyStateResult(
+            success=False,
+            message="Periodic steady-state is not available in demo mode.",
+        )
+
+    def run_harmonic_balance(
+        self,
+        circuit_data: dict,
+        settings: HarmonicBalanceSettings,
+    ) -> HarmonicBalanceResult:  # pragma: no cover - placeholder path
+        return HarmonicBalanceResult(
+            success=False,
+            message="Harmonic balance is not available in demo mode.",
+        )
+
     def run_frequency_analysis(
         self,
         circuit_data: dict,
@@ -726,6 +779,16 @@ class PulsimBackend(SimulationBackend):
         codegen_mod = getattr(self._module, "codegen", None)
         if codegen_mod is not None and hasattr(codegen_mod, "generate"):
             caps.add("c99_codegen")
+
+        # Wave-4 sub-B analysis modes (pulsim >= 0.9.0).
+        sim_cls = getattr(self._module, "Simulator", None)
+        if sim_cls is not None:
+            if hasattr(sim_cls, "run_fra"):
+                caps.add("fra")
+            if hasattr(sim_cls, "run_periodic_shooting"):
+                caps.add("periodic_steady_state")
+            if hasattr(sim_cls, "run_harmonic_balance"):
+                caps.add("harmonic_balance")
 
         self._cached_capabilities = caps
         return caps
@@ -4966,6 +5029,195 @@ class PulsimBackend(SimulationBackend):
             rom_estimate_bytes=int(getattr(summary, "rom_estimate_bytes", 0) or 0),
             ram_estimate_bytes=int(getattr(summary, "ram_estimate_bytes", 0) or 0),
             files_written=tuple(getattr(summary, "files_written", ()) or ()),
+        )
+
+    # ------------------------------------------------------------------
+    # Wave-4 sub-B analysis modes
+    # ------------------------------------------------------------------
+    def _build_simulator(self, circuit_data: dict) -> Any:
+        """Construct ``self._module.Simulator(circuit, default options)``.
+
+        Used by the wave-4 sub-B run helpers. The standard
+        ``run_transient`` path goes through a richer setup; this is a
+        slim variant that's sufficient for the new analysis modes which
+        only need a viable Simulator handle.
+        """
+        circuit = self._converter.build(circuit_data)
+        sim_options_cls = getattr(self._module, "SimulationOptions", None)
+        if sim_options_cls is None:
+            return self._module.Simulator(circuit)
+        return self._module.Simulator(circuit, sim_options_cls())
+
+    def run_fra(
+        self,
+        circuit_data: dict,
+        settings: FraSettings,
+    ) -> FraResult:
+        """Run pulsim's empirical FRA (Simulator.run_fra)."""
+        if not self.has_capability("fra"):
+            return FraResult(
+                success=False,
+                failure_reason="Backend version does not expose Simulator.run_fra.",
+            )
+
+        try:
+            simulator = self._build_simulator(circuit_data)
+        except CircuitConversionError as exc:
+            return FraResult(success=False, failure_reason=f"Circuit conversion: {exc}")
+
+        opts_cls = getattr(self._module, "FraOptions", None)
+        if opts_cls is None:
+            return FraResult(
+                success=False, failure_reason="pulsim.FraOptions not available."
+            )
+        opts = opts_cls()
+        if hasattr(opts, "f_start"):
+            opts.f_start = float(settings.f_start)
+        if hasattr(opts, "f_stop"):
+            opts.f_stop = float(settings.f_stop)
+        if hasattr(opts, "points_per_decade"):
+            opts.points_per_decade = int(settings.points_per_decade)
+        if hasattr(opts, "scale"):
+            opts.scale = str(settings.scale)
+        if hasattr(opts, "perturbation_amplitude"):
+            opts.perturbation_amplitude = float(settings.perturbation_amplitude)
+        if hasattr(opts, "perturbation_phase"):
+            opts.perturbation_phase = float(settings.perturbation_phase)
+        if hasattr(opts, "perturbation_source") and settings.perturbation_source:
+            opts.perturbation_source = settings.perturbation_source
+        if hasattr(opts, "measurement_nodes") and settings.measurement_nodes:
+            opts.measurement_nodes = list(settings.measurement_nodes)
+        if hasattr(opts, "samples_per_cycle"):
+            opts.samples_per_cycle = int(settings.samples_per_cycle)
+        if hasattr(opts, "n_cycles"):
+            opts.n_cycles = int(settings.n_cycles)
+        if hasattr(opts, "discard_cycles"):
+            opts.discard_cycles = int(settings.discard_cycles)
+
+        try:
+            native = simulator.run_fra(opts)
+        except Exception as exc:  # pragma: no cover - backend-side failure
+            return FraResult(success=False, failure_reason=str(exc))
+
+        frequencies = tuple(float(f) for f in getattr(native, "frequencies", ()) or ())
+        measurements = getattr(native, "measurements", []) or []
+        entries: list[FraResultEntry] = []
+        for f, meas in zip(frequencies, measurements):
+            entries.append(
+                FraResultEntry(
+                    frequency=float(f),
+                    magnitude_db=float(getattr(meas, "magnitude_db", 0.0) or 0.0),
+                    phase_deg=float(getattr(meas, "phase_deg", 0.0) or 0.0),
+                )
+            )
+
+        return FraResult(
+            success=bool(getattr(native, "success", False)),
+            failure_reason=str(getattr(native, "failure_reason", "") or ""),
+            wall_seconds=float(getattr(native, "wall_seconds", 0.0) or 0.0),
+            total_transient_steps=int(getattr(native, "total_transient_steps", 0) or 0),
+            frequencies=frequencies,
+            entries=tuple(entries),
+        )
+
+    def run_periodic_steady_state(
+        self,
+        circuit_data: dict,
+        settings: PeriodicSteadyStateSettings,
+    ) -> PeriodicSteadyStateResult:
+        """Shooting-based periodic steady-state solve."""
+        if not self.has_capability("periodic_steady_state"):
+            return PeriodicSteadyStateResult(
+                success=False,
+                message="Backend version does not expose Simulator.run_periodic_shooting.",
+            )
+
+        try:
+            simulator = self._build_simulator(circuit_data)
+        except CircuitConversionError as exc:
+            return PeriodicSteadyStateResult(success=False, message=f"Circuit conversion: {exc}")
+
+        opts_cls = getattr(self._module, "PeriodicSteadyStateOptions", None)
+        if opts_cls is None:
+            return PeriodicSteadyStateResult(
+                success=False,
+                message="pulsim.PeriodicSteadyStateOptions not available.",
+            )
+        opts = opts_cls()
+        if hasattr(opts, "period"):
+            opts.period = float(settings.period)
+        if hasattr(opts, "max_iterations"):
+            opts.max_iterations = int(settings.max_iterations)
+        if hasattr(opts, "tolerance"):
+            opts.tolerance = float(settings.tolerance)
+        if hasattr(opts, "relaxation"):
+            opts.relaxation = float(settings.relaxation)
+        if hasattr(opts, "store_last_transient"):
+            opts.store_last_transient = bool(settings.store_last_transient)
+
+        try:
+            native = simulator.run_periodic_shooting(opts)
+        except Exception as exc:  # pragma: no cover - backend-side failure
+            return PeriodicSteadyStateResult(success=False, message=str(exc))
+
+        return PeriodicSteadyStateResult(
+            success=bool(getattr(native, "success", False)),
+            message=str(getattr(native, "message", "") or ""),
+            iterations=int(getattr(native, "iterations", 0) or 0),
+            residual_norm=float(getattr(native, "residual_norm", 0.0) or 0.0),
+            diagnostic=str(getattr(native, "diagnostic", "") or ""),
+        )
+
+    def run_harmonic_balance(
+        self,
+        circuit_data: dict,
+        settings: HarmonicBalanceSettings,
+    ) -> HarmonicBalanceResult:
+        """Solve the spectrum via harmonic balance."""
+        if not self.has_capability("harmonic_balance"):
+            return HarmonicBalanceResult(
+                success=False,
+                message="Backend version does not expose Simulator.run_harmonic_balance.",
+            )
+
+        try:
+            simulator = self._build_simulator(circuit_data)
+        except CircuitConversionError as exc:
+            return HarmonicBalanceResult(success=False, message=f"Circuit conversion: {exc}")
+
+        opts_cls = getattr(self._module, "HarmonicBalanceOptions", None)
+        if opts_cls is None:
+            return HarmonicBalanceResult(
+                success=False,
+                message="pulsim.HarmonicBalanceOptions not available.",
+            )
+        opts = opts_cls()
+        if hasattr(opts, "period"):
+            opts.period = float(settings.period)
+        if hasattr(opts, "num_samples"):
+            opts.num_samples = int(settings.num_samples)
+        if hasattr(opts, "max_iterations"):
+            opts.max_iterations = int(settings.max_iterations)
+        if hasattr(opts, "tolerance"):
+            opts.tolerance = float(settings.tolerance)
+        if hasattr(opts, "relaxation"):
+            opts.relaxation = float(settings.relaxation)
+        if hasattr(opts, "initialize_from_transient"):
+            opts.initialize_from_transient = bool(settings.initialize_from_transient)
+
+        try:
+            native = simulator.run_harmonic_balance(opts)
+        except Exception as exc:  # pragma: no cover - backend-side failure
+            return HarmonicBalanceResult(success=False, message=str(exc))
+
+        sample_times = getattr(native, "sample_times", []) or []
+        return HarmonicBalanceResult(
+            success=bool(getattr(native, "success", False)),
+            message=str(getattr(native, "message", "") or ""),
+            iterations=int(getattr(native, "iterations", 0) or 0),
+            residual_norm=float(getattr(native, "residual_norm", 0.0) or 0.0),
+            diagnostic=str(getattr(native, "diagnostic", "") or ""),
+            sample_count=len(sample_times),
         )
 
     def _make_frequency_port(self, positive_node: str, negative_node: str) -> Any:
