@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Scope window branding
 The scope window SHALL render its brand strings using only the PulsimGui identity, never using prototype names from in-progress design experiments.
@@ -14,8 +14,6 @@ The scope window SHALL render its brand strings using only the PulsimGui identit
 #### Scenario: Qt window title
 - **GIVEN** the scope window is bound to a scope component named `Scope1`
 - **THEN** the Qt window title SHALL read "Scope1 — PulsimGui Scope" and SHALL NOT contain the substrings "VirtuScope" or "SimuScope"
-
-## ADDED Requirements
 
 ### Requirement: Single stat surface per channel
 Inline trace statistics (RMS, Peak, Mean) SHALL appear in exactly one place per channel: the channel-strip card adjacent to the trace name.
