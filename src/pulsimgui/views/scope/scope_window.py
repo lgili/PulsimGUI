@@ -865,8 +865,17 @@ class ScopeWindow(QWidget):
     STACKED_MAX_DISPLAY_POINTS = 10000
     STACKED_TOTAL_POINT_BUDGET = 24000
     STACKED_MIN_POINTS_PER_SIGNAL = 1200
-    BOTTOM_DRAWER_MIN_HEIGHT = 60
-    BOTTOM_DRAWER_MAX_HEIGHT = 360
+    BOTTOM_DRAWER_MIN_HEIGHT = 52
+    BOTTOM_DRAWER_MAX_HEIGHT = 240
+    DEFAULT_BOTTOM_DRAWER_HEIGHT = 84
+    COMPACT_LEFT_PANEL_WIDTH = 196
+    COMPACT_RIGHT_PANEL_WIDTH = 216
+    DEFAULT_LEFT_PANEL_WIDTH = 288
+    DEFAULT_RIGHT_PANEL_WIDTH = 340
+    MAX_LEFT_PANEL_WIDTH = 360
+    MAX_RIGHT_PANEL_WIDTH = 380
+    ADAPTIVE_MIN_CENTER_WIDTH = 880
+    AUTO_OVERLAY_RATIO_THRESHOLD = 3.0
 
     def __init__(
         self,
@@ -904,8 +913,8 @@ class ScopeWindow(QWidget):
         self._stacked_cursors_enabled = False
         self._left_panel_visible = False
         self._right_panel_visible = False
-        self._left_panel_width = 220
-        self._right_panel_width = 232
+        self._left_panel_width = self.DEFAULT_LEFT_PANEL_WIDTH
+        self._right_panel_width = self.DEFAULT_RIGHT_PANEL_WIDTH
         self._collapsed_panel_width = 64
         self._stacked_grid_enabled = True
         self._stacked_cursor_lines: list[tuple[pg.InfiniteLine, pg.InfiniteLine]] = []
@@ -917,6 +926,7 @@ class ScopeWindow(QWidget):
         self._trace_styles: dict[str, dict[str, object]] = {}
         self._stacked_plot_groups: dict[str, str] = {}
         self._selected_plot_group_leader: str | None = None
+        self._plot_composition_overridden = False
         self._default_trace_width = self.DEFAULT_TRACE_WIDTH
         self._syncing_trace_style_controls = False
         self._syncing_bottom_sliders = False
@@ -927,7 +937,7 @@ class ScopeWindow(QWidget):
         self._signal_units: dict[str, str] = {}
         self._inspector_snap_mode: str = "none"
         self._bottom_drawer_expanded = False
-        self._bottom_drawer_height = 132
+        self._bottom_drawer_height = self.DEFAULT_BOTTOM_DRAWER_HEIGHT
         self._bottom_drawer_user_height = False
         self._bottom_drawer_active_tab = 0
         self._bottom_events: list[str] = []
@@ -942,6 +952,8 @@ class ScopeWindow(QWidget):
                 "window": "hann",
                 "points": 1024,
                 "scale": "db",
+                # Wave-2 — fundamental for the THD readout (Hz).
+                "fundamental_hz": 60.0,
                 "x_range": None,
                 "y_range": None,
             },
@@ -1473,7 +1485,9 @@ class ScopeWindow(QWidget):
         self._stacked_splitter.setStretchFactor(0, 1)
         self._stacked_splitter.setStretchFactor(1, 10)
         self._stacked_splitter.setStretchFactor(2, 1)
-        self._stacked_splitter.setSizes([220, 1120, 232])
+        self._stacked_splitter.setSizes(
+            [self.DEFAULT_LEFT_PANEL_WIDTH, 1120, self.DEFAULT_RIGHT_PANEL_WIDTH]
+        )
         self._stacked_splitter.splitterMoved.connect(self._on_splitter_moved)
 
         self._mapping_label = QLabel()
@@ -1770,8 +1784,8 @@ class ScopeWindow(QWidget):
         chrome_layout.addWidget(self._scope_tool_row)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
         self._analysis_tabs = QTabWidget()
         self._analysis_tabs.setObjectName("scopeAnalysisTabs")
@@ -1792,14 +1806,14 @@ class ScopeWindow(QWidget):
         self._scope_bottom_controls = QWidget()
         self._scope_bottom_controls.setObjectName("scopeBottomControlBar")
         bottom_layout = QVBoxLayout(self._scope_bottom_controls)
-        bottom_layout.setContentsMargins(4, 3, 4, 3)
-        bottom_layout.setSpacing(3)
+        bottom_layout.setContentsMargins(3, 2, 3, 2)
+        bottom_layout.setSpacing(2)
 
         self._scope_quick_metrics_row = QWidget()
         self._scope_quick_metrics_row.setObjectName("scopeQuickMetricsRow")
         quick_layout = QHBoxLayout(self._scope_quick_metrics_row)
         quick_layout.setContentsMargins(0, 0, 0, 0)
-        quick_layout.setSpacing(4)
+        quick_layout.setSpacing(3)
         self._quick_metric_signal = QLabel("No signal")
         self._quick_metric_signal.setObjectName("scopeQuickMetricPrimary")
         self._quick_metric_rms = QLabel("RMS —")
@@ -1824,11 +1838,11 @@ class ScopeWindow(QWidget):
         self._scope_bottom_viewport_row.setObjectName("scopeBottomViewportRow")
         viewport_layout = QHBoxLayout(self._scope_bottom_viewport_row)
         viewport_layout.setContentsMargins(0, 0, 0, 0)
-        viewport_layout.setSpacing(2)
+        viewport_layout.setSpacing(1)
 
         self._timeline_dec_btn = QPushButton("◀")
         self._timeline_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_dec_btn.setFixedWidth(20)
+        self._timeline_dec_btn.setFixedWidth(18)
         self._timeline_dec_btn.setToolTip("Pan left")
         self._timeline_dec_btn.clicked.connect(lambda: self._step_timeline_window(-20))
         viewport_layout.addWidget(self._timeline_dec_btn)
@@ -1844,7 +1858,7 @@ class ScopeWindow(QWidget):
 
         self._timeline_inc_btn = QPushButton("▶")
         self._timeline_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_inc_btn.setFixedWidth(20)
+        self._timeline_inc_btn.setFixedWidth(18)
         self._timeline_inc_btn.setToolTip("Pan right")
         self._timeline_inc_btn.clicked.connect(lambda: self._step_timeline_window(20))
         viewport_layout.addWidget(self._timeline_inc_btn)
@@ -1856,7 +1870,7 @@ class ScopeWindow(QWidget):
 
         self._zoom_dec_btn = QPushButton("−")
         self._zoom_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_dec_btn.setFixedWidth(20)
+        self._zoom_dec_btn.setFixedWidth(18)
         self._zoom_dec_btn.setToolTip("Zoom out")
         self._zoom_dec_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, -5))
         viewport_layout.addWidget(self._zoom_dec_btn)
@@ -1871,7 +1885,7 @@ class ScopeWindow(QWidget):
 
         self._zoom_inc_btn = QPushButton("+")
         self._zoom_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_inc_btn.setFixedWidth(20)
+        self._zoom_inc_btn.setFixedWidth(18)
         self._zoom_inc_btn.setToolTip("Zoom in")
         self._zoom_inc_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, 5))
         viewport_layout.addWidget(self._zoom_inc_btn)
@@ -1888,7 +1902,7 @@ class ScopeWindow(QWidget):
         viewport_layout.addWidget(self._autoscale_btn)
         self._measurement_menu_btn = QToolButton()
         self._measurement_menu_btn.setObjectName("scopeMeasurementMenuBtn")
-        self._measurement_menu_btn.setText("+ Add Measurement")
+        self._measurement_menu_btn.setText("+ Measure")
         self._measurement_menu_btn.setToolTip(
             "Choose which measurement columns appear in the analysis drawer"
         )
@@ -1950,7 +1964,7 @@ class ScopeWindow(QWidget):
         measurements_page = QWidget()
         measure_layout = QVBoxLayout(measurements_page)
         measure_layout.setContentsMargins(0, 0, 0, 0)
-        measure_layout.setSpacing(2)
+        measure_layout.setSpacing(1)
 
         self._scope_bottom_measure_table = QTableWidget(0, 0)
         self._scope_bottom_measure_table.setObjectName("scopeBottomMeasureTable")
@@ -1959,8 +1973,8 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.setAlternatingRowColors(True)
         self._scope_bottom_measure_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._scope_bottom_measure_table.horizontalHeader().setMinimumSectionSize(54)
-        self._scope_bottom_measure_table.horizontalHeader().setDefaultSectionSize(84)
-        self._scope_bottom_measure_table.horizontalHeader().setFixedHeight(16)
+        self._scope_bottom_measure_table.horizontalHeader().setDefaultSectionSize(76)
+        self._scope_bottom_measure_table.horizontalHeader().setFixedHeight(14)
         self._scope_bottom_measure_table.verticalHeader().setVisible(False)
         self._scope_bottom_measure_table.setShowGrid(True)
         self._scope_bottom_measure_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -1972,7 +1986,6 @@ class ScopeWindow(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         measure_layout.addWidget(self._scope_bottom_measure_table, stretch=0)
-        measure_layout.addStretch(1)
         self._scope_bottom_tabs.addTab(measurements_page, "Measurements")
         self._scope_bottom_tabs.setTabToolTip(0, "Detailed per-signal measurements")
 
@@ -2551,6 +2564,15 @@ class ScopeWindow(QWidget):
         """Clamp the drawer body height to the supported desktop range."""
         return max(cls.BOTTOM_DRAWER_MIN_HEIGHT, min(cls.BOTTOM_DRAWER_MAX_HEIGHT, int(height)))
 
+    def _effective_bottom_drawer_cap(self) -> int:
+        """Return the current drawer cap after accounting for competing chrome."""
+        cap = self.BOTTOM_DRAWER_MAX_HEIGHT
+        if self._left_panel_visible and self._right_panel_visible:
+            cap = min(cap, 160)
+        if self.width() < 1450:
+            cap = min(cap, 136)
+        return max(self.BOTTOM_DRAWER_MIN_HEIGHT, cap)
+
     def _apply_bottom_drawer_height(self) -> None:
         """Apply drawer visibility and height from the persisted state."""
         if not hasattr(self, "_scope_bottom_tab"):
@@ -2563,7 +2585,10 @@ class ScopeWindow(QWidget):
             self._scope_bottom_resize_handle.setVisible(expanded)
             self._scope_bottom_resize_handle.setEnabled(expanded and self._scope_bottom_drawer_toggle_btn.isEnabled())
         if expanded:
-            height = self._clamp_bottom_drawer_height(self._bottom_drawer_height)
+            height = min(
+                self._effective_bottom_drawer_cap(),
+                self._clamp_bottom_drawer_height(self._bottom_drawer_height),
+            )
             self._bottom_drawer_height = height
             self._scope_bottom_tab.setMinimumHeight(height)
             self._scope_bottom_tab.setMaximumHeight(height)
@@ -2587,8 +2612,9 @@ class ScopeWindow(QWidget):
     def _preferred_bottom_drawer_height(self) -> int:
         """Return the body height that best fits the current bottom measurements table."""
         table_height = self._bottom_measure_table_content_height()
-        # Tab container/frame overhead around the table page.
-        return self._clamp_bottom_drawer_height(table_height + 8)
+        header_allowance = 10
+        preferred = self._clamp_bottom_drawer_height(table_height + header_allowance)
+        return min(preferred, self._effective_bottom_drawer_cap())
 
     def _grow_window_for_bottom_drawer(self, extra_height: int) -> None:
         """Grow the window when the drawer needs more room for many signals."""
@@ -2613,7 +2639,7 @@ class ScopeWindow(QWidget):
         current_height = self._clamp_bottom_drawer_height(self._bottom_drawer_height)
         required_height = self._preferred_bottom_drawer_height()
         if self._bottom_drawer_user_height:
-            target_height = max(current_height, required_height)
+            target_height = min(max(current_height, required_height), self._effective_bottom_drawer_cap())
         else:
             target_height = required_height
         if grow_window and self._bottom_drawer_expanded and target_height > current_height:
@@ -2758,11 +2784,11 @@ class ScopeWindow(QWidget):
 
         left_width_raw = state.get("left_panel_width")
         if isinstance(left_width_raw, (int, float)):
-            self._left_panel_width = max(208, min(380, int(left_width_raw)))
+            self._left_panel_width = max(self.COMPACT_LEFT_PANEL_WIDTH, min(self.MAX_LEFT_PANEL_WIDTH, int(left_width_raw)))
 
         right_width_raw = state.get("right_panel_width")
         if isinstance(right_width_raw, (int, float)):
-            self._right_panel_width = max(220, min(420, int(right_width_raw)))
+            self._right_panel_width = max(self.COMPACT_RIGHT_PANEL_WIDTH, min(self.MAX_RIGHT_PANEL_WIDTH, int(right_width_raw)))
 
         bottom_height_raw = state.get("bottom_drawer_height")
         if isinstance(bottom_height_raw, (int, float)):
@@ -2782,6 +2808,7 @@ class ScopeWindow(QWidget):
                 for signal_name, leader_name in plot_groups_raw.items()
                 if str(signal_name).strip() and str(leader_name).strip()
             }
+            self._plot_composition_overridden = bool(self._stacked_plot_groups)
         else:
             self._stacked_plot_groups = {}
 
@@ -2792,6 +2819,8 @@ class ScopeWindow(QWidget):
                 for signal_name, target in signal_axis_targets_raw.items()
                 if str(signal_name).strip() and str(target).strip()
             }
+            if self._signal_axis_targets:
+                self._plot_composition_overridden = True
 
         signal_labels_raw = state.get("signal_labels")
         if isinstance(signal_labels_raw, dict):
@@ -3060,6 +3089,66 @@ class ScopeWindow(QWidget):
             return "Hz"
         return ""
 
+    @staticmethod
+    def _normalized_unit_key(unit: str | None) -> str:
+        text = str(unit or "").strip()
+        return text.lower() if text else "__unitless__"
+
+    def _signal_dynamic_span(self, signal_name: str) -> float:
+        values = self._stacked_signals.get(signal_name)
+        if values is None or len(values) == 0:
+            return 0.0
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return 0.0
+        span = float(np.max(finite) - np.min(finite))
+        if span > 1e-12:
+            return span
+        return float(np.max(np.abs(finite))) if finite.size else 0.0
+
+    def _should_overlay_spans(self, left_span: float, right_span: float) -> bool:
+        floor = 1e-9
+        a = max(abs(float(left_span)), floor)
+        b = max(abs(float(right_span)), floor)
+        ratio = max(a, b) / min(a, b)
+        return ratio <= self.AUTO_OVERLAY_RATIO_THRESHOLD
+
+    def _apply_automatic_plot_composition(self) -> None:
+        """Build default plot groups that preserve readability for mixed-scale traces."""
+        if not self._stacked_signals:
+            self._stacked_plot_groups = {}
+            return
+
+        grouped_by_unit: dict[str, list[str]] = {}
+        for signal_name in self._stacked_signals:
+            unit_key = self._normalized_unit_key(self._signal_units.get(signal_name))
+            grouped_by_unit.setdefault(unit_key, []).append(signal_name)
+
+        resolved_groups: dict[str, str] = {}
+        for signal_names in grouped_by_unit.values():
+            if not signal_names:
+                continue
+
+            current_leader = signal_names[0]
+            current_span = self._signal_dynamic_span(current_leader)
+            resolved_groups[current_leader] = current_leader
+
+            for signal_name in signal_names[1:]:
+                span = self._signal_dynamic_span(signal_name)
+                if self._should_overlay_spans(current_span, span):
+                    resolved_groups[signal_name] = current_leader
+                    current_span = max(current_span, span)
+                else:
+                    current_leader = signal_name
+                    current_span = span
+                    resolved_groups[signal_name] = current_leader
+
+        for signal_name in self._stacked_signals:
+            resolved_groups.setdefault(signal_name, signal_name)
+            self._signal_axis_targets[signal_name] = "left"
+
+        self._stacked_plot_groups = resolved_groups
+
     def _measurement_scope_label(self) -> str:
         target = normalize_interval_target(self._stacked_interval_target)
         return {
@@ -3067,6 +3156,29 @@ class ScopeWindow(QWidget):
             "window": "Visible Window",
             "a_to_b": "Between Cursors",
         }.get(target, "Full Range")
+
+    def _preferred_left_panel_width(self) -> int:
+        """Return a useful expanded width for the signals panel."""
+        candidates = [
+            self.DEFAULT_LEFT_PANEL_WIDTH,
+            self._scope_selector_combo.sizeHint().width() + 40,
+            self._create_math_signal_btn.sizeHint().width() + 20,
+            self._sidebar_tabs.minimumSizeHint().width() + 28,
+            self._stacked_signal_list.sizeHint().width() + 18,
+        ]
+        preferred = max(int(value) for value in candidates if value)
+        return max(self.COMPACT_LEFT_PANEL_WIDTH, min(self.MAX_LEFT_PANEL_WIDTH, preferred))
+
+    def _preferred_right_panel_width(self) -> int:
+        """Return a useful expanded width for the inspector panel."""
+        candidates = [
+            self.DEFAULT_RIGHT_PANEL_WIDTH,
+            self._trace_signal_combo.minimumWidth() + 72,
+            self._inspector_content.sizeHint().width() + 16,
+            self._stacked_right_panel.sizeHint().width(),
+        ]
+        preferred = max(int(value) for value in candidates if value)
+        return max(self.COMPACT_RIGHT_PANEL_WIDTH, min(self.MAX_RIGHT_PANEL_WIDTH, preferred))
 
     def _current_visible_time_window(self) -> tuple[float, float] | None:
         """Return the currently visible horizontal time range."""
@@ -3259,12 +3371,46 @@ class ScopeWindow(QWidget):
         self._fft_scale_combo.setToolTip("Choose the FFT magnitude scale")
         self._fft_scale_combo.currentIndexChanged.connect(self._on_fft_settings_changed)
         controls_layout.addWidget(self._fft_scale_combo)
+        # Wave-2 — THD readout: fundamental frequency input + snap-to-peak
+        # button + live percentage. The fundamental is stored alongside
+        # the other FFT view state so it persists across runs.
+        controls_layout.addSpacing(12)
+        controls_layout.addWidget(QLabel("Fundamental"))
+        from PySide6.QtWidgets import QDoubleSpinBox  # local import
+        self._fft_fundamental_spin = QDoubleSpinBox()
+        self._fft_fundamental_spin.setRange(0.0, 1e9)
+        self._fft_fundamental_spin.setDecimals(2)
+        self._fft_fundamental_spin.setSingleStep(1.0)
+        self._fft_fundamental_spin.setValue(60.0)
+        self._fft_fundamental_spin.setSuffix(" Hz")
+        self._fft_fundamental_spin.setMinimumWidth(110)
+        self._fft_fundamental_spin.setToolTip(
+            "Fundamental frequency for the THD readout. "
+            "Use 'snap to peak' to grab the largest in-band bin."
+        )
+        self._fft_fundamental_spin.valueChanged.connect(self._on_fft_settings_changed)
+        controls_layout.addWidget(self._fft_fundamental_spin)
+        self._fft_snap_btn = QPushButton("snap to peak")
+        self._fft_snap_btn.setObjectName("scopeToolbarActionBtn")
+        self._fft_snap_btn.setToolTip(
+            "Set the fundamental to the largest in-band magnitude bin."
+        )
+        self._fft_snap_btn.clicked.connect(self._on_fft_snap_to_peak)
+        controls_layout.addWidget(self._fft_snap_btn)
         controls_layout.addStretch(1)
         layout.addWidget(controls)
 
         self._fft_summary_label = QLabel("Waiting for signal data.")
         self._fft_summary_label.setObjectName("scopePlaceholderSubtitle")
         layout.addWidget(self._fft_summary_label)
+        # Prominent THD readout (separate label so we can style it bold).
+        self._fft_thd_label = QLabel("")
+        self._fft_thd_label.setObjectName("scopeFFTThdReadout")
+        thd_font = self._fft_thd_label.font()
+        thd_font.setPointSize(max(10, thd_font.pointSize() + 1))
+        thd_font.setBold(True)
+        self._fft_thd_label.setFont(thd_font)
+        layout.addWidget(self._fft_thd_label)
 
         self._fft_plot = pg.PlotWidget()
         self._fft_plot.setObjectName("scopeAnalysisPlot")
@@ -3443,6 +3589,36 @@ class ScopeWindow(QWidget):
             f"{self._display_signal_name(active_signal)}  •  {window_kind.title()}  •  {points} pts  •  Peak {peak_freq:.4g} Hz"
         )
 
+        # Wave-2 — THD readout. We always work in linear amplitude
+        # (not dB), even when the plot is rendered in dB.
+        linear_magnitude = np.abs(spectrum) * 2.0 / max(1, len(signal_slice))
+        fundamental_hz = float(self._analysis_view_state["fft"].get("fundamental_hz", 60.0))
+        # Keep the spinner in sync if the value comes from saved state.
+        if (
+            hasattr(self, "_fft_fundamental_spin")
+            and not self._syncing_fft_controls
+            and abs(self._fft_fundamental_spin.value() - fundamental_hz) > 1e-6
+        ):
+            self._fft_fundamental_spin.blockSignals(True)
+            self._fft_fundamental_spin.setValue(fundamental_hz)
+            self._fft_fundamental_spin.blockSignals(False)
+        try:
+            from pulsimgui.views.scope.measurements import compute_thd_from_spectrum
+            thd_pct = compute_thd_from_spectrum(freqs, linear_magnitude, fundamental_hz)
+        except Exception:
+            thd_pct = 0.0
+        if fundamental_hz > 0 and thd_pct > 0:
+            self._fft_thd_label.setText(
+                f"THD = {thd_pct:.3f} %    (fundamental {fundamental_hz:g} Hz, "
+                f"k = 2..20)"
+            )
+        elif fundamental_hz > 0:
+            self._fft_thd_label.setText(
+                f"THD ≈ 0 %    (fundamental {fundamental_hz:g} Hz)"
+            )
+        else:
+            self._fft_thd_label.setText("")
+
     def _refresh_compare_view(self) -> None:
         names = list(self._stacked_signals.keys())
         active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
@@ -3551,9 +3727,37 @@ class ScopeWindow(QWidget):
         fft_state["window"] = str(self._fft_window_combo.currentData() or "hann")
         fft_state["points"] = int(self._fft_points_combo.currentData() or 1024)
         fft_state["scale"] = str(self._fft_scale_combo.currentData() or "db")
+        # Wave-2 — fundamental frequency for the THD readout.
+        fft_state["fundamental_hz"] = float(self._fft_fundamental_spin.value())
         fft_state["x_range"] = None
         fft_state["y_range"] = None
         self._refresh_fft_view()
+
+    def _on_fft_snap_to_peak(self) -> None:
+        """Set the fundamental-frequency spinner to the largest in-band bin."""
+        if self._syncing_fft_controls:
+            return
+        from pulsimgui.views.scope.measurements import snap_to_peak_frequency
+        # Pull the just-rendered spectrum back from the plot data; this
+        # avoids recomputing the FFT for the snap action.
+        items = self._fft_plot.getPlotItem().listDataItems() if hasattr(
+            self._fft_plot, "getPlotItem"
+        ) else []
+        for item in items:
+            xy = item.getData() if hasattr(item, "getData") else (None, None)
+            if xy and xy[0] is not None and xy[1] is not None:
+                freqs = np.asarray(xy[0], dtype=float)
+                # The FFT plot's y-data may be in dB; convert back to
+                # linear amplitude for peak-finding so the comparison
+                # makes sense.
+                mags = np.asarray(xy[1], dtype=float)
+                scale = str(self._analysis_view_state["fft"].get("scale", "db"))
+                if scale == "db":
+                    mags = np.power(10.0, mags / 20.0)
+                peak = snap_to_peak_frequency(freqs, mags, exclude_dc_hz=1.0)
+                if peak > 0.0:
+                    self._fft_fundamental_spin.setValue(float(peak))
+                return
 
     def _on_compare_primary_changed(self) -> None:
         """Keep compare primary selection synchronized with the shared active signal."""
@@ -3955,10 +4159,10 @@ class ScopeWindow(QWidget):
         """Restore the default panel and drawer layout."""
         self._left_panel_visible = False
         self._right_panel_visible = False
-        self._left_panel_width = 220
-        self._right_panel_width = 232
+        self._left_panel_width = self.DEFAULT_LEFT_PANEL_WIDTH
+        self._right_panel_width = self.DEFAULT_RIGHT_PANEL_WIDTH
         self._bottom_drawer_expanded = False
-        self._bottom_drawer_height = 132
+        self._bottom_drawer_height = self.DEFAULT_BOTTOM_DRAWER_HEIGHT
         self._bottom_drawer_user_height = False
         self._scope_bottom_drawer_toggle_btn.blockSignals(True)
         self._scope_bottom_drawer_toggle_btn.setChecked(False)
@@ -3968,6 +4172,8 @@ class ScopeWindow(QWidget):
 
     def _set_right_panel_visible(self, visible: bool) -> None:
         """Set right inspector visibility and sync the toggle button."""
+        if visible:
+            self._right_panel_width = max(self._right_panel_width, self._preferred_right_panel_width())
         self._right_panel_visible = bool(visible)
         self._right_panel_toggle_btn.blockSignals(True)
         self._right_panel_toggle_btn.setChecked(bool(visible))
@@ -4198,7 +4404,13 @@ class ScopeWindow(QWidget):
             return
         self._set_signal_alias(signal_name, self._trace_alias_edit.text())
 
-    def _set_signal_axis_target(self, signal_name: str, target: str) -> None:
+    def _set_signal_axis_target(
+        self,
+        signal_name: str,
+        target: str,
+        *,
+        mark_manual: bool = True,
+    ) -> None:
         """Set one signal axis target and refresh dependent UI."""
         if signal_name not in self._stacked_signals:
             return
@@ -4206,8 +4418,10 @@ class ScopeWindow(QWidget):
         if normalized not in {"left", "right", "new_plot"}:
             normalized = "left"
         self._signal_axis_targets[signal_name] = normalized
+        if mark_manual:
+            self._plot_composition_overridden = True
         if normalized == "new_plot":
-            self._set_signal_plot_group(signal_name, signal_name)
+            self._set_signal_plot_group(signal_name, signal_name, mark_manual=mark_manual)
         self._refresh_signal_list_metadata()
         self._refresh_inspector()
         self._rebuild_stacked_plots(self._current_result)
@@ -4427,18 +4641,32 @@ class ScopeWindow(QWidget):
         """Return plot-specific tokens derived from the active theme."""
         active = theme or self._theme or LIGHT_THEME
         c = active.colors
+        if active.is_dark:
+            plot_bg = c.plot_background
+            plot_axis = c.plot_axis
+            plot_text = c.plot_text
+            legend_bg = c.plot_legend_background
+            legend_border = c.plot_legend_border
+            grid_alpha = "0.18"
+        else:
+            plot_bg = self._mix(c.foreground, c.background, 0.10)
+            plot_axis = self._mix(c.background, c.foreground, 0.12)
+            plot_text = self._mix(c.background, c.foreground, 0.08)
+            legend_bg = self._rgba(plot_bg, 0.96)
+            legend_border = self._mix(c.primary, plot_axis, 0.16)
+            grid_alpha = "0.24"
         return {
-            "plot_bg": c.plot_background,
-            "plot_axis": c.plot_axis,
-            "plot_text": c.plot_text,
-            "legend_bg": c.plot_legend_background,
-            "legend_border": c.plot_legend_border,
-            "grid_alpha": "0.18" if active.is_dark else "0.28",
-            "header_active_bg": self._mix(c.panel_header, c.primary, 0.12),
-            "header_active_border": self._mix(c.panel_border, c.primary, 0.55),
-            "header_inactive_bg": c.panel_header,
+            "plot_bg": plot_bg,
+            "plot_axis": plot_axis,
+            "plot_text": plot_text,
+            "legend_bg": legend_bg,
+            "legend_border": legend_border,
+            "grid_alpha": grid_alpha,
+            "header_active_bg": self._mix(c.panel_header, c.primary, 0.10 if active.is_dark else 0.08),
+            "header_active_border": self._mix(c.panel_border, c.primary, 0.50),
+            "header_inactive_bg": self._mix(c.panel_header, c.background_alt, 0.25 if active.is_dark else 0.15),
             "header_inactive_border": c.panel_border,
-            "header_stats_bg": self._rgba(c.background_alt, 0.84),
+            "header_stats_bg": self._rgba(c.background_alt, 0.74 if active.is_dark else 0.90),
             "header_stats_text": c.foreground_muted,
             "overview_fill": self._rgba(c.primary, 0.14),
             "overview_border": self._rgba(c.primary, 0.58),
@@ -4627,7 +4855,7 @@ class ScopeWindow(QWidget):
                 background-color: {shell["toolbar_bg"]};
                 border-bottom-left-radius: 10px;
                 border-bottom-right-radius: 10px;
-                min-height: 24px;
+                min-height: 22px;
             }}
             QLabel#scopeToolbarScopeBadge {{
                 color: {shell["text"]};
@@ -4646,21 +4874,21 @@ class ScopeWindow(QWidget):
                 margin: 2px 5px;
             }}
             QToolButton#scopeToolbarTransportBtn {{
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
+                min-width: 22px;
+                max-width: 22px;
+                min-height: 22px;
+                max-height: 22px;
                 background-color: {shell["transport_bg"]};
                 border: 1px solid {shell["transport_border"]};
-                border-radius: 12px;
+                border-radius: 11px;
                 padding: 0px;
             }}
             QToolButton#scopeToolbarActionBtn {{
                 color: {shell["text"]};
-                min-width: 20px;
-                max-width: 20px;
-                min-height: 20px;
-                max-height: 20px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
                 background-color: transparent;
                 border: 1px solid transparent;
                 border-radius: 4px;
@@ -4668,10 +4896,10 @@ class ScopeWindow(QWidget):
             }}
             QToolButton#scopeToolbarMenuBtn {{
                 color: {shell["text"]};
-                min-width: 20px;
-                max-width: 20px;
-                min-height: 20px;
-                max-height: 20px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
                 background-color: transparent;
                 border: 1px solid transparent;
                 border-radius: 4px;
@@ -4744,11 +4972,11 @@ class ScopeWindow(QWidget):
             QTabWidget#scopeAnalysisTabs > QTabBar::tab {{
                 background-color: transparent;
                 color: {shell["muted"]};
-                padding: 6px 12px;
-                font-size: 10px;
+                padding: 5px 10px;
+                font-size: 9px;
                 font-weight: 600;
                 border: none;
-                margin-right: 4px;
+                margin-right: 3px;
             }}
             QTabWidget#scopeAnalysisTabs > QTabBar::tab:selected {{
                 color: {shell["text"]};
@@ -4799,21 +5027,21 @@ class ScopeWindow(QWidget):
             }}
             QLabel#scopeQuickMetricPrimary {{
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 700;
             }}
             QLabel#scopeQuickMetricChip {{
                 color: {shell["text"]};
-                font-size: 8px;
+                font-size: 7px;
                 font-weight: 600;
                 background-color: {shell["subtle_fill"]};
                 border: 1px solid {shell["badge_border"]};
                 border-radius: 8px;
-                padding: 2px 6px;
+                padding: 1px 5px;
             }}
             QWidget#scopeBottomControlBar QLabel {{
                 color: {shell["text"]};
-                font-size: 8px;
+                font-size: 7px;
                 font-weight: 600;
             }}
             QWidget#scopeBottomViewportRow {{
@@ -4856,8 +5084,8 @@ class ScopeWindow(QWidget):
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
-                padding: 1px 8px;
-                min-height: 20px;
+                padding: 1px 7px;
+                min-height: 18px;
                 font-weight: 600;
             }}
             QToolButton#scopeBottomDrawerToggleBtn:hover {{
@@ -4875,9 +5103,9 @@ class ScopeWindow(QWidget):
                 border-bottom: none;
                 border-top-left-radius: 7px;
                 border-top-right-radius: 7px;
-                padding: 4px 8px;
+                padding: 3px 7px;
                 margin-right: 3px;
-                font-size: 8px;
+                font-size: 7px;
                 font-weight: 600;
             }}
             QTabWidget#scopeBottomTabs > QTabBar::tab:selected {{
@@ -4891,7 +5119,7 @@ class ScopeWindow(QWidget):
                 border-radius: 6px;
                 gridline-color: {shell["border"]};
                 color: {shell["text"]};
-                font-size: 8px;
+                font-size: 7px;
             }}
             QTableWidget#scopeBottomMeasureTable QHeaderView::section {{
                 background-color: {shell["header_bg"]};
@@ -4899,8 +5127,8 @@ class ScopeWindow(QWidget):
                 border: none;
                 border-right: 1px solid {shell["border"]};
                 border-bottom: 1px solid {shell["border"]};
-                padding: 2px 5px;
-                font-size: 8px;
+                padding: 1px 4px;
+                font-size: 7px;
                 font-weight: 600;
             }}
             QListWidget#scopeBottomEventsList,
@@ -4918,7 +5146,7 @@ class ScopeWindow(QWidget):
             }}
             QLabel#scopeStatusLabel {{
                 color: {shell["muted"]};
-                font-size: 8px;
+                font-size: 7px;
                 font-weight: 600;
             }}
             QLabel#scopeSliderInfoLabel {{
@@ -5747,7 +5975,7 @@ class ScopeWindow(QWidget):
         self._scope_bottom_measure_table.setRowCount(len(table_data))
 
         for row, signal_name in enumerate(table_data.keys()):
-            self._scope_bottom_measure_table.setRowHeight(row, 18)
+            self._scope_bottom_measure_table.setRowHeight(row, 16)
             signal_item = QTableWidgetItem(self._display_signal_name(signal_name))
             signal_color = self._stacked_signal_list.get_signal_color(signal_name)
             if signal_color is not None:
@@ -5883,7 +6111,13 @@ class ScopeWindow(QWidget):
         for signal_name in list(self._stacked_plot_groups.keys()):
             self._stacked_plot_groups[signal_name] = self._plot_group_leader(signal_name)
 
-    def _set_signal_plot_group(self, signal_name: str, leader_signal: str) -> None:
+    def _set_signal_plot_group(
+        self,
+        signal_name: str,
+        leader_signal: str,
+        *,
+        mark_manual: bool = True,
+    ) -> None:
         """Assign a signal to a dedicated/shared plot group."""
         if signal_name not in self._stacked_signals:
             return
@@ -5893,15 +6127,19 @@ class ScopeWindow(QWidget):
         if leader_signal != signal_name:
             leader_signal = self._plot_group_leader(leader_signal)
         self._stacked_plot_groups[signal_name] = leader_signal
+        if mark_manual:
+            self._plot_composition_overridden = True
         self._sync_plot_groups()
         self._rebuild_stacked_plots(self._current_result)
 
-    def _split_all_plot_groups(self) -> None:
+    def _split_all_plot_groups(self, *, mark_manual: bool = True) -> None:
         if not self._stacked_signals:
             return
         self._stacked_plot_groups = {
             signal_name: signal_name for signal_name in self._stacked_signals
         }
+        if mark_manual:
+            self._plot_composition_overridden = True
         self._rebuild_stacked_plots(self._current_result)
 
     def _apply_dragged_signal_mapping(
@@ -6155,6 +6393,8 @@ class ScopeWindow(QWidget):
             sizes = self._stacked_splitter.sizes()
             if len(sizes) == 3 and sizes[0] > 0:
                 self._left_panel_width = sizes[0]
+        else:
+            self._left_panel_width = max(self._left_panel_width, self._preferred_left_panel_width())
         self._left_panel_visible = bool(checked)
         self._apply_panel_visibility()
 
@@ -6167,6 +6407,8 @@ class ScopeWindow(QWidget):
         self._on_toggle_left_panel_clicked(target_state)
 
     def _on_toggle_right_panel_clicked(self, checked: bool) -> None:
+        if checked:
+            self._right_panel_width = max(self._right_panel_width, self._preferred_right_panel_width())
         self._right_panel_visible = bool(checked)
         self._apply_panel_visibility()
 
@@ -6180,15 +6422,55 @@ class ScopeWindow(QWidget):
             self._right_panel_width = sizes[2]
 
     def _apply_panel_visibility(self) -> None:
-        if self._left_panel_visible:
+        total = max(self.width(), 1200)
+        min_center = self.ADAPTIVE_MIN_CENTER_WIDTH + (24 if self._bottom_drawer_expanded else 0)
+        left_visible = bool(self._left_panel_visible)
+        right_visible = bool(self._right_panel_visible)
+        left = max(self.COMPACT_LEFT_PANEL_WIDTH, min(self.MAX_LEFT_PANEL_WIDTH, int(self._left_panel_width))) if left_visible else self._collapsed_panel_width
+        right = max(self.COMPACT_RIGHT_PANEL_WIDTH, min(self.MAX_RIGHT_PANEL_WIDTH, int(self._right_panel_width))) if right_visible else 0
+        preferred_right = self._preferred_right_panel_width() if right_visible else 0
+
+        deficit = max(0, min_center - (total - left - right - 24))
+        if deficit > 0 and left_visible:
+            shrink = min(deficit, max(0, left - self.COMPACT_LEFT_PANEL_WIDTH))
+            left -= shrink
+            deficit -= shrink
+        if deficit > 0 and left_visible and right_visible:
+            left_visible = False
+            left = self._collapsed_panel_width
+            deficit = max(0, min_center - (total - left - right - 24))
+        if deficit > 0 and right_visible:
+            shrink_floor = preferred_right if not left_visible else self.COMPACT_RIGHT_PANEL_WIDTH
+            shrink = min(deficit, max(0, right - shrink_floor))
+            right -= shrink
+            deficit -= shrink
+        if deficit > 0 and right_visible and left_visible:
+            right_visible = False
+            right = 0
+        elif deficit > 0 and left_visible:
+            left_visible = False
+            left = self._collapsed_panel_width
+
+        self._left_panel_visible = left_visible
+        self._right_panel_visible = right_visible
+        self._left_panel_width = max(self.COMPACT_LEFT_PANEL_WIDTH, left) if left_visible else self._left_panel_width
+        self._right_panel_width = max(self.COMPACT_RIGHT_PANEL_WIDTH, right) if right_visible else self._right_panel_width
+        self._left_panel_toggle_btn.blockSignals(True)
+        self._left_panel_toggle_btn.setChecked(left_visible)
+        self._left_panel_toggle_btn.blockSignals(False)
+        self._right_panel_toggle_btn.blockSignals(True)
+        self._right_panel_toggle_btn.setChecked(right_visible)
+        self._right_panel_toggle_btn.blockSignals(False)
+
+        if left_visible:
             self._left_scope_label.setVisible(False)
             self._scope_selector_combo.setVisible(True)
             self._left_sidebar_top_row.setVisible(True)
             self._left_sidebar_actions_row.setVisible(True)
             self._create_math_signal_btn.setVisible(True)
             self._stacked_signal_list.setVisible(True)
-            self._stacked_sidebar.setMinimumWidth(208)
-            self._stacked_sidebar.setMaximumWidth(380)
+            self._stacked_sidebar.setMinimumWidth(self.COMPACT_LEFT_PANEL_WIDTH)
+            self._stacked_sidebar.setMaximumWidth(self.MAX_LEFT_PANEL_WIDTH)
             self._left_panel_toggle_btn.setToolTip(
                 self._compose_scope_action_tooltip(
                     "Collapse Signals Panel",
@@ -6200,7 +6482,6 @@ class ScopeWindow(QWidget):
                 self._sidebar_tabs.setVisible(True)
             if hasattr(self, "_collapsed_rail"):
                 self._collapsed_rail.setVisible(False)
-            left = self._left_panel_width
         else:
             self._left_scope_label.setVisible(False)
             self._scope_selector_combo.setVisible(False)
@@ -6221,12 +6502,11 @@ class ScopeWindow(QWidget):
                 self._sidebar_tabs.setVisible(False)
             if hasattr(self, "_collapsed_rail"):
                 self._collapsed_rail.setVisible(True)
-            left = self._collapsed_panel_width
 
-        if self._right_panel_visible:
+        if right_visible:
             self._right_header_label.setVisible(True)
-            self._stacked_right_panel.setMinimumWidth(220)
-            self._stacked_right_panel.setMaximumWidth(420)
+            self._stacked_right_panel.setMinimumWidth(self.COMPACT_RIGHT_PANEL_WIDTH)
+            self._stacked_right_panel.setMaximumWidth(self.MAX_RIGHT_PANEL_WIDTH)
             self._stacked_right_panel.setVisible(True)
             self._right_panel_toggle_btn.setToolTip(
                 self._compose_scope_action_tooltip(
@@ -6235,7 +6515,6 @@ class ScopeWindow(QWidget):
                     "Ctrl+I",
                 )
             )
-            right = self._right_panel_width
         else:
             self._stacked_right_panel.setMinimumWidth(0)
             self._stacked_right_panel.setMaximumWidth(0)
@@ -6247,9 +6526,7 @@ class ScopeWindow(QWidget):
                     "Ctrl+I",
                 )
             )
-            right = 0
 
-        total = max(self.width(), 1200)
         center = max(500, total - left - right - 24)
         target_sizes = [left, center, right]
         self._start_panel_animation(target_sizes)
@@ -6257,21 +6534,11 @@ class ScopeWindow(QWidget):
         self._sync_toolbar_toggles()
 
     def _start_panel_animation(self, target_sizes: list[int]) -> None:
-        """Animate splitter from current sizes to target sizes over ~150ms."""
+        """Apply splitter sizes directly for deterministic panel open/close behavior."""
         if self._panel_anim_timer is not None:
             self._panel_anim_timer.stop()
             self._panel_anim_timer = None
-        current = self._stacked_splitter.sizes()
-        if len(current) != 3 or current == target_sizes:
-            self._stacked_splitter.setSizes(target_sizes)
-            return
-        self._panel_anim_target = list(target_sizes)
-        self._panel_anim_start = list(current)
-        self._panel_anim_current_step = 0
-        self._panel_anim_timer = QTimer(self)
-        self._panel_anim_timer.setInterval(max(1, 150 // self._panel_anim_steps))
-        self._panel_anim_timer.timeout.connect(self._panel_anim_step)
-        self._panel_anim_timer.start()
+        self._stacked_splitter.setSizes(target_sizes)
 
     def _panel_anim_step(self) -> None:
         """Advance one animation step."""
@@ -6905,6 +7172,8 @@ class ScopeWindow(QWidget):
             name: self._signal_units.get(name) or self._infer_signal_unit(name, result)
             for name in valid_signals
         }
+        if not self._plot_composition_overridden:
+            self._apply_automatic_plot_composition()
         self._sync_plot_groups()
         self._rebuild_stacked_statistics_cache()
 
@@ -7415,8 +7684,8 @@ class ScopeWindow(QWidget):
             header_widget = QWidget()
             header_widget.setObjectName("scopePlotHeaderBar")
             header_layout = QHBoxLayout(header_widget)
-            header_layout.setContentsMargins(10, 7, 10, 7)
-            header_layout.setSpacing(8)
+            header_layout.setContentsMargins(8, 4, 8, 4)
+            header_layout.setSpacing(6)
 
             color_chip = QLabel()
             color_chip.setObjectName("scopePlotHeaderChip")
@@ -7429,12 +7698,12 @@ class ScopeWindow(QWidget):
             title_stack = QWidget()
             title_stack_layout = QVBoxLayout(title_stack)
             title_stack_layout.setContentsMargins(0, 0, 0, 0)
-            title_stack_layout.setSpacing(1)
+            title_stack_layout.setSpacing(0)
 
             title_row = QWidget()
             title_row_layout = QHBoxLayout(title_row)
             title_row_layout.setContentsMargins(0, 0, 0, 0)
-            title_row_layout.setSpacing(6)
+            title_row_layout.setSpacing(4)
 
             title_label = QLabel(self._display_signal_name(primary_signal_name))
             title_label.setObjectName("scopePlotHeaderTitle")
@@ -7490,9 +7759,9 @@ class ScopeWindow(QWidget):
                     context_handler=self._show_plot_context_menu,
                 )
             )
-            plot.setMinimumHeight(220)
+            plot.setMinimumHeight(280)
             plot.getPlotItem().hideButtons()
-            grid_alpha = 0.23
+            grid_alpha = float(self._scope_plot_palette().get("grid_alpha", "0.23"))
             if not self._stacked_grid_enabled:
                 grid_alpha = 0.0
             plot.showGrid(x=self._stacked_grid_enabled, y=self._stacked_grid_enabled, alpha=grid_alpha)
@@ -7653,7 +7922,7 @@ class ScopeWindow(QWidget):
             plot.showGrid(
                 x=self._stacked_grid_enabled,
                 y=self._stacked_grid_enabled,
-                alpha=0.23,
+                alpha=grid_alpha,
             )
             copy_plot_btn.setIcon(IconService.get_icon("copy-filled", shell["plot_copy_text"], 13))
             copy_plot_btn.setIconSize(QSize(13, 13))
@@ -7662,21 +7931,21 @@ class ScopeWindow(QWidget):
             header_border = plot_colors["header_active_border"] if is_active else plot_colors["header_inactive_border"]
             title_weight = "700" if is_active else "600"
             title_label.setStyleSheet(
-                f"color: {hex_color}; font-weight: {title_weight}; font-size: 12px;"
+                f"color: {hex_color}; font-weight: {title_weight}; font-size: 11px;"
             )
             subtitle_label.setStyleSheet(
-                f"color: {shell['muted']}; font-size: 9px; font-weight: 600; letter-spacing: 0.2px;"
+                f"color: {shell['muted']}; font-size: 8px; font-weight: 600; letter-spacing: 0.2px;"
             )
             if len(group_signal_names) > 1:
                 overlay_badge.setStyleSheet(
-                    f"color: {shell['text']}; font-size: 9px; font-weight: 700; "
+                    f"color: {shell['text']}; font-size: 8px; font-weight: 700; "
                     f"background-color: rgba({r}, {g}, {b}, 0.22); border: 1px solid rgba({r}, {g}, {b}, 0.34); "
-                    "border-radius: 8px; padding: 1px 6px;"
+                    "border-radius: 8px; padding: 1px 5px;"
                 )
             if sig_stats:
                 stats_lbl.setStyleSheet(
-                    f"color: {plot_colors['header_stats_text']}; font-size: 9px; font-family: monospace; font-weight: 600; "
-                    f"background-color: {plot_colors['header_stats_bg']}; border-radius: 8px; padding: 2px 6px;"
+                    f"color: {plot_colors['header_stats_text']}; font-size: 8px; font-family: monospace; font-weight: 600; "
+                    f"background-color: {plot_colors['header_stats_bg']}; border-radius: 8px; padding: 2px 5px;"
                 )
             panel.setStyleSheet(
                 f"""
@@ -7749,6 +8018,7 @@ class ScopeWindow(QWidget):
 
     def _build_plot_context_menu(self, group_leader: str) -> QMenu:
         """Build a scope-aware context menu for one plot pane."""
+        group_leader = self._plot_group_leader(group_leader)
         menu = QMenu(self)
         self._style_scope_menu(menu)
         group_signals = self._plot_group_signal_names(group_leader)
@@ -7795,6 +8065,7 @@ class ScopeWindow(QWidget):
 
     def _apply_plot_context_action(self, group_leader: str, action_key: str) -> None:
         """Apply one context-menu action to a plot group."""
+        group_leader = self._plot_group_leader(group_leader)
         if action_key in {"fit", "reset_zoom"}:
             self._on_autoscale_clicked()
             return
@@ -7812,15 +8083,19 @@ class ScopeWindow(QWidget):
             self._copy_plot_to_clipboard(self._plot_widgets_by_group.get(group_leader))
             return
         if action_key == "split_plot":
-            for signal_name in self._plot_group_signal_names(group_leader):
-                self._set_signal_plot_group(signal_name, signal_name)
+            group_signals = self._plot_group_signal_names(group_leader)
+            if not group_signals:
+                return
+            for signal_name in group_signals:
+                self._stacked_plot_groups[signal_name] = signal_name
+            self._plot_composition_overridden = True
+            self._sync_plot_groups()
             self._rebuild_stacked_plots(self._current_result)
             return
         if action_key == "overlay_active":
             active_signal = self._stacked_active_signal if self._stacked_active_signal in self._stacked_signals else ""
             if active_signal:
                 self._set_signal_plot_group(active_signal, group_leader)
-                self._rebuild_stacked_plots(self._current_result)
 
     def _show_plot_context_menu(self, group_leader: str, global_pos: object) -> None:
         """Show the context menu for one plot group."""

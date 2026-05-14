@@ -138,6 +138,12 @@ class MainWindow(QMainWindow):
         self._restore_state()
         self._apply_theme()
         self._setup_autosave_timer()
+        # Wave-2: rich welcome overlay replaces the legacy text-only
+        # empty-state surface. Must come after _create_dock_widgets so
+        # the schematic view exists.
+        self._welcome_overlay = None
+        self._install_welcome_overlay()
+        self._update_schematic_empty_state()
 
     def _setup_window(self) -> None:
         """Configure main window properties."""
@@ -263,6 +269,15 @@ class MainWindow(QMainWindow):
 
         self.action_export_csv = QAction("Export Waveforms as &CSV...", self)
         self.action_export_csv.triggered.connect(self._on_export_csv)
+
+        # Wave-2 — quick paste-into-doc clipboard action.
+        self.action_copy_schematic = QAction("Copy Schematic as &Image", self)
+        self.action_copy_schematic.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.action_copy_schematic.setToolTip(
+            "Copy a PNG render of the schematic to the system clipboard"
+            " (⌘⇧C / Ctrl+Shift+C)"
+        )
+        self.action_copy_schematic.triggered.connect(self._on_copy_schematic_to_clipboard)
 
         self.action_close = QAction("&Close Project", self)
         self.action_close.setShortcut(QKeySequence("Ctrl+W"))
@@ -476,6 +491,8 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_select_all)
         edit_menu.addAction(self.action_rename_signal)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_copy_schematic)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_create_subcircuit)
         edit_menu.addSeparator()
@@ -2088,6 +2105,119 @@ class MainWindow(QMainWindow):
         circuit = self._current_circuit()
         is_empty = not circuit.components and not circuit.wires
         view.set_empty_state_visible(is_empty)
+        if is_empty:
+            self._refresh_welcome_recent_paths()
+
+    # ------------------------------------------------------------------
+    # Wave-2 — Welcome overlay
+    # ------------------------------------------------------------------
+
+    def _install_welcome_overlay(self) -> None:
+        """Attach the four-card welcome surface to the schematic view."""
+        view = getattr(self, "_schematic_view", None)
+        if view is None or not hasattr(view, "set_welcome_overlay"):
+            return
+        try:
+            from pulsimgui.views.widgets.welcome_overlay import WelcomeOverlay
+        except Exception:  # pragma: no cover - missing module shouldn't crash
+            return
+        overlay = WelcomeOverlay(view.viewport())
+        overlay.new_project_requested.connect(self._on_welcome_new_project)
+        overlay.open_project_requested.connect(self._on_welcome_open_project)
+        overlay.recent_project_requested.connect(self._on_welcome_recent_project)
+        overlay.template_requested.connect(self._on_welcome_template)
+        # Apply current theme palette.
+        try:
+            theme = self._theme_service.current_theme
+            c = theme.colors
+            overlay.apply_palette(
+                foreground=c.foreground,
+                foreground_muted=c.foreground_muted,
+                surface=c.panel_background,
+                surface_muted=c.panel_background,
+                border=c.panel_border,
+            )
+        except Exception:
+            pass
+        view.set_welcome_overlay(overlay)
+        self._welcome_overlay = overlay
+        self._refresh_welcome_recent_paths()
+
+    def _refresh_welcome_recent_paths(self) -> None:
+        overlay = getattr(self, "_welcome_overlay", None)
+        if overlay is None:
+            return
+        try:
+            recent = list(self._settings.get_recent_projects())[:5]
+        except Exception:
+            recent = []
+        overlay.set_recent_paths(recent)
+
+    def _on_welcome_new_project(self) -> None:
+        self._on_new_project()
+
+    def _on_welcome_open_project(self) -> None:
+        self._on_open()
+
+    def _on_welcome_recent_project(self, path: str) -> None:
+        if not path:
+            return
+        # If the file disappeared since we cached it, drop it from the
+        # recent list and notify the user.
+        try:
+            from pathlib import Path
+            if not Path(path).is_file():
+                self._settings.remove_recent_project(path)
+                self._update_recent_menu()
+                self._refresh_welcome_recent_paths()
+                self.statusBar().showMessage(
+                    f"File not found: {path} — removed from recent list", 5000
+                )
+                return
+        except Exception:
+            pass
+        self._open_project_file(path)
+
+    def _on_welcome_template(self) -> None:
+        """Open the gallery picker so the user can pick a template."""
+        try:
+            from PySide6.QtWidgets import QFileDialog
+        except Exception:
+            return
+        import os
+        import sys
+        # Look up the bundled gallery dir; in dev mode this is
+        # repo/examples/gallery, in PyInstaller bundles it's next to the
+        # frozen executable.
+        candidates = []
+        try:
+            from pulsimgui import __file__ as pkg_init
+            from pathlib import Path
+            pkg_root = Path(pkg_init).resolve().parent
+            candidates.append(pkg_root / "../../examples/gallery")
+            candidates.append(pkg_root / "examples/gallery")
+        except Exception:
+            pass
+        if getattr(sys, "frozen", False):  # PyInstaller bundle
+            from pathlib import Path
+            candidates.append(Path(sys.executable).resolve().parent / "examples" / "gallery")
+        gallery_dir = None
+        for cand in candidates:
+            try:
+                if cand.is_dir():
+                    gallery_dir = str(cand.resolve())
+                    break
+            except Exception:
+                continue
+        start_dir = gallery_dir or os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open template",
+            start_dir,
+            "Pulsim Projects (*.pulsim);;All Files (*)",
+        )
+        if path:
+            self._open_project_file(path)
 
     def _on_about(self) -> None:
         """Show about dialog."""
@@ -3874,6 +4004,41 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Exported schematic: {path}", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", f"Failed to export PNG:\n{e}")
+
+    def _on_copy_schematic_to_clipboard(self) -> None:
+        """Wave-2: render the current schematic and place it on the clipboard.
+
+        Uses the same renderer as the PNG export path so the bytes the
+        user pastes into a document match what they'd see saved as a
+        file. No file is written; the QImage flows straight to the
+        system clipboard as both image data and (where supported) a
+        PNG-encoded mime payload.
+        """
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+            from PySide6.QtCore import QMimeData
+            image = ExportService.render_schematic_image(
+                self._schematic_scene, scale=2.0, padding=32,
+            )
+            clipboard = QApplication.clipboard()
+            mime = QMimeData()
+            mime.setImageData(image)
+            # Also attach PNG bytes for apps that prefer mime image/png.
+            buf = QByteArray()
+            qbuf = QBuffer(buf)
+            qbuf.open(QIODevice.OpenModeFlag.WriteOnly)
+            image.save(qbuf, "PNG")
+            qbuf.close()
+            mime.setData("image/png", buf)
+            clipboard.setMimeData(mime)
+            self.statusBar().showMessage(
+                "Schematic image copied to clipboard", 3000
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Copy Error", f"Failed to copy schematic image:\n{exc}"
+            )
 
     def _on_export_svg(self) -> None:
         """Export schematic to SVG image."""
