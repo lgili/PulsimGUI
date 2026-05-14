@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QComboBox
 
 from pulsimgui.models.component import ComponentType
-from pulsimgui.services.theme_service import BUILTIN_THEMES, DARK_THEME, LIGHT_THEME
+from pulsimgui.services.theme_service import DARK_THEME, LIGHT_THEME
 from pulsimgui.views.scope.scope_window import MathSignalDialog, ScopeWindow
 
 
@@ -38,13 +39,16 @@ def test_scope_shell_palette_differs_between_light_and_dark(qapp) -> None:
         window.close()
 
 
-def test_scope_plot_palette_returns_theme_plot_background(qapp) -> None:
-    """_scope_plot_palette() must carry the active theme's plot_background token."""
+def test_scope_plot_palette_keeps_dark_analysis_surface_in_light_theme(qapp) -> None:
+    """The plot palette should remain analysis-focused even under the light shell theme."""
     window = ScopeWindow("tsp-plot-tok", "Test", ComponentType.ELECTRICAL_SCOPE)
     try:
-        for theme in BUILTIN_THEMES.values():
-            tokens = window._scope_plot_palette(theme)
-            assert tokens["plot_bg"] == theme.colors.plot_background
+        light_tokens = window._scope_plot_palette(LIGHT_THEME)
+        dark_tokens = window._scope_plot_palette(DARK_THEME)
+
+        assert light_tokens["plot_bg"] != LIGHT_THEME.colors.plot_background
+        assert dark_tokens["plot_bg"] == DARK_THEME.colors.plot_background
+        assert QColor(light_tokens["plot_bg"]).lightness() < QColor(LIGHT_THEME.colors.background).lightness()
     finally:
         window.close()
 

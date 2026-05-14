@@ -690,12 +690,12 @@ class SignalRowWidget(QFrame):
         self._axis_badge = "L"
         self._syncing = False
         self.setObjectName("SignalListRowCard")
-        self.setMinimumHeight(26)
+        self.setMinimumHeight(22)
         self.setToolTip(signal_name)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(7, 2, 7, 2)
+        layout.setSpacing(6)
 
         self._toggle = QCheckBox()
         self._toggle.setObjectName("signalRowToggle")
@@ -720,7 +720,7 @@ class SignalRowWidget(QFrame):
         self._axis_button.setText(self._axis_badge)
         self._axis_button.setAutoRaise(True)
         self._axis_button.setToolTip("Cycle axis target")
-        self._axis_button.setFixedWidth(24)
+        self._axis_button.setFixedWidth(22)
         self._axis_button.clicked.connect(self._on_axis_badge_clicked)
         layout.addWidget(self._axis_button, stretch=0)
 
@@ -791,11 +791,11 @@ class GroupHeaderWidget(QFrame):
         self._collapse_icon_color = LIGHT_THEME.colors.foreground_muted
         self._visible_icon_color = LIGHT_THEME.colors.foreground_muted
         self.setObjectName("SignalListGroupCard")
-        self.setMinimumHeight(34)
+        self.setMinimumHeight(28)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(7, 4, 7, 4)
+        layout.setSpacing(6)
 
         self._collapse_btn = QToolButton()
         self._collapse_btn.setObjectName("signalGroupCollapseBtn")
@@ -1295,12 +1295,12 @@ class SignalListPanel(QFrame):
             }}
             QLabel#signalGroupTitle {{
                 color: {shell["text"]};
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 700;
             }}
             QLabel#signalGroupMeta {{
                 color: {shell["muted"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QToolButton#signalGroupCollapseBtn,
@@ -1319,17 +1319,17 @@ class SignalListPanel(QFrame):
             }}
             QLabel#signalRowLabel {{
                 color: {shell["text"]};
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 600;
             }}
             QToolButton#signalRowAxisBadge {{
                 color: {shell["muted"]};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 700;
                 background-color: {shell["field_bg"]};
                 border: 1px solid {shell["border_soft"]};
                 border-radius: 7px;
-                padding: 1px 6px;
+                padding: 1px 5px;
             }}
             QToolButton#signalRowAxisBadge:hover {{
                 color: {shell["text"]};
@@ -1339,8 +1339,8 @@ class SignalListPanel(QFrame):
                 spacing: 0px;
             }}
             QCheckBox#signalRowToggle::indicator {{
-                width: 28px;
-                height: 15px;
+                width: 24px;
+                height: 13px;
                 border-radius: 7px;
                 background-color: {shell["sidebar_toggle_off_bg"]};
                 border: 1px solid {shell["sidebar_toggle_off_border"]};
@@ -1358,7 +1358,7 @@ class SignalListPanel(QFrame):
                 padding: 2px 0px;
             }}
             QListWidget::item {{
-                padding: 6px 8px;
+                padding: 4px 6px;
                 border-radius: 8px;
                 margin: 1px 0px;
                 color: {shell["text"]};
@@ -1375,8 +1375,8 @@ class SignalListPanel(QFrame):
                 color: {shell["text"]};
                 border: 1px solid {shell["border_soft"]};
                 border-radius: 8px;
-                padding: 5px 9px;
-                font-size: 10px;
+                padding: 4px 8px;
+                font-size: 9px;
             }}
             QLineEdit#signalFilterEdit:focus {{
                 border-color: {shell["accent"]};
@@ -1416,12 +1416,12 @@ class SignalListPanel(QFrame):
             }}
             QLabel#signalGroupTitle {{
                 color: {c.foreground};
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 700;
             }}
             QLabel#signalGroupMeta {{
                 color: {c.foreground_muted};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 600;
             }}
             QToolButton#signalGroupCollapseBtn,
@@ -1440,25 +1440,25 @@ class SignalListPanel(QFrame):
             }}
             QLabel#signalRowLabel {{
                 color: {c.foreground};
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 600;
             }}
             QToolButton#signalRowAxisBadge {{
                 color: {c.foreground_muted};
-                font-size: 9px;
+                font-size: 8px;
                 font-weight: 700;
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 7px;
-                padding: 1px 6px;
+                padding: 1px 5px;
             }}
             QToolButton#signalRowAxisBadge:hover {{
                 color: {c.foreground};
                 border-color: {c.input_focus_border};
             }}
             QCheckBox#signalRowToggle::indicator {{
-                width: 28px;
-                height: 15px;
+                width: 24px;
+                height: 13px;
                 border-radius: 7px;
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};

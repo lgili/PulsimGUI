@@ -20,6 +20,16 @@ def _sample_result(signal_count: int = 3, sample_count: int = 24) -> SimulationR
     return SimulationResult(time=time, signals=signals, statistics={})
 
 
+def _mixed_scale_result(sample_count: int = 128) -> SimulationResult:
+    time = [idx * 1e-5 for idx in range(sample_count)]
+    signals = {
+        "Vsw": [12.0 if (idx % 2 == 0) else 0.0 for idx in range(sample_count)],
+        "Vout": [1.2 + 0.6 * (idx / sample_count) for idx in range(sample_count)],
+        "IL": [0.4 + 0.15 * ((idx % 10) / 10.0) for idx in range(sample_count)],
+    }
+    return SimulationResult(time=time, signals=signals, statistics={})
+
+
 def test_scope_can_overlay_signals_on_same_plot(qapp) -> None:
     """Assigning a signal to another signal's group should reduce plot count."""
     window = ScopeWindow("scope-group-1", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
@@ -134,6 +144,39 @@ def test_scope_can_render_right_axis_for_overlay_group(qapp) -> None:
         assert len(window._plot_widgets) == 1
         assert len(window._plot_right_view_boxes) == 1
         assert window._plot_widgets[0].getPlotItem().getAxis("right").isVisible()
+    finally:
+        window.close()
+
+
+def test_scope_auto_separates_mixed_scale_or_unit_traces(qapp) -> None:
+    """Default composition should avoid overlaying traces that are hard to read together."""
+    window = ScopeWindow("scope-group-auto-separate", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _mixed_scale_result()
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._rebuild_stacked_plots(result)
+
+        leaders = {name: window._plot_group_leader(name) for name in result.signals}
+        assert leaders["IL"] == "IL"
+        assert len(set(leaders.values())) >= 2
+    finally:
+        window.close()
+
+
+def test_manual_plot_group_override_survives_refresh_after_auto_composition(qapp) -> None:
+    """User plot reassignment should not be undone by later sidebar refreshes."""
+    window = ScopeWindow("scope-group-manual-preserve", "Group Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        result = _mixed_scale_result()
+        window._current_result = result
+        window._refresh_stacked_sidebar(result)
+        window._set_signal_plot_group("Vout", "Vsw")
+
+        window._refresh_stacked_sidebar(result)
+
+        assert window._plot_group_leader("Vout") == "Vsw"
+        assert window._plot_composition_overridden is True
     finally:
         window.close()
 

@@ -225,6 +225,90 @@ def test_bottom_quick_metrics_hide_when_drawer_is_expanded(qapp) -> None:
         window.close()
 
 
+def test_scope_adapts_auxiliary_panels_before_starving_plot(qapp) -> None:
+    """When space is constrained, the scope should compact/collapse chrome before crushing the plot."""
+    window = ScopeWindow("mst-collapse-adaptive-budget", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        window.resize(1200, 820)
+        window._on_toggle_left_panel_clicked(True)
+        window._on_toggle_right_panel_clicked(True)
+        window._on_bottom_drawer_toggled(True)
+        qapp.processEvents()
+
+        assert not (window._left_panel_visible and window._right_panel_visible)
+        if window._bottom_drawer_expanded:
+            assert window._bottom_drawer_height <= 136
+    finally:
+        window.close()
+
+
+def test_expanding_left_panel_restores_useful_content_width(qapp) -> None:
+    """Opening the left sidebar should restore a width that can show its content cleanly."""
+    window = ScopeWindow("mst-collapse-left-width", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        window.resize(1600, 980)
+        window._on_toggle_left_panel_clicked(True)
+        qapp.processEvents()
+
+        assert window._left_panel_visible is True
+        assert window._left_panel_width >= window._preferred_left_panel_width()
+    finally:
+        window.close()
+
+
+def test_expanding_right_panel_restores_useful_content_width(qapp) -> None:
+    """Opening the inspector should restore a width that avoids clipping compact forms."""
+    window = ScopeWindow("mst-collapse-right-width", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        window.resize(1600, 980)
+        window._on_toggle_right_panel_clicked(True)
+        qapp.processEvents()
+
+        assert window._right_panel_visible is True
+        assert window._right_panel_width >= window._preferred_right_panel_width()
+    finally:
+        window.close()
+
+
+def test_right_panel_keeps_useful_width_before_left_panel_starves_it(qapp) -> None:
+    """At intermediate widths, the inspector should stay readable and the left sidebar should yield first."""
+    window = ScopeWindow("mst-collapse-right-priority", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        window.resize(1366, 920)
+        window._on_toggle_left_panel_clicked(True)
+        window._on_toggle_right_panel_clicked(True)
+        qapp.processEvents()
+
+        assert window._right_panel_visible is True
+        assert window._right_panel_width >= window._preferred_right_panel_width()
+        assert (not window._left_panel_visible) or window._left_panel_width <= window.COMPACT_LEFT_PANEL_WIDTH
+    finally:
+        window.close()
+
+
+def test_reset_layout_restores_waveform_first_defaults(qapp) -> None:
+    """Reset Layout should collapse auxiliary surfaces and restore waveform-first defaults."""
+    window = ScopeWindow("mst-collapse-reset-layout", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
+    try:
+        window._on_toggle_left_panel_clicked(True)
+        window._on_toggle_right_panel_clicked(True)
+        window._on_bottom_drawer_toggled(True)
+        window._left_panel_width = 312
+        window._right_panel_width = 276
+        window._on_bottom_drawer_resize_requested(40)
+
+        window._reset_scope_layout()
+
+        assert window._left_panel_visible is False
+        assert window._right_panel_visible is False
+        assert window._bottom_drawer_expanded is False
+        assert window._left_panel_width == window.DEFAULT_LEFT_PANEL_WIDTH
+        assert window._right_panel_width == window.DEFAULT_RIGHT_PANEL_WIDTH
+        assert window._bottom_drawer_height == window.DEFAULT_BOTTOM_DRAWER_HEIGHT
+    finally:
+        window.close()
+
+
 def test_toggle_button_collapses_sidebar(qapp) -> None:
     """Clicking the toggle button once hides tabs and shows the compact rail."""
     window = ScopeWindow("mst-collapse-2", "Modern Scope", ComponentType.ELECTRICAL_SCOPE)
