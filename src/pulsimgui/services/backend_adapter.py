@@ -24,6 +24,8 @@ from pulsimgui.services.backend_types import (
     ACResult,
     ACSettings,
     BackendVersion,
+    C99CodegenResult,
+    C99CodegenSettings,
     ConvergenceInfo,
     DCResult,
     DCSettings,
@@ -273,6 +275,25 @@ class SimulationBackend(Protocol):
 
         Raises:
             NotImplementedError: backend does not support FMU export.
+        """
+        ...
+
+    def export_c99(
+        self,
+        circuit_data: dict,
+        settings: C99CodegenSettings,
+    ) -> C99CodegenResult:
+        """Generate deployable C99 controller code from the active circuit.
+
+        Args:
+            circuit_data: Serialised circuit definition.
+            settings: C99 codegen configuration.
+
+        Returns:
+            C99CodegenResult describing the produced files + matrices.
+
+        Raises:
+            NotImplementedError: backend does not support codegen.
         """
         ...
 
@@ -605,6 +626,16 @@ class PlaceholderBackend(SimulationBackend):
             "runtime (pip install pulsim) to enable this feature."
         )
 
+    def export_c99(
+        self,
+        circuit_data: dict,
+        settings: C99CodegenSettings,
+    ) -> C99CodegenResult:  # pragma: no cover - placeholder path
+        raise NotImplementedError(
+            "C99 codegen is not available in demo mode — install the Pulsim "
+            "runtime (pip install pulsim) to enable this feature."
+        )
+
     def run_frequency_analysis(
         self,
         circuit_data: dict,
@@ -690,6 +721,11 @@ class PulsimBackend(SimulationBackend):
         fmu_mod = getattr(self._module, "fmu", None)
         if fmu_mod is not None and hasattr(fmu_mod, "export"):
             caps.add("fmu_export")
+
+        # C99 controller codegen (pulsim >= 0.8.0).
+        codegen_mod = getattr(self._module, "codegen", None)
+        if codegen_mod is not None and hasattr(codegen_mod, "generate"):
+            caps.add("c99_codegen")
 
         self._cached_capabilities = caps
         return caps
@@ -4882,6 +4918,54 @@ class PulsimBackend(SimulationBackend):
             inputs=tuple(getattr(summary, "inputs", ()) or ()),
             outputs=tuple(getattr(summary, "outputs", ()) or ()),
             files_in_archive=tuple(getattr(summary, "files_in_archive", ()) or ()),
+        )
+
+    def export_c99(
+        self,
+        circuit_data: dict,
+        settings: C99CodegenSettings,
+    ) -> C99CodegenResult:
+        """Generate deployable C99 controller code via ``pulsim.codegen.generate``.
+
+        The Pulsim runtime today only ships the ``c99`` target; the dialog
+        is structured to accept others in the future so the GUI's
+        ``settings.target`` value is forwarded verbatim.
+        """
+        if not self.has_capability("c99_codegen"):
+            raise NotImplementedError(
+                "This backend version does not expose C99 codegen. Upgrade "
+                "to pulsim>=0.8.0."
+            )
+
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            raise RuntimeError(f"Circuit conversion failed: {exc}") from exc
+
+        generate_fn = self._module.codegen.generate
+
+        kwargs: dict[str, Any] = {
+            "dt": float(settings.dt),
+            "out_dir": str(settings.out_dir),
+            "target": str(settings.target or "c99"),
+            "t_op": float(settings.t_op),
+        }
+
+        try:
+            summary = generate_fn(circuit, **kwargs)
+        except Exception as exc:  # pragma: no cover - backend-side failure
+            raise RuntimeError(f"C99 codegen failed: {exc}") from exc
+
+        return C99CodegenResult(
+            out_dir=str(getattr(summary, "out_dir", settings.out_dir)),
+            target=str(getattr(summary, "target", settings.target)),
+            state_size=int(getattr(summary, "state_size", 0) or 0),
+            input_size=int(getattr(summary, "input_size", 0) or 0),
+            output_size=int(getattr(summary, "output_size", 0) or 0),
+            stability_radius=float(getattr(summary, "stability_radius", 0.0) or 0.0),
+            rom_estimate_bytes=int(getattr(summary, "rom_estimate_bytes", 0) or 0),
+            ram_estimate_bytes=int(getattr(summary, "ram_estimate_bytes", 0) or 0),
+            files_written=tuple(getattr(summary, "files_written", ()) or ()),
         )
 
     def _make_frequency_port(self, positive_node: str, negative_node: str) -> Any:

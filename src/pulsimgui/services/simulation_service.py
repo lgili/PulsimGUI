@@ -37,6 +37,12 @@ from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
 from pulsimgui.services.backend_types import (
+    C99CodegenResult as BackendC99CodegenResult,
+)
+from pulsimgui.services.backend_types import (
+    C99CodegenSettings,
+)
+from pulsimgui.services.backend_types import (
     FmuExportResult as BackendFmuExportResult,
 )
 from pulsimgui.services.backend_types import (
@@ -2696,6 +2702,26 @@ class SimulationService(QObject):
 
         circuit_data = self.convert_gui_circuit(project)
         return self._backend.export_fmu(circuit_data, settings)
+
+    def export_c99(
+        self,
+        project,
+        settings: C99CodegenSettings,
+    ) -> BackendC99CodegenResult:
+        """Generate deployable C99 controller code for the active project.
+
+        Synchronous wrapper around :py:meth:`SimulationBackend.export_c99`.
+
+        Raises:
+            NotImplementedError: backend does not support C99 codegen.
+            RuntimeError: backend reported a circuit conversion or
+                codegen failure.
+        """
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.export_c99(circuit_data, settings)
 
     def convert_gui_circuit_cached(self, project) -> dict:
         """Convert GUI circuit using cache-optimized worker semantics.

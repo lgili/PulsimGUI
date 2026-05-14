@@ -277,6 +277,13 @@ class MainWindow(QMainWindow):
         )
         self.action_export_fmu.triggered.connect(self._on_export_fmu)
 
+        # Wave-4 sub-wave A — C99 real-time controller codegen.
+        self.action_export_c99 = QAction("Export C99 &Controller…", self)
+        self.action_export_c99.setToolTip(
+            "Generate deployable C99 controller source for the current circuit"
+        )
+        self.action_export_c99.triggered.connect(self._on_export_c99)
+
         # Wave-2 — quick paste-into-doc clipboard action.
         self.action_copy_schematic = QAction("Copy Schematic as &Image", self)
         self.action_copy_schematic.setShortcut(QKeySequence("Ctrl+Shift+C"))
@@ -485,6 +492,7 @@ class MainWindow(QMainWindow):
         export_menu.addAction(self.action_export_csv)
         export_menu.addSeparator()
         export_menu.addAction(self.action_export_fmu)
+        export_menu.addAction(self.action_export_c99)
         file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
 
@@ -4136,4 +4144,40 @@ class MainWindow(QMainWindow):
         if result is not None:
             self.statusBar().showMessage(
                 f"FMU exported: {result.path}", 5000
+            )
+
+    def _on_export_c99(self) -> None:
+        """Generate deployable C99 controller code for the active project.
+
+        Wave-4 sub-wave A: wraps :py:meth:`SimulationService.export_c99`
+        through :class:`C99ExportDialog`.
+        """
+        if self._project is None:
+            QMessageBox.warning(
+                self,
+                "No project",
+                "Open or create a project before generating C99 code.",
+            )
+            return
+
+        if not self._simulation_service.has_capability("c99_codegen"):
+            QMessageBox.warning(
+                self,
+                "C99 codegen unavailable",
+                "The active simulation backend does not support C99 codegen. "
+                "Upgrade Pulsim to 0.8.0 or newer (pip install -U pulsim).",
+            )
+            return
+
+        from pulsimgui.views.dialogs.c99_export_dialog import C99ExportDialog
+
+        dialog = C99ExportDialog(
+            self._simulation_service,
+            self._project,
+            parent=self,
+        )
+        result = dialog.run()
+        if result is not None:
+            self.statusBar().showMessage(
+                f"C99 controller generated in: {result.out_dir}", 5000
             )
