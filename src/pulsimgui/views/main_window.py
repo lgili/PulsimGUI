@@ -455,6 +455,14 @@ class MainWindow(QMainWindow):
         self.action_thermal_viewer = QAction("&Thermal Viewer...", self)
         self.action_thermal_viewer.triggered.connect(self._on_show_thermal_viewer)
 
+        # Wave-4 sub-A 1.4 — loss & efficiency dashboard.
+        self.action_losses_dashboard = QAction("&Losses && Efficiency…", self)
+        self.action_losses_dashboard.setToolTip(
+            "Per-device conduction / switching loss breakdown and "
+            "system efficiency readout (uses the latest thermal result)"
+        )
+        self.action_losses_dashboard.triggered.connect(self._on_show_losses_dashboard)
+
         # Quick add action
         self.action_quick_add = QAction("&Quick Add Component...", self)
         self.action_quick_add.setShortcut(QKeySequence("Ctrl+K"))
@@ -545,6 +553,7 @@ class MainWindow(QMainWindow):
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_parameter_sweep)
         sim_menu.addAction(self.action_thermal_viewer)
+        sim_menu.addAction(self.action_losses_dashboard)
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_sim_settings)
 
@@ -3704,6 +3713,38 @@ class MainWindow(QMainWindow):
             return
 
         dialog = ThermalViewerDialog(result, theme_service=self._theme_service, parent=self)
+        dialog.exec()
+
+    def _on_show_losses_dashboard(self) -> None:
+        """Open the per-device losses & efficiency dashboard.
+
+        Wave-4 sub-A 1.4: reads the loss breakdown from the latest
+        ``ThermalResult`` produced via the existing thermal service.
+        Renders an empty-state when no telemetry is available, so the
+        action is always reachable.
+        """
+        from pulsimgui.views.dialogs.losses_dashboard_dialog import (
+            LossesDashboardDialog,
+        )
+
+        result = None
+        circuit = self._current_circuit()
+        if (
+            circuit is not None
+            and circuit.components
+            and self._simulation_service.last_result is not None
+        ):
+            try:
+                circuit_data = self._simulation_service.convert_gui_circuit(self._project)
+                result = self._thermal_service.build_result(
+                    circuit,
+                    self._simulation_service.last_result,
+                    circuit_data=circuit_data,
+                )
+            except Exception:  # pragma: no cover - defensive
+                result = None
+
+        dialog = LossesDashboardDialog(result, parent=self)
         dialog.exec()
 
     def _on_simulation_state_changed(self, state: SimulationState) -> None:

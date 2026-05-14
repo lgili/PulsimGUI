@@ -41,12 +41,21 @@
       mapping, seed handling, and range/MC mutual exclusivity.
 
 ### 1.4 Losses & efficiency dashboard
-- [ ] 1.4.1 New `LossesTab` widget under the scope workbench (sibling to FFT / Compare).
-- [ ] 1.4.2 Reads `SystemLossSummary` / `LossAccumulator` / `EfficiencyCalculator` from the
-      current simulation result.
-- [ ] 1.4.3 Per-device table: conduction loss / switching loss / total / share %; sortable.
-- [ ] 1.4.4 Stacked bar chart for system-level breakdown; efficiency readout vs. input/output power.
-- [ ] 1.4.5 Tests: tab populates from a synthetic `SystemLossSummary`, hides cleanly when no data.
+- [x] 1.4.1 New `LossesDashboardDialog` reachable from Simulation ▸ Losses & Efficiency…
+      (Promotion to a permanent tab inside the scope workbench is queued as a follow-up;
+      shipping it as a modal dialog first lets us iterate without restructuring the
+      8000-line scope_window.py.)
+- [x] 1.4.2 Reads loss breakdown from the existing `ThermalResult.devices[i].losses`
+      (`LossBreakdown` dataclass already on the GUI side; the runtime already computes
+      this through ThermalService).
+- [x] 1.4.3 Per-device table: conduction / switching / reverse-recovery / total / share %.
+      Sortable by any numeric column. Default sort is total-descending.
+- [ ] 1.4.4 Stacked bar chart for system-level breakdown; efficiency readout vs.
+      input/output power. **Deferred** — `ThermalResult` does not yet carry input/output
+      power telemetry, so the dialog shows a `—` efficiency until that path lands.
+- [x] 1.4.5 Tests: 6 dialog unit tests (empty state when no result, empty state when
+      result has no devices, populates one row per device, share column sums to 1.0,
+      `set_result` repopulates / clears, default sort is total descending).
 
 ### 1.5 Convergence diagnostics deep-dive
 - [ ] 1.5.1 Extend `convergence_diagnostics_dialog.py` with three new sub-views:
