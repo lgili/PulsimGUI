@@ -374,6 +374,8 @@ class SimulationSettingsDialog(QDialog):
             (self._create_dc_card(), "DC Setup"),
             (self._create_thermal_card(), "Thermal & Losses"),
             (self._create_frequency_card(), "Frequency Analysis"),
+            # Wave-4 sub-A 1.6 — advanced solver-stack knobs.
+            (self._create_solver_stack_card(), "Solver Stack"),
         ):
             tab_scroll = QScrollArea()
             tab_scroll.setWidgetResizable(True)
@@ -899,6 +901,94 @@ class SimulationSettingsDialog(QDialog):
         layout.addLayout(form)
         return card
 
+    # ------------------------------------------------------------------
+    # Wave-4 sub-A 1.6 — Solver Stack advanced tab
+    # ------------------------------------------------------------------
+    def _create_solver_stack_card(self) -> QWidget:
+        """Advanced linear / iterative solver + BDF knobs.
+
+        Only the most impactful four configs from the Pulsim solver
+        suite are surfaced here in this commit:
+
+        * ``LinearSolverStackConfig`` → linear solver combobox
+          (auto / KLU / EnhancedSparseLU / GMRES / BiCGSTAB).
+        * ``IterativeSolverConfig`` → max iterations + GMRES restart
+          length for the iterative branches.
+        * ``BDFOrderConfig`` → BDF max-order spinbox.
+
+        The remaining suites (``GminConfig``, ``SourceSteppingConfig``,
+        ``PseudoTransientConfig``, ``InitializationConfig``,
+        ``DCConvergenceConfig``, ``RichardsonLTEConfig``,
+        ``AdvancedTimestepConfig``) are deferred — they need backend
+        plumbing the wave-4 spec marked as optional follow-up.
+        """
+        card, layout = self._create_card(
+            "Solver Stack (Advanced)",
+            "Choose how Pulsim factors and iterates the linear systems.",
+            compact=True,
+            show_header=False,
+        )
+        form = self._create_form_layout()
+        form.setVerticalSpacing(4)
+
+        self._linear_solver_combo = QComboBox()
+        self._linear_solver_combo.addItem("Auto (let Pulsim choose)", "auto")
+        self._linear_solver_combo.addItem("KLU (sparse direct, default)", "klu")
+        self._linear_solver_combo.addItem(
+            "Enhanced Sparse LU (robust)", "enhanced_sparse_lu"
+        )
+        self._linear_solver_combo.addItem(
+            "GMRES (iterative, restarts)", "gmres"
+        )
+        self._linear_solver_combo.addItem(
+            "BiCGSTAB (iterative, no restart)", "bicgstab"
+        )
+        self._linear_solver_combo.setToolTip(
+            "Linear solver back-end. Direct solvers (KLU / EnhancedSparseLU) "
+            "are usually fastest for small/medium circuits; iterative "
+            "solvers help with very large or extremely sparse systems."
+        )
+        form.addRow("Linear solver:", self._linear_solver_combo)
+
+        self._iterative_max_iter_spin = QSpinBox()
+        self._iterative_max_iter_spin.setRange(10, 5000)
+        self._iterative_max_iter_spin.setValue(200)
+        self._iterative_max_iter_spin.setToolTip(
+            "Maximum iterations per linear solve (GMRES / BiCGSTAB)."
+        )
+        form.addRow("Iterative max iter:", self._iterative_max_iter_spin)
+
+        self._iterative_restart_spin = QSpinBox()
+        self._iterative_restart_spin.setRange(5, 500)
+        self._iterative_restart_spin.setValue(30)
+        self._iterative_restart_spin.setToolTip(
+            "GMRES restart length. Ignored by BiCGSTAB and direct solvers."
+        )
+        form.addRow("GMRES restart:", self._iterative_restart_spin)
+
+        self._bdf_max_order_spin = QSpinBox()
+        self._bdf_max_order_spin.setRange(1, 5)
+        self._bdf_max_order_spin.setValue(5)
+        self._bdf_max_order_spin.setToolTip(
+            "Highest BDF order Pulsim is allowed to use. Lower values "
+            "trade accuracy for stability on stiff circuits."
+        )
+        form.addRow("BDF max order:", self._bdf_max_order_spin)
+
+        layout.addLayout(form)
+
+        helper = QLabel(
+            "Note: additional solver suites (Gmin / source stepping / "
+            "pseudo-transient / Richardson LTE / Advanced timestep) are "
+            "queued for a future release. The fields above already feed "
+            "the backend; older Pulsim versions silently ignore unknown "
+            "keys."
+        )
+        helper.setWordWrap(True)
+        helper.setStyleSheet("color: #6b7280; font-size: 11px; font-style: italic;")
+        layout.addWidget(helper)
+        return card
+
     def _create_card(
         self,
         title: str,
@@ -1139,6 +1229,19 @@ class SimulationSettingsDialog(QDialog):
             bool(getattr(source, "direct_formulation_fallback", True))
         )
         self._on_formulation_mode_changed(self._formulation_mode_combo.currentIndex())
+
+        # Wave-4 sub-A 1.6 — advanced solver-stack knobs.
+        linear_stack = str(getattr(source, "linear_solver_stack", "auto") or "auto")
+        linear_idx = self._linear_solver_combo.findData(linear_stack)
+        self._linear_solver_combo.setCurrentIndex(linear_idx if linear_idx >= 0 else 0)
+        self._iterative_max_iter_spin.setValue(
+            int(getattr(source, "iterative_solver_max_iterations", 200))
+        )
+        self._iterative_restart_spin.setValue(
+            int(getattr(source, "iterative_solver_restart", 30))
+        )
+        self._bdf_max_order_spin.setValue(int(getattr(source, "bdf_max_order", 5)))
+
         averaged_options = getattr(source, "averaged_options", None)
         averaged_enabled = isinstance(averaged_options, dict)
         self._averaged_enabled_check.setChecked(averaged_enabled)
@@ -1287,6 +1390,17 @@ class SimulationSettingsDialog(QDialog):
         self._settings.direct_formulation_fallback = (
             self._direct_formulation_fallback_check.isChecked()
         )
+
+        # Wave-4 sub-A 1.6 — persist advanced solver-stack knobs.
+        self._settings.linear_solver_stack = str(
+            self._linear_solver_combo.currentData() or "auto"
+        )
+        self._settings.iterative_solver_max_iterations = int(
+            self._iterative_max_iter_spin.value()
+        )
+        self._settings.iterative_solver_restart = int(self._iterative_restart_spin.value())
+        self._settings.bdf_max_order = int(self._bdf_max_order_spin.value())
+
         if self._averaged_enabled_check.isChecked() and self._averaged_enabled_check.isEnabled():
             self._settings.averaged_options = {
                 "topology": str(self._averaged_topology_combo.currentData() or "buck"),

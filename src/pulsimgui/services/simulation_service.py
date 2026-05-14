@@ -288,6 +288,14 @@ class SimulationSettings:
     control_mode: str = "auto"
     control_sample_time: float = 0.0
 
+    # Wave-4 sub-A 1.6 — Advanced solver stack knobs.
+    # Forwarded to the backend if the runtime accepts them; ignored
+    # silently otherwise so older Pulsim versions keep working.
+    linear_solver_stack: str = "auto"  # auto / klu / enhanced_sparse_lu / gmres / bicgstab
+    iterative_solver_max_iterations: int = 200
+    iterative_solver_restart: int = 30
+    bdf_max_order: int = 5
+
     # Frequency-domain analysis defaults
     ac_f_start: float = 1.0
     ac_f_stop: float = 1e6
