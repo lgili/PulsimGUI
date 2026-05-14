@@ -19,14 +19,21 @@ Wave-4 ships as three sub-waves of increasing risk so each can be tagged and str
 - Simulation ▸ Periodic Steady-State… action + `PeriodicSteadyStateDialog` — wraps `PeriodicSteadyStateOptions/Result`
 - Simulation ▸ Harmonic Balance… action + `HarmonicBalanceDialog` — wraps `HarmonicBalanceOptions/Result`
 
-**Sub-wave C — palette + magnetics (highest risk, needs cross-repo pybind work):**
-- New "Motors & Drives" palette category: PMSM, PMSM with FOC, DC motor, mechanical load (inertia + friction)
-- Three-phase voltage source component (feeds the existing Clarke/Park/PLL/SVM blocks)
-- Saturable transformer + hysteresis inductor variants in the magnetics palette
-- BH-curve editor inside the properties dialog for saturable / hysteresis devices
-- Pulsim-side pybind11 bindings for `motors/{pmsm,pmsm_foc,dc_motor,mechanical}.hpp`, `grid/three_phase_source.hpp`, `magnetic/{saturable_transformer,hysteresis_inductor,bh_curve}.hpp` — released as Pulsim 0.10.0
+**Sub-wave C — REMOVED FROM WAVE-4 (deferred to wave-5):**
+A mid-wave feasibility check on the Pulsim runtime revealed that the C++ classes
+this sub-wave targeted (`grid::three_phase_source`, `motors::{pmsm,pmsm_foc,dc_motor,
+mechanical}`, `magnetic::{saturable_transformer,hysteresis_inductor,bh_curve}`) are
+not yet integrated into the `Circuit` device variant — their own headers flag a
+"Circuit-variant integration follow-up" that hasn't shipped yet. The math objects
+exist (`evaluate()` / `step()` methods) but there is no `Circuit::add_pmsm()` /
+`add_three_phase_source()` / `add_saturable_transformer()` API. Exposing the math
+objects through pybind alone would give users calculator-style classes that cannot
+be wired into a schematic, which is low value relative to the implementation cost.
+A new OpenSpec change is opened on the Pulsim side to track the upstream device-
+integration work; once that lands, a wave-5 GUI change reopens the palette items.
 
-The gRPC remote backend client (item 12 from the audit) is **out of scope** for wave-4; it needs project-wide settings/preferences work and is parked for wave-5.
+The gRPC remote backend client (item 12 from the original audit) was also out of
+scope for wave-4 and remains parked.
 
 ## Impact
 
@@ -40,7 +47,10 @@ The gRPC remote backend client (item 12 from the audit) is **out of scope** for 
   - `src/pulsimgui/views/main_window.py` — File and Simulation menu wiring
   - `src/pulsimgui/models/component.py` + `component_catalog.py` — new ComponentType entries
   - `src/pulsimgui/services/simulation_service.py` — wiring for the new analysis modes
-- **Affected code (Pulsim, sub-wave C only):**
-  - `python/bindings.cpp` — pybind11 entries for the motors / grid / magnetic classes
-  - `python/pulsim/__init__.py` — `__all__` additions and re-exports
-- **Release plan:** sub-wave A → PulsimGui v0.10.0, sub-wave B → v0.11.0, sub-wave C → Pulsim v0.10.0 + PulsimGui v0.12.0.
+- **Affected code (Pulsim, sub-wave C only):** *Not touched in wave-4* — see the
+  separate Pulsim-side OpenSpec for the device-integration work that has to land
+  before sub-wave C can reopen.
+- **Release plan:** sub-wave A → PulsimGui **v0.10.0 ✅ (tag `v0.10.0`)**;
+  sub-wave B → PulsimGui **v0.11.0 ✅ (tag `v0.11.0`)**; sub-wave C → deferred to
+  wave-5 once the Pulsim runtime ships the `Circuit::add_*` hooks for motors,
+  three-phase sources, and saturable magnetics.

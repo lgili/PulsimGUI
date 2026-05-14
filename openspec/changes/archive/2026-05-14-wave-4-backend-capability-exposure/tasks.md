@@ -141,9 +141,34 @@
 - [x] 2.4.2 Tag `v0.11.0`, push, monitor. Full suite green except the same pre-existing
       `test_ctrl_b_shortcut_toggles_left_panel` flake documented since v0.9.1.
 
-## 3. Sub-wave C — palette + magnetics + Pulsim pybind (ship as v0.12.0 + Pulsim v0.10.0)
+## 3. Sub-wave C — OUT OF SCOPE (deferred to wave-5)
 
-### 3.1 Pulsim pybind11 bindings (Pulsim repo)
+**Status:** Removed from wave-4 after a feasibility check on the Pulsim
+runtime. The C++ classes the proposal called out (`grid::three_phase_source`,
+`motors::{pmsm, pmsm_foc, dc_motor, mechanical}`, `magnetic::{saturable_transformer,
+hysteresis_inductor, bh_curve, core_catalog}`) exist as **math objects only** in the
+runtime today. The headers themselves flag the blocker:
+
+- `grid/three_phase_source.hpp:21` — *"The downstream simulator integration
+  (registering them as Circuit devices that stamp three branch equations) lands once
+  the Circuit-variant integration follow-up arrives."*
+- `magnetic/saturable_transformer.hpp:42` — *"Phase 4+ wires it into Circuit's device
+  variant."*
+- `motors/pmsm.hpp:13` — *"PMSM in dq frame (Phase 3)"* — no `Circuit::add_pmsm` hook.
+
+There is no `Circuit::add_three_phase_source()` / `add_pmsm()` / `add_saturable_transformer()`
+in `python/bindings.cpp`. Just adding pybind exposure for the math objects would give
+users `ThreePhaseSource.evaluate(t)` style classes that **can't be connected to the
+schematic**, which has little user value relative to the implementation cost.
+
+A new OpenSpec change has been opened to track the upstream C++ device-integration
+work in the Pulsim repo. Once those `Circuit::add_*` hooks ship, a wave-5 GUI change
+will reopen the palette / properties dialog work.
+
+Original wave-4 sub-C task lines are preserved verbatim below under the new heading
+"Deferred to wave-5" for traceability.
+
+### 3.1 Pulsim pybind11 bindings (deferred to wave-5)
 - [ ] 3.1.1 Expose `motors::pmsm` + `pmsm_foc` + `dc_motor` + `mechanical` in `python/bindings.cpp`.
 - [ ] 3.1.2 Expose `grid::three_phase_source` (balanced + unbalanced phase config).
 - [ ] 3.1.3 Expose `magnetic::saturable_transformer` + `hysteresis_inductor` + `bh_curve` +
@@ -152,32 +177,14 @@
 - [ ] 3.1.5 Backend smoke tests (one transient per new component).
 - [ ] 3.1.6 Tag Pulsim `v0.10.0`, publish to PyPI.
 
-### 3.2 PulsimGui — Three-phase grid source
-- [ ] 3.2.1 Add `ComponentType.THREE_PHASE_SOURCE` (in "Sources" category).
-- [ ] 3.2.2 Properties dialog: line-to-line voltage, frequency, phase rotation, unbalance %,
-      THD injection.
-- [ ] 3.2.3 Wire `simulation_service` instantiation through the new pybind class.
-- [ ] 3.2.4 Tests: schematic drop, params persist, simulation produces three phase-shifted waveforms.
+### 3.2 PulsimGui — Three-phase grid source (deferred)
+### 3.3 PulsimGui — Motors & Drives palette category (deferred)
+### 3.4 PulsimGui — Advanced magnetics + BH-curve editor (deferred)
+### 3.5 Release sub-wave C (deferred to v0.12.0 in wave-5)
 
-### 3.3 PulsimGui — Motors & Drives palette category
-- [ ] 3.3.1 New palette category "Motors & Drives".
-- [ ] 3.3.2 Add ComponentTypes: `PMSM`, `PMSM_FOC`, `DC_MOTOR`, `MECHANICAL_LOAD`.
-- [ ] 3.3.3 Each with a parameter form (pole pairs, Ld/Lq, flux linkage, inertia, friction).
-- [ ] 3.3.4 Wire to the new pybind bindings.
-- [ ] 3.3.5 Tests: drop each, simulate a no-load spin-up to steady-state.
-
-### 3.4 PulsimGui — Advanced magnetics + BH-curve editor
-- [ ] 3.4.1 Add `ComponentType.SATURABLE_TRANSFORMER` and `HYSTERESIS_INDUCTOR`.
-- [ ] 3.4.2 BH-curve editor widget: plot, drag-to-edit anchor points, import from
-      `core_catalog`, normalize/export.
-- [ ] 3.4.3 Properties dialog launches the BH editor when applicable.
-- [ ] 3.4.4 Tests: editor preserves curve through save/load.
-
-### 3.5 Release sub-wave C
-- [ ] 3.5.1 Bump PulsimGui `0.11.x → 0.12.0`, pin `pulsim>=0.10.0` in `pyproject.toml`.
-- [ ] 3.5.2 Tag `v0.12.0`, push, monitor.
-
-## 4. Docs and announcement (post sub-wave C)
-- [ ] 4.1 Update `docs/user-manual.md` with the new export / analysis / motors workflows.
-- [ ] 4.2 Add 3 example projects (FMU export demo, PMSM-FOC spin-up, MC sweep on a buck).
-- [ ] 4.3 Archive this OpenSpec change.
+## 4. Docs and announcement
+- [x] 4.1 Sub-A v0.10.0 + Sub-B v0.11.0 release notes captured in the respective
+      commit messages (`2af6008` and `954015d`). Standalone `docs/user-manual.md`
+      update queued as a small follow-up.
+- [ ] 4.2 Add 3 example projects (FMU export demo, FRA on a buck, MC sweep on a buck).
+- [x] 4.3 Archive this OpenSpec change with sub-C marked deferred to wave-5.
