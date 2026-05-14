@@ -73,15 +73,25 @@
       tests still pass.
 
 ### 1.6 Advanced solver knobs
-- [ ] 1.6.1 Add an "Advanced" tab to `simulation_settings_dialog.py`.
-- [ ] 1.6.2 Surface `GminConfig`, `SourceSteppingConfig`, `PseudoTransientConfig`,
-      `InitializationConfig`, `DCConvergenceConfig`.
-- [ ] 1.6.3 Surface `BDFOrderConfig`, `RichardsonLTEConfig`, `AdvancedTimestepConfig`.
-- [ ] 1.6.4 Surface `LinearSolverStackConfig` with a combobox of stacks (KLU / EnhancedSparseLU /
-      GMRES / BiCGSTAB) and `IterativeSolverConfig` editors (ILUT, scaling).
-- [ ] 1.6.5 Roundtrip these through `SimulationOptions` save/load.
-- [ ] 1.6.6 Tests: each new knob persists, loads, applies; the dialog gracefully ignores
-      unknown fields when reading older project files.
+- [x] 1.6.1 Added a "Solver Stack" tab to the dialog's advanced section (alongside the
+      existing Transient / DC Setup / Thermal & Losses / Frequency Analysis tabs).
+- [~] 1.6.2 `GminConfig`, `SourceSteppingConfig`, `PseudoTransientConfig`,
+      `InitializationConfig`, `DCConvergenceConfig`: **deferred** — most are exposed
+      indirectly via the existing `dc_strategy` / `gmin_initial` / `gmin_final` /
+      `dc_source_steps` fields on `SimulationSettings`. Native fine-grained configs land
+      when the runtime adds them to the project schema.
+- [~] 1.6.3 `BDFOrderConfig` exposed via the new `bdf_max_order` field (1..5);
+      `RichardsonLTEConfig` and `AdvancedTimestepConfig` deferred (no runtime hooks yet).
+- [x] 1.6.4 `LinearSolverStackConfig` exposed via the new `linear_solver_stack` field
+      (auto / KLU / EnhancedSparseLU / GMRES / BiCGSTAB) and `IterativeSolverConfig`
+      partial — surfaced `iterative_solver_max_iterations` and `iterative_solver_restart`
+      (GMRES restart length). ILUT preconditioner + scaling toggles deferred.
+- [x] 1.6.5 New fields persist through `_store_settings()` and load through the existing
+      `_load_from_source()` path with `getattr` fallback for older project files.
+- [x] 1.6.6 4 unit tests in `test_simulation_settings_advanced.py` cover: tab presence,
+      five-stack combobox content + default 200/30/5 values, full roundtrip through
+      `_store_settings`, and graceful fallback when older settings objects lack the new
+      attributes.
 
 ### 1.7 Release sub-wave A
 - [ ] 1.7.1 Bump PulsimGui `0.9.2 → 0.10.0`.
