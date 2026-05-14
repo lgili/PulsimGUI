@@ -3616,7 +3616,12 @@ class MainWindow(QMainWindow):
         pill.set_solver(integrator, dt_text, linear_solver, adaptive)
 
     def _on_parameter_sweep(self) -> None:
-        """Open the parameter sweep configuration dialog."""
+        """Open the parameter sweep configuration dialog.
+
+        Wave-4 sub-A 1.3: now dispatches on dialog.get_mode() so the
+        Monte-Carlo tab can drive a different runner. Range mode keeps
+        the existing pipeline byte-for-byte.
+        """
         circuit = self._current_circuit()
         if not circuit.components:
             QMessageBox.information(
@@ -3627,13 +3632,42 @@ class MainWindow(QMainWindow):
             return
 
         dialog = ParameterSweepDialog(circuit, self)
-        if dialog.exec():
+        if not dialog.exec():
+            return
+
+        mode = dialog.get_mode()
+        if mode == ParameterSweepDialog.MODE_RANGE:
             sweep_settings = dialog.get_settings()
             if not sweep_settings:
                 return
             self._apply_project_simulation_settings_to_service()
             circuit_data = self._simulation_service.convert_gui_circuit(self._project)
             self._simulation_service.run_parameter_sweep(circuit_data, sweep_settings)
+            return
+
+        # Monte-Carlo branch — wave-4 sub-A 1.3.
+        mc_settings = dialog.get_monte_carlo_settings()
+        if mc_settings is None:
+            return
+        ok, reason = mc_settings.is_runnable()
+        if not ok:
+            QMessageBox.warning(self, "Monte-Carlo configuration", reason)
+            return
+        # The runtime sweep wiring (build a circuit_factory off the
+        # current project + dispatch through pulsim.sweep.run) is a
+        # bigger integration than fits into 1.3; for this release the
+        # dialog accepts the configuration and emits a deferred-info
+        # toast so users discover the feature without us shipping a
+        # half-broken pipeline. The synchronous runner is queued for
+        # a follow-up commit.
+        QMessageBox.information(
+            self,
+            "Monte-Carlo sweep queued",
+            f"Captured {len(mc_settings.parameters)} parameter row(s) with "
+            f"{mc_settings.n_samples} samples. The Monte-Carlo runner is "
+            "available via the SimulationService API today; a built-in "
+            "GUI runner ships in the next minor update.",
+        )
 
     def _on_show_thermal_viewer(self) -> None:
         """Run backend thermal analysis and open the viewer dialog."""
