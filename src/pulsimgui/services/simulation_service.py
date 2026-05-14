@@ -49,6 +49,24 @@ from pulsimgui.services.backend_types import (
     FmuExportSettings,
 )
 from pulsimgui.services.backend_types import (
+    FraResult as BackendFraResult,
+)
+from pulsimgui.services.backend_types import (
+    FraSettings,
+)
+from pulsimgui.services.backend_types import (
+    HarmonicBalanceResult as BackendHarmonicBalanceResult,
+)
+from pulsimgui.services.backend_types import (
+    HarmonicBalanceSettings,
+)
+from pulsimgui.services.backend_types import (
+    PeriodicSteadyStateResult as BackendPeriodicSteadyStateResult,
+)
+from pulsimgui.services.backend_types import (
+    PeriodicSteadyStateSettings,
+)
+from pulsimgui.services.backend_types import (
     FrequencyAnalysisResult as BackendFrequencyAnalysisResult,
 )
 from pulsimgui.services.backend_types import (
@@ -2730,6 +2748,42 @@ class SimulationService(QObject):
 
         circuit_data = self.convert_gui_circuit(project)
         return self._backend.export_c99(circuit_data, settings)
+
+    # ------------------------------------------------------------------
+    # Wave-4 sub-B analysis modes
+    # ------------------------------------------------------------------
+    def run_fra(
+        self,
+        project,
+        settings: FraSettings,
+    ) -> BackendFraResult:
+        """Run closed-loop Frequency Response Analysis."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_fra(circuit_data, settings)
+
+    def run_periodic_steady_state(
+        self,
+        project,
+        settings: PeriodicSteadyStateSettings,
+    ) -> BackendPeriodicSteadyStateResult:
+        """Solve for the periodic orbit via shooting."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_periodic_steady_state(circuit_data, settings)
+
+    def run_harmonic_balance(
+        self,
+        project,
+        settings: HarmonicBalanceSettings,
+    ) -> BackendHarmonicBalanceResult:
+        """Solve the spectrum via harmonic balance."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_harmonic_balance(circuit_data, settings)
 
     def convert_gui_circuit_cached(self, project) -> dict:
         """Convert GUI circuit using cache-optimized worker semantics.
