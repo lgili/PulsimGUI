@@ -27,6 +27,8 @@ from pulsimgui.services.backend_types import (
     ConvergenceInfo,
     DCResult,
     DCSettings,
+    FmuExportResult,
+    FmuExportSettings,
     FosterStage,
     FrequencyAnalysisResult,
     HarmonicEntry,
@@ -251,6 +253,26 @@ class SimulationBackend(Protocol):
 
         Returns:
             FrequencyAnalysisResult with Bode data and stability margins.
+        """
+        ...
+
+    def export_fmu(
+        self,
+        circuit_data: dict,
+        settings: FmuExportSettings,
+    ) -> FmuExportResult:
+        """Export the current circuit as a FMI 2.0 co-simulation FMU.
+
+        Args:
+            circuit_data: Serialised circuit definition (same shape as the
+                one used for ``run_transient``).
+            settings: FMU export configuration.
+
+        Returns:
+            FmuExportResult describing the produced ``.fmu`` archive.
+
+        Raises:
+            NotImplementedError: backend does not support FMU export.
         """
         ...
 
@@ -573,6 +595,16 @@ class PlaceholderBackend(SimulationBackend):
 
         return PostProcessingResult(jobs=job_results, success=True)
 
+    def export_fmu(
+        self,
+        circuit_data: dict,
+        settings: FmuExportSettings,
+    ) -> FmuExportResult:  # pragma: no cover - placeholder path
+        raise NotImplementedError(
+            "FMU export is not available in demo mode — install the Pulsim "
+            "runtime (pip install pulsim) to enable this feature."
+        )
+
     def run_frequency_analysis(
         self,
         circuit_data: dict,
@@ -653,6 +685,11 @@ class PulsimBackend(SimulationBackend):
         # Check for averaged converter options (pulsim >= 0.7.0)
         if hasattr(self._module, "AveragedConverterOptions"):
             caps.add("averaged")
+
+        # FMU 2.0 co-simulation export (pulsim >= 0.8.0).
+        fmu_mod = getattr(self._module, "fmu", None)
+        if fmu_mod is not None and hasattr(fmu_mod, "export"):
+            caps.add("fmu_export")
 
         self._cached_capabilities = caps
         return caps
@@ -4790,6 +4827,62 @@ class PulsimBackend(SimulationBackend):
                 diagnostic_code="internal_error",
                 diagnostic_message=str(exc),
             )
+
+    def export_fmu(
+        self,
+        circuit_data: dict,
+        settings: FmuExportSettings,
+    ) -> FmuExportResult:
+        """Export the current circuit as a FMI 2.0 co-simulation FMU.
+
+        Wraps :func:`pulsim.fmu.export`. Re-raises backend exceptions as
+        :class:`RuntimeError` so callers get a single failure type to
+        surface in the UI.
+        """
+        if not self.has_capability("fmu_export"):
+            raise NotImplementedError(
+                "This backend version does not expose FMU export. Upgrade "
+                "to pulsim>=0.8.0."
+            )
+
+        try:
+            circuit = self._converter.build(circuit_data)
+        except CircuitConversionError as exc:
+            raise RuntimeError(f"Circuit conversion failed: {exc}") from exc
+
+        export_fn = self._module.fmu.export
+
+        kwargs: dict[str, Any] = {
+            "dt": float(settings.dt),
+            "out_path": str(settings.out_path),
+        }
+        if settings.model_name:
+            kwargs["model_name"] = settings.model_name
+        if settings.inputs:
+            kwargs["inputs"] = tuple(settings.inputs)
+        if settings.outputs:
+            kwargs["outputs"] = tuple(settings.outputs)
+        if settings.cc:
+            kwargs["cc"] = settings.cc
+
+        try:
+            summary = export_fn(circuit, **kwargs)
+        except Exception as exc:  # pragma: no cover - backend-side failure
+            raise RuntimeError(f"FMU export failed: {exc}") from exc
+
+        return FmuExportResult(
+            path=str(getattr(summary, "path", settings.out_path)),
+            model_name=str(getattr(summary, "model_name", "")),
+            model_identifier=str(getattr(summary, "model_identifier", "")),
+            guid=str(getattr(summary, "guid", "")),
+            fmi_version=str(getattr(summary, "fmi_version", "")),
+            state_size=int(getattr(summary, "state_size", 0) or 0),
+            input_size=int(getattr(summary, "input_size", 0) or 0),
+            output_size=int(getattr(summary, "output_size", 0) or 0),
+            inputs=tuple(getattr(summary, "inputs", ()) or ()),
+            outputs=tuple(getattr(summary, "outputs", ()) or ()),
+            files_in_archive=tuple(getattr(summary, "files_in_archive", ()) or ()),
+        )
 
     def _make_frequency_port(self, positive_node: str, negative_node: str) -> Any:
         """Create FrequencyAnalysisPort for pybind/dataclass backends."""

@@ -270,6 +270,13 @@ class MainWindow(QMainWindow):
         self.action_export_csv = QAction("Export Waveforms as &CSV...", self)
         self.action_export_csv.triggered.connect(self._on_export_csv)
 
+        # Wave-4 sub-wave A — FMU 2.0 co-simulation export.
+        self.action_export_fmu = QAction("Export &FMU 2.0…", self)
+        self.action_export_fmu.setToolTip(
+            "Export the current circuit as a FMI 2.0 co-simulation .fmu archive"
+        )
+        self.action_export_fmu.triggered.connect(self._on_export_fmu)
+
         # Wave-2 — quick paste-into-doc clipboard action.
         self.action_copy_schematic = QAction("Copy Schematic as &Image", self)
         self.action_copy_schematic.setShortcut(QKeySequence("Ctrl+Shift+C"))
@@ -476,6 +483,8 @@ class MainWindow(QMainWindow):
         export_menu.addAction(self.action_export_svg)
         export_menu.addSeparator()
         export_menu.addAction(self.action_export_csv)
+        export_menu.addSeparator()
+        export_menu.addAction(self.action_export_fmu)
         file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
 
@@ -4083,3 +4092,48 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Exported waveforms: {path}", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", f"Failed to export CSV:\n{e}")
+
+    def _on_export_fmu(self) -> None:
+        """Export the active circuit as a FMI 2.0 co-simulation FMU.
+
+        Wave-4 sub-wave A: wraps :py:meth:`SimulationService.export_fmu`
+        through :class:`FmuExportDialog`. The dialog itself surfaces
+        validation + backend errors so this handler stays thin.
+        """
+        if self._project is None:
+            QMessageBox.warning(
+                self,
+                "No project",
+                "Open or create a project before exporting an FMU.",
+            )
+            return
+
+        if not self._simulation_service.has_capability("fmu_export"):
+            QMessageBox.warning(
+                self,
+                "FMU export unavailable",
+                "The active simulation backend does not support FMU export. "
+                "Upgrade Pulsim to 0.8.0 or newer (pip install -U pulsim).",
+            )
+            return
+
+        # Collect node names users might want to expose. Best-effort —
+        # the dialog handles the empty case gracefully.
+        last_result = self._simulation_service.last_result
+        node_names: list[str] = []
+        if last_result is not None and last_result.signals:
+            node_names = sorted(last_result.signals.keys())
+
+        from pulsimgui.views.dialogs.fmu_export_dialog import FmuExportDialog
+
+        dialog = FmuExportDialog(
+            self._simulation_service,
+            self._project,
+            available_node_names=node_names,
+            parent=self,
+        )
+        result = dialog.run()
+        if result is not None:
+            self.statusBar().showMessage(
+                f"FMU exported: {result.path}", 5000
+            )
