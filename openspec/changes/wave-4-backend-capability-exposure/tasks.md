@@ -24,14 +24,21 @@
       gate, backend-error path).
 
 ### 1.3 Monte-Carlo sweep upgrade
-- [ ] 1.3.1 Extend `parameter_sweep_dialog.py` with a tab/page for "Monte-Carlo" alongside
-      the existing linear/log range mode.
-- [ ] 1.3.2 Multi-row component+parameter table; each row picks a `Distribution`
-      (uniform / log-uniform / normal / cartesian) with bound editors.
-- [ ] 1.3.3 Metric selector wired to `pulsim.sweep.metrics` (`steady_state` / `peak` / `rms` /
-      `settling_time` / `custom`).
+- [x] 1.3.1 Extend `parameter_sweep_dialog.py` with a QTabWidget hosting "Range" (preserves
+      the prior single-parameter behaviour byte-for-byte) and "Monte Carlo" tabs.
+- [x] 1.3.2 Multi-row component+parameter table; each row picks a distribution name
+      (uniform / log-uniform / normal / cartesian) plus low/high (or μ/σ for normal) editors.
+- [x] 1.3.3 Metric selector wired to `pulsim.sweep.metrics` (`steady_state` / `peak` /
+      `rms` / `settling_time`). Custom metrics are accepted at the service layer; the
+      dialog limits to the four canonical kinds for clarity.
 - [ ] 1.3.4 Results viewer: histogram + scatter on metric axes, CSV export.
-- [ ] 1.3.5 Tests: distribution wiring, metric computation roundtrip.
+      **Deferred** to a follow-up commit — the main_window handler currently shows a
+      "queued" toast so the dialog ships with end-to-end settings collection without a
+      half-broken pipeline.
+- [x] 1.3.5 Tests: 21 service unit tests cover the distribution factories, runtime-spec
+      dispatch, settings validation, offline synthesizer, and runtime-result adapter;
+      6 dialog unit tests cover mode toggle, row add/remove, normal-distribution param
+      mapping, seed handling, and range/MC mutual exclusivity.
 
 ### 1.4 Losses & efficiency dashboard
 - [ ] 1.4.1 New `LossesTab` widget under the scope workbench (sibling to FFT / Compare).
