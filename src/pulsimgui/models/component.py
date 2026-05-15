@@ -103,6 +103,9 @@ class ComponentType(Enum):
     PLL = auto()
     SVM = auto()
 
+    # Three-phase grid source (Pulsim 0.10.0a1+: Circuit::add_three_phase_source)
+    THREE_PHASE_SOURCE = auto()
+
     # Pre-configured networks
     SNUBBER_RC = auto()
 
@@ -884,6 +887,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "DB", 35, 0),
         Pin(4, "DC", 35, 20),
     ],
+
+    # Three-phase grid source (pulsim>=0.10.0a1).
+    # 4 pins: A, B, C, Neutral. The runtime decomposes this into 3 internal
+    # SineVoltageSource branches sharing the neutral.
+    ComponentType.THREE_PHASE_SOURCE: [
+        Pin(0, "A", 30, -25),
+        Pin(1, "B", 30, 0),
+        Pin(2, "C", 30, 25),
+        Pin(3, "N", -30, 0),
+    ],
 }
 
 
@@ -1305,6 +1318,17 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "alpha_from_channel": "",
         "beta_from_channel": "",
         "sample_time": 0.0,
+    },
+    # Three-phase voltage source (Pulsim 0.10.0a1).
+    # Decomposes into 3 internal SineVoltageSource branches sharing
+    # the neutral pin. ``positive_sequence`` flips B/C; ``unbalance_factor``
+    # in [0, 1) scales |V_b|=(1-u) and |V_c|=(1+u) keeping A at nominal.
+    ComponentType.THREE_PHASE_SOURCE: {
+        "line_to_line_voltage_rms": 400.0,
+        "frequency_hz": 50.0,
+        "phase_a_deg": 0.0,
+        "positive_sequence": True,
+        "unbalance_factor": 0.0,
     },
 }
 

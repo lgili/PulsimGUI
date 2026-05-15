@@ -464,6 +464,44 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.THREE_PHASE_SOURCE:
+            # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
+            # which internally decomposes into 3 SineVoltageSource branches.
+            # Requires pulsim>=0.10.0a1; older runtimes degrade to 3 manual
+            # sine sources so older saved projects still load.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            three_phase_helper = getattr(circuit, "add_three_phase_source", None)
+            params_cls = getattr(self._sl, "ThreePhaseSourceParams", None)
+            if three_phase_helper is not None and params_cls is not None:
+                tp_params = params_cls()
+                tp_params.line_to_line_voltage_rms = self._as_float(
+                    params.get("line_to_line_voltage_rms"), default=400.0
+                )
+                tp_params.frequency_hz = self._as_float(
+                    params.get("frequency_hz"), default=50.0
+                )
+                tp_params.phase_a_deg = self._as_float(
+                    params.get("phase_a_deg"), default=0.0
+                )
+                tp_params.positive_sequence = bool(
+                    params.get("positive_sequence", True)
+                )
+                tp_params.unbalance_factor = self._as_float(
+                    params.get("unbalance_factor"), default=0.0
+                )
+                three_phase_helper(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, tp_params)
+            else:
+                # Fallback for pulsim < 0.10.0a1: emit 3 manual sine sources.
+                self._add_three_phase_fallback(
+                    circuit, name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, params
+                )
+            return
+
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
             anode = self._node_index(circuit, n_anode, node_cache)
@@ -785,6 +823,55 @@ class CircuitConverter:
             nneg,
             self._as_float(waveform.get("value"), default=0.0),
         )
+
+    def _add_three_phase_fallback(
+        self,
+        circuit: Any,
+        name: str,
+        n_a: int,
+        n_b: int,
+        n_c: int,
+        n_neutral: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Manual decomposition for runtimes older than pulsim 0.10.0a1.
+
+        Mirrors the helper that lives in ``runtime_circuit.hpp`` so saved
+        projects authored against newer Pulsim still load on older
+        runtimes — they just won't see the optimized helper path.
+        """
+        import math
+
+        v_ll_rms = self._as_float(params.get("line_to_line_voltage_rms"), default=400.0)
+        frequency = self._as_float(params.get("frequency_hz"), default=50.0)
+        phase_a_deg = self._as_float(params.get("phase_a_deg"), default=0.0)
+        positive_sequence = bool(params.get("positive_sequence", True))
+        unbalance = self._as_float(params.get("unbalance_factor"), default=0.0)
+
+        # V_ph_peak = V_LL_RMS * sqrt(2) / sqrt(3)
+        v_peak = v_ll_rms * math.sqrt(2.0) / math.sqrt(3.0)
+        phase_a_rad = math.radians(phase_a_deg)
+        two_pi_third = 2.0 * math.pi / 3.0
+        shift_b = -two_pi_third if positive_sequence else two_pi_third
+        shift_c = -2.0 * two_pi_third if positive_sequence else 2.0 * two_pi_third
+
+        sine_params_cls = getattr(self._sl, "SineParams", None)
+        if sine_params_cls is None:
+            raise CircuitConversionError(
+                "Backend does not expose SineParams; install pulsim>=0.7.0."
+            )
+
+        def _emit_leg(suffix: str, node: int, amplitude: float, phase_rad: float) -> None:
+            leg = sine_params_cls()
+            leg.amplitude = amplitude
+            leg.frequency = frequency
+            leg.offset = 0.0
+            leg.phase = phase_rad
+            circuit.add_sine_voltage_source(f"{name}__{suffix}", node, n_neutral, leg)
+
+        _emit_leg("A", n_a, v_peak, phase_a_rad)
+        _emit_leg("B", n_b, v_peak * (1.0 - unbalance), phase_a_rad + shift_b)
+        _emit_leg("C", n_c, v_peak * (1.0 + unbalance), phase_a_rad + shift_c)
 
     def _apply_positions_from_list(
         self, circuit: Any, positions: list[tuple[str, dict]]
