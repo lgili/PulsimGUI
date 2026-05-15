@@ -55,109 +55,168 @@ GBU2506_C_TH_PKG = 8.0        # J/°C package mass
 class ConverterSpec:
     label: str
     power_w: float
-    use_pfc: bool
-    c_bus_f: float
+    topology: str            # "doubler" | "bridge_pfc"
+    c_bus_f: float           # full-bridge: bus cap; doubler: per-cap value
     r_load_ohm: float
+    l_in_h: float = 1e-3     # input choke (larger for PFC to approximate sinusoidal current)
 
     @property
     def v_bus_estimate(self) -> float:
-        """Rough DC bus voltage estimate (for sizing R_load).
-        Passive bridge at 100 V_rms line → 141 V peak → ~130 V after drops."""
-        return 130.0
+        """DC bus voltage estimate (for sizing R_load).
+
+        - Doubler at 100 V_rms: V_bus ≈ 2·V_peak ≈ 283 V (minus a small
+          forward-drop loss on the active diode pair → ~270 V).
+        - Bridge with PFC at 100 V_rms: PFC boosts to ~190-200 V depending
+          on duty (we sit at ~190 V in open-loop with the approximation).
+        """
+        return 270.0 if self.topology == "doubler" else 190.0
 
     @classmethod
-    def for_power(cls, p: float, pfc: bool = False) -> "ConverterSpec":
+    def for_doubler(cls, p: float) -> "ConverterSpec":
+        v_bus = 270.0
+        r_load = (v_bus * v_bus) / p
+        c_per_cap = {
+            240: 1000e-6,
+            400: 1500e-6,
+            550: 2200e-6,
+        }.get(int(p), 1500e-6)
+        return cls(
+            label=f"{int(p)}W doubler",
+            power_w=p,
+            topology="doubler",
+            c_bus_f=c_per_cap,
+            r_load_ohm=r_load,
+            l_in_h=1e-3,
+        )
+
+    @classmethod
+    def for_bridge_pfc(cls, p: float) -> "ConverterSpec":
+        # Without an active boost stage, V_bus stays at ~peak after the
+        # bridge regardless of L_in. The L_in does smooth I_AC toward
+        # sinusoidal (the *real* benefit of PFC for bridge losses).
+        # Size R_load assuming V_bus ≈ 130 V (passive bridge floor).
+        # Real closed-loop PFC would boost to ~380 V but bridge losses
+        # remain governed by the AC-side current shape, which is what
+        # L_in approximates here.
         v_bus = 130.0
         r_load = (v_bus * v_bus) / p
-        c_bus = {
-            240:  470e-6,
-            400:  680e-6,
-            550:  1000e-6,
-            1000: 1500e-6,   # bigger cap at higher power for similar ripple
-        }.get(int(p), 680e-6)
-        label = f"{int(p)}W{' (PFC ref)' if pfc else ''}"
-        return cls(label=label, power_w=p, use_pfc=pfc,
-                   c_bus_f=c_bus, r_load_ohm=r_load)
+        return cls(
+            label=f"{int(p)}W bridge+PFC",
+            power_w=p,
+            topology="bridge_pfc",
+            c_bus_f=1500e-6,
+            r_load_ohm=r_load,
+            l_in_h=10e-3,    # 10 mH — 10× the passive choke to approximate PFC shaping
+        )
 
 
 SPECS = [
-    ConverterSpec.for_power(240, pfc=False),
-    ConverterSpec.for_power(400, pfc=False),
-    ConverterSpec.for_power(550, pfc=False),
-    ConverterSpec.for_power(1000, pfc=True),
+    ConverterSpec.for_doubler(240),
+    ConverterSpec.for_doubler(400),
+    ConverterSpec.for_doubler(550),
+    ConverterSpec.for_bridge_pfc(1000),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Circuit builders (direct Pulsim API — bypasses GUI schematic engine)
 # ---------------------------------------------------------------------------
-def _build_passive_bridge(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
-    """AC → L_in → Graetz bridge → C_bus → R_load."""
-    c = pulsim.Circuit()
+def _build_voltage_doubler(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
+    """Greinacher symmetric voltage doubler — 2 diodes only.
 
-    # Named nodes for clarity
-    n_ac_in   = c.add_node("ac_in")     # output of L_in (= AC+)
-    n_dc_plus = c.add_node("dc_plus")
-    n_dc_minus= c.add_node("dc_minus")
+        DC+ ────●
+                │
+              [C1]
+                │
+       ─[D1]──●── (midpoint = AC return = GND)
+        │     │
+       [AC]   │
+        │     │
+       ─[D2]──●
+                │
+              [C2]
+                │
+        DC- ────●
 
-    # 100 V_rms / 60 Hz sine source. Pulsim's SineParams uses peak amplitude.
-    sine = pulsim.SineParams()
-    sine.amplitude = 100.0 * math.sqrt(2.0)   # 141.42 V peak
-    sine.frequency = 60.0
-    sine.offset = 0.0
-    sine.phase = 0.0
-    # AC source: + at "ac_src", − at ground
-    n_ac_src = c.add_node("ac_src")
-    c.add_sine_voltage_source("V_ac", n_ac_src, pulsim.Circuit.ground(), sine)
+    During positive half-cycle (V_AC > 0): D1 forward-biased,
+    charges C1 to +V_peak. D2 reverse-biased.
+    During negative half-cycle (V_AC < 0): D2 forward-biased,
+    charges C2 to -V_peak. D1 reverse-biased.
+    Steady state: V_bus = V_C1 + V_C2 ≈ 2·V_peak ≈ 283 V at 100 V_rms.
 
-    # Small input choke (1 mH).
-    c.add_inductor("L_in", n_ac_src, n_ac_in, 1e-3, 0.0)
-
-    # Graetz bridge:
-    #   D1: ac_in (A) → dc_plus (K)
-    #   D2: gnd   (A) → dc_plus (K)
-    #   D3: dc_minus (A) → ac_in (K)
-    #   D4: dc_minus (A) → gnd  (K)
-    c.add_diode("D1", n_ac_in, n_dc_plus,  GBU2506_G_ON, GBU2506_G_OFF)
-    c.add_diode("D2", pulsim.Circuit.ground(), n_dc_plus,  GBU2506_G_ON, GBU2506_G_OFF)
-    c.add_diode("D3", n_dc_minus, n_ac_in,                 GBU2506_G_ON, GBU2506_G_OFF)
-    c.add_diode("D4", n_dc_minus, pulsim.Circuit.ground(), GBU2506_G_ON, GBU2506_G_OFF)
-
-    # Bus cap + load. C_bus initial voltage 0 → cold start.
-    c.add_capacitor("C_bus", n_dc_plus, n_dc_minus, spec.c_bus_f, 0.0)
-    c.add_resistor("R_load", n_dc_plus, n_dc_minus, spec.r_load_ohm)
-
-    return c, {
-        "n_ac_in": n_ac_in,
-        "n_dc_plus": n_dc_plus,
-        "n_dc_minus": n_dc_minus,
-        "n_ac_src": n_ac_src,
-        "diodes": ["D1", "D2", "D3", "D4"],
-    }
-
-
-def _build_pfc_bridge(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
-    """1000W variant — same bridge as passive but a stiffer DC load that
-    represents the active-PFC controlled output (which holds bus voltage
-    elevated by ~50%, drawing more average current).
-
-    For pure bridge-loss validation, modeling the boost-switch PWM at
-    50 kHz is computationally expensive and not necessary — the bridge's
-    losses depend on how much current the downstream stage draws. We
-    model the PFC stage as an equivalent resistor that produces the same
-    rated power draw at the elevated DC bus voltage (~190V) the real
-    boost would maintain. The bridge sees the same average input current
-    a PFC would impose.
-
-    For a real PFC-shaping current waveform analysis, add a closed-loop
-    boost controller as a follow-up.
+    Only D1 and D2 commutate — half the conduction loss vs a 4-diode
+    Graetz bridge for the same power, since each conduction path has
+    just one diode (not two in series). The bridge's other two diodes
+    (D3, D4 in the same physical GBU2506 package) are reverse-biased
+    throughout — they don't conduct but they DO see the bus voltage
+    across them, so the package still dissipates D1+D2 conduction
+    losses through its shared thermal path.
     """
     c = pulsim.Circuit()
 
-    n_ac_in     = c.add_node("ac_in")
-    n_dc_plus   = c.add_node("dc_plus")
-    n_dc_minus  = c.add_node("dc_minus")
-    n_ac_src    = c.add_node("ac_src")
+    n_ac_src   = c.add_node("ac_src")
+    n_ac_in    = c.add_node("ac_in")     # L_in output, AC node of doubler
+    n_dc_plus  = c.add_node("dc_plus")
+    n_dc_minus = c.add_node("dc_minus")
+
+    # AC source: 100 V_rms / 60 Hz between n_ac_src and ground (= midpoint).
+    sine = pulsim.SineParams()
+    sine.amplitude = 100.0 * math.sqrt(2.0)
+    sine.frequency = 60.0
+    sine.offset = 0.0
+    sine.phase = 0.0
+    c.add_sine_voltage_source("V_ac", n_ac_src, pulsim.Circuit.ground(), sine)
+
+    # Input choke
+    c.add_inductor("L_in", n_ac_src, n_ac_in, spec.l_in_h, 0.0)
+
+    # Doubler diodes — D1 charges C1 on positive half, D2 charges C2 on negative.
+    c.add_diode("D1", n_ac_in, n_dc_plus,  GBU2506_G_ON, GBU2506_G_OFF)
+    c.add_diode("D2", n_dc_minus, n_ac_in, GBU2506_G_ON, GBU2506_G_OFF)
+
+    # Symmetric series capacitors with midpoint at ground.
+    c.add_capacitor("C1", n_dc_plus, pulsim.Circuit.ground(),  spec.c_bus_f, 0.0)
+    c.add_capacitor("C2", pulsim.Circuit.ground(), n_dc_minus, spec.c_bus_f, 0.0)
+
+    # Load between DC+ and DC-.
+    c.add_resistor("R_load", n_dc_plus, n_dc_minus, spec.r_load_ohm)
+
+    return c, {
+        "topology":  "doubler",
+        "n_ac_in":   n_ac_in,
+        "n_ac_src":  n_ac_src,
+        "n_dc_plus": n_dc_plus,
+        "n_dc_minus":n_dc_minus,
+        "active_diodes": ["D1", "D2"],  # only these two carry current
+        "package_diodes_total": 4,      # but the GBU2506 package houses 4 dies
+    }
+
+
+def _build_bridge_with_pfc(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
+    """Full Graetz bridge feeding a load that *would be* a boost PFC.
+
+    For bridge-loss validation, the key effect of active PFC is that the
+    input current becomes sinusoidal (proportional to V_AC) instead of
+    pulsed (peak-charging). We approximate this with a large input choke
+    (10 mH vs 1 mH passive) — it smooths the AC current toward a
+    sinusoidal envelope without modeling the PWM boost switch and its
+    closed-loop control.
+
+    In this Graetz topology, two diodes always conduct in series during
+    each half-cycle (D1+D4 on positive, D2+D3 on negative). Each diode
+    sees the full I_AC during its conducting half — but I_AC itself is
+    smaller and more sinusoidal than the doubler case, so the I²·R_on
+    integral is lower per amp than peak-charging.
+
+    A closed-loop boost-PFC controller is left as a follow-up and would
+    actively regulate V_bus to a higher value (e.g. 380 V) with PF ~0.99.
+    """
+    c = pulsim.Circuit()
+
+    n_ac_src   = c.add_node("ac_src")
+    n_ac_in    = c.add_node("ac_in")
+    n_dc_plus  = c.add_node("dc_plus")
+    n_dc_minus = c.add_node("dc_minus")
 
     sine = pulsim.SineParams()
     sine.amplitude = 100.0 * math.sqrt(2.0)
@@ -165,8 +224,11 @@ def _build_pfc_bridge(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
     sine.offset = 0.0
     sine.phase = 0.0
     c.add_sine_voltage_source("V_ac", n_ac_src, pulsim.Circuit.ground(), sine)
-    c.add_inductor("L_in", n_ac_src, n_ac_in, 1e-3, 0.0)
 
+    # Large input choke approximates PFC-shaped sinusoidal current.
+    c.add_inductor("L_in", n_ac_src, n_ac_in, spec.l_in_h, 0.0)
+
+    # Full Graetz bridge — all 4 diodes participate.
     c.add_diode("D1", n_ac_in, n_dc_plus,  GBU2506_G_ON, GBU2506_G_OFF)
     c.add_diode("D2", pulsim.Circuit.ground(), n_dc_plus,  GBU2506_G_ON, GBU2506_G_OFF)
     c.add_diode("D3", n_dc_minus, n_ac_in,                 GBU2506_G_ON, GBU2506_G_OFF)
@@ -176,11 +238,13 @@ def _build_pfc_bridge(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
     c.add_resistor("R_load", n_dc_plus, n_dc_minus, spec.r_load_ohm)
 
     return c, {
-        "n_ac_in": n_ac_in,
+        "topology":  "bridge_pfc",
+        "n_ac_src":  n_ac_src,
+        "n_ac_in":   n_ac_in,
         "n_dc_plus": n_dc_plus,
-        "n_dc_minus": n_dc_minus,
-        "n_ac_src": n_ac_src,
-        "diodes": ["D1", "D2", "D3", "D4"],
+        "n_dc_minus":n_dc_minus,
+        "active_diodes": ["D1", "D2", "D3", "D4"],   # all four conduct
+        "package_diodes_total": 4,
     }
 
 
@@ -189,15 +253,17 @@ def _build_pfc_bridge(spec: ConverterSpec) -> tuple[pulsim.Circuit, dict]:
 # ---------------------------------------------------------------------------
 def run_converter(spec: ConverterSpec) -> dict:
     print(f"\n=== Building {spec.label} ===")
-    print(f"  R_load = {spec.r_load_ohm:.2f} Ω, C_bus = {spec.c_bus_f * 1e6:.0f} µF")
-    if spec.use_pfc:
-        circuit, nodes = _build_pfc_bridge(spec)
-        tstop = 0.3
-        dt = 5e-6        # finer for PFC PWM at 50 kHz
+    print(f"  topology: {spec.topology}")
+    print(f"  R_load = {spec.r_load_ohm:.2f} Ω, "
+          f"C_bus = {spec.c_bus_f * 1e6:.0f} µF "
+          f"({'per cap (×2 series)' if spec.topology == 'doubler' else 'across DC bus'}), "
+          f"L_in = {spec.l_in_h * 1e3:.1f} mH")
+    if spec.topology == "doubler":
+        circuit, nodes = _build_voltage_doubler(spec)
     else:
-        circuit, nodes = _build_passive_bridge(spec)
-        tstop = 0.3      # 18 line cycles at 60 Hz
-        dt = 50e-6
+        circuit, nodes = _build_bridge_with_pfc(spec)
+    tstop = 0.3
+    dt = 50e-6
 
     print(f"  nodes: {circuit.num_nodes()}, branches: {circuit.num_branches()}")
 
@@ -238,33 +304,57 @@ def run_converter(spec: ConverterSpec) -> dict:
     # Steady-state slice (skip first 50% — past the inrush transient).
     steady_start = len(result.time) // 2
     i_input_ss = i_input[steady_start:]
-
-    # Bridge loss from input-current RMS (analytical: in a Graetz bridge,
-    # 2 diodes conduct in series at any instant, each diode carries the
-    # AC line current during its half-cycle.
-    #   P_per_diode = I_AC_rms² · R_on / 2     (D1/D2 conduct 50% each)
-    #   P_total     = 2 · I_AC_rms² · R_on     (sum across 4 diodes)
-    # This is more robust than sampling V_AK on IdealDiode terminals,
-    # which is essentially zero when conducting (Pulsim uses an LCP).
     n_ss = len(i_input_ss)
     i_rms_sq = sum(x * x for x in i_input_ss) / max(n_ss, 1)
     r_on = 1.0 / GBU2506_G_ON
-    p_per_diode = 0.5 * i_rms_sq * r_on
-    diode_loss = {name: p_per_diode for name in ["D1", "D2", "D3", "D4"]}
 
-    diode_peak_i = {name: 0.0 for name in diode_loss}
+    # Loss per ACTIVE diode depends on topology:
+    #
+    # Voltage doubler (2 active diodes):
+    #   Each active diode (D1 or D2) carries the FULL i_AC during its
+    #   half-cycle. The path has only ONE diode in series (not two).
+    #     I_diode_rms² = I_AC_rms² / 2     (50% conduction duty)
+    #     P_per_active = I_AC_rms² · R_on / 2
+    #     P_total = 2 × P_per_active = I_AC_rms² · R_on
+    #
+    # Full bridge (4 active diodes, 2 in series at all times):
+    #   Each conduction path has 2 diodes in series carrying i_AC.
+    #     I_diode_rms² = I_AC_rms² / 2
+    #     P_per_active = I_AC_rms² · R_on / 2
+    #     P_total = 4 × P_per_active = 2 · I_AC_rms² · R_on
+    #
+    # So the doubler has HALF the conduction loss of a full bridge for
+    # the same I_AC_rms — confirming the user's intuition.
+    p_per_active_diode = 0.5 * i_rms_sq * r_on
+    active_names = nodes["active_diodes"]
+
+    diode_loss = {}
+    for name in ["D1", "D2", "D3", "D4"]:
+        if name in active_names:
+            diode_loss[name] = p_per_active_diode
+        else:
+            # Diode present in the GBU2506 package but reverse-biased
+            # throughout — zero conduction loss.
+            diode_loss[name] = 0.0
+
+    diode_peak_i = {}
     peak_i = max(abs(x) for x in i_input_ss) if i_input_ss else 0.0
-    for name in diode_peak_i:
-        diode_peak_i[name] = peak_i
+    for name in ["D1", "D2", "D3", "D4"]:
+        diode_peak_i[name] = peak_i if name in active_names else 0.0
 
-    # Junction temperature (steady state): T_j = T_a + P · R_thJA
-    # R_thJA per diode = R_thJC + R_thCA/4 (4 dies share the package).
-    r_th_ja_per_diode = GBU2506_R_TH_JC + GBU2506_R_TH_CA / 4.0
+    # Junction temperature: T_j = T_ambient + P_die · (R_thJC + R_thCA_shared)
+    # The package houses 4 dies sharing one thermal pad → R_thCA / 4 each.
+    # Even reverse-biased dies still see ambient temperature plus the package
+    # rise from the actively-dissipating ones (via shared case temperature).
     t_ambient = 25.0
-    diode_t_j = {
-        name: t_ambient + diode_loss[name] * r_th_ja_per_diode
-        for name in diode_loss
-    }
+    p_total_package = sum(diode_loss.values())
+    t_case = t_ambient + p_total_package * GBU2506_R_TH_CA  # case rises with total
+    diode_t_j = {}
+    for name in ["D1", "D2", "D3", "D4"]:
+        # Each active die: its own junction rise above the case.
+        # Each inactive die: just sits at case temperature.
+        delta_jc = diode_loss[name] * GBU2506_R_TH_JC
+        diode_t_j[name] = t_case + delta_jc
 
     return {
         "spec": spec,
