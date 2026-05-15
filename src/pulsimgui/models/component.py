@@ -106,6 +106,9 @@ class ComponentType(Enum):
     # Three-phase grid source (Pulsim 0.10.0a1+: Circuit::add_three_phase_source)
     THREE_PHASE_SOURCE = auto()
 
+    # Motors (Pulsim 0.10.0a2+: full device-variant integration)
+    DC_MOTOR = auto()
+
     # Pre-configured networks
     SNUBBER_RC = auto()
 
@@ -897,6 +900,14 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "C", 30, 25),
         Pin(3, "N", -30, 0),
     ],
+
+    # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
+    # mechanical state (ω, θ). Pulsim's runtime reserves one branch row for
+    # the armature current and advances ω, θ each accepted timestep.
+    ComponentType.DC_MOTOR: [
+        Pin(0, "A+", -30, 0),
+        Pin(1, "A-", 30, 0),
+    ],
 }
 
 
@@ -1329,6 +1340,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "phase_a_deg": 0.0,
         "positive_sequence": True,
         "unbalance_factor": 0.0,
+    },
+    # DC Motor (Pulsim 0.10.0a2). Full device-variant — runtime advances
+    # ω and θ internally; user only needs to wire the armature terminals.
+    # Defaults match the analytical small-motor example used in Pulsim's
+    # examples/cpp/02_dc_motor_step.cpp.
+    ComponentType.DC_MOTOR: {
+        "R_a": 0.5,           # Ω — armature resistance
+        "L_a": 10e-3,         # H — armature inductance
+        "K_e": 0.05,          # V·s/rad — back-EMF constant
+        "K_t": 0.05,          # N·m/A — torque constant (= K_e in SI)
+        "J":   1e-4,          # kg·m² — rotor inertia
+        "b":   1e-5,          # N·m·s — viscous friction
+        "i_a_init":   0.0,    # A — initial armature current
+        "omega_init": 0.0,    # rad/s — initial speed
+        "theta_init": 0.0,    # rad — initial rotor angle
+        "tau_load":   0.0,    # N·m — external load torque (constant)
     },
 }
 

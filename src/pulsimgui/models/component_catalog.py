@@ -51,6 +51,9 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.PLL, "name": "PLL", "shortcut": ""},
         {"type": ComponentType.SVM, "name": "SVM", "shortcut": ""},
     ],
+    "Motors & Drives": [
+        {"type": ComponentType.DC_MOTOR, "name": "DC Motor", "shortcut": ""},
+    ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
     ],
@@ -94,6 +97,7 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.THERMAL_SCOPE, "Thermal Scope", ["thermal", "temp", "temperature"]),
     # Three-phase / vector control (Pulsim Phase 28)
     (ComponentType.THREE_PHASE_SOURCE, "Three-Phase Source", ["3 phase", "three phase", "3 phase source", "grid", "vab", "vac", "abc", "trifasico", "trifásico"]),
+    (ComponentType.DC_MOTOR, "DC Motor", ["dc motor", "motor", "armature", "rotor", "back-emf", "shaft", "torque", "drive", "motor cc", "motor dc"]),
     (ComponentType.CLARKE_TRANSFORM, "Clarke Transform", ["clarke", "abc", "alpha", "beta", "three phase", "3 phase"]),
     (ComponentType.INVERSE_CLARKE_TRANSFORM, "Inverse Clarke", ["inverse clarke", "alpha beta abc", "iclarke"]),
     (ComponentType.PARK_TRANSFORM, "Park Transform", ["park", "dq", "dq0", "rotating", "three phase"]),

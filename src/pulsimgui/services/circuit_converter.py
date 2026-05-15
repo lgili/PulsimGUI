@@ -464,6 +464,47 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.DC_MOTOR:
+            # Pulsim 0.10.0a2+: Circuit::add_dc_motor with full device-variant
+            # integration. Pins: A+ (pin 0), A- (pin 1). The runtime reserves
+            # one MNA branch row for the armature current and advances ω, θ
+            # internally each timestep. Backend-version gating: if the
+            # capability isn't available, raise CircuitConversionError so the
+            # GUI surfaces a clear "upgrade Pulsim" message rather than a
+            # cryptic AttributeError.
+            n_a_plus, n_a_minus = self._require_nodes(name, nodes, 2)
+            n_plus_idx = self._node_index(circuit, n_a_plus, node_cache)
+            n_minus_idx = self._node_index(circuit, n_a_minus, node_cache)
+
+            params_cls = getattr(self._sl, "DcMotorParams", None)
+            add_motor = getattr(circuit, "add_dc_motor", None)
+            if params_cls is None or add_motor is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the DC Motor device "
+                    "(need pulsim>=0.10.0a2). Upgrade with `pip install -U pulsim`."
+                )
+
+            motor_params = params_cls()
+            motor_params.name = name
+            motor_params.R_a = self._as_float(params.get("R_a"), default=0.5)
+            motor_params.L_a = self._as_float(params.get("L_a"), default=10e-3)
+            motor_params.K_e = self._as_float(params.get("K_e"), default=0.05)
+            motor_params.K_t = self._as_float(params.get("K_t"), default=0.05)
+            motor_params.J   = self._as_float(params.get("J"),   default=1e-4)
+            motor_params.b   = self._as_float(params.get("b"),   default=1e-5)
+            motor_params.i_a_init   = self._as_float(params.get("i_a_init"), default=0.0)
+            motor_params.omega_init = self._as_float(params.get("omega_init"), default=0.0)
+            motor_params.theta_init = self._as_float(params.get("theta_init"), default=0.0)
+            add_motor(name, n_plus_idx, n_minus_idx, motor_params)
+
+            # Apply optional load torque (constant, set once at simulation start).
+            tau_load = self._as_float(params.get("tau_load"), default=0.0)
+            if tau_load != 0.0:
+                set_tau = getattr(circuit, "set_motor_tau_load", None)
+                if set_tau is not None:
+                    set_tau(name, tau_load)
+            return
+
         if comp_type == ComponentType.THREE_PHASE_SOURCE:
             # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
             # which internally decomposes into 3 SineVoltageSource branches.
