@@ -138,6 +138,13 @@ _TEMPLATE_EXAMPLE_FILES: dict[str, str] = {
     "boost_converter": "boost_converter.pulsim",
     "flyback_converter": "flyback_converter.pulsim",
     "buck_converter_closed_loop": "buck_converter_closed_loop.pulsim",
+    # Motor templates (open-loop, fixed shaft speed) — wave-5 first deliverable.
+    # Full Circuit-side integration of motors as DeviceVariant entries is
+    # deferred to a Pulsim 0.10.0+ follow-up; these templates work today by
+    # mirroring the analytical decoupled-axis models from
+    # ``benchmarks/circuits/motor_pmsm_dq_open_loop.yaml``.
+    "dc_motor_open_loop": "dc_motor_open_loop.pulsim",
+    "pmsm_open_loop_dq": "pmsm_open_loop_dq.pulsim",
 }
 
 TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
@@ -194,6 +201,42 @@ TEMPLATES: dict[str, tuple[TemplateInfo, Callable[[], Circuit]]] = {
         _example_factory(
             _TEMPLATE_EXAMPLE_FILES["buck_converter_closed_loop"],
             "Buck Converter (Closed Loop)",
+        ),
+    ),
+    "dc_motor_open_loop": (
+        TemplateInfo(
+            id="dc_motor_open_loop",
+            name="DC Motor (Open-Loop)",
+            category=TemplateCategory.MOTOR_DRIVES,
+            description=(
+                "Open-loop DC motor armature analysis: Va → R_a → L_a → V_back_emf → 0. "
+                "Steady-state current i_a = (Va - V_back_emf) / R_a; useful for torque "
+                "vs. armature current at fixed shaft speed. Mirrors examples/cpp/02_dc_motor_step.cpp."
+            ),
+            tags=["motor", "dc-motor", "armature", "open-loop", "torque"],
+        ),
+        _example_factory(
+            _TEMPLATE_EXAMPLE_FILES["dc_motor_open_loop"],
+            "DC Motor (Open-Loop)",
+        ),
+    ),
+    "pmsm_open_loop_dq": (
+        TemplateInfo(
+            id="pmsm_open_loop_dq",
+            name="PMSM Open-Loop (dq-frame)",
+            category=TemplateCategory.MOTOR_DRIVES,
+            description=(
+                "PMSM in synchronous (dq) reference frame, decoupled axes. d-axis: "
+                "V_d → R_s → L_d → 0 (drives i_d to zero). q-axis: V_q → R_s → L_q → "
+                "V_emf_q → 0, where V_emf_q = ω_e · λ_pm represents the rotor back-EMF "
+                "at rated speed. Mirrors benchmarks/circuits/motor_pmsm_dq_open_loop.yaml — "
+                "i_q_ss = (V_q - V_emf_q) / R_s, electromagnetic torque T_e = (3/2)·p·λ_pm·i_q."
+            ),
+            tags=["motor", "pmsm", "dq", "park", "synchronous", "field-oriented", "foc"],
+        ),
+        _example_factory(
+            _TEMPLATE_EXAMPLE_FILES["pmsm_open_loop_dq"],
+            "PMSM Open-Loop (dq-frame)",
         ),
     ),
 }
