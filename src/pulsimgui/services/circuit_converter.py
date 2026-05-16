@@ -492,6 +492,13 @@ class CircuitConverter:
             motor_params.K_t = self._as_float(params.get("K_t"), default=0.05)
             motor_params.J   = self._as_float(params.get("J"),   default=1e-4)
             motor_params.b   = self._as_float(params.get("b"),   default=1e-5)
+            # Quadratic load (Pulsim>=0.10.0a3) — gracefully ignored on older
+            # runtimes via hasattr check, so older pulsim still loads files
+            # authored against the newer GUI.
+            if hasattr(motor_params, "tau_load_quad_coeff"):
+                motor_params.tau_load_quad_coeff = self._as_float(
+                    params.get("tau_load_quad_coeff"), default=0.0
+                )
             motor_params.i_a_init   = self._as_float(params.get("i_a_init"), default=0.0)
             motor_params.omega_init = self._as_float(params.get("omega_init"), default=0.0)
             motor_params.theta_init = self._as_float(params.get("theta_init"), default=0.0)
@@ -503,6 +510,75 @@ class CircuitConverter:
                 set_tau = getattr(circuit, "set_motor_tau_load", None)
                 if set_tau is not None:
                     set_tau(name, tau_load)
+            return
+
+        if comp_type == ComponentType.THREE_PHASE_RL_LOAD:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a3 decomposes into 3 R+L
+            # series branches (Star or Delta).
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_load = getattr(circuit, "add_three_phase_rl_load", None)
+            params_cls = getattr(self._sl, "ThreePhaseRLLoadParams", None)
+            topology_enum = getattr(self._sl, "ThreePhaseLoadTopology", None)
+            if add_load is None or params_cls is None or topology_enum is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the 3-Phase RL Load "
+                    "component (need pulsim>=0.10.0a3). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+
+            ld_p = params_cls()
+            ld_p.resistance_per_phase = self._as_float(
+                params.get("resistance_per_phase"), default=30.0
+            )
+            ld_p.inductance_per_phase = self._as_float(
+                params.get("inductance_per_phase"), default=50e-3
+            )
+            topology_str = str(params.get("topology") or "Star").strip().lower()
+            ld_p.topology = (
+                topology_enum.Delta if topology_str.startswith("delta")
+                else topology_enum.Star
+            )
+            ld_p.unbalance_factor = self._as_float(
+                params.get("unbalance_factor"), default=0.0
+            )
+            add_load(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, ld_p)
+            return
+
+        if comp_type == ComponentType.PMSM_STEADY_STATE:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a3 decomposes into 3 phases
+            # of R_s + L_s + sinusoidal back-EMF.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_pmsm = getattr(circuit, "add_pmsm_steady_state", None)
+            params_cls = getattr(self._sl, "PmsmSteadyStateParams", None)
+            if add_pmsm is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the PMSM "
+                    "(steady-state) component (need pulsim>=0.10.0a3). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            pmsm_p = params_cls()
+            pmsm_p.R_s = self._as_float(params.get("R_s"), default=0.5)
+            pmsm_p.L_s = self._as_float(params.get("L_s"), default=2e-3)
+            pmsm_p.lambda_pm = self._as_float(params.get("lambda_pm"), default=0.1)
+            pmsm_p.omega_electrical = self._as_float(
+                params.get("omega_electrical"), default=314.159265
+            )
+            pmsm_p.phase_a_offset_deg = self._as_float(
+                params.get("phase_a_offset_deg"), default=0.0
+            )
+            pmsm_p.positive_sequence = bool(params.get("positive_sequence", True))
+            add_pmsm(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, pmsm_p)
             return
 
         if comp_type == ComponentType.THREE_PHASE_SOURCE:

@@ -53,6 +53,8 @@ COMPONENT_LIBRARY = {
     ],
     "Motors & Drives": [
         {"type": ComponentType.DC_MOTOR, "name": "DC Motor", "shortcut": ""},
+        {"type": ComponentType.PMSM_STEADY_STATE, "name": "PMSM (steady)", "shortcut": ""},
+        {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL Load", "shortcut": ""},
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
@@ -98,6 +100,8 @@ QUICK_ADD_COMPONENTS = [
     # Three-phase / vector control (Pulsim Phase 28)
     (ComponentType.THREE_PHASE_SOURCE, "Three-Phase Source", ["3 phase", "three phase", "3 phase source", "grid", "vab", "vac", "abc", "trifasico", "trifásico"]),
     (ComponentType.DC_MOTOR, "DC Motor", ["dc motor", "motor", "armature", "rotor", "back-emf", "shaft", "torque", "drive", "motor cc", "motor dc"]),
+    (ComponentType.PMSM_STEADY_STATE, "PMSM (steady-state)", ["pmsm", "permanent magnet", "synchronous motor", "synch motor", "brushless", "bldc", "motor pmsm", "motor sync"]),
+    (ComponentType.THREE_PHASE_RL_LOAD, "3-Phase RL Load", ["3 phase load", "three phase load", "rl load", "carga trifasica", "carga 3 fases", "star load", "delta load", "y load", "wye load"]),
     (ComponentType.CLARKE_TRANSFORM, "Clarke Transform", ["clarke", "abc", "alpha", "beta", "three phase", "3 phase"]),
     (ComponentType.INVERSE_CLARKE_TRANSFORM, "Inverse Clarke", ["inverse clarke", "alpha beta abc", "iclarke"]),
     (ComponentType.PARK_TRANSFORM, "Park Transform", ["park", "dq", "dq0", "rotating", "three phase"]),

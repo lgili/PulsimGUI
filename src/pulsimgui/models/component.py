@@ -109,6 +109,12 @@ class ComponentType(Enum):
     # Motors (Pulsim 0.10.0a2+: full device-variant integration)
     DC_MOTOR = auto()
 
+    # 3-phase RL load (Pulsim 0.10.0a3+: Y/Δ topology, balanced/unbalanced)
+    THREE_PHASE_RL_LOAD = auto()
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3+: R_s + L_s + back-EMF per phase)
+    PMSM_STEADY_STATE = auto()
+
     # Pre-configured networks
     SNUBBER_RC = auto()
 
@@ -908,6 +914,24 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(0, "A+", -30, 0),
         Pin(1, "A-", 30, 0),
     ],
+
+    # 3-phase RL load (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral.
+    # The runtime decomposes into R+L series branches (Y or Δ topology).
+    ComponentType.THREE_PHASE_RL_LOAD: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into
+    # 3 phases of R_s + L_s + sinusoidal back-EMF source.
+    ComponentType.PMSM_STEADY_STATE: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
 }
 
 
@@ -1351,11 +1375,32 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "K_e": 0.05,          # V·s/rad — back-EMF constant
         "K_t": 0.05,          # N·m/A — torque constant (= K_e in SI)
         "J":   1e-4,          # kg·m² — rotor inertia
-        "b":   1e-5,          # N·m·s — viscous friction
+        "b":   1e-5,          # N·m·s — viscous friction (linear in ω)
+        "tau_load_quad_coeff": 0.0,  # N·m·s² — quadratic load (fan/pump)
         "i_a_init":   0.0,    # A — initial armature current
         "omega_init": 0.0,    # rad/s — initial speed
         "theta_init": 0.0,    # rad — initial rotor angle
         "tau_load":   0.0,    # N·m — external load torque (constant)
+    },
+
+    # 3-phase RL load (Pulsim 0.10.0a3). Decomposes into 3 R+L branches
+    # in Star (Y) or Delta (Δ) topology.
+    ComponentType.THREE_PHASE_RL_LOAD: {
+        "resistance_per_phase": 30.0,    # Ω
+        "inductance_per_phase": 50e-3,   # H
+        "topology": "Star",              # "Star" or "Delta"
+        "unbalance_factor": 0.0,         # [0, 1)
+    },
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3). Per-phase R_s + L_s +
+    # sinusoidal back-EMF (amplitude = ω_e · λ_pm).
+    ComponentType.PMSM_STEADY_STATE: {
+        "R_s": 0.5,                      # Ω — stator phase resistance
+        "L_s": 2e-3,                     # H — stator phase inductance
+        "lambda_pm": 0.1,                # V·s/rad — rotor flux linkage
+        "omega_electrical": 314.16,      # rad/s — fixed electrical speed (~50 Hz)
+        "phase_a_offset_deg": 0.0,       # rotor angle offset
+        "positive_sequence": True,       # False flips B/C
     },
 }
 
