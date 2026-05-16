@@ -581,6 +581,66 @@ class CircuitConverter:
             add_pmsm(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, pmsm_p)
             return
 
+        if comp_type == ComponentType.PMSM:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a4 dynamic device-variant
+            # with 4 internal states (i_d, i_q, ω_m, θ_m), Park-frame torque,
+            # forward-Euler mechanical step. Capability-gated against
+            # older runtimes.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_pmsm_dyn = getattr(circuit, "add_pmsm", None)
+            params_cls = getattr(self._sl, "PmsmParams", None)
+            if add_pmsm_dyn is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the PMSM "
+                    "(dynamic) component (need pulsim>=0.10.0a4). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            pmsm_p = params_cls()
+            pmsm_p.name = name
+            pmsm_p.Rs = self._as_float(params.get("Rs"), default=0.5)
+            pmsm_p.Ld = self._as_float(params.get("Ld"), default=2e-3)
+            pmsm_p.Lq = self._as_float(params.get("Lq"), default=2e-3)
+            pmsm_p.psi_pm = self._as_float(params.get("psi_pm"), default=0.1)
+            pmsm_p.pole_pairs = int(self._as_float(
+                params.get("pole_pairs"), default=2
+            ))
+            pmsm_p.J = self._as_float(params.get("J"), default=1e-3)
+            pmsm_p.b_friction = self._as_float(
+                params.get("b_friction"), default=1e-4
+            )
+            pmsm_p.friction_coulomb = self._as_float(
+                params.get("friction_coulomb"), default=0.0
+            )
+            pmsm_p.i_d_init = self._as_float(
+                params.get("i_d_init"), default=0.0
+            )
+            pmsm_p.i_q_init = self._as_float(
+                params.get("i_q_init"), default=0.0
+            )
+            pmsm_p.omega_init = self._as_float(
+                params.get("omega_init"), default=0.0
+            )
+            pmsm_p.theta_init = self._as_float(
+                params.get("theta_init"), default=0.0
+            )
+            add_pmsm_dyn(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, pmsm_p)
+
+            # External load torque is set via a separate runtime call,
+            # mirroring the DC motor flow. Only forward if the user gave
+            # a non-zero value.
+            tau_load = self._as_float(params.get("tau_load"), default=0.0)
+            if tau_load != 0.0:
+                set_tau = getattr(circuit, "set_pmsm_tau_load", None)
+                if set_tau is not None:
+                    set_tau(name, tau_load)
+            return
+
         if comp_type == ComponentType.THREE_PHASE_SOURCE:
             # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
             # which internally decomposes into 3 SineVoltageSource branches.
