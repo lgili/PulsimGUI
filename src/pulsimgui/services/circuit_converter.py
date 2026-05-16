@@ -679,6 +679,58 @@ class CircuitConverter:
                 )
             return
 
+        if comp_type == ComponentType.THREE_PHASE_VSI:
+            # 5-pin (VDC+, VDC-, A, B, C). Pulsim>=0.10.0a5 builds a
+            # complete 3-leg 6-switch SPWM inverter internally. Capability-
+            # gated against older runtimes that lack ``add_three_phase_vsi``.
+            n_vdc_pos, n_vdc_neg, n_a, n_b, n_c = self._require_nodes(name, nodes, 5)
+            n_vdc_pos_idx = self._node_index(circuit, n_vdc_pos, node_cache)
+            n_vdc_neg_idx = self._node_index(circuit, n_vdc_neg, node_cache)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+
+            add_vsi = getattr(circuit, "add_three_phase_vsi", None)
+            params_cls = getattr(self._sl, "ThreePhaseVsiParams", None)
+            if add_vsi is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the 3-Phase VSI "
+                    "component (need pulsim>=0.10.0a5). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            vsi_p = params_cls()
+            vsi_p.switching_frequency_hz = self._as_float(
+                params.get("switching_frequency_hz"), default=10e3
+            )
+            vsi_p.modulation_index = self._as_float(
+                params.get("modulation_index"), default=0.8
+            )
+            vsi_p.modulation_frequency_hz = self._as_float(
+                params.get("modulation_frequency_hz"), default=50.0
+            )
+            vsi_p.phase_a_deg = self._as_float(
+                params.get("phase_a_deg"), default=0.0
+            )
+            vsi_p.positive_sequence = bool(
+                params.get("positive_sequence", True)
+            )
+            vsi_p.v_gate_on = self._as_float(
+                params.get("v_gate_on"), default=12.0
+            )
+            vsi_p.v_gate_off = self._as_float(
+                params.get("v_gate_off"), default=0.0
+            )
+            vsi_p.mosfet_r_on_ohm = self._as_float(
+                params.get("mosfet_r_on_ohm"), default=0.01
+            )
+            vsi_p.mosfet_vth = self._as_float(
+                params.get("mosfet_vth"), default=1.0
+            )
+            add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
+                    n_a_idx, n_b_idx, n_c_idx, vsi_p)
+            return
+
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
             anode = self._node_index(circuit, n_anode, node_cache)
