@@ -762,8 +762,14 @@ class PulsimBackend(SimulationBackend):
         if hasattr(self._module, "run_post_processing"):
             caps.add("post_processing")
 
-        # Check for frequency analysis (pulsim >= 0.7.0)
-        if hasattr(self._module, "run_frequency_analysis"):
+        # Check for frequency analysis. Old v0 builds shipped
+        # ``run_frequency_analysis``; pulsim 1.3+ replaces it with the
+        # swept-sine ``run_ac_sweep`` and the impulse-response
+        # ``run_mna_sweep`` pair.
+        if any(
+            hasattr(self._module, name)
+            for name in ("run_ac_sweep", "run_mna_sweep", "run_frequency_analysis")
+        ):
             caps.add("frequency_analysis")
 
         # Check for averaged converter options (pulsim >= 0.7.0)
@@ -5832,7 +5838,18 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_dc_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("dc_operating_point", "solve_dc", "run_dc", "run_dc_analysis")):
+        # Pulsim 1.3+ ships ``compute_dc_op``; older v0/v1 builds shipped
+        # ``dc_operating_point`` / ``solve_dc`` / ``run_dc``.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "compute_dc_op",
+                "dc_operating_point",
+                "solve_dc",
+                "run_dc",
+                "run_dc_analysis",
+            )
+        ):
             return True
 
         for ns_name in ("v1", "v2"):
@@ -5868,7 +5885,21 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_ac_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("run_ac", "run_ac_analysis", "run_small_signal", "ACAnalysis")):
+        # Pulsim 1.3+ exposes ``run_ac_sweep`` (impulse-response Bode) and
+        # ``run_mna_sweep`` (frequency-domain MNA solve). The older v0/v1
+        # surface used ``run_ac`` / ``run_ac_analysis`` / ``run_small_signal``
+        # / ``ACAnalysis`` — kept here for backwards compatibility.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "run_ac_sweep",
+                "run_mna_sweep",
+                "run_ac",
+                "run_ac_analysis",
+                "run_small_signal",
+                "ACAnalysis",
+            )
+        ):
             return True
 
         simulator_cls = getattr(module, "Simulator", None)
@@ -5894,7 +5925,23 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_thermal_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("run_thermal", "run_thermal_analysis")):
+        # Pulsim 1.3+ ships thermal Foster networks (``FosterStage``,
+        # ``add_foster_network``, ``make_thermal_observer``,
+        # ``compute_temperature``, ``fit_foster_from_zth``). The older
+        # v0/v1 surface used ``ThermalSimulator`` /
+        # ``create_simple_thermal_model`` / ``run_thermal*``.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "add_foster_network",
+                "FosterStage",
+                "make_thermal_observer",
+                "compute_temperature",
+                "fit_foster_from_zth",
+                "run_thermal",
+                "run_thermal_analysis",
+            )
+        ):
             return True
 
         thermal_simulator = getattr(module, "ThermalSimulator", None)
