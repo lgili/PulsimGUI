@@ -732,7 +732,13 @@ class PulsimBackend(SimulationBackend):
     def __init__(self, module: Any, info: BackendInfo) -> None:
         self._module = module
         self.info = info
-        self._converter = CircuitConverter(module)
+        # ``circuit_converter`` was written for pulsim's pre-1.0 surface
+        # (``Circuit`` / ``MOSFETParams`` / int node indices). When the
+        # host pulsim is 1.0+, ``make_compat_module`` wraps it in a shim
+        # that re-exposes the v0 names on top of ``CircuitBuilder``.
+        # When the host is legacy, the shim is a no-op.
+        from pulsimgui.services.pulsim_v0_compat import make_compat_module
+        self._converter = CircuitConverter(make_compat_module(module))
         self._controllers: dict[int, Any] = {}
         self._lock = threading.Lock()
         self._cached_capabilities: set[str] | None = None
