@@ -660,10 +660,25 @@ class Circuit:
         ``switch_fn`` at simulate-time. We record the gate-to-switch
         mapping on :attr:`pending_gate_signals` so a later
         ``backend_adapter`` iteration can assemble the ``switch_fn``.
+
+        Under the hood we delegate to ``add_mosfet_with_body_diode``
+        rather than the bare ``add_mosfet`` for one specific reason:
+        pulsim 1.3's ``PwlStateSpaceCache.build`` eagerly enumerates
+        every 2^N switch-mask combination and rejects any singular
+        topology — including masks the runtime would never actually
+        visit. With a bare MOSFET, the "off" mask leaves the inductor
+        terminal floating (singular) and the cache build fails before
+        any simulation can start. The intrinsic body diode (anti-
+        parallel, source → drain) keeps that terminal connected so
+        every mask is solvable. Two switch bits are consumed instead
+        of one (MOSFET + body diode), but the shim's
+        ``pending_gate_signals`` is the user-controlled list so only
+        the MOSFET bit shows up there; the body-diode bit is
+        event-driven (commutation events fire it at runtime).
         """
         p = params or MOSFETParams()
         switch_idx = self._next_switch_idx()
-        self._builder.add_mosfet(
+        self._builder.add_mosfet_with_body_diode(
             name,
             self._name_of(drain),
             self._name_of(source),
