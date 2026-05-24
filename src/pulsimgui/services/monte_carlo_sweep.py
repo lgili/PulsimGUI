@@ -1,15 +1,27 @@
 """Monte-Carlo sweep helpers (wave-4 sub-A 1.3).
 
-Wraps :mod:`pulsim.sweep` so the GUI can drive multi-parameter
-Monte-Carlo sweeps with non-uniform distributions without leaking
-pulsim runtime types into the dialog layer.
+Self-contained sampling primitives the GUI uses to drive multi-parameter
+sweeps without leaking pulsim runtime types into the dialog layer.
 
-The runtime expects each ``ParameterSpec`` to be either a
-``Distribution`` (continuous, defined by a closed-form inverse CDF
-mapping ``[0, 1]`` to the target distribution) or a ``Cartesian``
-(discrete list of values). The GUI side speaks in user-friendly
-distribution names + per-distribution parameters; this module is the
-translation layer.
+The module defines its own tiny ``Distribution`` / ``Cartesian`` /
+``MetricSpec`` types so the GUI's offline preview, deterministic
+sampling, and serialisation contracts do not move every time upstream
+pulsim re-shapes its sweep API. When a real executor lands, the
+translation step is:
+
+* :class:`Distribution` → ``pulsim.monte_carlo`` ``distributions`` dict,
+  via ``{name: lambda rng: dist.inverse_cdf([rng.random()])[0]}``.
+* :class:`Cartesian` → ``pulsim.sweep`` ``params`` dict, via
+  ``{name: list(cart.values)}``.
+* :class:`MetricSpec` → entries in the user-supplied
+  ``kpi_fn(result, params) -> dict[str, float]`` body.
+
+The ``Distribution`` shape — ``(name, inverse_cdf)`` mapping the
+uniform ``[0, 1]`` quantile to a value — survived the v0 → v1 churn
+because it is exactly what deterministic, NumPy-free unit testing
+needs. Keeping it local also lets the GUI preview histograms in
+demo mode (see :func:`synthesize_uniform_samples`) without needing
+pulsim installed.
 """
 
 from __future__ import annotations
@@ -18,6 +30,47 @@ import math
 import random
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
+
+
+# ---------------------------------------------------------------------------
+# Local sampling primitives (self-contained; no pulsim dependency)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Distribution:
+    """Continuous parameter distribution defined by its inverse CDF.
+
+    ``inverse_cdf(quantiles)`` maps an iterable of quantile probabilities
+    in ``[0, 1]`` to an iterable of distribution values. The exact return
+    container matches the input (NumPy array → NumPy array, list → list)
+    so callers can plug it into either deterministic sampling or
+    numpy-aware fast paths.
+    """
+
+    name: str
+    inverse_cdf: Callable[[Iterable[float]], Any]
+
+
+@dataclass(frozen=True)
+class Cartesian:
+    """Discrete parameter spec — every listed value is exercised."""
+
+    values: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """Lightweight descriptor of a runtime metric.
+
+    The dispatch consumer (executor or KPI extractor) reads ``kind`` +
+    ``channel`` + ``options`` and decides how to compute the metric from
+    a simulation result. ``options`` may carry per-kind keys (e.g.
+    ``target``/``tolerance`` for ``settling_time``) or a ``compute``
+    callable for ``kind="custom"``.
+    """
+
+    kind: str
+    channel: str
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -151,46 +204,43 @@ def _arrayify(values: Iterable[float], func: Callable[[float], float]) -> Any:
     return [func(v) for v in values]
 
 
-def make_uniform_distribution(low: float, high: float):
-    """Build a ``pulsim.sweep.Distribution`` for a uniform [low, high]."""
+def make_uniform_distribution(low: float, high: float) -> Distribution:
+    """Build a :class:`Distribution` for a uniform [low, high]."""
     if high < low:
         raise ValueError("Uniform high must be >= low")
-    import pulsim.sweep as sweep
 
     span = float(high) - float(low)
-    return sweep.Distribution(
+    return Distribution(
         name=f"uniform({low}, {high})",
         inverse_cdf=lambda u: _arrayify(u, lambda p: float(low) + p * span),
     )
 
 
-def make_log_uniform_distribution(low: float, high: float):
+def make_log_uniform_distribution(low: float, high: float) -> Distribution:
     """Build a log-uniform distribution covering [low, high] with low > 0."""
     if low <= 0 or high <= 0:
         raise ValueError("Log-uniform bounds must be strictly positive")
     if high < low:
         raise ValueError("Log-uniform high must be >= low")
-    import pulsim.sweep as sweep
 
     log_low = math.log(low)
     log_high = math.log(high)
     log_span = log_high - log_low
-    return sweep.Distribution(
+    return Distribution(
         name=f"log_uniform({low}, {high})",
         inverse_cdf=lambda u: _arrayify(u, lambda p: math.exp(log_low + p * log_span)),
     )
 
 
-def make_normal_distribution(mu: float, sigma: float):
+def make_normal_distribution(mu: float, sigma: float) -> Distribution:
     """Build a normal(mu, sigma) distribution.
 
     Uses the Beasley–Springer–Moro quantile so we don't pull SciPy in.
     """
     if sigma <= 0:
         raise ValueError("Normal sigma must be > 0")
-    import pulsim.sweep as sweep
 
-    return sweep.Distribution(
+    return Distribution(
         name=f"normal({mu}, {sigma})",
         inverse_cdf=lambda u: _arrayify(
             u, lambda p: float(mu) + float(sigma) * _normal_quantile(min(max(p, 1e-9), 1 - 1e-9))
@@ -198,13 +248,12 @@ def make_normal_distribution(mu: float, sigma: float):
     )
 
 
-def make_cartesian(values: Sequence[float]):
-    """Build a Cartesian-product spec from a list of discrete values."""
+def make_cartesian(values: Sequence[float]) -> Cartesian:
+    """Build a :class:`Cartesian` spec from a list of discrete values."""
     if not values:
         raise ValueError("Cartesian spec needs at least one value")
-    import pulsim.sweep as sweep
 
-    return sweep.Cartesian(values=tuple(values))
+    return Cartesian(values=tuple(float(v) for v in values))
 
 
 def build_runtime_parameter(row: MonteCarloParameter) -> Any:
@@ -236,34 +285,43 @@ def build_runtime_parameter(row: MonteCarloParameter) -> Any:
 # ---------------------------------------------------------------------------
 # Metric factories
 # ---------------------------------------------------------------------------
-def build_runtime_metric(metric: MonteCarloMetric) -> Any:
-    """Translate :class:`MonteCarloMetric` to a :mod:`pulsim.sweep.metrics` entry."""
-    import pulsim.sweep.metrics as metrics
+_VALID_METRIC_KINDS = frozenset({
+    "steady_state",
+    "peak",
+    "rms",
+    "settling_time",
+    "custom",
+})
 
+
+def build_runtime_metric(metric: MonteCarloMetric) -> MetricSpec:
+    """Translate :class:`MonteCarloMetric` into a :class:`MetricSpec`.
+
+    The executor turns the spec into an entry of the ``kpi_fn`` body
+    that :func:`pulsim.sweep` / :func:`pulsim.monte_carlo` expect. We
+    do not call the runtime here so this function stays trivially
+    testable and works in offline/preview mode.
+
+    ``kind="custom"`` requires ``options["compute"]`` to be callable —
+    that's the function the executor will call as ``compute(result,
+    params) -> float``.
+    """
     kind = metric.kind.strip().lower()
     channel = metric.channel
     if not channel:
         raise ValueError("Metric channel is required")
 
-    if kind == "steady_state":
-        return metrics.steady_state(channel=channel, **metric.options)
-    if kind == "peak":
-        return metrics.peak(channel=channel, **metric.options)
-    if kind == "rms":
-        return metrics.rms(channel=channel, **metric.options)
-    if kind == "settling_time":
-        return metrics.settling_time(channel=channel, **metric.options)
     if kind == "custom":
-        # ``options`` must include a ``compute`` callable accepting
-        # (result, parameters) and returning a float — matches
-        # ``pulsim.sweep.metrics.custom(name, fn)``.
         compute = metric.options.get("compute")
         if not callable(compute):
             raise ValueError(
                 "Custom metric requires a 'compute' callable in options"
             )
-        name = metric.options.get("name") or f"custom({channel})"
-        return metrics.custom(name, compute)
+        return MetricSpec(kind="custom", channel=channel, options=dict(metric.options))
+
+    if kind in _VALID_METRIC_KINDS:
+        return MetricSpec(kind=kind, channel=channel, options=dict(metric.options))
+
     raise ValueError(f"Unknown metric kind: {metric.kind!r}")
 
 
