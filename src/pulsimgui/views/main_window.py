@@ -4000,7 +4000,7 @@ class MainWindow(QMainWindow):
         )
         widget.setWindowTitle("Pulsim — Live Scope (streaming)")
         widget.resize(1100, 600)
-        widget.stop_requested.connect(self._simulation_service.cancel_simulation)
+        widget.stop_requested.connect(self._simulation_service.cancel)
         widget.show()
         widget.start()
         self._live_scope_window = widget
