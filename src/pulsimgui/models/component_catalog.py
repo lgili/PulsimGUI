@@ -52,8 +52,10 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.SVM, "name": "SVM", "shortcut": ""},
     ],
     "Motors & Drives": [
+        {"type": ComponentType.THREE_PHASE_VSI, "name": "3φ VSI", "shortcut": ""},
         {"type": ComponentType.DC_MOTOR, "name": "DC Motor", "shortcut": ""},
         {"type": ComponentType.PMSM_STEADY_STATE, "name": "PMSM (steady)", "shortcut": ""},
+        {"type": ComponentType.PMSM, "name": "PMSM (dynamic)", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL Load", "shortcut": ""},
     ],
     "Thermal": [
@@ -99,8 +101,10 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.THERMAL_SCOPE, "Thermal Scope", ["thermal", "temp", "temperature"]),
     # Three-phase / vector control (Pulsim Phase 28)
     (ComponentType.THREE_PHASE_SOURCE, "Three-Phase Source", ["3 phase", "three phase", "3 phase source", "grid", "vab", "vac", "abc", "trifasico", "trifásico"]),
+    (ComponentType.THREE_PHASE_VSI, "3-Phase VSI", ["vsi", "3 phase inverter", "three phase inverter", "spwm", "inverter", "6 switch", "inversor trifasico", "inversor", "vsi trifasico", "voltage source inverter"]),
     (ComponentType.DC_MOTOR, "DC Motor", ["dc motor", "motor", "armature", "rotor", "back-emf", "shaft", "torque", "drive", "motor cc", "motor dc"]),
     (ComponentType.PMSM_STEADY_STATE, "PMSM (steady-state)", ["pmsm", "permanent magnet", "synchronous motor", "synch motor", "brushless", "bldc", "motor pmsm", "motor sync"]),
+    (ComponentType.PMSM, "PMSM (dynamic)", ["pmsm dynamic", "pmsm dq", "pmsm motor", "permanent magnet dynamic", "synchronous dynamic", "motor pmsm dinamico", "dynamic pmsm", "rotor inertia", "motor sync dinamico"]),
     (ComponentType.THREE_PHASE_RL_LOAD, "3-Phase RL Load", ["3 phase load", "three phase load", "rl load", "carga trifasica", "carga 3 fases", "star load", "delta load", "y load", "wye load"]),
     (ComponentType.CLARKE_TRANSFORM, "Clarke Transform", ["clarke", "abc", "alpha", "beta", "three phase", "3 phase"]),
     (ComponentType.INVERSE_CLARKE_TRANSFORM, "Inverse Clarke", ["inverse clarke", "alpha beta abc", "iclarke"]),

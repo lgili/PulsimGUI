@@ -106,6 +106,10 @@ class ComponentType(Enum):
     # Three-phase grid source (Pulsim 0.10.0a1+: Circuit::add_three_phase_source)
     THREE_PHASE_SOURCE = auto()
 
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5+: 6 MOSFETs + 6 SPWM
+    # gates packaged into a single drop-in inverter component).
+    THREE_PHASE_VSI = auto()
+
     # Motors (Pulsim 0.10.0a2+: full device-variant integration)
     DC_MOTOR = auto()
 
@@ -114,6 +118,10 @@ class ComponentType(Enum):
 
     # PMSM at fixed rotor speed (Pulsim 0.10.0a3+: R_s + L_s + back-EMF per phase)
     PMSM_STEADY_STATE = auto()
+
+    # PMSM dynamic device-variant (Pulsim 0.10.0a4+: 4 internal states —
+    # i_d, i_q, ω_m, θ_m — with mechanical inertia and torque feedback).
+    PMSM = auto()
 
     # Pre-configured networks
     SNUBBER_RC = auto()
@@ -907,6 +915,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "N", -30, 0),
     ],
 
+    # Three-phase 2-level VSI (pulsim>=0.10.0a5).
+    # 5 pins: VDC+, VDC-, A, B, C. The runtime decomposes into 6 MOSFETs +
+    # 6 PWM gate drivers in 3 half-bridge legs.
+    ComponentType.THREE_PHASE_VSI: [
+        Pin(0, "VDC+", -35, -25),
+        Pin(1, "VDC-", -35, 25),
+        Pin(2, "A", 35, -25),
+        Pin(3, "B", 35, 0),
+        Pin(4, "C", 35, 25),
+    ],
+
     # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
     # mechanical state (ω, θ). Pulsim's runtime reserves one branch row for
     # the armature current and advances ω, θ each accepted timestep.
@@ -927,6 +946,16 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into
     # 3 phases of R_s + L_s + sinusoidal back-EMF source.
     ComponentType.PMSM_STEADY_STATE: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM dynamic (pulsim>=0.10.0a4). 4 pins: A, B, C, Neutral. Full
+    # device-variant: rotor inertia + electromagnetic torque feedback,
+    # 4 internal states tracked by the runtime.
+    ComponentType.PMSM: [
         Pin(0, "A", -30, -25),
         Pin(1, "B", -30, 0),
         Pin(2, "C", -30, 25),
@@ -1365,6 +1394,19 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "positive_sequence": True,
         "unbalance_factor": 0.0,
     },
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5). Decomposes into
+    # 6 MOSFETs + 6 SPWM gate drivers (forced to Ideal switching mode).
+    ComponentType.THREE_PHASE_VSI: {
+        "switching_frequency_hz":  10e3,   # Hz — PWM carrier
+        "modulation_index":        0.8,    # 0..1 linear SPWM
+        "modulation_frequency_hz": 50.0,   # Hz — output fundamental
+        "phase_a_deg":             0.0,    # Reference angle for phase A
+        "positive_sequence":       True,
+        "v_gate_on":               12.0,   # V — gate drive amplitude
+        "v_gate_off":              0.0,    # V
+        "mosfet_r_on_ohm":         0.01,   # Ω — R_ds(on)
+        "mosfet_vth":              1.0,    # V — gate threshold
+    },
     # DC Motor (Pulsim 0.10.0a2). Full device-variant — runtime advances
     # ω and θ internally; user only needs to wire the armature terminals.
     # Defaults match the analytical small-motor example used in Pulsim's
@@ -1401,6 +1443,25 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "omega_electrical": 314.16,      # rad/s — fixed electrical speed (~50 Hz)
         "phase_a_offset_deg": 0.0,       # rotor angle offset
         "positive_sequence": True,       # False flips B/C
+    },
+
+    # PMSM dynamic device (Pulsim 0.10.0a4). Full device-variant: 4
+    # internal states (i_d, i_q, ω_m, θ_m), 3 reserved MNA branch rows,
+    # Park-frame torque, forward-Euler mechanical step.
+    ComponentType.PMSM: {
+        "Rs":            0.5,        # Ω — stator phase resistance
+        "Ld":            2e-3,       # H — d-axis inductance
+        "Lq":            2e-3,       # H — q-axis inductance (Lq > Ld → IPM)
+        "psi_pm":        0.1,        # Wb — magnet flux linkage
+        "pole_pairs":    2,          # poles / 2
+        "J":             1e-3,       # kg·m² — rotor inertia
+        "b_friction":    1e-4,       # N·m·s — linear viscous friction
+        "friction_coulomb": 0.0,     # N·m — Coulomb friction
+        "i_d_init":      0.0,        # A
+        "i_q_init":      0.0,        # A
+        "omega_init":    0.0,        # rad/s
+        "theta_init":    0.0,        # rad
+        "tau_load":      0.0,        # N·m — external shaft load
     },
 }
 
