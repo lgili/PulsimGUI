@@ -4387,6 +4387,17 @@ class PulsimBackend(SimulationBackend):
             return ACResult(error_message=str(exc))
 
         try:
+            # Pulsim 1.3+: ``run_ac`` / ``run_ac_analysis`` /
+            # ``run_small_signal`` / ``ACAnalysis`` were retired in
+            # favour of ``run_ac_sweep`` (swept-sine, accurate for
+            # nonlinear small-signal) and ``run_mna_sweep`` (impulse
+            # response + FFT, fast for linear systems). The GUI's
+            # AC analysis pane targets linear-circuit Bode plots, so
+            # we prefer the MNA path for speed; the swept-sine
+            # variant is available as a per-call override.
+            if self._should_use_ac_sweep_v13():
+                return self._run_ac_sweep_v13(circuit, settings)
+
             # Build AC options
             ac_opts = self._build_ac_options(settings)
 
@@ -6033,6 +6044,199 @@ class PulsimBackend(SimulationBackend):
             convergence_info=info,
             error_message="",
         )
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ AC sweep routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_ac_sweep_v13(self) -> bool:
+        """True iff host pulsim ships the modern AC entry points
+        (``run_ac_sweep`` / ``run_mna_sweep``) AND no longer exposes
+        any of the legacy ones (``run_ac`` / ``run_ac_analysis`` /
+        ``run_small_signal`` / ``ACAnalysis``)."""
+        modern = hasattr(self._module, "run_ac_sweep") or hasattr(
+            self._module, "run_mna_sweep"
+        )
+        if not modern:
+            return False
+        legacy = any(
+            hasattr(self._module, name)
+            for name in (
+                "run_ac",
+                "run_ac_analysis",
+                "run_small_signal",
+                "ACAnalysis",
+            )
+        )
+        return not legacy
+
+    def _run_ac_sweep_v13(
+        self,
+        circuit: Any,
+        settings: ACSettings,
+    ) -> ACResult:
+        """Frequency sweep through pulsim 1.3+'s impulse-FFT API.
+
+        Uses ``run_mna_sweep(builder, freqs=, output_idx=, …)`` —
+        one transient with an impulse + FFT to extract H(f). Fast
+        for linear circuits, which is what the GUI's AC panel
+        targets in 99 % of cases. The swept-sine variant
+        (``run_ac_sweep``) is more accurate for nonlinear small-
+        signal but requires a hand-written ``excite_fn``; the GUI
+        doesn't surface that knob yet.
+
+        The result is mapped into the GUI's :class:`ACResult` shape:
+        ``frequencies`` is the log-spaced grid from
+        ``ACSettings.f_start`` / ``f_stop`` / ``points_per_decade``;
+        ``magnitude`` and ``phase`` are dicts keyed by output-node
+        name. Multiple ``output_nodes`` are run as separate sweeps —
+        each is a fresh impulse response.
+        """
+        import math
+        import numpy as np
+
+        builder = getattr(circuit, "builder", circuit)
+
+        # Log-spaced frequency grid the GUI expects to see in the
+        # result. Pulsim's MNA sweep accepts an explicit ``freqs=``
+        # parameter and interpolates internally onto it, so we set
+        # the grid once and reuse it across outputs.
+        f_lo = max(float(settings.f_start), 1e-9)
+        f_hi = max(float(settings.f_stop), f_lo * 10.0)
+        ppd = max(int(settings.points_per_decade), 1)
+        n_decades = max(1.0, math.log10(f_hi / f_lo))
+        n_points = max(2, int(round(ppd * n_decades)) + 1)
+        freqs = np.logspace(math.log10(f_lo), math.log10(f_hi), n_points)
+
+        # Solver time-step: must satisfy Nyquist for ``f_hi``.
+        dt = 1.0 / (4.0 * f_hi)
+        # Total horizon: ≥ 10 / f_lo for clean low-frequency reading.
+        t_end = max(10.0 / f_lo, 100.0 * dt)
+
+        outputs = list(settings.output_nodes) or []
+        if not outputs:
+            return ACResult(
+                error_message=(
+                    "AC analysis requires at least one output node. "
+                    "Add a node to ACSettings.output_nodes."
+                ),
+            )
+
+        magnitude: dict[str, list[float]] = {}
+        phase: dict[str, list[float]] = {}
+
+        for node_name in outputs:
+            # Translate node name to state-vector index. Shim
+            # circuits expose ``get_node(name) -> int``; legacy
+            # backends use ``node_id_of``. Try shim first.
+            output_idx = None
+            getter = getattr(circuit, "get_node", None)
+            if callable(getter):
+                idx = getter(node_name)
+                if isinstance(idx, int) and idx >= 0:
+                    output_idx = idx
+            if output_idx is None and hasattr(builder, "node_id_of"):
+                try:
+                    idx = builder.node_id_of(node_name)
+                    if isinstance(idx, int) and idx >= 0:
+                        output_idx = idx
+                except Exception:
+                    pass
+            if output_idx is None:
+                magnitude[node_name] = []
+                phase[node_name] = []
+                continue
+
+            try:
+                sweep_kwargs: dict[str, Any] = dict(
+                    output_idx=output_idx,
+                    dt=dt,
+                    t_end=t_end,
+                    freqs=list(freqs),
+                )
+                input_branch = self._resolve_ac_input_branch_id(
+                    builder, settings
+                )
+                if input_branch is not None:
+                    sweep_kwargs["v_in_branch_id"] = input_branch
+                sweep_res = self._module.run_mna_sweep(
+                    builder, **sweep_kwargs
+                )
+            except Exception as exc:  # pragma: no cover - failure path
+                return ACResult(
+                    error_message=(
+                        f"run_mna_sweep failed for output '{node_name}': "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+
+            # ``MnaSweepResult`` exposes ``.freqs`` (NumPy array),
+            # ``.H`` (complex), ``.mag_dB`` and ``.phase_deg`` as
+            # the Bode-extracted pair. Fall back to computing them
+            # from ``H`` if the convenience fields are absent.
+            mag_db = getattr(sweep_res, "mag_dB", None)
+            phase_deg = getattr(sweep_res, "phase_deg", None)
+            if mag_db is None or phase_deg is None:
+                H = np.asarray(sweep_res.H)
+                mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-30))
+                phase_deg = np.unwrap(np.angle(H)) * 180.0 / math.pi
+            magnitude[node_name] = [float(x) for x in mag_db]
+            phase[node_name] = [float(x) for x in phase_deg]
+
+        return ACResult(
+            frequencies=[float(f) for f in freqs],
+            magnitude=magnitude,
+            phase=phase,
+            error_message="",
+        )
+
+    @staticmethod
+    def _resolve_ac_input_branch_id(
+        builder: Any,
+        settings: ACSettings,
+    ) -> int | None:
+        """Find the branch id of the input source ``run_mna_sweep``
+        should perturb. Tries the explicit ``settings.input_source``
+        name first; falls back to the first voltage source in
+        builder-call order. Returns ``None`` when no source can be
+        identified (caller then lets pulsim's default kick in).
+
+        v1.3's ``builder.components()`` lists every device with
+        ``{"kind", "name", "branch_id", ...}`` in insertion order, so
+        we walk it looking for a matching name. The lookup is name-
+        first (cheaper / unambiguous) with a kind-based fallback so
+        a circuit that omits the input-source name still works.
+        """
+        components = []
+        getter = getattr(builder, "components", None)
+        if callable(getter):
+            try:
+                components = list(getter())
+            except Exception:
+                components = []
+        if not components:
+            return None
+
+        wanted_name = (settings.input_source or "").strip()
+        if wanted_name:
+            for entry in components:
+                if str(entry.get("name", "")).strip() == wanted_name:
+                    return int(entry.get("branch_id", -1))
+
+        # Fallback: the first voltage / sine / pulse / PWM source in
+        # the builder. This matches pulsim's own ``run_buck`` example
+        # which calls ``run_mna_sweep`` without naming the source
+        # explicitly because the buck has exactly one source.
+        source_kinds = {
+            "voltage_source",
+            "sine_voltage_source",
+            "pulse_voltage_source",
+            "pwm_voltage_source",
+            "current_source",
+        }
+        for entry in components:
+            if str(entry.get("kind", "")).lower() in source_kinds:
+                return int(entry.get("branch_id", -1))
+        return None
 
     def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
