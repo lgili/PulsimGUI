@@ -3704,6 +3704,16 @@ class PulsimBackend(SimulationBackend):
             )
 
         try:
+            # Pulsim 1.3+: retired ``dc_operating_point`` /
+            # ``Simulator.dc_operating_point`` / ``solve_dc`` in
+            # favour of the new ``compute_dc_op(builder, strategy=…)``
+            # surface. Detect that case first; everything else is
+            # legacy fallbacks.
+            if self._should_use_compute_dc_op_v13():
+                return self._run_dc_compute_op_v13(
+                    circuit, settings, circuit_data
+                )
+
             # Try top-level dc_operating_point first (preferred)
             if hasattr(self._module, "dc_operating_point"):
                 return self._run_dc_top_level(circuit, settings, circuit_data)
@@ -5917,6 +5927,111 @@ class PulsimBackend(SimulationBackend):
             None,  # virtual_channels — populated by the v0 streaming
                    # API; the modern path doesn't surface them as a
                    # separate stream.
+        )
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ compute_dc_op() routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_compute_dc_op_v13(self) -> bool:
+        """True iff host pulsim exposes ``compute_dc_op`` and no
+        longer ships the v0 ``dc_operating_point`` / ``solve_dc``
+        entry points. The legacy v0/v1 builds still answer
+        ``hasattr(module, "dc_operating_point")``, so the predicate
+        sleeps for them and the original fallback ladder takes
+        over."""
+        if not hasattr(self._module, "compute_dc_op"):
+            return False
+        return not hasattr(self._module, "dc_operating_point")
+
+    def _run_dc_compute_op_v13(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
+        """Compute the DC operating point through pulsim 1.3+'s
+        ``compute_dc_op(builder, strategy=…)``.
+
+        The v1.3 entry point returns just an ``np.ndarray`` — the
+        state vector. There's no per-iteration history, no explicit
+        success / message, no problematic-variable list; failure
+        manifests as a ``RuntimeError`` when ``strategy="auto"`` runs
+        out of fallbacks. We map that into the same
+        :class:`DCResult` shape the legacy paths produced so callers
+        don't notice the rewire.
+
+        Node voltages are extracted from the front of the state
+        vector via the shim's ``_node_id_to_name`` map (i-th entry =
+        voltage at node ``i`` once ground is filtered out).
+        ``branch_currents`` / ``power_dissipation`` are left empty
+        for now — the shim doesn't track branch-index → device-name
+        mappings yet, and the eventual users of those fields
+        (loss-thermal dashboards, etc.) consume them from the
+        transient path anyway.
+        """
+        # The shim exposes ``Circuit.builder`` for the underlying
+        # CircuitBuilder; fall back to ``circuit`` itself for raw
+        # builders in case a test mock passes one.
+        builder = getattr(circuit, "builder", circuit)
+
+        # Pick the strategy from settings if the GUI surfaces one,
+        # otherwise let ``compute_dc_op`` auto-cascade through naive
+        # → pseudo_trans → source_step.
+        strategy = (
+            getattr(settings, "dc_strategy", None) or "auto"
+        )
+        strategy = str(strategy).strip().lower() or "auto"
+        if strategy not in {"auto", "naive", "pseudo_trans", "source_step"}:
+            strategy = "auto"
+
+        try:
+            state = self._module.compute_dc_op(builder, strategy=strategy)
+        except RuntimeError as exc:
+            return DCResult(
+                error_message=str(exc),
+                convergence_info=ConvergenceInfo(
+                    converged=False,
+                    failure_reason=str(exc),
+                    strategy_used=strategy,
+                ),
+            )
+
+        # Map the state vector back to a {node_name: voltage} dict
+        # the GUI's DC-results panel expects. The shim's node map
+        # has gnd at id ``-1`` and the real nodes at consecutive ids
+        # ``0, 1, 2, …`` matching the builder's enumeration.
+        node_voltages: dict[str, float] = {}
+        id_to_name = getattr(circuit, "_node_id_to_name", {}) or {}
+        n_nodes_in_state = min(int(builder.graph.num_nodes), len(state))
+        for node_id in range(n_nodes_in_state):
+            name = id_to_name.get(node_id)
+            if not name or name == "gnd":
+                continue
+            try:
+                node_voltages[name] = float(state[node_id])
+            except (TypeError, ValueError, IndexError):
+                continue
+        # Ground is by convention 0 V — the GUI's results panel
+        # tends to list it explicitly so DC reports look complete.
+        node_voltages.setdefault("gnd", 0.0)
+
+        # Build a DCResult with full success diagnostics. The
+        # ``strategy_used`` value reports what the user (or
+        # ``auto``) requested; the actual strategy that won inside
+        # ``compute_dc_op`` is not exposed back to Python at the
+        # moment.
+        info = ConvergenceInfo(
+            converged=True,
+            iterations=0,
+            final_residual=0.0,
+            strategy_used=strategy,
+        )
+        return DCResult(
+            node_voltages=node_voltages,
+            branch_currents={},
+            power_dissipation={},
+            convergence_info=info,
+            error_message="",
         )
 
     def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
