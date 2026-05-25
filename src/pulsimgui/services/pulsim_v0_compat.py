@@ -144,9 +144,15 @@ class CompatModule:
     SineParams = staticmethod(lambda: SineParams())  # noqa: N815
     PulseParams = staticmethod(lambda: PulseParams())  # noqa: N815
     PWMParams = staticmethod(lambda: PWMParams())  # noqa: N815
-    SchematicPosition = staticmethod(  # noqa: N815
-        lambda **kw: SchematicPosition(**kw)
-    )
+    @property
+    def SchematicPosition(self) -> type:  # noqa: N802 — v0 API name
+        # Expose the dataclass directly — the GUI converter calls it
+        # positionally as ``SchematicPosition(x, y, rotation,
+        # mirrored)``, which a kwargs-only lambda silently rejects.
+        # A property defers the lookup so the forward reference to the
+        # dataclass declared below this class body resolves at call
+        # time rather than class-body execution time.
+        return SchematicPosition
 
     # --- everything else: passthrough ----------------------------------
     def __getattr__(self, name: str) -> Any:
@@ -215,16 +221,25 @@ class SineParams:
 
     Translated to ``CircuitBuilder.add_sine_voltage_source(name, from, to,
     v_dc, v_amplitude, frequency, phase)``.
+
+    **Field names track what** :class:`CircuitConverter._add_voltage_source`
+    **writes**: ``offset`` (DC bias) and ``amplitude`` (peak). Earlier
+    revisions of this shim used the pulsim-1.x positional names
+    ``v_dc`` / ``v_amplitude``, but the converter was already speaking
+    the v0 ``offset`` / ``amplitude`` vocabulary — the mismatch sent
+    every sine source write into ``extras`` and emitted an
+    amplitude-0 source, so every diode bridge in the GUI quietly
+    produced V_bus ≈ 0 V.
     """
 
-    v_dc: float = 0.0
-    v_amplitude: float = 1.0
+    offset: float = 0.0
+    amplitude: float = 1.0
     frequency: float = 60.0
     phase: float = 0.0
     extras: dict[str, Any] = field(default_factory=dict)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"v_dc", "v_amplitude", "frequency", "phase", "extras"}:
+        if name in {"offset", "amplitude", "frequency", "phase", "extras"}:
             object.__setattr__(self, name, value)
         else:
             try:
@@ -239,28 +254,36 @@ class SineParams:
 class PulseParams:
     """v0 pulse-source params bag.
 
+    Field names track what :class:`CircuitConverter._add_voltage_source`
+    writes:: ``v_initial``, ``v_pulse``, ``t_delay``, ``t_rise``,
+    ``t_fall``, ``t_width``, ``period``. Earlier revisions named these
+    ``v_pulsed`` / ``t_start`` / ``pulse_width`` / ``rise_time`` /
+    ``fall_time`` (pulsim-1.x positional vocabulary) — the mismatch
+    sent every pulse write into ``extras`` so the source defaulted to
+    a 1 V → 1 V no-op step.
+
     Translated to ``CircuitBuilder.add_pulse_voltage_source(name, from, to,
-    v_initial, v_pulsed, t_start, pulse_width, period, rise_time, fall_time)``.
+    v_initial, v_pulse, t_delay, t_width, period, t_rise, t_fall)``.
     """
 
     v_initial: float = 0.0
-    v_pulsed: float = 1.0
-    t_start: float = 0.0
-    pulse_width: float = 1e-3
+    v_pulse: float = 1.0
+    t_delay: float = 0.0
+    t_width: float = 1e-3
     period: float = 2e-3
-    rise_time: float = 1e-6
-    fall_time: float = 1e-6
+    t_rise: float = 1e-6
+    t_fall: float = 1e-6
     extras: dict[str, Any] = field(default_factory=dict)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {
             "v_initial",
-            "v_pulsed",
-            "t_start",
-            "pulse_width",
+            "v_pulse",
+            "t_delay",
+            "t_width",
             "period",
-            "rise_time",
-            "fall_time",
+            "t_rise",
+            "t_fall",
             "extras",
         }:
             object.__setattr__(self, name, value)
@@ -303,11 +326,18 @@ class PWMParams:
 class SchematicPosition:
     """v0 layout-position struct. Tracked but not propagated — v1.3's
     schematic module lives outside the runtime builder and reads
-    positions from a separate path."""
+    positions from a separate path.
+
+    ``CircuitConverter._apply_positions_from_list`` calls this with
+    four *positional* args ``(x, y, rotation, mirrored)`` so the
+    dataclass order must match — switching to ``staticmethod(lambda
+    **kw: …)`` is what broke it on real .pulsim files.
+    """
 
     x: float = 0.0
     y: float = 0.0
     rotation: float = 0.0
+    mirrored: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +388,15 @@ class Circuit:
 
         # Position metadata — never round-tripped to the builder.
         self._positions: dict[str, SchematicPosition] = {}
+
+        # ``device_name → initial_voltage|initial_current`` collected
+        # from v0-style ``add_capacitor(…, initial_voltage)`` and
+        # ``add_inductor(…, initial_current)`` calls. Pulsim 1.4 has no
+        # builder-level IC slot, so these values are kept here for a
+        # future caller (e.g. ``backend_adapter`` could later pre-load
+        # ``simulate(initial_state=…)`` from the dict). Empty for the
+        # common case where the converter passes ICs of zero.
+        self._initial_conditions: dict[str, float] = {}
 
     # --- public accessors expected by the converter --------------------
     @property
@@ -468,6 +507,19 @@ class Circuit:
         name = _normalise_node_name(name)
         return self._node_name_to_id.get(name, -1)
 
+    def ground(self) -> int:
+        """Return the ground node id (always ``-1`` in the shim).
+
+        v0 ``pulsim.Circuit`` exposed a ``ground()`` method that
+        :class:`CircuitConverter` calls whenever it encounters a node
+        whose normalised name is ``"0"`` (the v0 ground convention).
+        The shim reserves ``-1 ↔ "gnd"`` at construction time
+        (:attr:`_node_id_to_name`) so any node id we mint here can be
+        translated back to the v1.3 ``"gnd"`` string by ``_name_of``
+        without colliding with the user-minted ids that start at 0.
+        """
+        return -1
+
     def node_name(self, node_id: int) -> str:
         """Reverse lookup: id → name (used by some GUI hover labels)."""
         return self._node_id_to_name.get(int(node_id), "")
@@ -488,11 +540,44 @@ class Circuit:
     def add_resistor(self, name: str, n1: int, n2: int, R: float) -> None:  # noqa: E741, N803
         self._builder.add_resistor(name, self._name_of(n1), self._name_of(n2), float(R))
 
-    def add_capacitor(self, name: str, n1: int, n2: int, C: float) -> None:  # noqa: N803
-        self._builder.add_capacitor(name, self._name_of(n1), self._name_of(n2), float(C))
+    def add_capacitor(  # noqa: N803
+        self,
+        name: str,
+        n1: int,
+        n2: int,
+        C: float,
+        initial_voltage: float = 0.0,
+    ) -> None:
+        # pulsim 1.4's ``CircuitBuilder.add_capacitor`` is 4-arg
+        # (no IC). v0 ``Circuit.add_capacitor`` accepted a fifth
+        # ``initial_voltage`` argument that the GUI's converter still
+        # passes through. We accept it for source compatibility and
+        # record non-zero values on the shim so a future caller could
+        # pre-load ``simulate(initial_state=…)``. Today the value is
+        # not propagated because v1.3 has no builder-level IC slot —
+        # warn so we don't silently drop a meaningful IC.
+        if initial_voltage:
+            _warn_initial_condition("capacitor", name, "V", initial_voltage)
+            self._initial_conditions[name] = float(initial_voltage)
+        self._builder.add_capacitor(
+            name, self._name_of(n1), self._name_of(n2), float(C)
+        )
 
-    def add_inductor(self, name: str, n1: int, n2: int, L: float) -> None:  # noqa: N803
-        self._builder.add_inductor(name, self._name_of(n1), self._name_of(n2), float(L))
+    def add_inductor(  # noqa: N803
+        self,
+        name: str,
+        n1: int,
+        n2: int,
+        L: float,
+        initial_current: float = 0.0,
+    ) -> None:
+        # See ``add_capacitor`` for the IC handling rationale.
+        if initial_current:
+            _warn_initial_condition("inductor", name, "A", initial_current)
+            self._initial_conditions[name] = float(initial_current)
+        self._builder.add_inductor(
+            name, self._name_of(n1), self._name_of(n2), float(L)
+        )
 
     def add_transformer(
         self,
@@ -538,17 +623,17 @@ class Circuit:
             p = value_or_params
             self._builder.add_sine_voltage_source(
                 name, npos_s, nneg_s,
-                float(p.v_dc), float(p.v_amplitude),
+                float(p.offset), float(p.amplitude),
                 float(p.frequency), float(p.phase),
             )
         elif isinstance(value_or_params, PulseParams):
             p = value_or_params
             self._builder.add_pulse_voltage_source(
                 name, npos_s, nneg_s,
-                float(p.v_initial), float(p.v_pulsed),
-                float(p.t_start), float(p.pulse_width),
-                float(p.period), float(p.rise_time),
-                float(p.fall_time),
+                float(p.v_initial), float(p.v_pulse),
+                float(p.t_delay), float(p.t_width),
+                float(p.period), float(p.t_rise),
+                float(p.t_fall),
             )
         elif isinstance(value_or_params, PWMParams):
             p = value_or_params
@@ -569,12 +654,15 @@ class Circuit:
         nneg: int,
         params: SineParams,
     ) -> None:
+        # Read the same field names the GUI converter writes
+        # (``offset`` / ``amplitude``) rather than the old positional
+        # names so a 110 V_rms sine source actually emits 110 V_rms.
         self._builder.add_sine_voltage_source(
             name,
             self._name_of(npos),
             self._name_of(nneg),
-            float(params.v_dc),
-            float(params.v_amplitude),
+            float(params.offset),
+            float(params.amplitude),
             float(params.frequency),
             float(params.phase),
         )
@@ -591,12 +679,12 @@ class Circuit:
             self._name_of(npos),
             self._name_of(nneg),
             float(params.v_initial),
-            float(params.v_pulsed),
-            float(params.t_start),
-            float(params.pulse_width),
+            float(params.v_pulse),
+            float(params.t_delay),
+            float(params.t_width),
             float(params.period),
-            float(params.rise_time),
-            float(params.fall_time),
+            float(params.t_rise),
+            float(params.t_fall),
         )
 
     def add_pwm_voltage_source(
@@ -831,22 +919,32 @@ class Circuit:
     # --- virtual / control components ---------------------------------
     def add_virtual_component(
         self,
-        name: str,
         kind: str,
+        name: str,
         nodes: list[int] | None = None,
         params: dict[str, Any] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         """v0's virtual components were control blocks (PI, integrator,
         PWM generator, ...). v1.3 has them under ``pulsim.control`` /
         ``pulsim.blockchain``, but the assembly is driven by the
         backend's BlockChain executor, not the circuit builder. Record
         the call so the backend can pick it up later.
+
+        Argument order matches what
+        :class:`CircuitConverter._add_virtual_component` calls today
+        — ``(kind, name, nodes, params, metadata)``. Earlier revisions
+        had ``name`` first and silently dropped ``metadata``, which
+        caused every ``VOLTAGE_PROBE`` / ``CURRENT_PROBE`` /
+        ``PWM_GENERATOR`` write from the GUI to raise a TypeError
+        once pulsim 1.4+ landed.
         """
         self.virtual_component_records.append({
             "name": name,
             "kind": kind,
             "nodes": [int(n) for n in (nodes or [])],
             "params": dict(params or {}),
+            "metadata": dict(metadata or {}),
         })
 
     # --- layout (no-op pass-through) ----------------------------------
@@ -866,3 +964,34 @@ def _normalise_node_name(name: Any) -> str:
     if not s or s.lower() in {"0", "gnd"}:
         return "gnd"
     return s
+
+
+def _warn_initial_condition(
+    device_kind: str,
+    device_name: str,
+    unit: str,
+    value: float,
+) -> None:
+    """Emit a one-line warning when the v0 converter passes a non-zero
+    initial condition that pulsim 1.4 has no builder-level slot for.
+
+    Pulsim 1.4's ``CircuitBuilder.add_capacitor`` and ``add_inductor``
+    are 4-arg (name, from, to, value) — initial state is set at run
+    time via ``simulate(initial_state=…)`` if needed. The shim records
+    the value in :attr:`Circuit._initial_conditions` so a future
+    backend pass *could* pre-load it, but today the value would be
+    silently lost — a warning makes the gap obvious in the console.
+
+    Warning is rate-limited per device name to avoid spamming the
+    output when a .pulsim file declares many ICs.
+    """
+    import warnings
+
+    warnings.warn(
+        f"v0 compat: non-zero {device_kind} IC {value} {unit} on "
+        f"'{device_name}' is recorded but not yet propagated to the "
+        f"pulsim 1.4 simulator. Set ICs via simulate(initial_state=…) "
+        f"if they materially affect your result.",
+        RuntimeWarning,
+        stacklevel=3,
+    )

@@ -2593,6 +2593,68 @@ class PulsimBackend(SimulationBackend):
             result.signals[name] = []
         attempt_diagnostics: dict[str, Any] = {}
 
+        # Pulsim 1.3+ short-circuit: route every transient attempt
+        # through ``pulsim.simulate(builder, ...)`` BEFORE the legacy
+        # ``run_transient``/``run_transient_streaming``/``Simulator``
+        # path-selection cascade below. Those paths still exist in
+        # this method because some hosts (older PulsimGUI test
+        # mocks, the pre-1.0 wheel) rely on them, but on a real
+        # pulsim 1.4 install they were all calling
+        # ``pulsim._pulsim.run_transient`` with v0 positional args
+        # the new binding rejects. Without this gate, the chunked
+        # path at "Prefer robust run_transient path first" (~25
+        # lines down) wins the race and crashes with an
+        # incompatible-args TypeError.
+        if self._should_use_simulate_v13():
+            total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
+            emit_interval = max(1, total_steps // 50)
+            callbacks.progress(8.0, "Running simulation...")
+
+            def _v13_progress(percent: float, message: str) -> None:
+                # Map 0..100 percent into the 8..80 solver-stage band
+                # the rest of the GUI expects.
+                mapped = 8.0 + (max(0.0, min(100.0, percent)) / 100.0) * 72.0
+                callbacks.progress(mapped, message)
+
+            def _v13_data(t: float, signals: dict[str, Any]) -> None:
+                if callbacks.data_point is not None:
+                    callbacks.data_point(t, signals)
+
+            def _v13_cancel() -> bool:
+                return callbacks.check_cancelled()
+
+            try:
+                times, states, success, message, virtual_channels = (
+                    self._invoke_simulate_v13(
+                        circuit=circuit,
+                        settings=settings,
+                        dt=dt,
+                        emit_interval=emit_interval,
+                        callbacks=callbacks,
+                        progress_callback=_v13_progress,
+                        data_callback=_v13_data,
+                        cancel_check=_v13_cancel,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — surface to UI
+                result.error_message = f"simulate(): {type(exc).__name__}: {exc}"
+                return result
+
+            if not success:
+                result.error_message = message
+                return result
+            result.error_message = ""
+            callbacks.progress(84.0, "Finalizing results...")
+            self._fill_result_from_samples(
+                result, times, states, signal_names,
+                callbacks=callbacks, progress_start=84.0,
+                progress_span=8.0,
+                progress_message="Finalizing results...",
+            )
+            if virtual_channels:
+                self._merge_streaming_virtual_channels(result, virtual_channels)
+            return result
+
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
             if attempt_diagnostics:
                 run_result.statistics.update(
@@ -6477,10 +6539,18 @@ class PulsimBackend(SimulationBackend):
         if hasattr(opts, "auto_damping"):
             opts.auto_damping = True
 
+        # ``num_nodes`` / ``num_branches`` are methods on the legacy
+        # v0 ``Circuit`` but properties on the v0-compat shim. Handle
+        # both shapes so the path works regardless of which Circuit
+        # implementation a host wires up.
         if hasattr(circuit, "num_nodes"):
-            opts.num_nodes = circuit.num_nodes()
+            n_nodes = circuit.num_nodes
+            opts.num_nodes = n_nodes() if callable(n_nodes) else int(n_nodes)
         if hasattr(circuit, "num_branches"):
-            opts.num_branches = circuit.num_branches()
+            n_branches = circuit.num_branches
+            opts.num_branches = (
+                n_branches() if callable(n_branches) else int(n_branches)
+            )
 
         return opts
 
