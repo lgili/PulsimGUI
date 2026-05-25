@@ -440,16 +440,24 @@ class Circuit:
     # --- node management ----------------------------------------------
     def add_node(self, name: str) -> int:
         """v0 ``add_node`` returned an integer node id. We mint one
-        here, registering the str name with the underlying builder so
-        any subsequent ``add_*`` call can pass either form."""
+        here without poking the underlying builder.
+
+        Why not call ``builder.node(name)``? Because v1.3's
+        ``CircuitBuilder`` **auto-creates** any node a subsequent
+        ``add_*`` call references, and any node we touch here that
+        never ends up wired to a branch becomes a dangling row in
+        the MNA matrix (singular topology, cache build rejects it).
+        The v0 GUI flow creates several "logical" nodes that v1.3
+        doesn't need — most notably the **gate** of a MOSFET / IGBT
+        (the gate has no electrical wiring in v1.3, it's a
+        ``switch_fn`` signal). Reserving the name on the shim side
+        and letting the builder discover only the truly-electrical
+        names keeps every mask buildable.
+        """
         name = _normalise_node_name(name)
         existing = self._node_name_to_id.get(name)
         if existing is not None:
             return existing
-        # Trigger node creation on the builder so it shows up in the
-        # graph; we don't actually care about pulsim's internal id — we
-        # keep our own.
-        self._builder.node(name)
         new_id = self._next_node_id
         self._next_node_id += 1
         self._node_id_to_name[new_id] = name
@@ -628,15 +636,36 @@ class Circuit:
         name: str,
         anode: int,
         cathode: int,
-        g_on: float = 1.0,
+        g_on: float = 1e3,
         g_off: float = 1e-9,
+        V_th: float = 0.7,  # noqa: N803
     ) -> None:
+        """v1.3's ``add_diode(name, anode, cathode, g_on, g_off, V_th=0.0)``.
+
+        Three defaults differ from v0 and matter for cache buildability:
+
+        * ``g_on=1e3`` (1 mΩ ON) — pulsim's own buck example uses this
+          value. The v0 default of 1.0 (1 Ω) produces a diode forward
+          drop large enough to collapse buck/boost output voltages by
+          several volts at typical inductor currents.
+        * ``V_th=0.7`` — a non-zero forward-voltage threshold is
+          required for ``PwlStateSpaceCache.build`` to certify the
+          all-off mask as non-singular for topologies that rely on
+          diode commutation to keep an inductor terminal grounded
+          (buck, boost, half-wave rectifier, …). With ``V_th=0`` the
+          eager-cache rejects the topology before any timestep runs.
+
+        ``V_th`` isn't part of the v0 ``Circuit.add_diode(name, anode,
+        cathode, g_on, g_off)`` signature, so callers that only pass
+        four positional args get the new default automatically.
+        """
         self._builder.add_diode(
             name,
             self._name_of(anode),
             self._name_of(cathode),
             float(g_on),
             float(g_off),
+            float(V_th),
         )
 
     def _next_switch_idx(self) -> int:
