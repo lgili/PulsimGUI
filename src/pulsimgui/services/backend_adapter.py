@@ -155,6 +155,13 @@ class BackendCallbacks:
     data_point: Callable[[float, dict[str, float]], None]
     check_cancelled: Callable[[], bool]
     wait_if_paused: Callable[[], None]
+    # Optional kernel-side ring buffer for zero-copy streaming. When
+    # set, the adapter forwards it as ``simulate(live_stream=…)`` so
+    # the kernel pushes (t, x) samples directly into the shared
+    # buffer at a decimated rate (no Python callback per step). The
+    # GUI thread polls it via QTimer for the live-scope view. ``None``
+    # means: stay on the legacy per-step ``data_point`` callback.
+    live_stream: object | None = None
 
 
 @dataclass(frozen=True)
@@ -5988,15 +5995,47 @@ class PulsimBackend(SimulationBackend):
         # ``simulate`` raises if cancelled via observer exception or
         # on any solver failure. Map both into the streaming
         # (times, states, success, message, virtual_channels) tuple.
+        #
+        # Live-stream: when ``callbacks.live_stream`` is set (typically
+        # a ``pulsim.NativeLiveStream`` created by the GUI worker), the
+        # kernel writes (t, x) samples into its C++ ring buffer at the
+        # decimated rate (default 1/100 steps). The GUI's QTimer polls
+        # the ring on the main thread — zero Python in the per-step
+        # hot path. Falls back to the legacy ``step_observer`` data
+        # callback when ``live_stream is None``.
+        simulate_kwargs: dict[str, Any] = {
+            "t_start": t_start,
+            "switch_fn": switch_fn,
+            "step_observer": step_observer,
+        }
+        live_stream = getattr(callbacks, "live_stream", None)
+        if live_stream is not None:
+            simulate_kwargs["live_stream"] = live_stream
         try:
             res = self._module.simulate(
                 builder, t_stop, dt,
-                t_start=t_start,
-                switch_fn=switch_fn,
-                step_observer=step_observer,
+                **simulate_kwargs,
             )
         except _SimulateCancelled:
             return ([], [], False, "Cancelled by user", None)
+        except TypeError as exc:
+            # Backwards-compat: older pulsim builds (pre v1.5) don't
+            # accept ``live_stream``. Retry without it so the GUI still
+            # works against a stale kernel, just without zero-copy
+            # streaming.
+            if "live_stream" in str(exc) and "live_stream" in simulate_kwargs:
+                simulate_kwargs.pop("live_stream")
+                try:
+                    res = self._module.simulate(
+                        builder, t_stop, dt,
+                        **simulate_kwargs,
+                    )
+                except _SimulateCancelled:
+                    return ([], [], False, "Cancelled by user", None)
+                except RuntimeError as exc2:
+                    return ([], [], False, str(exc2), None)
+            else:
+                raise
         except RuntimeError as exc:
             return ([], [], False, str(exc), None)
 

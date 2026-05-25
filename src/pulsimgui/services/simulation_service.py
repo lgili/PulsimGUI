@@ -473,6 +473,12 @@ class SimulationWorker(QThread):
     data_point = Signal(float, dict)  # time, signal_values
     finished_signal = Signal(SimulationResult)
     error = Signal(str)
+    # NEW: published right before the kernel call so the GUI's live
+    # scope can attach a QTimer poll to the same C++ ring buffer.
+    # The payload is the ``pulsim.NativeLiveStream`` (or ``None`` if
+    # the host pulsim doesn't expose it — older builds gracefully
+    # degrade to the per-step ``data_point`` callback above).
+    live_stream_ready = Signal(object)
 
     def __init__(
         self,
@@ -529,11 +535,37 @@ class SimulationWorker(QThread):
             # Emit initial progress immediately so user sees feedback
             self.progress.emit(0, "Starting simulation...")
 
+            # Live-streaming hook: try to create a ``NativeLiveStream``
+            # so the kernel pushes (t, x) samples into a C++ ring
+            # buffer that the GUI's LiveScopeWidget polls on a QTimer.
+            # Fails silently — older pulsim builds (pre v1.5) don't
+            # expose ``NativeLiveStream`` and we fall back to the
+            # per-step ``data_point`` callback.
+            live_stream = None
+            try:
+                import pulsim as _ps  # type: ignore[import-not-found]
+                NativeLiveStream = getattr(_ps, "NativeLiveStream", None)
+                if NativeLiveStream is not None:
+                    # Capacity 200k × decimate 50 covers ~10 s at a
+                    # 1 µs kernel dt — far more visible history than
+                    # any user reasonably needs while sim runs.
+                    live_stream = NativeLiveStream(
+                        capacity=200_000, decimate=50,
+                    )
+            except Exception:  # noqa: BLE001 — fallback to legacy path
+                live_stream = None
+            if live_stream is not None:
+                # Hand the stream to the host BEFORE we block in
+                # run_transient so the LiveScope can attach and start
+                # polling while the sim is in flight.
+                self.live_stream_ready.emit(live_stream)
+
             callbacks = BackendCallbacks(
                 progress=lambda value, message: self.progress.emit(value, message),
                 data_point=lambda t, data: self.data_point.emit(t, data),
                 check_cancelled=lambda: self._cancelled,
                 wait_if_paused=self._wait_if_paused,
+                live_stream=live_stream,
             )
 
             backend_result = self._backend.run_transient(
@@ -927,6 +959,10 @@ class SimulationService(QObject):
     state_changed = Signal(SimulationState)
     progress = Signal(float, str)
     data_point = Signal(float, dict)
+    # Forwarded from SimulationWorker.live_stream_ready: emitted right
+    # before the kernel call so views (LiveScopeWidget) can attach a
+    # QTimer poll loop to the same ring buffer the kernel is filling.
+    live_stream_ready = Signal(object)
     simulation_finished = Signal(SimulationResult)
     dc_finished = Signal(DCResult)
     ac_finished = Signal(ACResult)
@@ -2211,6 +2247,9 @@ class SimulationService(QObject):
         worker.data_point.connect(self._on_data_point)
         worker.finished_signal.connect(self._on_finished)
         worker.error.connect(self._on_error)
+        # Forward the live_stream_ready event up to subscribers
+        # (typically main_window) so they can attach the LiveScope.
+        worker.live_stream_ready.connect(self.live_stream_ready)
         worker.finished.connect(worker.deleteLater)
         QTimer.singleShot(0, self._start_pending_worker)
 
