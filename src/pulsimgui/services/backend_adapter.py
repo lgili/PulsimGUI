@@ -726,6 +726,13 @@ class PlaceholderBackend(SimulationBackend):
         )
 
 
+class _SimulateCancelled(Exception):
+    """Internal sentinel used inside the v1.3 ``step_observer`` to bail
+    out of ``pulsim.simulate(...)`` when the GUI's ``check_cancelled``
+    callback returns True. Caught at the seam in ``_invoke_simulate_v13``
+    and translated into the standard "cancelled" return tuple."""
+
+
 class PulsimBackend(SimulationBackend):
     """Adapter that executes simulations via the native Pulsim backend."""
 
@@ -3355,6 +3362,51 @@ class PulsimBackend(SimulationBackend):
         total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
         emit_interval = max(1, total_steps // 50)
 
+        # Pulsim 1.3+ retired ``run_transient_streaming`` in favour of
+        # ``pulsim.simulate(builder, t_end, dt, switch_fn=,
+        # step_observer=)``. The shim path detects that case (host
+        # exposes ``simulate`` but not ``run_transient_streaming``) and
+        # routes through the modern API; legacy hosts keep the v0
+        # path untouched.
+        if self._should_use_simulate_v13():
+            try:
+                times, states, success, message, virtual_channels = (
+                    self._invoke_simulate_v13(
+                        circuit=circuit,
+                        settings=settings,
+                        dt=dt,
+                        emit_interval=emit_interval,
+                        callbacks=callbacks,
+                        progress_callback=progress_callback,
+                        data_callback=data_callback,
+                        cancel_check=cancel_check,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - surface as error
+                result.error_message = f"simulate(): {type(exc).__name__}: {exc}"
+                return result
+
+            if not success:
+                result.error_message = message
+                return result
+            result.error_message = ""
+            callbacks.progress(84.0, "Finalizing results...")
+            self._fill_result_from_samples(
+                result, times, states, signal_names,
+                callbacks=callbacks, progress_start=84.0,
+                progress_span=8.0,
+                progress_message="Finalizing results...",
+            )
+            if virtual_channels:
+                self._merge_streaming_virtual_channels(result, virtual_channels)
+            if result.time:
+                final_sample = {
+                    name: values[-1]
+                    for name, values in result.signals.items()
+                }
+                callbacks.data_point(result.time[-1], final_sample)
+            return result
+
         transient_args = self._compose_transient_args(
             circuit=circuit,
             settings=settings,
@@ -5743,6 +5795,129 @@ class PulsimBackend(SimulationBackend):
             if "robust" not in text and "auto_regularize" not in text:
                 raise
         return self._module.run_transient(*args)
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ simulate() routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_simulate_v13(self) -> bool:
+        """True iff host pulsim is the post-1.0 surface (``simulate`` is
+        exported, ``run_transient_streaming`` was retired). Sleeping
+        when either side of the predicate is false keeps legacy
+        pulsim builds on their original code paths."""
+        if not hasattr(self._module, "simulate"):
+            return False
+        # Legacy pulsim shipped both ``simulate`` (since 0.7) AND
+        # ``run_transient_streaming``. Only the post-1.0 surface
+        # dropped the streaming entry-point — that's the signal we use
+        # to commit to the v1.3 path.
+        return not hasattr(self._module, "run_transient_streaming")
+
+    def _invoke_simulate_v13(
+        self,
+        circuit: Any,
+        settings: SimulationSettings,
+        dt: float,
+        emit_interval: int,
+        callbacks: BackendCallbacks,
+        progress_callback: Callable[[float, str], None],
+        data_callback: Callable[[float, dict], None],
+        cancel_check: Callable[[], bool],
+    ) -> tuple[Any, Any, bool, str, Any]:
+        """Run a transient through pulsim 1.3+'s ergonomic
+        ``simulate(builder, t_end, dt, switch_fn=, step_observer=)``.
+
+        ``circuit`` is the GUI's shim ``Circuit`` (see
+        ``pulsim_v0_compat.Circuit``); we pull its underlying
+        ``builder`` and the per-switch metadata (``num_switches`` +
+        ``switch_indices`` + ``virtual_component_records``) to
+        assemble the simulate-time ``switch_fn``.
+
+        The streaming/cancel/progress contract is preserved by
+        wrapping a ``step_observer`` that translates ``(t, x)``
+        callbacks into the GUI's progress / data-point / cancel
+        signals at roughly the same cadence the legacy streaming API
+        produced.
+        """
+        # The shim Circuit exposes ``.builder`` for the underlying
+        # v1.3 CircuitBuilder. Fall back to ``circuit`` itself when
+        # the host gave us a raw builder (defensive: tests sometimes
+        # do this).
+        builder = getattr(circuit, "builder", circuit)
+
+        # ``import`` lazily to avoid module-import time penalty.
+        from pulsimgui.services.switch_fn_builder import (
+            assemble_switch_fn,
+            configs_from_pwm_records,
+        )
+
+        # Per-device PWM configs: best-effort heuristic from the
+        # shim's ``virtual_component_records`` (PWM-generator virtual
+        # components the converter recorded). Devices with no matching
+        # record default to OFF.
+        configs = configs_from_pwm_records(circuit)
+        switch_fn = assemble_switch_fn(circuit, configs, self._module)
+
+        # Step-observer adapter: translate per-step ``(t, x)`` into
+        # the existing data / progress / cancel callbacks.
+        t_start = float(settings.t_start)
+        t_stop = float(settings.t_stop)
+        t_span = max(t_stop - t_start, 1e-12)
+        step_counter = [0]
+        cancel_requested = [False]
+
+        def step_observer(t: float, x: Any) -> None:
+            step_counter[0] += 1
+            # Only emit progress / data callbacks every
+            # ``emit_interval`` steps to match the legacy streaming
+            # cadence and avoid GIL contention.
+            if step_counter[0] % max(1, emit_interval) != 0:
+                return
+            try:
+                if cancel_check():
+                    cancel_requested[0] = True
+                    raise _SimulateCancelled()
+            except _SimulateCancelled:
+                raise
+            except Exception:
+                # ``check_cancelled`` shouldn't raise; if it does we
+                # treat it as "keep going" and swallow.
+                pass
+            pct = 100.0 * (t - t_start) / t_span
+            progress_callback(max(0.0, min(100.0, pct)),
+                                "Simulating...")
+            # The legacy data_callback was given a ``state_dict``; we
+            # don't reconstruct the per-channel map here (the final
+            # arrays carry full resolution) — pass an empty dict so
+            # the existing ``data_callback`` signature is satisfied.
+            data_callback(float(t), {})
+
+        # ``simulate`` raises if cancelled via observer exception or
+        # on any solver failure. Map both into the streaming
+        # (times, states, success, message, virtual_channels) tuple.
+        try:
+            res = self._module.simulate(
+                builder, t_stop, dt,
+                t_start=t_start,
+                switch_fn=switch_fn,
+                step_observer=step_observer,
+            )
+        except _SimulateCancelled:
+            return ([], [], False, "Cancelled by user", None)
+        except RuntimeError as exc:
+            return ([], [], False, str(exc), None)
+
+        # Pull arrays in the same layout the legacy streaming API
+        # produced. ``SimulationResult.states`` is a list of NumPy
+        # vectors (one per timestep); ``times`` is a 1-D array.
+        return (
+            list(res.times),
+            [list(s) for s in res.states],
+            True,
+            "",
+            None,  # virtual_channels — populated by the v0 streaming
+                   # API; the modern path doesn't surface them as a
+                   # separate stream.
+        )
 
     def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
