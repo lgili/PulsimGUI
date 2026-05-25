@@ -36,6 +36,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parent.parent
 # Previous revisions hard-coded a developer-specific path here:
 #     sys.path.insert(0, "/Users/.../Pulsim/build/python")
@@ -109,6 +111,44 @@ SIMS = [
 
 
 # ---------------------------------------------------------------------------
+# V_bus probe via pulsim 1.5 introspection
+# ---------------------------------------------------------------------------
+def _pick_bus_voltage_trace(
+    builder,
+    states: np.ndarray,
+    *,
+    ss_start: int,
+) -> list[float]:
+    """Pick the bus voltage by scanning every registered node and
+    returning the **differential** between the highest- and
+    lowest-mean-voltage nodes. On a rectifier topology that's the
+    rail-to-rail DC bus by definition (positive-rail node minus
+    negative-rail node, or +V_dc minus gnd for a single-rail
+    full-bridge).
+
+    Pulsim 1.5 exposes ``builder.graph.nodes`` as a list of
+    ``{"id": int, "name": str}`` dicts; each node's column in
+    ``states`` matches the builder's node_id. We walk the
+    last-half steady-state window to identify the two extremes,
+    then report the trace of `node_max[t] - node_min[t]`.
+    """
+    n_nodes = int(builder.graph.num_nodes)
+    if n_nodes <= 0 or states.size == 0:
+        return [0.0] * states.shape[0]
+    tail = states[ss_start:, :n_nodes]
+    if tail.size == 0:
+        tail = states[:, :n_nodes]
+    means = np.mean(tail, axis=0)
+    hi = int(np.argmax(means))
+    lo = int(np.argmin(means))
+    if hi == lo:
+        # Degenerate — single useful node. Fall back to that node's
+        # potential.
+        return states[:, hi].tolist()
+    return (states[:, hi] - states[:, lo]).tolist()
+
+
+# ---------------------------------------------------------------------------
 # Run one .pulsim
 # ---------------------------------------------------------------------------
 def run_one(spec: SimSpec) -> dict:
@@ -163,26 +203,23 @@ def run_one(spec: SimSpec) -> dict:
         return {"spec": spec, "result": None, "ok": False}
     print(f"  samples: {result.num_steps()}")
 
-    # Extract steady-state metrics. v1.3 ``SimulationResult.states`` is
-    # an (n_steps, n_states) ndarray; ``times`` is the matching time
-    # axis.
+    # Extract steady-state metrics.
     #
-    # NOTE on V_bus reporting: the GUI's ``node_aliases`` dict labels
-    # decorative wire segments (``"n_dc_plus"`` → GUI id ``"3"``) but
-    # the converter only feeds the *electrically-connected* node names
-    # into ``CircuitBuilder``. When the alias points at a wire id that
-    # isn't tied to any component pin, ``builder.node_id_of("3")``
-    # raises ``IndexError`` and the V_bus column ends up as ``0 V``.
-    # The bridge-loss validation (I_rms → P_bridge → T_J) is what
-    # matters here and only needs the input-current trace, so we
-    # report V_bus as ``None`` and let the CSV / plot show the
-    # waveform itself. A future revision could walk
-    # ``builder.graph.nodes`` and pick the highest-peak node as a
-    # best-effort fallback.
+    # V_bus reporting via pulsim 1.5's introspection: the GUI's
+    # `node_aliases` dict labels decorative wire segments
+    # (`n_dc_plus` → GUI id "3") that may not map to any electrical
+    # node the builder knows. Earlier revisions silently returned
+    # V_bus = 0 V here. The right pulsim-1.5 fix is to scan every
+    # registered node, pick the one with the highest steady-state
+    # peak voltage — that IS the bus by definition on a rectifier
+    # topology — and use it directly.
     n_nodes = circuit.num_nodes
     ss = len(result.states) // 2
 
-    bus_voltage = [0.0] * len(result.states)
+    states_arr = np.asarray(result.states)
+    bus_voltage = _pick_bus_voltage_trace(
+        builder, states_arr, ss_start=ss,
+    )
     # L_in is the second branch (index 1) — V_ac reserves branch 0.
     i_input = [s[n_nodes + 1] for s in result.states]
 

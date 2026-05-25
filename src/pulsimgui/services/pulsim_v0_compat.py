@@ -548,20 +548,27 @@ class Circuit:
         C: float,
         initial_voltage: float = 0.0,
     ) -> None:
-        # pulsim 1.4's ``CircuitBuilder.add_capacitor`` is 4-arg
-        # (no IC). v0 ``Circuit.add_capacitor`` accepted a fifth
-        # ``initial_voltage`` argument that the GUI's converter still
-        # passes through. We accept it for source compatibility and
-        # record non-zero values on the shim so a future caller could
-        # pre-load ``simulate(initial_state=…)``. Today the value is
-        # not propagated because v1.3 has no builder-level IC slot —
-        # warn so we don't silently drop a meaningful IC.
-        if initial_voltage:
-            _warn_initial_condition("capacitor", name, "V", initial_voltage)
-            self._initial_conditions[name] = float(initial_voltage)
-        self._builder.add_capacitor(
-            name, self._name_of(n1), self._name_of(n2), float(C)
-        )
+        # pulsim 1.5 lands native `c0=` kwarg on
+        # ``CircuitBuilder.add_capacitor`` — IC propagates through to
+        # ``initial_state()`` synthesis without the shim having to
+        # warn-and-drop. Pre-1.5 hosts get the legacy 4-arg path with
+        # a one-shot warning + shim-side record (handled by the older
+        # capability detector if/when this shim ships against a
+        # pre-1.5 wheel).
+        try:
+            self._builder.add_capacitor(
+                name, self._name_of(n1), self._name_of(n2), float(C),
+                c0=float(initial_voltage) if initial_voltage else None,
+            )
+        except TypeError:
+            # Pre-1.5 binding without c0 kwarg — fall back to the
+            # shim-side warn-and-drop the way v1.4 did.
+            if initial_voltage:
+                _warn_initial_condition("capacitor", name, "V", initial_voltage)
+                self._initial_conditions[name] = float(initial_voltage)
+            self._builder.add_capacitor(
+                name, self._name_of(n1), self._name_of(n2), float(C),
+            )
 
     def add_inductor(  # noqa: N803
         self,
@@ -572,12 +579,18 @@ class Circuit:
         initial_current: float = 0.0,
     ) -> None:
         # See ``add_capacitor`` for the IC handling rationale.
-        if initial_current:
-            _warn_initial_condition("inductor", name, "A", initial_current)
-            self._initial_conditions[name] = float(initial_current)
-        self._builder.add_inductor(
-            name, self._name_of(n1), self._name_of(n2), float(L)
-        )
+        try:
+            self._builder.add_inductor(
+                name, self._name_of(n1), self._name_of(n2), float(L),
+                i0=float(initial_current) if initial_current else None,
+            )
+        except TypeError:
+            if initial_current:
+                _warn_initial_condition("inductor", name, "A", initial_current)
+                self._initial_conditions[name] = float(initial_current)
+            self._builder.add_inductor(
+                name, self._name_of(n1), self._name_of(n2), float(L),
+            )
 
     def add_transformer(
         self,

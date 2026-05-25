@@ -6068,8 +6068,21 @@ class PulsimBackend(SimulationBackend):
         if strategy not in {"auto", "naive", "pseudo_trans", "source_step"}:
             strategy = "auto"
 
+        # v1.5 lands `should_continue=` on every long-running analysis;
+        # forward the GUI's cancel-check so the Cancel button preempts
+        # the DC Newton between strategy fallbacks (Auto path). Older
+        # pulsim builds don't accept the kwarg — try/TypeError-fallback
+        # for graceful degradation.
+        cancel_fn = getattr(callbacks, "check_cancelled", None)
+        sc_kw: dict = {}
+        if cancel_fn is not None:
+            sc_kw["should_continue"] = lambda: not cancel_fn()
         try:
-            state = self._module.compute_dc_op(builder, strategy=strategy)
+            try:
+                state = self._module.compute_dc_op(
+                    builder, strategy=strategy, **sc_kw)
+            except TypeError:
+                state = self._module.compute_dc_op(builder, strategy=strategy)
         except RuntimeError as exc:
             return DCResult(
                 error_message=str(exc),
@@ -6231,9 +6244,21 @@ class PulsimBackend(SimulationBackend):
                 )
                 if input_branch is not None:
                     sweep_kwargs["v_in_branch_id"] = input_branch
-                sweep_res = self._module.run_mna_sweep(
-                    builder, **sweep_kwargs
-                )
+                # v1.5: forward Cancel button into the AC sweep so it
+                # preempts between frequency points (50-point sweep
+                # would otherwise block the GUI for several seconds).
+                cancel_fn = getattr(callbacks, "check_cancelled", None)
+                if cancel_fn is not None:
+                    sweep_kwargs["should_continue"] = lambda: not cancel_fn()
+                try:
+                    sweep_res = self._module.run_mna_sweep(
+                        builder, **sweep_kwargs
+                    )
+                except TypeError:
+                    sweep_kwargs.pop("should_continue", None)
+                    sweep_res = self._module.run_mna_sweep(
+                        builder, **sweep_kwargs
+                    )
             except Exception as exc:  # pragma: no cover - failure path
                 return ACResult(
                     error_message=(
@@ -6403,9 +6428,22 @@ class PulsimBackend(SimulationBackend):
             # (Kelvin or Celsius — it just convolves ΔT and adds
             # T_amb back). The GUI surfaces Celsius so we stay
             # in Celsius the whole way.
-            t_j = self._module.compute_temperature(
-                t_arr, p_arr, stages_module, t_amb_celsius
-            )
+            # v1.5: forward Cancel button into the convolution so it
+            # preempts every ~1000 samples (a 1 s / 1 µs trace would
+            # otherwise block the GUI for ~1 s mid-cancel).
+            cancel_fn = getattr(callbacks, "check_cancelled", None)
+            therm_kwargs: dict = {}
+            if cancel_fn is not None:
+                therm_kwargs["should_continue"] = lambda: not cancel_fn()
+            try:
+                t_j = self._module.compute_temperature(
+                    t_arr, p_arr, stages_module, t_amb_celsius,
+                    **therm_kwargs,
+                )
+            except TypeError:
+                t_j = self._module.compute_temperature(
+                    t_arr, p_arr, stages_module, t_amb_celsius
+                )
         except Exception as exc:
             return ThermalResult(
                 error_message=(
