@@ -335,9 +335,20 @@ class Circuit:
         self._node_name_to_id: dict[str, int] = {"gnd": -1, "0": -1}
         self._next_node_id: int = 0
 
-        # MOSFET / IGBT / VC-switch gate pins are dropped on the floor
-        # for now but recorded here so a later ``backend_adapter``
-        # iteration can wire them to a ``switch_fn``.
+        # MOSFET / IGBT / VC-switch / explicit-switch entries — recorded
+        # in the order they were added to the builder so the eventual
+        # ``switch_fn`` can index into pulsim 1.3's
+        # ``SwitchStateMask(num_switches)`` bit positions. Pulsim
+        # enumerates switching branches in builder-call order, so the
+        # i-th entry here owns bit ``i`` of the mask.
+        #
+        # Each record carries::
+        #
+        #     {"device": str, "kind": str, "gate_node": str,
+        #      "switch_idx": int}
+        #
+        # ``gate_node`` is ``""`` for plain ``add_switch`` (no gate
+        # terminal).
         self.pending_gate_signals: list[dict[str, Any]] = []
 
         # add_virtual_component calls are also recorded — they map to
@@ -363,6 +374,48 @@ class Circuit:
     @property
     def num_branches(self) -> int:
         return self._builder.graph.num_branches
+
+    @property
+    def num_switches(self) -> int:
+        """Total number of switching branches the builder enumerates.
+
+        Pulsim 1.3's ``SwitchStateMask(num_switches)`` and
+        ``make_pwm_switch_fn(..., num_switches=…)`` both want this
+        value, **including** event-driven devices like diodes — they
+        occupy bits in the mask even though the user-supplied
+        ``switch_fn`` never toggles them directly.
+
+        The shim defers to ``builder.graph.num_switches`` so the
+        count stays in sync with pulsim's own enumeration: the
+        ``pending_gate_signals`` list is a strict subset (only
+        explicitly controllable devices). When a circuit has e.g. one
+        MOSFET + one diode, ``num_switches == 2`` but
+        ``len(pending_gate_signals) == 1``.
+        """
+        return self._builder.graph.num_switches
+
+    @property
+    def switch_indices(self) -> dict[str, int]:
+        """``device_name → switch_idx`` map for callers that want to
+        target a specific device when assembling the simulate-time
+        ``switch_fn``. Empty when there are no switching elements."""
+        return {
+            entry["device"]: entry["switch_idx"]
+            for entry in self.pending_gate_signals
+        }
+
+    @property
+    def gate_node_indices(self) -> dict[str, int]:
+        """``gate_node → switch_idx`` map. The GUI's PWM generator
+        records the *gate node it drives* in its
+        ``virtual_component_records[*]["nodes"]`` — this property is
+        the bridge that lets ``backend_adapter`` connect a PWM gen to
+        the switch bit it should toggle."""
+        return {
+            entry["gate_node"]: entry["switch_idx"]
+            for entry in self.pending_gate_signals
+            if entry.get("gate_node")
+        }
 
     def node_names(self) -> list[str]:
         return [
@@ -586,6 +639,14 @@ class Circuit:
             float(g_off),
         )
 
+    def _next_switch_idx(self) -> int:
+        """Return the bit position pulsim 1.3 will use for the next
+        switching device added to the builder. The graph numbers them
+        in call order, so the shim just tracks its own counter — kept
+        in sync via every ``add_mosfet`` / ``add_igbt`` / ``add_switch``
+        / ``add_vcswitch`` path."""
+        return len(self.pending_gate_signals)
+
     def add_mosfet(
         self,
         name: str,
@@ -601,6 +662,7 @@ class Circuit:
         ``backend_adapter`` iteration can assemble the ``switch_fn``.
         """
         p = params or MOSFETParams()
+        switch_idx = self._next_switch_idx()
         self._builder.add_mosfet(
             name,
             self._name_of(drain),
@@ -612,6 +674,7 @@ class Circuit:
             "device": name,
             "kind": "mosfet_n" if p.is_nmos else "mosfet_p",
             "gate_node": self._name_of(gate),
+            "switch_idx": switch_idx,
         })
 
     def add_igbt(
@@ -623,6 +686,7 @@ class Circuit:
         params: IGBTParams | None = None,
     ) -> None:
         p = params or IGBTParams()
+        switch_idx = self._next_switch_idx()
         self._builder.add_igbt(
             name,
             self._name_of(collector),
@@ -634,6 +698,7 @@ class Circuit:
             "device": name,
             "kind": "igbt",
             "gate_node": self._name_of(gate),
+            "switch_idx": switch_idx,
         })
 
     def add_switch(
@@ -645,6 +710,7 @@ class Circuit:
         g_on: float = 1.0,
         g_off: float = 1e-9,
     ) -> None:
+        switch_idx = self._next_switch_idx()
         self._builder.add_switch(
             name,
             self._name_of(n1),
@@ -652,6 +718,16 @@ class Circuit:
             float(g_on),
             float(g_off),
         )
+        # Plain switches have no gate terminal — recorded with an empty
+        # ``gate_node`` so callers know this bit is driven solely by
+        # the user-supplied ``switch_fn`` rather than by a PWM-source
+        # virtual component.
+        self.pending_gate_signals.append({
+            "device": name,
+            "kind": "switch",
+            "gate_node": "",
+            "switch_idx": switch_idx,
+        })
 
     def add_vcswitch(
         self,
@@ -666,6 +742,7 @@ class Circuit:
         # Voltage-controlled switch in v1.3 is just a switch driven by
         # switch_fn(t, state) — record the control node for later
         # wiring.
+        switch_idx = self._next_switch_idx()
         self._builder.add_switch(
             name,
             self._name_of(t1),
@@ -677,6 +754,7 @@ class Circuit:
             "device": name,
             "kind": "vcswitch",
             "gate_node": self._name_of(ctrl),
+            "switch_idx": switch_idx,
         })
 
     def add_snubber_rc(
