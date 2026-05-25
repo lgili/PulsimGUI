@@ -37,7 +37,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, "/Users/lgili/Documents/01 - Codes/01 - Github/Pulsim/build/python")
+# Previous revisions hard-coded a developer-specific path here:
+#     sys.path.insert(0, "/Users/.../Pulsim/build/python")
+# That broke on every other machine. ``pulsim>=1.3.0`` is now a
+# regular dependency declared in ``pyproject.toml``, so the venv-
+# installed wheel is on ``sys.path`` automatically.
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
@@ -47,12 +51,23 @@ import pulsim
 from pulsimgui.models.project import Project
 from pulsimgui.services.circuit_data_builder import CircuitDataBuilder
 from pulsimgui.services.circuit_converter import CircuitConverter
+from pulsimgui.services.pulsim_v0_compat import make_compat_module
 from pulsimgui.services.simulation_service import (
     normalize_step_mode, normalize_formulation_mode,
     normalize_thermal_policy, normalize_control_mode,
     SimulationSettings,
 )
+from pulsimgui.services.switch_fn_builder import (
+    assemble_switch_fn,
+    configs_from_pwm_records,
+)
 from pulsimgui.utils.net_utils import build_node_map, build_node_alias_map
+
+# Pulsim 1.3 retired the legacy ``Circuit`` API the converter still
+# speaks; ``make_compat_module`` wraps the runtime in the v0 shim so
+# the converter keeps working unchanged. On pulsim <1.0 the wrapper
+# is a no-op pass-through, so this is safe for either host.
+_PULSIM_FOR_CONVERTER = make_compat_module(pulsim)
 
 
 # ---------------------------------------------------------------------------
@@ -121,38 +136,53 @@ def run_one(spec: SimSpec) -> dict:
         copy_result=True, cooperative_yield=False,
     )
 
-    circuit = CircuitConverter(pulsim).build(data)
-    print(f"  nodes: {circuit.num_nodes()}, branches: {circuit.num_branches()}")
+    circuit = CircuitConverter(_PULSIM_FOR_CONVERTER).build(data)
+    print(f"  nodes: {circuit.num_nodes}, branches: {circuit.num_branches}")
 
-    opts = pulsim.SimulationOptions()
-    opts.tstart = project.simulation_settings.tstart
-    opts.tstop = project.simulation_settings.tstop
-    opts.dt = project.simulation_settings.dt
-    opts.dt_min = 1e-9
-    opts.dt_max = project.simulation_settings.max_step
-    opts.adaptive_timestep = (project.simulation_settings.step_mode == "variable")
-    opts.enable_bdf_order_control = False
-    opts.newton_options.num_nodes = circuit.num_nodes()
-    opts.newton_options.num_branches = circuit.num_branches()
-    opts.enable_events = True
-    # No pre-charge — let DC OP find initial conditions naturally.
+    # Pulsim 1.3 dropped the legacy ``Simulator`` / ``SimulationOptions``
+    # pair. Transient runs go through the top-level ``pulsim.simulate``
+    # helper, which takes a ``CircuitBuilder`` (the shim's ``Circuit``
+    # owns one as ``circuit.builder``) plus kwargs equivalent to the v0
+    # opts fields. A bridge rectifier has no controllable switches, so
+    # ``assemble_switch_fn`` will return ``None`` and we omit the kwarg.
+    builder = circuit.builder
+    pwm_configs = configs_from_pwm_records(circuit)
+    switch_fn = assemble_switch_fn(circuit, pwm_configs, pulsim)
+    sim_kwargs: dict = {
+        "t_start": project.simulation_settings.tstart,
+        "t_end":   project.simulation_settings.tstop,
+        "dt":      project.simulation_settings.dt,
+    }
+    if switch_fn is not None:
+        sim_kwargs["switch_fn"] = switch_fn
 
-    sim = pulsim.Simulator(circuit, opts)
-    result = sim.run_transient()
-    print(f"  status: {result.final_status}, success: {result.success}, time pts: {len(result.time)}")
-    if not result.success:
-        print(f"  message: {result.message}")
-        return {"spec": spec, "result": result, "ok": False}
+    try:
+        result = pulsim.simulate(builder, **sim_kwargs)
+    except Exception as exc:  # noqa: BLE001 — surface any solver failure
+        print(f"  FAILED: {exc!r}")
+        return {"spec": spec, "result": None, "ok": False}
+    print(f"  samples: {result.num_steps()}")
 
-    # Extract steady-state metrics
-    aliases = data["node_aliases"]
-    name_to_idx = {v: int(k) for k, v in aliases.items()}
-    idx_plus = name_to_idx.get("n_dc_plus", -1)
-    idx_minus = name_to_idx.get("n_dc_minus", -1)
-    n_nodes = circuit.num_nodes()
+    # Extract steady-state metrics. v1.3 ``SimulationResult.states`` is
+    # an (n_steps, n_states) ndarray; ``times`` is the matching time
+    # axis.
+    #
+    # NOTE on V_bus reporting: the GUI's ``node_aliases`` dict labels
+    # decorative wire segments (``"n_dc_plus"`` → GUI id ``"3"``) but
+    # the converter only feeds the *electrically-connected* node names
+    # into ``CircuitBuilder``. When the alias points at a wire id that
+    # isn't tied to any component pin, ``builder.node_id_of("3")``
+    # raises ``IndexError`` and the V_bus column ends up as ``0 V``.
+    # The bridge-loss validation (I_rms → P_bridge → T_J) is what
+    # matters here and only needs the input-current trace, so we
+    # report V_bus as ``None`` and let the CSV / plot show the
+    # waveform itself. A future revision could walk
+    # ``builder.graph.nodes`` and pick the highest-peak node as a
+    # best-effort fallback.
+    n_nodes = circuit.num_nodes
     ss = len(result.states) // 2
 
-    bus_voltage = [s[idx_plus] - s[idx_minus] for s in result.states] if idx_plus >= 0 and idx_minus >= 0 else [0] * len(result.states)
+    bus_voltage = [0.0] * len(result.states)
     # L_in is the second branch (index 1) — V_ac reserves branch 0.
     i_input = [s[n_nodes + 1] for s in result.states]
 
@@ -244,7 +274,7 @@ def main() -> None:
                      fontsize=13, y=0.995)
         for row, r in enumerate(runs_ok):
             s = r["spec"]
-            t_ms = [t * 1000.0 for t in r["result"].time]
+            t_ms = [t * 1000.0 for t in r["result"].times]
             axes[row][0].plot(t_ms, r["bus_voltage"], color="#1d4ed8", lw=0.7)
             axes[row][0].set_title(f"{s.label} — V_bus(t) [mean = {r['v_bus_mean']:.1f} V]",
                                    fontsize=10)

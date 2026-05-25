@@ -6,6 +6,25 @@ Control:  Vout feedback → SUB1(error = 6V − Vout) → PI(kp=1,ki=100) → PW
 Runs through PulsimBackend using native backend control semantics
 (`pi_controller` + `pwm_generator`) exactly as exercised by the GUI.
 
+KNOWN LIMITATION on pulsim 1.4+
+-------------------------------
+The closed loop **will not converge** here today: pulsim 1.4 retired
+the in-kernel virtual-component blocks (``pi_controller`` /
+``pwm_generator``) that v0 used to embed inside the simulation
+stride. The shim's :meth:`Circuit.add_virtual_component` records the
+PI/SUB/CONSTANT/PWM blocks but the v1.3 ``simulate(builder, …)``
+driver doesn't (yet) wire them into a closure that drives the
+MOSFET's ``switch_fn``. Until PR #9 lands a Python-side
+``step_observer`` that walks ``virtual_component_records`` and
+synthesises a duty-controlled ``switch_fn`` (the same pattern
+``scripts/test_cl_buck.py`` already demonstrates by hand), Vout stays
+at 0 V because the MOSFET never gets gated.
+
+The transient itself completes cleanly (25 k samples on a 5 ms
+window) — that's the PR #10 deliverable. For a working v1.3
+closed-loop reference, see ``scripts/test_cl_buck.py`` (4.998 V
+steady-state on a 5 V target, 0.04 % error).
+
 Usage
 -----
     cd PulsimGui
