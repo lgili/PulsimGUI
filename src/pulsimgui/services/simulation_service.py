@@ -546,11 +546,20 @@ class SimulationWorker(QThread):
                 import pulsim as _ps  # type: ignore[import-not-found]
                 NativeLiveStream = getattr(_ps, "NativeLiveStream", None)
                 if NativeLiveStream is not None:
-                    # Capacity 200k × decimate 50 covers ~10 s at a
+                    # Capacity 200k × decimate 100 covers ~20 s at a
                     # 1 µs kernel dt — far more visible history than
                     # any user reasonably needs while sim runs.
+                    #
+                    # Why decimate=100 (not 50): profile_live_stream.py
+                    # showed the GUI poll is 12 µs (0.09% of a 60 Hz
+                    # tick); cutting the sample rate in half halves
+                    # the pyqtgraph ``setData`` work — the only real
+                    # cost — without losing visual fidelity at
+                    # human-perceivable timescales. For zoomed-in
+                    # inspection the post-sim ``finalize`` path swaps
+                    # in the full-resolution arrays.
                     live_stream = NativeLiveStream(
-                        capacity=200_000, decimate=50,
+                        capacity=200_000, decimate=100,
                     )
             except Exception:  # noqa: BLE001 — fallback to legacy path
                 live_stream = None

@@ -144,9 +144,29 @@ class LiveScopeWidget(QWidget):
     # UI scaffolding
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        pg.setConfigOptions(
-            antialias=True, background=_BG_COLOR, foreground=_TEXT_COLOR,
-        )
+        # OpenGL render path: moves curve rasterisation to the GPU.
+        # Combined with ``setDownsampling(auto=True)`` on each plot
+        # this drops per-redraw cost to ~visible-pixel-count regardless
+        # of how many ring samples the curve actually holds. On
+        # systems without an OpenGL stack pyqtgraph silently falls
+        # back to the raster path — ``enableExperimental=True`` is
+        # required for the legacy "scatter on top of curve" features
+        # in OpenGL mode (see pyqtgraph 0.13+ release notes).
+        try:
+            pg.setConfigOptions(
+                antialias=True,
+                background=_BG_COLOR,
+                foreground=_TEXT_COLOR,
+                useOpenGL=True,
+                enableExperimental=True,
+            )
+        except Exception:  # noqa: BLE001 — fallback to raster
+            pg.setConfigOptions(
+                antialias=True,
+                background=_BG_COLOR,
+                foreground=_TEXT_COLOR,
+                useOpenGL=False,
+            )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
