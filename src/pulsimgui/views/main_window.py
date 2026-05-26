@@ -95,8 +95,16 @@ from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
 from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
+from pulsimgui.views.scope_v2 import BaseScopeWindow as BaseScopeWindow_t  # noqa: F401 - typing hint
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
+
+
+# Greenfield rollout flag for the modular scope (views/scope_v2). When
+# True, ``_on_scope_open_requested`` opens the new ``BaseScopeWindow``
+# instead of the legacy ScopeWindow. The old code path stays compiled
+# so we can flip back instantly if a regression is spotted.
+USE_SCOPE_V2 = True
 
 
 class MainWindow(QMainWindow):
@@ -119,6 +127,11 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._scope_windows: dict[str, ScopeWindow] = {}
+        # scope_v2 greenfield — new modular PLECS-style scope. Per
+        # component, holds at most one ``BaseScopeWindow`` (in addition
+        # to / instead of the legacy ScopeWindow above depending on the
+        # USE_SCOPE_V2 flag).
+        self._scope_v2_windows: dict[str, "BaseScopeWindow_t"] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
         self._latest_thermal_waveform: SimulationResult | None = None
@@ -2905,7 +2918,100 @@ class MainWindow(QMainWindow):
         """Open (or focus) a dedicated window for the requested scope."""
         if component is None:
             return
-        self._open_scope_window(component)
+        # Greenfield switch: when True, opens the modular scope_v2 shell
+        # (PLECS-style live + post-sim in the same window). When False,
+        # falls back to the legacy ScopeWindow path that still ships.
+        if USE_SCOPE_V2:
+            self._open_scope_v2_window(component)
+        else:
+            self._open_scope_window(component)
+
+    def _open_scope_v2_window(self, component) -> None:
+        """Open the modular scope_v2 ``BaseScopeWindow`` for ``component``.
+
+        Resolves the wired-up probe channels via
+        :func:`resolve_scope_signal_specs`, builds the live + post-sim
+        capabilities, and instantiates the variant matching the scope
+        component's type (electrical / thermal).
+        """
+        from pulsimgui.models.component import ComponentType
+        from pulsimgui.views.scope_v2 import (
+            BaseScopeWindow,
+            CursorsCapability,
+            ExportCapability,
+            FFTCapability,
+            LiveStreamCapability,
+            MathSignalsCapability,
+            PostSimCapability,
+            SMPSMacrosCapability,
+            TriggerCapability,
+        )
+        from pulsimgui.views.scope_v2.resolver import resolve_scope_signal_specs
+        from pulsimgui.views.scope_v2.variants import (
+            ElectricalScopeVariant,
+            ThermalScopeVariant,
+        )
+
+        comp_id = str(component.id)
+        existing = self._scope_v2_windows.get(comp_id)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        circuit = self._current_circuit()
+        live_specs, post_specs = resolve_scope_signal_specs(
+            component, circuit, self._simulation_service, self._project,
+        )
+
+        variant_cls = (
+            ThermalScopeVariant
+            if component.type == ComponentType.THERMAL_SCOPE
+            else ElectricalScopeVariant
+        )
+        variant = variant_cls(name=f"Scope: {component.name}")
+
+        try:
+            from pulsimgui import __version__ as _pg_version
+        except Exception:  # pragma: no cover
+            _pg_version = ""
+
+        capabilities: list = []
+        if live_specs:
+            capabilities.append(LiveStreamCapability(self._simulation_service, live_specs))
+        if post_specs:
+            capabilities.append(PostSimCapability(self._simulation_service, post_specs))
+        # Cursors are always-on — they're a data-agnostic interaction
+        # that even an empty scope benefits from (drag the marker, see
+        # the time readout).
+        capabilities.append(CursorsCapability())
+        # Math signals are gated by the toolbar fx button — attaching
+        # them with no data costs nothing and the user expects the
+        # button to always be present.
+        capabilities.append(MathSignalsCapability())
+        # Trigger / SMPS macros populate the Inspector groups; Export
+        # is on the toolbar download icon; FFT is the Σ toolbar toggle.
+        capabilities.append(TriggerCapability())
+        capabilities.append(SMPSMacrosCapability())
+        capabilities.append(ExportCapability())
+        capabilities.append(FFTCapability())
+
+        window = BaseScopeWindow(
+            variant=variant,
+            capabilities=capabilities,
+            version=_pg_version,
+        )
+        # LiveStreamCapability's Run button forwards to
+        # ``run_transient_project(self._project)`` — give it the project
+        # reference up front so the user can drive the run from inside
+        # the scope window.
+        window._project = self._project
+        window.closed.connect(lambda cid=comp_id: self._scope_v2_windows.pop(cid, None))
+        self._scope_v2_windows[comp_id] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _on_component_properties_requested(self, component) -> None:
         """Open modal component properties editor and apply on confirmation."""
@@ -3953,15 +4059,21 @@ class MainWindow(QMainWindow):
         self._waveform_viewer.add_data_point(time, signals)
 
     def _on_live_stream_ready(self, stream) -> None:
-        """Attach the LiveScopeWidget to the kernel's freshly-allocated
-        live ring (v1.5+ streaming).
+        """Open the standalone LiveScopeWidget (legacy v1.5+ streaming path).
 
-        Opens a non-modal scope window the user can leave open across
-        runs. Adds every named node voltage as a signal so the default
-        view is "all node voltages, real time". The window starts
-        polling immediately — by the time the worker thread enters the
-        blocking simulate() call, samples are already arriving.
+        When ``USE_SCOPE_V2`` is enabled, every open ``BaseScopeWindow``
+        already subscribes to ``live_stream_ready`` via its own
+        :class:`LiveStreamCapability`. Routing the same stream into a
+        second floating window would cause double-rendering, so we
+        suppress the legacy path entirely.
         """
+        if USE_SCOPE_V2:
+            return
+
+        # Legacy path below: open a separate ``LiveScopeWidget`` so the
+        # user sees node voltages stream in real time. The polling timer
+        # starts immediately so samples arrive before simulate() exits.
+
         # Lazy import — pyqtgraph is heavy and not all users of the
         # GUI need the live scope.
         try:
