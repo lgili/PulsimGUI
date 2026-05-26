@@ -31,7 +31,7 @@ class Rule:
 RULES: dict[str, list[Rule]] = {
     "pyproject.toml": [
         Rule(
-            pattern=re.compile(r'(?m)^    "pulsim>=\d+\.\d+\.\d+",$'),
+            pattern=re.compile(r'(?m)^    "pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?",$'),
             replacement='    "pulsim>={backend_version}",',
             expected_count=2,
             description="Runtime/build pulsim minimum version",
@@ -39,7 +39,7 @@ RULES: dict[str, list[Rule]] = {
     ],
     "scripts/build.py": [
         Rule(
-            pattern=re.compile(r'(?m)^        "pulsim>=\d+\.\d+\.\d+",$'),
+            pattern=re.compile(r'(?m)^        "pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?",$'),
             replacement='        "pulsim>={backend_version}",',
             description="Build dependency pulsim minimum version",
         ),
@@ -122,7 +122,7 @@ RULES: dict[str, list[Rule]] = {
     ],
     "BUILD.md": [
         Rule(
-            pattern=re.compile(r"(?m)^pip install pulsim>=\d+\.\d+\.\d+$"),
+            pattern=re.compile(r"(?m)^pip install pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?$"),
             replacement="pip install pulsim>={backend_version}",
             description="Build guide pulsim dependency example",
         ),

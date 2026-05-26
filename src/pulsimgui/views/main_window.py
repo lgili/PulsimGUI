@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -142,6 +142,7 @@ class MainWindow(QMainWindow):
         # empty-state surface. Must come after _create_dock_widgets so
         # the schematic view exists.
         self._welcome_overlay = None
+        self._welcome_user_dismissed = False
         self._install_welcome_overlay()
         self._update_schematic_empty_state()
 
@@ -183,12 +184,15 @@ class MainWindow(QMainWindow):
         # Ensure scene reflects current hierarchy level
         self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
 
-        # Create minimap overlay in corner of schematic view
+        # Minimap floats in the bottom-right corner so it never collides
+        # with the centered welcome overlay or the hierarchy bar at top.
+        # An event filter re-anchors it whenever the view resizes.
         self._minimap = MinimapOverlay(self._schematic_view)
         self._minimap.set_source_view(self._schematic_view)
         self._minimap.navigation_requested.connect(self._on_minimap_navigation)
-        self._minimap.move(10, 10)  # Position in top-left corner
+        self._position_minimap()
         self._minimap.raise_()
+        self._schematic_view.installEventFilter(self)
 
         # Connect schematic signals
         self._schematic_view.zoom_changed.connect(self.update_zoom)
@@ -755,7 +759,7 @@ class MainWindow(QMainWindow):
         self._library_panel = LibraryPanel(theme_service=self._theme_service)
         self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
         self.library_dock.setWidget(self._library_panel)
-        self.library_dock.setMinimumWidth(272)
+        self.library_dock.setMinimumWidth(360)
         self.library_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -831,6 +835,12 @@ class MainWindow(QMainWindow):
         self._simulation_service.state_changed.connect(self._on_simulation_state_changed)
         self._simulation_service.progress.connect(self._on_simulation_progress)
         self._simulation_service.data_point.connect(self._on_simulation_data_point)
+        # NEW (live-streaming v1.5+): open the LiveScopeWidget when
+        # the kernel ring buffer is ready (right before the blocking
+        # ``simulate()`` call). The GUI thread polls it via QTimer
+        # for real-time waveforms while the worker thread is still
+        # crunching numbers.
+        self._simulation_service.live_stream_ready.connect(self._on_live_stream_ready)
         self._simulation_service.simulation_finished.connect(self._on_simulation_finished)
         self._simulation_service.dc_finished.connect(self._on_dc_finished)
         self._simulation_service.ac_finished.connect(self._on_ac_finished)
@@ -1032,8 +1042,15 @@ class MainWindow(QMainWindow):
         """Apply the current theme stylesheet and update components."""
         theme = self._theme_service.current_theme
 
-        # Apply stylesheet
-        self.setStyleSheet(self._theme_service.generate_stylesheet())
+        # Apply the generated stylesheet on the QApplication so detached
+        # top-level dialogs (Preferences, Simulation Settings, Convergence
+        # Diagnostics, …) inherit the same look as MainWindow children.
+        # MainWindow's own stylesheet is cleared to avoid double-application.
+        stylesheet = self._theme_service.generate_stylesheet()
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        self.setStyleSheet("")
         self._apply_palette(theme)
 
         # Update schematic colors from theme
@@ -2155,7 +2172,22 @@ class MainWindow(QMainWindow):
         circuit = self._current_circuit()
         is_empty = not circuit.components and not circuit.wires
         view.set_empty_state_visible(is_empty)
-        if is_empty:
+        # Honour the user's explicit dismissal of the welcome overlay so
+        # ``New schematic`` shows the blank canvas they asked for instead
+        # of immediately re-rendering the welcome card.
+        if is_empty and getattr(self, "_welcome_user_dismissed", False):
+            view.set_empty_state_visible(False)
+
+        # Hide the minimap while the welcome card is centered on the
+        # canvas — it would otherwise float on top of the card and the
+        # placeholder is meaningless without a schematic anyway.
+        minimap = getattr(self, "_minimap", None)
+        toggle_action = getattr(self, "action_toggle_minimap", None)
+        if minimap is not None:
+            wants_visible = toggle_action.isChecked() if toggle_action is not None else True
+            welcome_visible = is_empty and not getattr(self, "_welcome_user_dismissed", False)
+            minimap.setVisible(wants_visible and not welcome_visible)
+        if is_empty and not getattr(self, "_welcome_user_dismissed", False):
             self._refresh_welcome_recent_paths()
 
     # ------------------------------------------------------------------
@@ -2176,6 +2208,7 @@ class MainWindow(QMainWindow):
         overlay.open_project_requested.connect(self._on_welcome_open_project)
         overlay.recent_project_requested.connect(self._on_welcome_recent_project)
         overlay.template_requested.connect(self._on_welcome_template)
+        overlay.dismissed.connect(self._on_welcome_dismissed)
         # Apply current theme palette.
         try:
             theme = self._theme_service.current_theme
@@ -2204,10 +2237,22 @@ class MainWindow(QMainWindow):
         overlay.set_recent_paths(recent)
 
     def _on_welcome_new_project(self) -> None:
+        # User explicitly asked for a blank canvas — dismiss the overlay
+        # so they actually see the empty schematic they requested.
+        self._welcome_user_dismissed = True
         self._on_new_project()
+        self.statusBar().showMessage("New blank schematic created", 2500)
 
     def _on_welcome_open_project(self) -> None:
-        self._on_open()
+        self._on_open_project()
+
+    def _on_welcome_dismissed(self) -> None:
+        """Hide the welcome overlay until the next app launch."""
+        self._welcome_user_dismissed = True
+        self._update_schematic_empty_state()
+        overlay = getattr(self, "_welcome_overlay", None)
+        if overlay is not None:
+            overlay.hide()
 
     def _on_welcome_recent_project(self, path: str) -> None:
         if not path:
@@ -2390,8 +2435,33 @@ class MainWindow(QMainWindow):
         self._schematic_scene.show_dc_overlay = checked
 
     def _on_toggle_minimap(self, checked: bool) -> None:
-        """Toggle minimap visibility."""
-        self._minimap.setVisible(checked)
+        """Toggle minimap visibility, respecting the welcome empty state."""
+        self._minimap.setVisible(checked and not self._is_canvas_empty())
+
+    def _is_canvas_empty(self) -> bool:
+        """Return whether the current schematic has no components or wires."""
+        try:
+            circuit = self._current_circuit()
+        except Exception:
+            return False
+        return not circuit.components and not circuit.wires
+
+    def _position_minimap(self) -> None:
+        """Anchor the minimap to the bottom-right corner of the schematic view."""
+        view = getattr(self, "_schematic_view", None)
+        minimap = getattr(self, "_minimap", None)
+        if view is None or minimap is None:
+            return
+        margin = 12
+        x = max(0, view.width() - minimap.width() - margin)
+        y = max(0, view.height() - minimap.height() - margin)
+        minimap.move(x, y)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt override
+        # Keep the minimap pinned to the bottom-right on schematic resize.
+        if obj is getattr(self, "_schematic_view", None) and event.type() == QEvent.Type.Resize:
+            self._position_minimap()
+        return super().eventFilter(obj, event)
 
     def _schedule_minimap_update(self) -> None:
         """Schedule a throttled minimap update."""
@@ -3911,6 +3981,87 @@ class MainWindow(QMainWindow):
         # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
+    def _on_live_stream_ready(self, stream) -> None:
+        """Attach the LiveScopeWidget to the kernel's freshly-allocated
+        live ring (v1.5+ streaming).
+
+        Opens a non-modal scope window the user can leave open across
+        runs. Adds every named node voltage as a signal so the default
+        view is "all node voltages, real time". The window starts
+        polling immediately — by the time the worker thread enters the
+        blocking simulate() call, samples are already arriving.
+        """
+        # Lazy import — pyqtgraph is heavy and not all users of the
+        # GUI need the live scope.
+        try:
+            from pulsimgui.views.scope.live_scope_widget import (
+                LiveScopeWidget, LiveSignalSpec, DEFAULT_PALETTE,
+            )
+        except Exception:  # noqa: BLE001 — gracefully no-op
+            return
+
+        # Build the signal list from the current project's circuit
+        # builder. We rely on the project's already-converted builder
+        # via the simulation service; this matches what the kernel
+        # actually sees on its state vector.
+        builder = None
+        try:
+            project = getattr(self, "_project", None)
+            converter = getattr(self._simulation_service, "_circuit_converter", None)
+            if project is not None and converter is not None:
+                circuit_data = converter.project_to_dict(project)
+                builder = circuit_data.get("circuit", None)
+                if builder is not None:
+                    builder = getattr(builder, "builder", builder)
+        except Exception:  # noqa: BLE001
+            builder = None
+
+        # Without a builder we can't resolve node indices — still open
+        # the scope (the user can register signals manually later), but
+        # with an empty signal set so the user at least sees the
+        # streaming infrastructure react.
+        signals: list = []
+        if builder is not None:
+            try:
+                # ``builder.graph.node_names`` returns nodes in
+                # registration order; ``node_id_of`` resolves a state
+                # vector slot.
+                names = list(getattr(builder.graph, "node_names", []) or [])
+                if not names:
+                    n_nodes = int(getattr(builder.graph, "num_nodes", 0))
+                    names = [f"n{i}" for i in range(n_nodes)]
+                for i, name in enumerate(names):
+                    try:
+                        idx = int(builder.node_id_of(name))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
+                    signals.append(LiveSignalSpec(
+                        name=f"V({name})", state_idx=idx,
+                        color=color, unit="V",
+                    ))
+            except Exception:  # noqa: BLE001
+                signals = []
+
+        # Re-use the same window across runs to avoid a window-storm
+        # when the user clicks Run repeatedly.
+        existing = getattr(self, "_live_scope_window", None)
+        if existing is not None:
+            try:
+                existing.stop_polling()
+                existing.close()
+            except Exception:  # noqa: BLE001
+                pass
+        widget = LiveScopeWidget(
+            stream, signals, window_seconds=3e-3, update_hz=60.0,
+        )
+        widget.setWindowTitle("Pulsim — Live Scope (streaming)")
+        widget.resize(1100, 600)
+        widget.stop_requested.connect(self._simulation_service.cancel)
+        widget.show()
+        widget.start()
+        self._live_scope_window = widget
+
     def _on_post_processing_requested(self, jobs: list[dict]) -> None:
         """Run waveform post-processing for the latest electrical result."""
         source = self._latest_electrical_result or self._simulation_service.last_result
@@ -3922,6 +4073,26 @@ class MainWindow(QMainWindow):
         if result.is_valid:
             # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
+
+            # NEW (v1.5+): finalise the live-streaming scope with the
+            # full result so the user sees the entire run, not just
+            # the rolling window. We pull the result's time + state
+            # matrix straight from ``result.states`` (a list of
+            # per-step numpy vectors); the widget reshapes into a 2D
+            # array internally.
+            live_scope = getattr(self, "_live_scope_window", None)
+            if live_scope is not None:
+                try:
+                    import numpy as _np
+                    t_arr = _np.asarray(result.time, dtype=_np.float64)
+                    states = getattr(result, "states", None)
+                    if states is not None and len(states) > 0:
+                        x_arr = _np.asarray(states, dtype=_np.float64)
+                    else:
+                        x_arr = _np.zeros((t_arr.size, 0), dtype=_np.float64)
+                    live_scope.finalize(t_arr, x_arr)
+                except Exception:  # noqa: BLE001 — non-critical view sync
+                    pass
 
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "

@@ -157,6 +157,7 @@ class WelcomeOverlay(QFrame):
     open_project_requested = Signal()
     recent_project_requested = Signal(str)  # absolute path
     template_requested = Signal()
+    dismissed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -174,6 +175,7 @@ class WelcomeOverlay(QFrame):
         }
 
         self._setup_ui()
+        self._build_close_button()
 
     # --- Public API ----------------------------------------------------
 
@@ -370,6 +372,57 @@ class WelcomeOverlay(QFrame):
             f"QLabel#WelcomeTitle    {{ color: {self._palette['fg']}; }}"
             f"QLabel#WelcomeSubtitle {{ color: {self._palette['fg_muted']}; }}"
         )
+        self._apply_close_button_style()
+
+    # --- Close (X) button ---------------------------------------------
+
+    def _build_close_button(self) -> None:
+        """Add a small × button in the top-right corner to dismiss the overlay."""
+        self._close_btn = QPushButton("×", self)
+        self._close_btn.setObjectName("WelcomeCloseBtn")
+        self._close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._close_btn.setFlat(True)
+        self._close_btn.setFixedSize(28, 28)
+        self._close_btn.setToolTip("Dismiss welcome")
+        self._close_btn.clicked.connect(self.dismissed)
+        self._apply_close_button_style()
+        self._reposition_close_button()
+        self._close_btn.raise_()
+
+    def _apply_close_button_style(self) -> None:
+        btn = getattr(self, "_close_btn", None)
+        if btn is None:
+            return
+        # Explicit padding: 0 to override the global QPushButton rule
+        # (9px 16px) which would otherwise eat the entire 28×28 surface
+        # and clip the glyph to nothing.
+        btn.setStyleSheet(
+            "QPushButton#WelcomeCloseBtn {"
+            f"  color: {self._palette['fg_muted']};"
+            "  background: transparent;"
+            "  border: none;"
+            "  padding: 0;"
+            "  font-size: 20px;"
+            "  font-weight: 700;"
+            "  border-radius: 14px;"
+            "  min-width: 0;"
+            "}"
+            "QPushButton#WelcomeCloseBtn:hover {"
+            f"  color: {self._palette['fg']};"
+            "  background: rgba(0, 0, 0, 0.08);"
+            "}"
+        )
+
+    def _reposition_close_button(self) -> None:
+        btn = getattr(self, "_close_btn", None)
+        if btn is None:
+            return
+        margin = 10
+        btn.move(self.width() - btn.width() - margin, margin)
+
+    def resizeEvent(self, event):  # noqa: D401 - Qt override
+        super().resizeEvent(event)
+        self._reposition_close_button()
 
 
 __all__ = ["WelcomeOverlay", "MAX_RECENT"]

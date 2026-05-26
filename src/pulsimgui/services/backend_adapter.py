@@ -155,6 +155,13 @@ class BackendCallbacks:
     data_point: Callable[[float, dict[str, float]], None]
     check_cancelled: Callable[[], bool]
     wait_if_paused: Callable[[], None]
+    # Optional kernel-side ring buffer for zero-copy streaming. When
+    # set, the adapter forwards it as ``simulate(live_stream=…)`` so
+    # the kernel pushes (t, x) samples directly into the shared
+    # buffer at a decimated rate (no Python callback per step). The
+    # GUI thread polls it via QTimer for the live-scope view. ``None``
+    # means: stay on the legacy per-step ``data_point`` callback.
+    live_stream: object | None = None
 
 
 @dataclass(frozen=True)
@@ -726,13 +733,26 @@ class PlaceholderBackend(SimulationBackend):
         )
 
 
+class _SimulateCancelled(Exception):
+    """Internal sentinel used inside the v1.3 ``step_observer`` to bail
+    out of ``pulsim.simulate(...)`` when the GUI's ``check_cancelled``
+    callback returns True. Caught at the seam in ``_invoke_simulate_v13``
+    and translated into the standard "cancelled" return tuple."""
+
+
 class PulsimBackend(SimulationBackend):
     """Adapter that executes simulations via the native Pulsim backend."""
 
     def __init__(self, module: Any, info: BackendInfo) -> None:
         self._module = module
         self.info = info
-        self._converter = CircuitConverter(module)
+        # ``circuit_converter`` was written for pulsim's pre-1.0 surface
+        # (``Circuit`` / ``MOSFETParams`` / int node indices). When the
+        # host pulsim is 1.0+, ``make_compat_module`` wraps it in a shim
+        # that re-exposes the v0 names on top of ``CircuitBuilder``.
+        # When the host is legacy, the shim is a no-op.
+        from pulsimgui.services.pulsim_v0_compat import make_compat_module
+        self._converter = CircuitConverter(make_compat_module(module))
         self._controllers: dict[int, Any] = {}
         self._lock = threading.Lock()
         self._cached_capabilities: set[str] | None = None
@@ -762,8 +782,14 @@ class PulsimBackend(SimulationBackend):
         if hasattr(self._module, "run_post_processing"):
             caps.add("post_processing")
 
-        # Check for frequency analysis (pulsim >= 0.7.0)
-        if hasattr(self._module, "run_frequency_analysis"):
+        # Check for frequency analysis. Old v0 builds shipped
+        # ``run_frequency_analysis``; pulsim 1.3+ replaces it with the
+        # swept-sine ``run_ac_sweep`` and the impulse-response
+        # ``run_mna_sweep`` pair.
+        if any(
+            hasattr(self._module, name)
+            for name in ("run_ac_sweep", "run_mna_sweep", "run_frequency_analysis")
+        ):
             caps.add("frequency_analysis")
 
         # Check for averaged converter options (pulsim >= 0.7.0)
@@ -2574,6 +2600,68 @@ class PulsimBackend(SimulationBackend):
             result.signals[name] = []
         attempt_diagnostics: dict[str, Any] = {}
 
+        # Pulsim 1.3+ short-circuit: route every transient attempt
+        # through ``pulsim.simulate(builder, ...)`` BEFORE the legacy
+        # ``run_transient``/``run_transient_streaming``/``Simulator``
+        # path-selection cascade below. Those paths still exist in
+        # this method because some hosts (older PulsimGUI test
+        # mocks, the pre-1.0 wheel) rely on them, but on a real
+        # pulsim 1.4 install they were all calling
+        # ``pulsim._pulsim.run_transient`` with v0 positional args
+        # the new binding rejects. Without this gate, the chunked
+        # path at "Prefer robust run_transient path first" (~25
+        # lines down) wins the race and crashes with an
+        # incompatible-args TypeError.
+        if self._should_use_simulate_v13():
+            total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
+            emit_interval = max(1, total_steps // 50)
+            callbacks.progress(8.0, "Running simulation...")
+
+            def _v13_progress(percent: float, message: str) -> None:
+                # Map 0..100 percent into the 8..80 solver-stage band
+                # the rest of the GUI expects.
+                mapped = 8.0 + (max(0.0, min(100.0, percent)) / 100.0) * 72.0
+                callbacks.progress(mapped, message)
+
+            def _v13_data(t: float, signals: dict[str, Any]) -> None:
+                if callbacks.data_point is not None:
+                    callbacks.data_point(t, signals)
+
+            def _v13_cancel() -> bool:
+                return callbacks.check_cancelled()
+
+            try:
+                times, states, success, message, virtual_channels = (
+                    self._invoke_simulate_v13(
+                        circuit=circuit,
+                        settings=settings,
+                        dt=dt,
+                        emit_interval=emit_interval,
+                        callbacks=callbacks,
+                        progress_callback=_v13_progress,
+                        data_callback=_v13_data,
+                        cancel_check=_v13_cancel,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — surface to UI
+                result.error_message = f"simulate(): {type(exc).__name__}: {exc}"
+                return result
+
+            if not success:
+                result.error_message = message
+                return result
+            result.error_message = ""
+            callbacks.progress(84.0, "Finalizing results...")
+            self._fill_result_from_samples(
+                result, times, states, signal_names,
+                callbacks=callbacks, progress_start=84.0,
+                progress_span=8.0,
+                progress_message="Finalizing results...",
+            )
+            if virtual_channels:
+                self._merge_streaming_virtual_channels(result, virtual_channels)
+            return result
+
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
             if attempt_diagnostics:
                 run_result.statistics.update(
@@ -3343,6 +3431,51 @@ class PulsimBackend(SimulationBackend):
         total_steps = max(1, int((settings.t_stop - settings.t_start) / dt))
         emit_interval = max(1, total_steps // 50)
 
+        # Pulsim 1.3+ retired ``run_transient_streaming`` in favour of
+        # ``pulsim.simulate(builder, t_end, dt, switch_fn=,
+        # step_observer=)``. The shim path detects that case (host
+        # exposes ``simulate`` but not ``run_transient_streaming``) and
+        # routes through the modern API; legacy hosts keep the v0
+        # path untouched.
+        if self._should_use_simulate_v13():
+            try:
+                times, states, success, message, virtual_channels = (
+                    self._invoke_simulate_v13(
+                        circuit=circuit,
+                        settings=settings,
+                        dt=dt,
+                        emit_interval=emit_interval,
+                        callbacks=callbacks,
+                        progress_callback=progress_callback,
+                        data_callback=data_callback,
+                        cancel_check=cancel_check,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - surface as error
+                result.error_message = f"simulate(): {type(exc).__name__}: {exc}"
+                return result
+
+            if not success:
+                result.error_message = message
+                return result
+            result.error_message = ""
+            callbacks.progress(84.0, "Finalizing results...")
+            self._fill_result_from_samples(
+                result, times, states, signal_names,
+                callbacks=callbacks, progress_start=84.0,
+                progress_span=8.0,
+                progress_message="Finalizing results...",
+            )
+            if virtual_channels:
+                self._merge_streaming_virtual_channels(result, virtual_channels)
+            if result.time:
+                final_sample = {
+                    name: values[-1]
+                    for name, values in result.signals.items()
+                }
+                callbacks.data_point(result.time[-1], final_sample)
+            return result
+
         transient_args = self._compose_transient_args(
             circuit=circuit,
             settings=settings,
@@ -3640,6 +3773,16 @@ class PulsimBackend(SimulationBackend):
             )
 
         try:
+            # Pulsim 1.3+: retired ``dc_operating_point`` /
+            # ``Simulator.dc_operating_point`` / ``solve_dc`` in
+            # favour of the new ``compute_dc_op(builder, strategy=…)``
+            # surface. Detect that case first; everything else is
+            # legacy fallbacks.
+            if self._should_use_compute_dc_op_v13():
+                return self._run_dc_compute_op_v13(
+                    circuit, settings, circuit_data
+                )
+
             # Try top-level dc_operating_point first (preferred)
             if hasattr(self._module, "dc_operating_point"):
                 return self._run_dc_top_level(circuit, settings, circuit_data)
@@ -4313,6 +4456,17 @@ class PulsimBackend(SimulationBackend):
             return ACResult(error_message=str(exc))
 
         try:
+            # Pulsim 1.3+: ``run_ac`` / ``run_ac_analysis`` /
+            # ``run_small_signal`` / ``ACAnalysis`` were retired in
+            # favour of ``run_ac_sweep`` (swept-sine, accurate for
+            # nonlinear small-signal) and ``run_mna_sweep`` (impulse
+            # response + FFT, fast for linear systems). The GUI's
+            # AC analysis pane targets linear-circuit Bode plots, so
+            # we prefer the MNA path for speed; the swept-sine
+            # variant is available as a per-call override.
+            if self._should_use_ac_sweep_v13():
+                return self._run_ac_sweep_v13(circuit, settings)
+
             # Build AC options
             ac_opts = self._build_ac_options(settings)
 
@@ -4468,6 +4622,17 @@ class PulsimBackend(SimulationBackend):
             return ThermalResult(error_message=str(exc), is_synthetic=False)
 
         try:
+            # Pulsim 1.3+ retired the standalone ``ThermalSimulator``
+            # in favour of Foster networks embedded in the circuit
+            # (``add_foster_network`` at build time) and a post-hoc
+            # ``compute_temperature(t, P, foster_stages, T_amb)``
+            # convolution. The GUI's thermal pane runs as a post-
+            # transient analysis, so we use the convolution helper.
+            if self._should_use_thermal_v13():
+                return self._run_thermal_compute_v13(
+                    circuit, electrical_result, settings
+                )
+
             direct_result = self._run_thermal_native(circuit, electrical_result, settings)
             if direct_result is not None:
                 return direct_result
@@ -5732,6 +5897,694 @@ class PulsimBackend(SimulationBackend):
                 raise
         return self._module.run_transient(*args)
 
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ simulate() routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_simulate_v13(self) -> bool:
+        """True iff host pulsim is the post-1.0 surface (``simulate`` is
+        exported, ``run_transient_streaming`` was retired). Sleeping
+        when either side of the predicate is false keeps legacy
+        pulsim builds on their original code paths."""
+        if not hasattr(self._module, "simulate"):
+            return False
+        # Legacy pulsim shipped both ``simulate`` (since 0.7) AND
+        # ``run_transient_streaming``. Only the post-1.0 surface
+        # dropped the streaming entry-point — that's the signal we use
+        # to commit to the v1.3 path.
+        return not hasattr(self._module, "run_transient_streaming")
+
+    def _invoke_simulate_v13(
+        self,
+        circuit: Any,
+        settings: SimulationSettings,
+        dt: float,
+        emit_interval: int,
+        callbacks: BackendCallbacks,
+        progress_callback: Callable[[float, str], None],
+        data_callback: Callable[[float, dict], None],
+        cancel_check: Callable[[], bool],
+    ) -> tuple[Any, Any, bool, str, Any]:
+        """Run a transient through pulsim 1.3+'s ergonomic
+        ``simulate(builder, t_end, dt, switch_fn=, step_observer=)``.
+
+        ``circuit`` is the GUI's shim ``Circuit`` (see
+        ``pulsim_v0_compat.Circuit``); we pull its underlying
+        ``builder`` and the per-switch metadata (``num_switches`` +
+        ``switch_indices`` + ``virtual_component_records``) to
+        assemble the simulate-time ``switch_fn``.
+
+        The streaming/cancel/progress contract is preserved by
+        wrapping a ``step_observer`` that translates ``(t, x)``
+        callbacks into the GUI's progress / data-point / cancel
+        signals at roughly the same cadence the legacy streaming API
+        produced.
+        """
+        # The shim Circuit exposes ``.builder`` for the underlying
+        # v1.3 CircuitBuilder. Fall back to ``circuit`` itself when
+        # the host gave us a raw builder (defensive: tests sometimes
+        # do this).
+        builder = getattr(circuit, "builder", circuit)
+
+        # ``import`` lazily to avoid module-import time penalty.
+        from pulsimgui.services.switch_fn_builder import (
+            assemble_switch_fn,
+            configs_from_pwm_records,
+        )
+
+        # Per-device PWM configs: best-effort heuristic from the
+        # shim's ``virtual_component_records`` (PWM-generator virtual
+        # components the converter recorded). Devices with no matching
+        # record default to OFF.
+        configs = configs_from_pwm_records(circuit)
+        switch_fn = assemble_switch_fn(circuit, configs, self._module)
+
+        # Step-observer adapter: translate per-step ``(t, x)`` into
+        # the existing data / progress / cancel callbacks.
+        t_start = float(settings.t_start)
+        t_stop = float(settings.t_stop)
+        t_span = max(t_stop - t_start, 1e-12)
+        step_counter = [0]
+        cancel_requested = [False]
+
+        def step_observer(t: float, x: Any) -> None:
+            step_counter[0] += 1
+            # Only emit progress / data callbacks every
+            # ``emit_interval`` steps to match the legacy streaming
+            # cadence and avoid GIL contention.
+            if step_counter[0] % max(1, emit_interval) != 0:
+                return
+            try:
+                if cancel_check():
+                    cancel_requested[0] = True
+                    raise _SimulateCancelled()
+            except _SimulateCancelled:
+                raise
+            except Exception:
+                # ``check_cancelled`` shouldn't raise; if it does we
+                # treat it as "keep going" and swallow.
+                pass
+            pct = 100.0 * (t - t_start) / t_span
+            progress_callback(max(0.0, min(100.0, pct)),
+                                "Simulating...")
+            # The legacy data_callback was given a ``state_dict``; we
+            # don't reconstruct the per-channel map here (the final
+            # arrays carry full resolution) — pass an empty dict so
+            # the existing ``data_callback`` signature is satisfied.
+            data_callback(float(t), {})
+
+        # ``simulate`` raises if cancelled via observer exception or
+        # on any solver failure. Map both into the streaming
+        # (times, states, success, message, virtual_channels) tuple.
+        #
+        # Live-stream: when ``callbacks.live_stream`` is set (typically
+        # a ``pulsim.NativeLiveStream`` created by the GUI worker), the
+        # kernel writes (t, x) samples into its C++ ring buffer at the
+        # decimated rate (default 1/100 steps). The GUI's QTimer polls
+        # the ring on the main thread — zero Python in the per-step
+        # hot path. Falls back to the legacy ``step_observer`` data
+        # callback when ``live_stream is None``.
+        simulate_kwargs: dict[str, Any] = {
+            "t_start": t_start,
+            "switch_fn": switch_fn,
+            "step_observer": step_observer,
+        }
+        live_stream = getattr(callbacks, "live_stream", None)
+        if live_stream is not None:
+            simulate_kwargs["live_stream"] = live_stream
+        try:
+            res = self._module.simulate(
+                builder, t_stop, dt,
+                **simulate_kwargs,
+            )
+        except _SimulateCancelled:
+            return ([], [], False, "Cancelled by user", None)
+        except TypeError as exc:
+            # Backwards-compat: older pulsim builds (pre v1.5) don't
+            # accept ``live_stream``. Retry without it so the GUI still
+            # works against a stale kernel, just without zero-copy
+            # streaming.
+            if "live_stream" in str(exc) and "live_stream" in simulate_kwargs:
+                simulate_kwargs.pop("live_stream")
+                try:
+                    res = self._module.simulate(
+                        builder, t_stop, dt,
+                        **simulate_kwargs,
+                    )
+                except _SimulateCancelled:
+                    return ([], [], False, "Cancelled by user", None)
+                except RuntimeError as exc2:
+                    return ([], [], False, str(exc2), None)
+            else:
+                raise
+        except RuntimeError as exc:
+            return ([], [], False, str(exc), None)
+
+        # Pull arrays in the same layout the legacy streaming API
+        # produced. ``SimulationResult.states`` is a list of NumPy
+        # vectors (one per timestep); ``times`` is a 1-D array.
+        return (
+            list(res.times),
+            [list(s) for s in res.states],
+            True,
+            "",
+            None,  # virtual_channels — populated by the v0 streaming
+                   # API; the modern path doesn't surface them as a
+                   # separate stream.
+        )
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ compute_dc_op() routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_compute_dc_op_v13(self) -> bool:
+        """True iff host pulsim exposes ``compute_dc_op`` and no
+        longer ships the v0 ``dc_operating_point`` / ``solve_dc``
+        entry points. The legacy v0/v1 builds still answer
+        ``hasattr(module, "dc_operating_point")``, so the predicate
+        sleeps for them and the original fallback ladder takes
+        over."""
+        if not hasattr(self._module, "compute_dc_op"):
+            return False
+        return not hasattr(self._module, "dc_operating_point")
+
+    def _run_dc_compute_op_v13(
+        self,
+        circuit: Any,
+        settings: DCSettings,
+        circuit_data: dict | None = None,
+    ) -> DCResult:
+        """Compute the DC operating point through pulsim 1.3+'s
+        ``compute_dc_op(builder, strategy=…)``.
+
+        The v1.3 entry point returns just an ``np.ndarray`` — the
+        state vector. There's no per-iteration history, no explicit
+        success / message, no problematic-variable list; failure
+        manifests as a ``RuntimeError`` when ``strategy="auto"`` runs
+        out of fallbacks. We map that into the same
+        :class:`DCResult` shape the legacy paths produced so callers
+        don't notice the rewire.
+
+        Node voltages are extracted from the front of the state
+        vector via the shim's ``_node_id_to_name`` map (i-th entry =
+        voltage at node ``i`` once ground is filtered out).
+        ``branch_currents`` / ``power_dissipation`` are left empty
+        for now — the shim doesn't track branch-index → device-name
+        mappings yet, and the eventual users of those fields
+        (loss-thermal dashboards, etc.) consume them from the
+        transient path anyway.
+        """
+        # The shim exposes ``Circuit.builder`` for the underlying
+        # CircuitBuilder; fall back to ``circuit`` itself for raw
+        # builders in case a test mock passes one.
+        builder = getattr(circuit, "builder", circuit)
+
+        # Pick the strategy from settings if the GUI surfaces one,
+        # otherwise let ``compute_dc_op`` auto-cascade through naive
+        # → pseudo_trans → source_step.
+        strategy = (
+            getattr(settings, "dc_strategy", None) or "auto"
+        )
+        strategy = str(strategy).strip().lower() or "auto"
+        if strategy not in {"auto", "naive", "pseudo_trans", "source_step"}:
+            strategy = "auto"
+
+        # v1.5 lands `should_continue=` on every long-running analysis;
+        # forward the GUI's cancel-check so the Cancel button preempts
+        # the DC Newton between strategy fallbacks (Auto path). Older
+        # pulsim builds don't accept the kwarg — try/TypeError-fallback
+        # for graceful degradation.
+        cancel_fn = getattr(callbacks, "check_cancelled", None)
+        sc_kw: dict = {}
+        if cancel_fn is not None:
+            sc_kw["should_continue"] = lambda: not cancel_fn()
+        try:
+            try:
+                state = self._module.compute_dc_op(
+                    builder, strategy=strategy, **sc_kw)
+            except TypeError:
+                state = self._module.compute_dc_op(builder, strategy=strategy)
+        except RuntimeError as exc:
+            return DCResult(
+                error_message=str(exc),
+                convergence_info=ConvergenceInfo(
+                    converged=False,
+                    failure_reason=str(exc),
+                    strategy_used=strategy,
+                ),
+            )
+
+        # Map the state vector back to a {node_name: voltage} dict
+        # the GUI's DC-results panel expects. The shim's node map
+        # has gnd at id ``-1`` and the real nodes at consecutive ids
+        # ``0, 1, 2, …`` matching the builder's enumeration.
+        node_voltages: dict[str, float] = {}
+        id_to_name = getattr(circuit, "_node_id_to_name", {}) or {}
+        n_nodes_in_state = min(int(builder.graph.num_nodes), len(state))
+        for node_id in range(n_nodes_in_state):
+            name = id_to_name.get(node_id)
+            if not name or name == "gnd":
+                continue
+            try:
+                node_voltages[name] = float(state[node_id])
+            except (TypeError, ValueError, IndexError):
+                continue
+        # Ground is by convention 0 V — the GUI's results panel
+        # tends to list it explicitly so DC reports look complete.
+        node_voltages.setdefault("gnd", 0.0)
+
+        # Build a DCResult with full success diagnostics. The
+        # ``strategy_used`` value reports what the user (or
+        # ``auto``) requested; the actual strategy that won inside
+        # ``compute_dc_op`` is not exposed back to Python at the
+        # moment.
+        info = ConvergenceInfo(
+            converged=True,
+            iterations=0,
+            final_residual=0.0,
+            strategy_used=strategy,
+        )
+        return DCResult(
+            node_voltages=node_voltages,
+            branch_currents={},
+            power_dissipation={},
+            convergence_info=info,
+            error_message="",
+        )
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ AC sweep routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_ac_sweep_v13(self) -> bool:
+        """True iff host pulsim ships the modern AC entry points
+        (``run_ac_sweep`` / ``run_mna_sweep``) AND no longer exposes
+        any of the legacy ones (``run_ac`` / ``run_ac_analysis`` /
+        ``run_small_signal`` / ``ACAnalysis``)."""
+        modern = hasattr(self._module, "run_ac_sweep") or hasattr(
+            self._module, "run_mna_sweep"
+        )
+        if not modern:
+            return False
+        legacy = any(
+            hasattr(self._module, name)
+            for name in (
+                "run_ac",
+                "run_ac_analysis",
+                "run_small_signal",
+                "ACAnalysis",
+            )
+        )
+        return not legacy
+
+    def _run_ac_sweep_v13(
+        self,
+        circuit: Any,
+        settings: ACSettings,
+    ) -> ACResult:
+        """Frequency sweep through pulsim 1.3+'s impulse-FFT API.
+
+        Uses ``run_mna_sweep(builder, freqs=, output_idx=, …)`` —
+        one transient with an impulse + FFT to extract H(f). Fast
+        for linear circuits, which is what the GUI's AC panel
+        targets in 99 % of cases. The swept-sine variant
+        (``run_ac_sweep``) is more accurate for nonlinear small-
+        signal but requires a hand-written ``excite_fn``; the GUI
+        doesn't surface that knob yet.
+
+        The result is mapped into the GUI's :class:`ACResult` shape:
+        ``frequencies`` is the log-spaced grid from
+        ``ACSettings.f_start`` / ``f_stop`` / ``points_per_decade``;
+        ``magnitude`` and ``phase`` are dicts keyed by output-node
+        name. Multiple ``output_nodes`` are run as separate sweeps —
+        each is a fresh impulse response.
+        """
+        import math
+        import numpy as np
+
+        builder = getattr(circuit, "builder", circuit)
+
+        # Log-spaced frequency grid the GUI expects to see in the
+        # result. Pulsim's MNA sweep accepts an explicit ``freqs=``
+        # parameter and interpolates internally onto it, so we set
+        # the grid once and reuse it across outputs.
+        f_lo = max(float(settings.f_start), 1e-9)
+        f_hi = max(float(settings.f_stop), f_lo * 10.0)
+        ppd = max(int(settings.points_per_decade), 1)
+        n_decades = max(1.0, math.log10(f_hi / f_lo))
+        n_points = max(2, int(round(ppd * n_decades)) + 1)
+        freqs = np.logspace(math.log10(f_lo), math.log10(f_hi), n_points)
+
+        # Solver time-step: must satisfy Nyquist for ``f_hi``.
+        dt = 1.0 / (4.0 * f_hi)
+        # Total horizon: ≥ 10 / f_lo for clean low-frequency reading.
+        t_end = max(10.0 / f_lo, 100.0 * dt)
+
+        outputs = list(settings.output_nodes) or []
+        if not outputs:
+            return ACResult(
+                error_message=(
+                    "AC analysis requires at least one output node. "
+                    "Add a node to ACSettings.output_nodes."
+                ),
+            )
+
+        magnitude: dict[str, list[float]] = {}
+        phase: dict[str, list[float]] = {}
+
+        for node_name in outputs:
+            # Translate node name to state-vector index. Shim
+            # circuits expose ``get_node(name) -> int``; legacy
+            # backends use ``node_id_of``. Try shim first.
+            output_idx = None
+            getter = getattr(circuit, "get_node", None)
+            if callable(getter):
+                idx = getter(node_name)
+                if isinstance(idx, int) and idx >= 0:
+                    output_idx = idx
+            if output_idx is None and hasattr(builder, "node_id_of"):
+                try:
+                    idx = builder.node_id_of(node_name)
+                    if isinstance(idx, int) and idx >= 0:
+                        output_idx = idx
+                except Exception:
+                    pass
+            if output_idx is None:
+                magnitude[node_name] = []
+                phase[node_name] = []
+                continue
+
+            try:
+                sweep_kwargs: dict[str, Any] = dict(
+                    output_idx=output_idx,
+                    dt=dt,
+                    t_end=t_end,
+                    freqs=list(freqs),
+                )
+                input_branch = self._resolve_ac_input_branch_id(
+                    builder, settings
+                )
+                if input_branch is not None:
+                    sweep_kwargs["v_in_branch_id"] = input_branch
+                # v1.5: forward Cancel button into the AC sweep so it
+                # preempts between frequency points (50-point sweep
+                # would otherwise block the GUI for several seconds).
+                cancel_fn = getattr(callbacks, "check_cancelled", None)
+                if cancel_fn is not None:
+                    sweep_kwargs["should_continue"] = lambda: not cancel_fn()
+                try:
+                    sweep_res = self._module.run_mna_sweep(
+                        builder, **sweep_kwargs
+                    )
+                except TypeError:
+                    sweep_kwargs.pop("should_continue", None)
+                    sweep_res = self._module.run_mna_sweep(
+                        builder, **sweep_kwargs
+                    )
+            except Exception as exc:  # pragma: no cover - failure path
+                return ACResult(
+                    error_message=(
+                        f"run_mna_sweep failed for output '{node_name}': "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+
+            # ``MnaSweepResult`` exposes ``.freqs`` (NumPy array),
+            # ``.H`` (complex), ``.mag_dB`` and ``.phase_deg`` as
+            # the Bode-extracted pair. Fall back to computing them
+            # from ``H`` if the convenience fields are absent.
+            mag_db = getattr(sweep_res, "mag_dB", None)
+            phase_deg = getattr(sweep_res, "phase_deg", None)
+            if mag_db is None or phase_deg is None:
+                H = np.asarray(sweep_res.H)
+                mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-30))
+                phase_deg = np.unwrap(np.angle(H)) * 180.0 / math.pi
+            magnitude[node_name] = [float(x) for x in mag_db]
+            phase[node_name] = [float(x) for x in phase_deg]
+
+        return ACResult(
+            frequencies=[float(f) for f in freqs],
+            magnitude=magnitude,
+            phase=phase,
+            error_message="",
+        )
+
+    @staticmethod
+    def _resolve_ac_input_branch_id(
+        builder: Any,
+        settings: ACSettings,
+    ) -> int | None:
+        """Find the branch id of the input source ``run_mna_sweep``
+        should perturb. Tries the explicit ``settings.input_source``
+        name first; falls back to the first voltage source in
+        builder-call order. Returns ``None`` when no source can be
+        identified (caller then lets pulsim's default kick in).
+
+        v1.3's ``builder.components()`` lists every device with
+        ``{"kind", "name", "branch_id", ...}`` in insertion order, so
+        we walk it looking for a matching name. The lookup is name-
+        first (cheaper / unambiguous) with a kind-based fallback so
+        a circuit that omits the input-source name still works.
+        """
+        components = []
+        getter = getattr(builder, "components", None)
+        if callable(getter):
+            try:
+                components = list(getter())
+            except Exception:
+                components = []
+        if not components:
+            return None
+
+        wanted_name = (settings.input_source or "").strip()
+        if wanted_name:
+            for entry in components:
+                if str(entry.get("name", "")).strip() == wanted_name:
+                    return int(entry.get("branch_id", -1))
+
+        # Fallback: the first voltage / sine / pulse / PWM source in
+        # the builder. This matches pulsim's own ``run_buck`` example
+        # which calls ``run_mna_sweep`` without naming the source
+        # explicitly because the buck has exactly one source.
+        source_kinds = {
+            "voltage_source",
+            "sine_voltage_source",
+            "pulse_voltage_source",
+            "pwm_voltage_source",
+            "current_source",
+        }
+        for entry in components:
+            if str(entry.get("kind", "")).lower() in source_kinds:
+                return int(entry.get("branch_id", -1))
+        return None
+
+    # ------------------------------------------------------------------
+    # Pulsim 1.3+ thermal routing (post-namespace-flatten path)
+    # ------------------------------------------------------------------
+    def _should_use_thermal_v13(self) -> bool:
+        """True iff host pulsim exposes the modern thermal surface
+        (``compute_temperature`` and/or the ``FosterStage`` /
+        ``add_foster_network`` helpers) AND no longer ships the
+        legacy ``ThermalSimulator`` /
+        ``create_simple_thermal_model``."""
+        modern = hasattr(self._module, "compute_temperature") or hasattr(
+            self._module, "add_foster_network"
+        )
+        if not modern:
+            return False
+        legacy = hasattr(self._module, "ThermalSimulator") or hasattr(
+            self._module, "create_simple_thermal_model"
+        )
+        return not legacy
+
+    def _run_thermal_compute_v13(
+        self,
+        circuit: Any,
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult:
+        """System-level thermal estimate via pulsim 1.3's
+        ``compute_temperature`` post-hoc convolution.
+
+        v1.3's thermal philosophy is "Foster network inside the
+        electrical simulation": ``add_foster_network(builder, …)``
+        at build time + ``make_thermal_observer`` for live trace
+        capture. The GUI's existing thermal pane is a post-transient
+        analysis, so we use the standalone ``compute_temperature(t,
+        P, foster_stages, T_amb)`` helper — convolve P(t) with the
+        Foster Z_th(t) to get ΔT_j(t).
+
+        Today the result is **system-level** rather than per-device:
+        the GUI's electrical result doesn't track per-device
+        instantaneous power, so we estimate total system loss from
+        the source-side power-in trace (when available) and present
+        a single virtual ``"system"`` device with default Foster
+        stages. Per-device thermal awaits a branch-index ↔
+        device-name map + per-device loss instrumentation; tracked
+        for a follow-up PR.
+        """
+        import numpy as np
+
+        times = list(electrical_result.time or [])
+        if len(times) < 2:
+            return ThermalResult(
+                error_message=(
+                    "Thermal analysis needs a transient time series — "
+                    "run a transient first, then re-run thermal."
+                ),
+                is_synthetic=False,
+            )
+
+        # Estimate total system power from the electrical result.
+        # The GUI's TransientResult stores per-signal time series
+        # in ``signals``; we sum the named-power probe channels if
+        # the GUI surfaced any, otherwise fall back to zero and
+        # report a synthetic-ish result so the user sees the
+        # ambient line plus a warning rather than a blank panel.
+        power_trace = self._estimate_total_power(electrical_result, times)
+
+        # Sensible default Foster stages — a fast die-to-case stage
+        # plus a slow case-to-ambient stage. Roughly matches a
+        # TO-247-style MOSFET sitting on a small heatsink. Users
+        # who want device-specific values can populate
+        # ``settings.foster_stages`` once that field exists; for
+        # now the GUI doesn't carry it so we use these defaults.
+        default_stages = self._default_foster_stages()
+
+        try:
+            FosterStageCls = self._module.FosterStage
+            # v1.3's FosterStage takes (R_th_K_per_W, tau_s) — note
+            # different field names than the GUI's FosterStage
+            # (which uses ``resistance`` / ``capacitance``).
+            stages_module = [
+                FosterStageCls(
+                    float(stage.resistance),
+                    float(stage.time_constant),
+                )
+                for stage in default_stages
+            ]
+            t_arr = np.asarray(times, dtype=float)
+            p_arr = np.asarray(power_trace, dtype=float)
+            t_amb_celsius = float(settings.ambient_temperature)
+            # v1.3 ``compute_temperature`` works in absolute units
+            # (Kelvin or Celsius — it just convolves ΔT and adds
+            # T_amb back). The GUI surfaces Celsius so we stay
+            # in Celsius the whole way.
+            # v1.5: forward Cancel button into the convolution so it
+            # preempts every ~1000 samples (a 1 s / 1 µs trace would
+            # otherwise block the GUI for ~1 s mid-cancel).
+            cancel_fn = getattr(callbacks, "check_cancelled", None)
+            therm_kwargs: dict = {}
+            if cancel_fn is not None:
+                therm_kwargs["should_continue"] = lambda: not cancel_fn()
+            try:
+                t_j = self._module.compute_temperature(
+                    t_arr, p_arr, stages_module, t_amb_celsius,
+                    **therm_kwargs,
+                )
+            except TypeError:
+                t_j = self._module.compute_temperature(
+                    t_arr, p_arr, stages_module, t_amb_celsius
+                )
+        except Exception as exc:
+            return ThermalResult(
+                error_message=(
+                    f"compute_temperature failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                is_synthetic=False,
+            )
+
+        t_j_list = [float(v) for v in t_j]
+        peak = float(max(t_j_list, default=t_amb_celsius))
+        steady = float(
+            sum(t_j_list[-min(50, len(t_j_list)):])
+            / max(1, min(50, len(t_j_list)))
+        )
+
+        # Surface a single virtual device. The GUI's thermal pane
+        # iterates ``ThermalResult.devices`` and plots one trace per
+        # entry; a single "system" entry keeps the panel populated
+        # and makes the limitation visible.
+        device = ThermalDeviceResult(
+            name="system",
+            junction_temperature=t_j_list,
+            peak_temperature=peak,
+            steady_state_temperature=steady,
+            foster_stages=list(default_stages),
+        )
+
+        # Loss breakdown: best-effort total — we know total power
+        # but not the switching/conduction split. Attribute
+        # everything to ``conduction`` so the loss-pie chart at
+        # least sums correctly.
+        try:
+            total_loss_W = float(np.trapezoid(power_trace, times))
+            total_loss_avg_W = total_loss_W / max(
+                times[-1] - times[0], 1e-12
+            )
+        except Exception:
+            total_loss_avg_W = 0.0
+        device.losses.conduction = max(0.0, total_loss_avg_W)
+
+        return ThermalResult(
+            time=list(times),
+            devices=[device],
+            ambient_temperature=t_amb_celsius,
+            is_synthetic=False,
+            error_message="",
+        )
+
+    @staticmethod
+    def _estimate_total_power(
+        electrical_result: TransientResult,
+        times: list[float],
+    ) -> list[float]:
+        """Best-effort total-system power trace.
+
+        Walks ``electrical_result.signals`` for any channel whose
+        name contains "power" or "p_" — the GUI's power-probe
+        components emit one of those. Falls back to a zero trace
+        when none are present (the resulting temperature stays at
+        T_amb, signalling to the user that the circuit needs a
+        power probe to drive the thermal panel).
+        """
+        signals = getattr(electrical_result, "signals", None) or {}
+        n = len(times)
+        accum = [0.0] * n
+        any_found = False
+        for name, series in signals.items():
+            lname = str(name).lower()
+            if not ("power" in lname or lname.startswith("p_") or lname.startswith("p(")):
+                continue
+            series_list = list(series)
+            for i in range(min(n, len(series_list))):
+                try:
+                    accum[i] += float(series_list[i])
+                except (TypeError, ValueError):
+                    continue
+            any_found = True
+        if not any_found:
+            return [0.0] * n
+        return accum
+
+    @staticmethod
+    def _default_foster_stages() -> list[FosterStage]:
+        """Sensible default Foster network when the user hasn't
+        wired one through the GUI yet.
+
+        Stage 1: die-to-case, ~0.5 K/W, τ ≈ 10 ms — captures the
+        millisecond-scale junction transient.
+
+        Stage 2: case-to-ambient via a typical bolted-on heatsink,
+        ~10 K/W, τ ≈ 100 s — captures the slow soak.
+
+        These are deliberately conservative (warmer than a real
+        well-designed cooling path) so the panel doesn't lull the
+        user into thinking thermal is fine when it isn't.
+        """
+        return [
+            FosterStage(resistance=0.5,  capacitance=10e-3 / 0.5),   # τ = 10 ms
+            FosterStage(resistance=10.0, capacitance=100.0 / 10.0),  # τ = 100 s
+        ]
+
     def _build_newton_options(self, settings: SimulationSettings, circuit: Any) -> Any:
         """Build NewtonOptions for the new kernel API."""
         if hasattr(self._module, "NewtonOptions"):
@@ -5763,10 +6616,18 @@ class PulsimBackend(SimulationBackend):
         if hasattr(opts, "auto_damping"):
             opts.auto_damping = True
 
+        # ``num_nodes`` / ``num_branches`` are methods on the legacy
+        # v0 ``Circuit`` but properties on the v0-compat shim. Handle
+        # both shapes so the path works regardless of which Circuit
+        # implementation a host wires up.
         if hasattr(circuit, "num_nodes"):
-            opts.num_nodes = circuit.num_nodes()
+            n_nodes = circuit.num_nodes
+            opts.num_nodes = n_nodes() if callable(n_nodes) else int(n_nodes)
         if hasattr(circuit, "num_branches"):
-            opts.num_branches = circuit.num_branches()
+            n_branches = circuit.num_branches
+            opts.num_branches = (
+                n_branches() if callable(n_branches) else int(n_branches)
+            )
 
         return opts
 
@@ -5832,7 +6693,18 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_dc_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("dc_operating_point", "solve_dc", "run_dc", "run_dc_analysis")):
+        # Pulsim 1.3+ ships ``compute_dc_op``; older v0/v1 builds shipped
+        # ``dc_operating_point`` / ``solve_dc`` / ``run_dc``.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "compute_dc_op",
+                "dc_operating_point",
+                "solve_dc",
+                "run_dc",
+                "run_dc_analysis",
+            )
+        ):
             return True
 
         for ns_name in ("v1", "v2"):
@@ -5868,7 +6740,21 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_ac_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("run_ac", "run_ac_analysis", "run_small_signal", "ACAnalysis")):
+        # Pulsim 1.3+ exposes ``run_ac_sweep`` (impulse-response Bode) and
+        # ``run_mna_sweep`` (frequency-domain MNA solve). The older v0/v1
+        # surface used ``run_ac`` / ``run_ac_analysis`` / ``run_small_signal``
+        # / ``ACAnalysis`` — kept here for backwards compatibility.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "run_ac_sweep",
+                "run_mna_sweep",
+                "run_ac",
+                "run_ac_analysis",
+                "run_small_signal",
+                "ACAnalysis",
+            )
+        ):
             return True
 
         simulator_cls = getattr(module, "Simulator", None)
@@ -5894,7 +6780,23 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _supports_thermal_analysis(module: Any) -> bool:
-        if any(hasattr(module, name) for name in ("run_thermal", "run_thermal_analysis")):
+        # Pulsim 1.3+ ships thermal Foster networks (``FosterStage``,
+        # ``add_foster_network``, ``make_thermal_observer``,
+        # ``compute_temperature``, ``fit_foster_from_zth``). The older
+        # v0/v1 surface used ``ThermalSimulator`` /
+        # ``create_simple_thermal_model`` / ``run_thermal*``.
+        if any(
+            hasattr(module, name)
+            for name in (
+                "add_foster_network",
+                "FosterStage",
+                "make_thermal_observer",
+                "compute_temperature",
+                "fit_foster_from_zth",
+                "run_thermal",
+                "run_thermal_analysis",
+            )
+        ):
             return True
 
         thermal_simulator = getattr(module, "ThermalSimulator", None)

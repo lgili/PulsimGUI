@@ -464,6 +464,273 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.DC_MOTOR:
+            # Pulsim 0.10.0a2+: Circuit::add_dc_motor with full device-variant
+            # integration. Pins: A+ (pin 0), A- (pin 1). The runtime reserves
+            # one MNA branch row for the armature current and advances ω, θ
+            # internally each timestep. Backend-version gating: if the
+            # capability isn't available, raise CircuitConversionError so the
+            # GUI surfaces a clear "upgrade Pulsim" message rather than a
+            # cryptic AttributeError.
+            n_a_plus, n_a_minus = self._require_nodes(name, nodes, 2)
+            n_plus_idx = self._node_index(circuit, n_a_plus, node_cache)
+            n_minus_idx = self._node_index(circuit, n_a_minus, node_cache)
+
+            params_cls = getattr(self._sl, "DcMotorParams", None)
+            add_motor = getattr(circuit, "add_dc_motor", None)
+            if params_cls is None or add_motor is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the DC Motor device "
+                    "(need pulsim>=0.10.0a2). Upgrade with `pip install -U pulsim`."
+                )
+
+            motor_params = params_cls()
+            motor_params.name = name
+            motor_params.R_a = self._as_float(params.get("R_a"), default=0.5)
+            motor_params.L_a = self._as_float(params.get("L_a"), default=10e-3)
+            motor_params.K_e = self._as_float(params.get("K_e"), default=0.05)
+            motor_params.K_t = self._as_float(params.get("K_t"), default=0.05)
+            motor_params.J   = self._as_float(params.get("J"),   default=1e-4)
+            motor_params.b   = self._as_float(params.get("b"),   default=1e-5)
+            # Quadratic load (Pulsim>=0.10.0a3) — gracefully ignored on older
+            # runtimes via hasattr check, so older pulsim still loads files
+            # authored against the newer GUI.
+            if hasattr(motor_params, "tau_load_quad_coeff"):
+                motor_params.tau_load_quad_coeff = self._as_float(
+                    params.get("tau_load_quad_coeff"), default=0.0
+                )
+            motor_params.i_a_init   = self._as_float(params.get("i_a_init"), default=0.0)
+            motor_params.omega_init = self._as_float(params.get("omega_init"), default=0.0)
+            motor_params.theta_init = self._as_float(params.get("theta_init"), default=0.0)
+            add_motor(name, n_plus_idx, n_minus_idx, motor_params)
+
+            # Apply optional load torque (constant, set once at simulation start).
+            tau_load = self._as_float(params.get("tau_load"), default=0.0)
+            if tau_load != 0.0:
+                set_tau = getattr(circuit, "set_motor_tau_load", None)
+                if set_tau is not None:
+                    set_tau(name, tau_load)
+            return
+
+        if comp_type == ComponentType.THREE_PHASE_RL_LOAD:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a3 decomposes into 3 R+L
+            # series branches (Star or Delta).
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_load = getattr(circuit, "add_three_phase_rl_load", None)
+            params_cls = getattr(self._sl, "ThreePhaseRLLoadParams", None)
+            topology_enum = getattr(self._sl, "ThreePhaseLoadTopology", None)
+            if add_load is None or params_cls is None or topology_enum is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the 3-Phase RL Load "
+                    "component (need pulsim>=0.10.0a3). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+
+            ld_p = params_cls()
+            ld_p.resistance_per_phase = self._as_float(
+                params.get("resistance_per_phase"), default=30.0
+            )
+            ld_p.inductance_per_phase = self._as_float(
+                params.get("inductance_per_phase"), default=50e-3
+            )
+            topology_str = str(params.get("topology") or "Star").strip().lower()
+            ld_p.topology = (
+                topology_enum.Delta if topology_str.startswith("delta")
+                else topology_enum.Star
+            )
+            ld_p.unbalance_factor = self._as_float(
+                params.get("unbalance_factor"), default=0.0
+            )
+            add_load(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, ld_p)
+            return
+
+        if comp_type == ComponentType.PMSM_STEADY_STATE:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a3 decomposes into 3 phases
+            # of R_s + L_s + sinusoidal back-EMF.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_pmsm = getattr(circuit, "add_pmsm_steady_state", None)
+            params_cls = getattr(self._sl, "PmsmSteadyStateParams", None)
+            if add_pmsm is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the PMSM "
+                    "(steady-state) component (need pulsim>=0.10.0a3). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            pmsm_p = params_cls()
+            pmsm_p.R_s = self._as_float(params.get("R_s"), default=0.5)
+            pmsm_p.L_s = self._as_float(params.get("L_s"), default=2e-3)
+            pmsm_p.lambda_pm = self._as_float(params.get("lambda_pm"), default=0.1)
+            pmsm_p.omega_electrical = self._as_float(
+                params.get("omega_electrical"), default=314.159265
+            )
+            pmsm_p.phase_a_offset_deg = self._as_float(
+                params.get("phase_a_offset_deg"), default=0.0
+            )
+            pmsm_p.positive_sequence = bool(params.get("positive_sequence", True))
+            add_pmsm(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, pmsm_p)
+            return
+
+        if comp_type == ComponentType.PMSM:
+            # 4-pin (A, B, C, N). Pulsim>=0.10.0a4 dynamic device-variant
+            # with 4 internal states (i_d, i_q, ω_m, θ_m), Park-frame torque,
+            # forward-Euler mechanical step. Capability-gated against
+            # older runtimes.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_pmsm_dyn = getattr(circuit, "add_pmsm", None)
+            params_cls = getattr(self._sl, "PmsmParams", None)
+            if add_pmsm_dyn is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the PMSM "
+                    "(dynamic) component (need pulsim>=0.10.0a4). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            pmsm_p = params_cls()
+            pmsm_p.name = name
+            pmsm_p.Rs = self._as_float(params.get("Rs"), default=0.5)
+            pmsm_p.Ld = self._as_float(params.get("Ld"), default=2e-3)
+            pmsm_p.Lq = self._as_float(params.get("Lq"), default=2e-3)
+            pmsm_p.psi_pm = self._as_float(params.get("psi_pm"), default=0.1)
+            pmsm_p.pole_pairs = int(self._as_float(
+                params.get("pole_pairs"), default=2
+            ))
+            pmsm_p.J = self._as_float(params.get("J"), default=1e-3)
+            pmsm_p.b_friction = self._as_float(
+                params.get("b_friction"), default=1e-4
+            )
+            pmsm_p.friction_coulomb = self._as_float(
+                params.get("friction_coulomb"), default=0.0
+            )
+            pmsm_p.i_d_init = self._as_float(
+                params.get("i_d_init"), default=0.0
+            )
+            pmsm_p.i_q_init = self._as_float(
+                params.get("i_q_init"), default=0.0
+            )
+            pmsm_p.omega_init = self._as_float(
+                params.get("omega_init"), default=0.0
+            )
+            pmsm_p.theta_init = self._as_float(
+                params.get("theta_init"), default=0.0
+            )
+            add_pmsm_dyn(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, pmsm_p)
+
+            # External load torque is set via a separate runtime call,
+            # mirroring the DC motor flow. Only forward if the user gave
+            # a non-zero value.
+            tau_load = self._as_float(params.get("tau_load"), default=0.0)
+            if tau_load != 0.0:
+                set_tau = getattr(circuit, "set_pmsm_tau_load", None)
+                if set_tau is not None:
+                    set_tau(name, tau_load)
+            return
+
+        if comp_type == ComponentType.THREE_PHASE_SOURCE:
+            # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
+            # which internally decomposes into 3 SineVoltageSource branches.
+            # Requires pulsim>=0.10.0a1; older runtimes degrade to 3 manual
+            # sine sources so older saved projects still load.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            three_phase_helper = getattr(circuit, "add_three_phase_source", None)
+            params_cls = getattr(self._sl, "ThreePhaseSourceParams", None)
+            if three_phase_helper is not None and params_cls is not None:
+                tp_params = params_cls()
+                tp_params.line_to_line_voltage_rms = self._as_float(
+                    params.get("line_to_line_voltage_rms"), default=400.0
+                )
+                tp_params.frequency_hz = self._as_float(
+                    params.get("frequency_hz"), default=50.0
+                )
+                tp_params.phase_a_deg = self._as_float(
+                    params.get("phase_a_deg"), default=0.0
+                )
+                tp_params.positive_sequence = bool(
+                    params.get("positive_sequence", True)
+                )
+                tp_params.unbalance_factor = self._as_float(
+                    params.get("unbalance_factor"), default=0.0
+                )
+                three_phase_helper(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, tp_params)
+            else:
+                # Fallback for pulsim < 0.10.0a1: emit 3 manual sine sources.
+                self._add_three_phase_fallback(
+                    circuit, name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, params
+                )
+            return
+
+        if comp_type == ComponentType.THREE_PHASE_VSI:
+            # 5-pin (VDC+, VDC-, A, B, C). Pulsim>=0.10.0a5 builds a
+            # complete 3-leg 6-switch SPWM inverter internally. Capability-
+            # gated against older runtimes that lack ``add_three_phase_vsi``.
+            n_vdc_pos, n_vdc_neg, n_a, n_b, n_c = self._require_nodes(name, nodes, 5)
+            n_vdc_pos_idx = self._node_index(circuit, n_vdc_pos, node_cache)
+            n_vdc_neg_idx = self._node_index(circuit, n_vdc_neg, node_cache)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+
+            add_vsi = getattr(circuit, "add_three_phase_vsi", None)
+            params_cls = getattr(self._sl, "ThreePhaseVsiParams", None)
+            if add_vsi is None or params_cls is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the 3-Phase VSI "
+                    "component (need pulsim>=0.10.0a5). "
+                    "Upgrade with `pip install -U pulsim`."
+                )
+
+            vsi_p = params_cls()
+            vsi_p.switching_frequency_hz = self._as_float(
+                params.get("switching_frequency_hz"), default=10e3
+            )
+            vsi_p.modulation_index = self._as_float(
+                params.get("modulation_index"), default=0.8
+            )
+            vsi_p.modulation_frequency_hz = self._as_float(
+                params.get("modulation_frequency_hz"), default=50.0
+            )
+            vsi_p.phase_a_deg = self._as_float(
+                params.get("phase_a_deg"), default=0.0
+            )
+            vsi_p.positive_sequence = bool(
+                params.get("positive_sequence", True)
+            )
+            vsi_p.v_gate_on = self._as_float(
+                params.get("v_gate_on"), default=12.0
+            )
+            vsi_p.v_gate_off = self._as_float(
+                params.get("v_gate_off"), default=0.0
+            )
+            vsi_p.mosfet_r_on_ohm = self._as_float(
+                params.get("mosfet_r_on_ohm"), default=0.01
+            )
+            vsi_p.mosfet_vth = self._as_float(
+                params.get("mosfet_vth"), default=1.0
+            )
+            add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
+                    n_a_idx, n_b_idx, n_c_idx, vsi_p)
+            return
+
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
             n_anode, n_cathode = self._require_nodes(name, nodes, 2)
             anode = self._node_index(circuit, n_anode, node_cache)
@@ -785,6 +1052,55 @@ class CircuitConverter:
             nneg,
             self._as_float(waveform.get("value"), default=0.0),
         )
+
+    def _add_three_phase_fallback(
+        self,
+        circuit: Any,
+        name: str,
+        n_a: int,
+        n_b: int,
+        n_c: int,
+        n_neutral: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Manual decomposition for runtimes older than pulsim 0.10.0a1.
+
+        Mirrors the helper that lives in ``runtime_circuit.hpp`` so saved
+        projects authored against newer Pulsim still load on older
+        runtimes — they just won't see the optimized helper path.
+        """
+        import math
+
+        v_ll_rms = self._as_float(params.get("line_to_line_voltage_rms"), default=400.0)
+        frequency = self._as_float(params.get("frequency_hz"), default=50.0)
+        phase_a_deg = self._as_float(params.get("phase_a_deg"), default=0.0)
+        positive_sequence = bool(params.get("positive_sequence", True))
+        unbalance = self._as_float(params.get("unbalance_factor"), default=0.0)
+
+        # V_ph_peak = V_LL_RMS * sqrt(2) / sqrt(3)
+        v_peak = v_ll_rms * math.sqrt(2.0) / math.sqrt(3.0)
+        phase_a_rad = math.radians(phase_a_deg)
+        two_pi_third = 2.0 * math.pi / 3.0
+        shift_b = -two_pi_third if positive_sequence else two_pi_third
+        shift_c = -2.0 * two_pi_third if positive_sequence else 2.0 * two_pi_third
+
+        sine_params_cls = getattr(self._sl, "SineParams", None)
+        if sine_params_cls is None:
+            raise CircuitConversionError(
+                "Backend does not expose SineParams; install pulsim>=0.7.0."
+            )
+
+        def _emit_leg(suffix: str, node: int, amplitude: float, phase_rad: float) -> None:
+            leg = sine_params_cls()
+            leg.amplitude = amplitude
+            leg.frequency = frequency
+            leg.offset = 0.0
+            leg.phase = phase_rad
+            circuit.add_sine_voltage_source(f"{name}__{suffix}", node, n_neutral, leg)
+
+        _emit_leg("A", n_a, v_peak, phase_a_rad)
+        _emit_leg("B", n_b, v_peak * (1.0 - unbalance), phase_a_rad + shift_b)
+        _emit_leg("C", n_c, v_peak * (1.0 + unbalance), phase_a_rad + shift_c)
 
     def _apply_positions_from_list(
         self, circuit: Any, positions: list[tuple[str, dict]]

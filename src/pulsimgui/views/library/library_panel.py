@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
+from pulsimgui.models.component_catalog import (
+    COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY,
+    get_descriptive_name,
+)
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.utils.shortcut_format import shortcut_format
@@ -718,11 +721,11 @@ class ComponentCard(QFrame):
 
     clicked = Signal(ComponentType)
     double_clicked = Signal(ComponentType)
-    CARD_WIDTH = 84
-    CARD_HEIGHT = 88
+    CARD_WIDTH = 92
+    CARD_HEIGHT = 100
     ICON_SIZE = 46
-    READABLE_COLUMN_WIDTH = 96
-    CONTENT_WIDTH = 64
+    READABLE_COLUMN_WIDTH = 104
+    CONTENT_WIDTH = 76  # leaves 8px breathing room inside the 92px card frame
 
     def __init__(self, comp_type: ComponentType, name: str, shortcut: str, parent=None):
         super().__init__(parent)
@@ -763,45 +766,66 @@ class ComponentCard(QFrame):
         self._update_icon()
         layout.addWidget(self._icon_label)
 
-        # Name — pick the largest font size whose rendered width fits
-        # inside the card's content area, then fall back to Qt's elided
-        # text if even the smallest tested size still overflows.
+        # Name — try increasingly compact font sizes on a single line;
+        # if even 9 pt overflows, fall back to a two-line word-wrapped
+        # label at 9 pt so names like "PMSM (dynamic)" or "3-Phase RL
+        # Load" remain fully visible. Qt's elide is the last resort.
         #
-        # v0.8.1 used a heuristic based on len(name), but glyph widths
-        # are not linear with character count: "Transformer" (11 chars,
-        # mostly wide glyphs) overflowed at 9 pt even though "Saturable"
-        # (also 9 chars) fit fine at 10 pt. Measuring with QFontMetrics
-        # is the only way to be consistent across themes and DPIs.
+        # Measuring with QFontMetrics is the only way to stay consistent
+        # across themes and DPIs — glyph widths are not linear with
+        # character count.
+        from PySide6.QtCore import QRect
         from PySide6.QtGui import QFontMetrics
 
+        descriptive = get_descriptive_name(self._comp_type)
         self._name_label = QLabel("", self)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._name_label.setWordWrap(False)
         self._name_label.setFixedWidth(self.CONTENT_WIDTH)
         self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        self._name_label.setToolTip(self._name)
-        self._name_label.setAccessibleDescription(self._name)
+        # Tooltip surfaces the long-form name (e.g. "PMSM (dynamic)") so
+        # the short card label stays readable without losing context.
+        self._name_label.setToolTip(descriptive)
+        self.setToolTip(descriptive)
+        self._name_label.setAccessibleDescription(descriptive)
 
         chosen_font = self._name_label.font()
         chosen_font.setBold(True)
+        text_width = self.CONTENT_WIDTH - 4
+        fitted_one_line = False
+
+        # Single-word names (Transformer, Resistor) cannot be wrapped, so
+        # we try progressively smaller sizes before falling back to wrap.
         for trial_size in (10, 9, 8):
             chosen_font.setPointSize(trial_size)
-            metrics = QFontMetrics(chosen_font)
-            if metrics.horizontalAdvance(self._name) <= self.CONTENT_WIDTH - 4:
-                # Whole name fits cleanly at this size; render verbatim.
+            if QFontMetrics(chosen_font).horizontalAdvance(self._name) <= text_width:
+                self._name_label.setWordWrap(False)
                 self._name_label.setFont(chosen_font)
                 self._name_label.setText(self._name)
+                fitted_one_line = True
                 break
-        else:
-            # Even at 8 pt the name overflows — render with an ellipsis
-            # rather than clipping both ends of the string.
+
+        if not fitted_one_line:
+            chosen_font.setPointSize(9)
+            self._name_label.setWordWrap(True)
             self._name_label.setFont(chosen_font)
             metrics = QFontMetrics(chosen_font)
-            elided = metrics.elidedText(
-                self._name, Qt.TextElideMode.ElideRight,
-                self.CONTENT_WIDTH - 4,
+            # Reserve enough room for two lines plus line-leading.
+            two_line_height = metrics.lineSpacing() * 2 + 2
+            test_rect = metrics.boundingRect(
+                QRect(0, 0, text_width, two_line_height),
+                int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+                self._name,
             )
-            self._name_label.setText(elided)
+            if test_rect.height() <= two_line_height:
+                self._name_label.setText(self._name)
+            else:
+                # Doesn't fit even on two lines — elide the second line.
+                elided = metrics.elidedText(
+                    self._name, Qt.TextElideMode.ElideRight, text_width * 2 - 8,
+                )
+                self._name_label.setText(elided)
+            self._name_label.setFixedHeight(two_line_height)
+
         layout.addWidget(self._name_label)
 
         self._shortcut_label = QLabel(self._shortcut)
@@ -1082,7 +1106,10 @@ class CategorySection(QWidget):
         usable_width = max(available_width - margins.left() - margins.right(), 0)
         card_width = ComponentCard.READABLE_COLUMN_WIDTH
         if usable_width <= 0:
-            return 3
+            # Layout hasn't settled yet — pick a conservative default so
+            # rightmost cards aren't clipped by the dock edge while Qt
+            # still measures widgets.
+            return 2
         columns = max(1, int((usable_width + spacing) / (card_width + spacing)))
         return min(columns, 4)
 

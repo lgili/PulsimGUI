@@ -103,6 +103,25 @@ class ComponentType(Enum):
     PLL = auto()
     SVM = auto()
 
+    # Three-phase grid source (Pulsim 0.10.0a1+: Circuit::add_three_phase_source)
+    THREE_PHASE_SOURCE = auto()
+
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5+: 6 MOSFETs + 6 SPWM
+    # gates packaged into a single drop-in inverter component).
+    THREE_PHASE_VSI = auto()
+
+    # Motors (Pulsim 0.10.0a2+: full device-variant integration)
+    DC_MOTOR = auto()
+
+    # 3-phase RL load (Pulsim 0.10.0a3+: Y/Δ topology, balanced/unbalanced)
+    THREE_PHASE_RL_LOAD = auto()
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3+: R_s + L_s + back-EMF per phase)
+    PMSM_STEADY_STATE = auto()
+
+    # PMSM dynamic device-variant (Pulsim 0.10.0a4+: 4 internal states —
+    # i_d, i_q, ω_m, θ_m — with mechanical inertia and torque feedback).
+    PMSM = auto()
     # Pre-configured networks
     SNUBBER_RC = auto()
 
@@ -884,6 +903,62 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "DB", 35, 0),
         Pin(4, "DC", 35, 20),
     ],
+    # Three-phase grid source (pulsim>=0.10.0a1).
+    # 4 pins: A, B, C, Neutral. The runtime decomposes this into 3 internal
+    # SineVoltageSource branches sharing the neutral.
+    ComponentType.THREE_PHASE_SOURCE: [
+        Pin(0, "A", 30, -25),
+        Pin(1, "B", 30, 0),
+        Pin(2, "C", 30, 25),
+        Pin(3, "N", -30, 0),
+    ],
+
+    # Three-phase 2-level VSI (pulsim>=0.10.0a5).
+    # 5 pins: VDC+, VDC-, A, B, C. The runtime decomposes into 6 MOSFETs +
+    # 6 PWM gate drivers in 3 half-bridge legs.
+    ComponentType.THREE_PHASE_VSI: [
+        Pin(0, "VDC+", -35, -25),
+        Pin(1, "VDC-", -35, 25),
+        Pin(2, "A", 35, -25),
+        Pin(3, "B", 35, 0),
+        Pin(4, "C", 35, 25),
+    ],
+
+    # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
+    # mechanical state (ω, θ). Pulsim's runtime reserves one branch row for
+    # the armature current and advances ω, θ each accepted timestep.
+    ComponentType.DC_MOTOR: [
+        Pin(0, "A+", -30, 0),
+        Pin(1, "A-", 30, 0),
+    ],
+
+    # 3-phase RL load (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral.
+    # The runtime decomposes into R+L series branches (Y or Δ topology).
+    ComponentType.THREE_PHASE_RL_LOAD: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into
+    # 3 phases of R_s + L_s + sinusoidal back-EMF source.
+    ComponentType.PMSM_STEADY_STATE: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM dynamic (pulsim>=0.10.0a4). 4 pins: A, B, C, Neutral. Full
+    # device-variant: rotor inertia + electromagnetic torque feedback,
+    # 4 internal states tracked by the runtime.
+    ComponentType.PMSM: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
 }
 
 
@@ -1305,6 +1380,86 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "alpha_from_channel": "",
         "beta_from_channel": "",
         "sample_time": 0.0,
+    },
+    # Three-phase voltage source (Pulsim 0.10.0a1).
+    # Decomposes into 3 internal SineVoltageSource branches sharing
+    # the neutral pin. ``positive_sequence`` flips B/C; ``unbalance_factor``
+    # in [0, 1) scales |V_b|=(1-u) and |V_c|=(1+u) keeping A at nominal.
+    ComponentType.THREE_PHASE_SOURCE: {
+        "line_to_line_voltage_rms": 400.0,
+        "frequency_hz": 50.0,
+        "phase_a_deg": 0.0,
+        "positive_sequence": True,
+        "unbalance_factor": 0.0,
+    },
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5). Decomposes into
+    # 6 MOSFETs + 6 SPWM gate drivers (forced to Ideal switching mode).
+    ComponentType.THREE_PHASE_VSI: {
+        "switching_frequency_hz":  10e3,   # Hz — PWM carrier
+        "modulation_index":        0.8,    # 0..1 linear SPWM
+        "modulation_frequency_hz": 50.0,   # Hz — output fundamental
+        "phase_a_deg":             0.0,    # Reference angle for phase A
+        "positive_sequence":       True,
+        "v_gate_on":               12.0,   # V — gate drive amplitude
+        "v_gate_off":              0.0,    # V
+        "mosfet_r_on_ohm":         0.01,   # Ω — R_ds(on)
+        "mosfet_vth":              1.0,    # V — gate threshold
+    },
+    # DC Motor (Pulsim 0.10.0a2). Full device-variant — runtime advances
+    # ω and θ internally; user only needs to wire the armature terminals.
+    # Defaults match the analytical small-motor example used in Pulsim's
+    # examples/cpp/02_dc_motor_step.cpp.
+    ComponentType.DC_MOTOR: {
+        "R_a": 0.5,           # Ω — armature resistance
+        "L_a": 10e-3,         # H — armature inductance
+        "K_e": 0.05,          # V·s/rad — back-EMF constant
+        "K_t": 0.05,          # N·m/A — torque constant (= K_e in SI)
+        "J":   1e-4,          # kg·m² — rotor inertia
+        "b":   1e-5,          # N·m·s — viscous friction (linear in ω)
+        "tau_load_quad_coeff": 0.0,  # N·m·s² — quadratic load (fan/pump)
+        "i_a_init":   0.0,    # A — initial armature current
+        "omega_init": 0.0,    # rad/s — initial speed
+        "theta_init": 0.0,    # rad — initial rotor angle
+        "tau_load":   0.0,    # N·m — external load torque (constant)
+    },
+
+    # 3-phase RL load (Pulsim 0.10.0a3). Decomposes into 3 R+L branches
+    # in Star (Y) or Delta (Δ) topology.
+    ComponentType.THREE_PHASE_RL_LOAD: {
+        "resistance_per_phase": 30.0,    # Ω
+        "inductance_per_phase": 50e-3,   # H
+        "topology": "Star",              # "Star" or "Delta"
+        "unbalance_factor": 0.0,         # [0, 1)
+    },
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3). Per-phase R_s + L_s +
+    # sinusoidal back-EMF (amplitude = ω_e · λ_pm).
+    ComponentType.PMSM_STEADY_STATE: {
+        "R_s": 0.5,                      # Ω — stator phase resistance
+        "L_s": 2e-3,                     # H — stator phase inductance
+        "lambda_pm": 0.1,                # V·s/rad — rotor flux linkage
+        "omega_electrical": 314.16,      # rad/s — fixed electrical speed (~50 Hz)
+        "phase_a_offset_deg": 0.0,       # rotor angle offset
+        "positive_sequence": True,       # False flips B/C
+    },
+
+    # PMSM dynamic device (Pulsim 0.10.0a4). Full device-variant: 4
+    # internal states (i_d, i_q, ω_m, θ_m), 3 reserved MNA branch rows,
+    # Park-frame torque, forward-Euler mechanical step.
+    ComponentType.PMSM: {
+        "Rs":            0.5,        # Ω — stator phase resistance
+        "Ld":            2e-3,       # H — d-axis inductance
+        "Lq":            2e-3,       # H — q-axis inductance (Lq > Ld → IPM)
+        "psi_pm":        0.1,        # Wb — magnet flux linkage
+        "pole_pairs":    2,          # poles / 2
+        "J":             1e-3,       # kg·m² — rotor inertia
+        "b_friction":    1e-4,       # N·m·s — linear viscous friction
+        "friction_coulomb": 0.0,     # N·m — Coulomb friction
+        "i_d_init":      0.0,        # A
+        "i_q_init":      0.0,        # A
+        "omega_init":    0.0,        # rad/s
+        "theta_init":    0.0,        # rad
+        "tau_load":      0.0,        # N·m — external shaft load
     },
 }
 
