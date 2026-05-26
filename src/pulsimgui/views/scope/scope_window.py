@@ -915,7 +915,10 @@ class ScopeWindow(QWidget):
         self._right_panel_visible = False
         self._left_panel_width = self.DEFAULT_LEFT_PANEL_WIDTH
         self._right_panel_width = self.DEFAULT_RIGHT_PANEL_WIDTH
-        self._collapsed_panel_width = 64
+        # Wide enough to fit a 86px rail button + 10px sidebar margins on
+        # each side, so "Signals / Scopes / Traces / Views" labels stop
+        # being truncated to "Signa / Scop / Trac / View".
+        self._collapsed_panel_width = 110
         self._stacked_grid_enabled = True
         self._stacked_cursor_lines: list[tuple[pg.InfiniteLine, pg.InfiniteLine]] = []
         self._stacked_hover_items: list[tuple[pg.InfiniteLine, pg.InfiniteLine, pg.TextItem]] = []
@@ -1340,6 +1343,7 @@ class ScopeWindow(QWidget):
         right_controls_layout.addWidget(self._stacked_cursor_toggle)
         right_controls_layout.addWidget(self._stacked_grid_toggle)
         self._interval_combo = QComboBox()
+        self._interval_combo.setObjectName("scopeBottomRowCombo")
         self._interval_combo.addItem("Full Range", "full")
         self._interval_combo.addItem("Visible Window", "window")
         self._interval_combo.addItem("Between Cursors", "a_to_b")
@@ -1612,9 +1616,10 @@ class ScopeWindow(QWidget):
             from pulsimgui import __version__ as _pg_version
         except Exception:  # pragma: no cover - extremely defensive
             _pg_version = ""
-        version_text = (
-            f"Scope · PulsimGui {_pg_version}" if _pg_version else "Scope · PulsimGui"
-        )
+        # Header already shows the "Scope" brand on the left and the
+        # current scope name pill on the right, so the version label
+        # only needs to carry the version itself.
+        version_text = f"v{_pg_version}" if _pg_version else ""
         self._scope_version_label = QLabel(version_text)
         self._scope_version_label.setObjectName("scopeVersionLabel")
         menu_layout.addWidget(self._scope_version_label)
@@ -1917,7 +1922,7 @@ class ScopeWindow(QWidget):
 
         self._timeline_dec_btn = QPushButton("◀")
         self._timeline_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_dec_btn.setFixedWidth(18)
+        self._timeline_dec_btn.setFixedWidth(24)
         self._timeline_dec_btn.setToolTip("Pan left")
         self._timeline_dec_btn.clicked.connect(lambda: self._step_timeline_window(-20))
         viewport_layout.addWidget(self._timeline_dec_btn)
@@ -1933,7 +1938,7 @@ class ScopeWindow(QWidget):
 
         self._timeline_inc_btn = QPushButton("▶")
         self._timeline_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._timeline_inc_btn.setFixedWidth(18)
+        self._timeline_inc_btn.setFixedWidth(24)
         self._timeline_inc_btn.setToolTip("Pan right")
         self._timeline_inc_btn.clicked.connect(lambda: self._step_timeline_window(20))
         viewport_layout.addWidget(self._timeline_inc_btn)
@@ -1945,7 +1950,7 @@ class ScopeWindow(QWidget):
 
         self._zoom_dec_btn = QPushButton("−")
         self._zoom_dec_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_dec_btn.setFixedWidth(18)
+        self._zoom_dec_btn.setFixedWidth(24)
         self._zoom_dec_btn.setToolTip("Zoom out")
         self._zoom_dec_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, -5))
         viewport_layout.addWidget(self._zoom_dec_btn)
@@ -1960,7 +1965,7 @@ class ScopeWindow(QWidget):
 
         self._zoom_inc_btn = QPushButton("+")
         self._zoom_inc_btn.setObjectName("scopeSliderStepBtn")
-        self._zoom_inc_btn.setFixedWidth(18)
+        self._zoom_inc_btn.setFixedWidth(24)
         self._zoom_inc_btn.setToolTip("Zoom in")
         self._zoom_inc_btn.clicked.connect(lambda: self._step_slider(self._zoom_slider, 5))
         viewport_layout.addWidget(self._zoom_inc_btn)
@@ -1972,6 +1977,7 @@ class ScopeWindow(QWidget):
         viewport_layout.addWidget(self._zoom_percent_label)
 
         self._autoscale_btn = QPushButton("Fit")
+        self._autoscale_btn.setObjectName("scopeBottomRowBtn")
         self._autoscale_btn.setToolTip("Fit viewport to full data range (F)")
         self._autoscale_btn.clicked.connect(self._on_autoscale_clicked)
         viewport_layout.addWidget(self._autoscale_btn)
@@ -4917,7 +4923,7 @@ class ScopeWindow(QWidget):
             }}
             QLabel#scopeBrandLabel {{
                 color: {shell["text"]};
-                font-size: 9px;
+                font-size: 12px;
                 font-weight: 700;
                 letter-spacing: 0.3px;
             }}
@@ -4925,19 +4931,24 @@ class ScopeWindow(QWidget):
                 color: {shell["menu_text"]};
                 background: transparent;
                 border: none;
-                padding: 0px 5px;
-                font-size: 8px;
+                padding: 4px 10px;
+                font-size: 12px;
                 font-weight: 500;
+                border-radius: 5px;
+            }}
+            QToolButton#scopeMenuTextBtn::menu-indicator {{
+                image: none;
+                width: 0;
+                height: 0;
             }}
             QToolButton#scopeMenuTextBtn:hover {{
                 color: {shell["text"]};
                 background-color: {shell["hover_fill"]};
-                border-radius: 4px;
             }}
             QLabel#scopeVersionLabel {{
                 color: {shell["muted"]};
-                font-size: 8px;
-                font-weight: 600;
+                font-size: 11px;
+                font-weight: 500;
             }}
             QWidget#scopeToolbarRow {{
                 background-color: {shell["toolbar_bg"]};
@@ -4955,12 +4966,12 @@ class ScopeWindow(QWidget):
                 border-radius: 8px;
             }}
             QFrame#scopeToolbarSeparator {{
-                background-color: {shell["separator"]};
-                min-width: 2px;
-                max-width: 2px;
+                background-color: {shell["border"]};
+                min-width: 1px;
+                max-width: 1px;
                 border: none;
-                margin: 4px 8px;
-                border-radius: 1px;
+                margin: 5px 10px;
+                border-radius: 0;
             }}
             QToolButton#scopeToolbarTransportBtn {{
                 min-width: 22px;
@@ -5061,11 +5072,16 @@ class ScopeWindow(QWidget):
             QTabWidget#scopeAnalysisTabs > QTabBar::tab {{
                 background-color: transparent;
                 color: {shell["muted"]};
-                padding: 5px 10px;
-                font-size: 9px;
+                padding: 7px 16px;
+                font-size: 12px;
                 font-weight: 600;
                 border: none;
-                margin-right: 3px;
+                margin-right: 4px;
+            }}
+            QTabWidget#scopeAnalysisTabs > QTabBar::tab:hover:!selected {{
+                color: {shell["text"]};
+                background-color: {shell["hover_fill"]};
+                border-radius: 6px;
             }}
             QTabWidget#scopeAnalysisTabs > QTabBar::tab:selected {{
                 color: {shell["text"]};
@@ -5168,17 +5184,32 @@ class ScopeWindow(QWidget):
                 font-size: 9px;
                 font-weight: 500;
             }}
-            QToolButton#scopeBottomDrawerToggleBtn {{
+            QToolButton#scopeBottomDrawerToggleBtn,
+            QPushButton#scopeBottomRowBtn {{
                 background-color: {shell["button_bg"]};
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
-                padding: 1px 7px;
-                min-height: 18px;
+                padding: 3px 12px;
+                min-height: 22px;
+                font-size: 11px;
                 font-weight: 600;
             }}
-            QToolButton#scopeBottomDrawerToggleBtn:hover {{
+            QToolButton#scopeBottomDrawerToggleBtn:hover,
+            QPushButton#scopeBottomRowBtn:hover {{
                 background-color: {shell["button_hover_bg"]};
+                border-color: {shell["accent"]};
+            }}
+            QComboBox#scopeBottomRowCombo {{
+                background-color: {shell["field_bg"]};
+                color: {shell["text"]};
+                border: 1px solid {shell["field_border"]};
+                border-radius: 8px;
+                padding: 3px 10px;
+                min-height: 22px;
+                font-size: 11px;
+            }}
+            QComboBox#scopeBottomRowCombo:hover {{
                 border-color: {shell["accent"]};
             }}
             QTabWidget#scopeBottomTabs::pane {{
@@ -5244,12 +5275,13 @@ class ScopeWindow(QWidget):
                 font-weight: 600;
             }}
             QPushButton#scopeSliderStepBtn {{
-                min-width: 20px;
-                max-width: 20px;
-                min-height: 18px;
-                max-height: 18px;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 22px;
+                max-height: 22px;
                 padding: 0px;
-                font-size: 8px;
+                font-size: 11px;
+                font-weight: 600;
                 border-radius: 6px;
                 background-color: {shell["button_bg"]};
                 border: 1px solid {shell["border"]};
@@ -5366,8 +5398,9 @@ class ScopeWindow(QWidget):
                 color: {shell["button_text"]};
                 border: 1px solid {shell["border"]};
                 border-radius: 8px;
-                padding: 1px 7px;
-                min-height: 20px;
+                padding: 3px 12px;
+                min-height: 22px;
+                font-size: 11px;
                 font-weight: 600;
             }}
             QToolButton#scopeMeasurementMenuBtn:hover {{
@@ -5546,10 +5579,10 @@ class ScopeWindow(QWidget):
                 background-color: transparent;
                 color: {muted};
                 border: none;
-                padding: 4px 8px 6px 8px;
-                font-size: 9px;
+                padding: 6px 10px 8px 10px;
+                font-size: 11px;
                 font-weight: 600;
-                min-width: 44px;
+                min-width: 54px;
             }}
             QTabWidget#scopeSidebarTabs > QTabBar::tab:selected {{
                 background-color: transparent;
