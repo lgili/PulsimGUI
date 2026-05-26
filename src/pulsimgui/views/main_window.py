@@ -3971,47 +3971,64 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 — gracefully no-op
             return
 
-        # Build the signal list from the current project's circuit
-        # builder. We rely on the project's already-converted builder
-        # via the simulation service; this matches what the kernel
-        # actually sees on its state vector.
-        builder = None
-        try:
-            project = getattr(self, "_project", None)
-            if project is not None and hasattr(self._simulation_service, "convert_gui_circuit"):
-                circuit_data = self._simulation_service.convert_gui_circuit(project)
-                builder = circuit_data.get("circuit", None)
-                if builder is not None:
-                    builder = getattr(builder, "builder", builder)
-        except Exception:  # noqa: BLE001
-            builder = None
-
-        # Without a builder we can't resolve node indices — still open
-        # the scope (the user can register signals manually later), but
-        # with an empty signal set so the user at least sees the
-        # streaming infrastructure react.
+        # Build the signal list from the stream's own ``channel_names``
+        # (pulsim ≥ v1.4.2). This list is the authority on the kernel's
+        # state-vector layout — covers node voltages AND inductor
+        # currents AND voltage-source currents (which can't be inferred
+        # from the GUI's ``circuit_data`` alone). Falls back to the old
+        # builder-introspection path on older pulsim binaries so the
+        # widget still opens with at least node voltages.
         signals: list = []
-        if builder is not None:
+        channel_names = getattr(stream, "channel_names", None)
+        if channel_names:
+            # New path — kernel-authoritative names. Pre-tick scope
+            # with every state-vector column; the user can hide curves
+            # via the checkbox panel if they only care about a subset.
+            for i, name in enumerate(channel_names):
+                color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
+                # Crude unit guess from the prefix the kernel emits:
+                # V(x) → V,  I(x) / Is(x) → A,  anything else → "".
+                if name.startswith("V("):
+                    unit = "V"
+                elif name.startswith("I(") or name.startswith("Is("):
+                    unit = "A"
+                else:
+                    unit = ""
+                signals.append(LiveSignalSpec(
+                    name=name, state_idx=i, color=color, unit=unit,
+                ))
+        else:
+            # Legacy fallback — older pulsim without ``channel_names``.
+            # Walk the GUI's circuit_data to at least get node voltages
+            # (will miss inductor / source currents).
+            builder = None
             try:
-                # ``builder.graph.node_names`` returns nodes in
-                # registration order; ``node_id_of`` resolves a state
-                # vector slot.
-                names = list(getattr(builder.graph, "node_names", []) or [])
-                if not names:
-                    n_nodes = int(getattr(builder.graph, "num_nodes", 0))
-                    names = [f"n{i}" for i in range(n_nodes)]
-                for i, name in enumerate(names):
-                    try:
-                        idx = int(builder.node_id_of(name))
-                    except Exception:  # noqa: BLE001
-                        continue
-                    color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
-                    signals.append(LiveSignalSpec(
-                        name=f"V({name})", state_idx=idx,
-                        color=color, unit="V",
-                    ))
+                project = getattr(self, "_project", None)
+                if project is not None and hasattr(self._simulation_service, "convert_gui_circuit"):
+                    circuit_data = self._simulation_service.convert_gui_circuit(project)
+                    builder = circuit_data.get("circuit", None)
+                    if builder is not None:
+                        builder = getattr(builder, "builder", builder)
             except Exception:  # noqa: BLE001
-                signals = []
+                builder = None
+            if builder is not None:
+                try:
+                    names = list(getattr(builder.graph, "node_names", []) or [])
+                    if not names:
+                        n_nodes = int(getattr(builder.graph, "num_nodes", 0))
+                        names = [f"n{i}" for i in range(n_nodes)]
+                    for i, name in enumerate(names):
+                        try:
+                            idx = int(builder.node_id_of(name))
+                        except Exception:  # noqa: BLE001
+                            continue
+                        color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
+                        signals.append(LiveSignalSpec(
+                            name=f"V({name})", state_idx=idx,
+                            color=color, unit="V",
+                        ))
+                except Exception:  # noqa: BLE001
+                    signals = []
 
         # Also forward the stream to every open per-component
         # ScopeWindow so the schematic-side scopes see live data, not
