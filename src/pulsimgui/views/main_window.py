@@ -142,6 +142,7 @@ class MainWindow(QMainWindow):
         # empty-state surface. Must come after _create_dock_widgets so
         # the schematic view exists.
         self._welcome_overlay = None
+        self._welcome_user_dismissed = False
         self._install_welcome_overlay()
         self._update_schematic_empty_state()
 
@@ -745,7 +746,7 @@ class MainWindow(QMainWindow):
         self._library_panel = LibraryPanel(theme_service=self._theme_service)
         self._library_panel.component_double_clicked.connect(self._on_library_component_selected)
         self.library_dock.setWidget(self._library_panel)
-        self.library_dock.setMinimumWidth(272)
+        self.library_dock.setMinimumWidth(360)
         self.library_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -1028,8 +1029,15 @@ class MainWindow(QMainWindow):
         """Apply the current theme stylesheet and update components."""
         theme = self._theme_service.current_theme
 
-        # Apply stylesheet
-        self.setStyleSheet(self._theme_service.generate_stylesheet())
+        # Apply the generated stylesheet on the QApplication so detached
+        # top-level dialogs (Preferences, Simulation Settings, Convergence
+        # Diagnostics, …) inherit the same look as MainWindow children.
+        # MainWindow's own stylesheet is cleared to avoid double-application.
+        stylesheet = self._theme_service.generate_stylesheet()
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        self.setStyleSheet("")
         self._apply_palette(theme)
 
         # Update schematic colors from theme
@@ -2151,6 +2159,12 @@ class MainWindow(QMainWindow):
         circuit = self._current_circuit()
         is_empty = not circuit.components and not circuit.wires
         view.set_empty_state_visible(is_empty)
+        # Honour the user's explicit dismissal of the welcome overlay so
+        # ``New schematic`` shows the blank canvas they asked for instead
+        # of immediately re-rendering the welcome card.
+        if is_empty and getattr(self, "_welcome_user_dismissed", False):
+            view.set_empty_state_visible(False)
+
         # Hide the minimap while the welcome card is centered on the
         # canvas — it would otherwise float on top of the card and the
         # placeholder is meaningless without a schematic anyway.
@@ -2158,8 +2172,9 @@ class MainWindow(QMainWindow):
         toggle_action = getattr(self, "action_toggle_minimap", None)
         if minimap is not None:
             wants_visible = toggle_action.isChecked() if toggle_action is not None else True
-            minimap.setVisible(wants_visible and not is_empty)
-        if is_empty:
+            welcome_visible = is_empty and not getattr(self, "_welcome_user_dismissed", False)
+            minimap.setVisible(wants_visible and not welcome_visible)
+        if is_empty and not getattr(self, "_welcome_user_dismissed", False):
             self._refresh_welcome_recent_paths()
 
     # ------------------------------------------------------------------
@@ -2180,6 +2195,7 @@ class MainWindow(QMainWindow):
         overlay.open_project_requested.connect(self._on_welcome_open_project)
         overlay.recent_project_requested.connect(self._on_welcome_recent_project)
         overlay.template_requested.connect(self._on_welcome_template)
+        overlay.dismissed.connect(self._on_welcome_dismissed)
         # Apply current theme palette.
         try:
             theme = self._theme_service.current_theme
@@ -2208,10 +2224,22 @@ class MainWindow(QMainWindow):
         overlay.set_recent_paths(recent)
 
     def _on_welcome_new_project(self) -> None:
+        # User explicitly asked for a blank canvas — dismiss the overlay
+        # so they actually see the empty schematic they requested.
+        self._welcome_user_dismissed = True
         self._on_new_project()
+        self.statusBar().showMessage("New blank schematic created", 2500)
 
     def _on_welcome_open_project(self) -> None:
-        self._on_open()
+        self._on_open_project()
+
+    def _on_welcome_dismissed(self) -> None:
+        """Hide the welcome overlay until the next app launch."""
+        self._welcome_user_dismissed = True
+        self._update_schematic_empty_state()
+        overlay = getattr(self, "_welcome_overlay", None)
+        if overlay is not None:
+            overlay.hide()
 
     def _on_welcome_recent_project(self, path: str) -> None:
         if not path:
