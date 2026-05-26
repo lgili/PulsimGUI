@@ -48,7 +48,6 @@ from pulsimgui.models.component import (
     pin_connection_domain,
 )
 from pulsimgui.models.project import Project
-from pulsimgui.scope_workbench import ScopeWorkspaceState, ScopeWorkbenchSession
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
     create_subcircuit_from_selection,
@@ -94,17 +93,9 @@ from pulsimgui.views.dialogs import (
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
-from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
-from pulsimgui.views.scope_v2 import BaseScopeWindow as BaseScopeWindow_t  # noqa: F401 - typing hint
+from pulsimgui.views.scope_v2 import BaseScopeWindow
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
-
-
-# Greenfield rollout flag for the modular scope (views/scope_v2). When
-# True, ``_on_scope_open_requested`` opens the new ``BaseScopeWindow``
-# instead of the legacy ScopeWindow. The old code path stays compiled
-# so we can flip back instantly if a regression is spotted.
-USE_SCOPE_V2 = True
 
 
 class MainWindow(QMainWindow):
@@ -118,7 +109,6 @@ class MainWindow(QMainWindow):
         self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
         self._project = Project()
-        self._scope_workbench_session = self._build_scope_workbench_session()
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
@@ -126,12 +116,10 @@ class MainWindow(QMainWindow):
             allow_synthetic_fallback=False,
             parent=self,
         )
-        self._scope_windows: dict[str, ScopeWindow] = {}
-        # scope_v2 greenfield — new modular PLECS-style scope. Per
-        # component, holds at most one ``BaseScopeWindow`` (in addition
-        # to / instead of the legacy ScopeWindow above depending on the
-        # USE_SCOPE_V2 flag).
-        self._scope_v2_windows: dict[str, "BaseScopeWindow_t"] = {}
+        # Open scope windows keyed by the source component's id. One
+        # ``BaseScopeWindow`` instance per scope component on the
+        # schematic; re-opening focuses the existing window.
+        self._scope_windows: dict[str, BaseScopeWindow] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
         self._latest_thermal_waveform: SimulationResult | None = None
@@ -1581,124 +1569,6 @@ class MainWindow(QMainWindow):
         self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
-        self._reset_scope_workbench_session()
-        self._restore_saved_scope_windows()
-
-    def _build_scope_workbench_session(self) -> ScopeWorkbenchSession:
-        """Build standalone scope workspace session from project persistence."""
-        raw_state = self._project.scope_workspace_state
-        workspace_state = (
-            ScopeWorkspaceState.from_dict(raw_state)
-            if isinstance(raw_state, dict)
-            else None
-        )
-        return ScopeWorkbenchSession("project-main", state=workspace_state)
-
-    def _reset_scope_workbench_session(self) -> None:
-        """Reset standalone scope workspace session for current project."""
-        self._scope_workbench_session = self._build_scope_workbench_session()
-
-    def _persist_scope_workspace_state(self, *, mark_dirty: bool) -> None:
-        """Persist standalone workspace snapshot back into project model."""
-        self._project.scope_workspace_state = self._scope_workbench_session.export_state_dict()
-        if mark_dirty:
-            self._project.mark_dirty()
-            self._update_modified_indicator()
-
-    def _sync_open_scope_window_states(self) -> None:
-        """Snapshot currently open scope windows into project/session state."""
-        if not self._scope_windows:
-            self._persist_scope_workspace_state(mark_dirty=False)
-            return
-        circuit = self._current_circuit()
-        for scope_id, window in list(self._scope_windows.items()):
-            state = self._project.scope_state_for(scope_id)
-            state.is_open = True
-            state.geometry = list(window.capture_geometry_state())
-            state.ui_state = window.capture_ui_state()
-            component = self._get_component_by_id(scope_id, circuit)
-            if component is None:
-                continue
-            self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
-
-    def _scope_signal_keys_from_bindings(self, component) -> list[str]:
-        """Collect unique bound signal keys for one scope component."""
-        bindings = build_scope_channel_bindings(component, self._current_circuit())
-        keys: list[str] = []
-        seen: set[str] = set()
-        for binding in bindings:
-            for signal in binding.signals:
-                key = str(signal.signal_key or "").strip()
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                keys.append(key)
-        return keys
-
-    def _sync_scope_session_for_component(self, component, window: ScopeWindow | None = None) -> None:
-        """Mirror scope component/window state into standalone session model."""
-        scope_id = str(component.id)
-        self._scope_workbench_session.ensure_scope(scope_id, component.name)
-        self._scope_workbench_session.set_scope_signals(
-            scope_id,
-            self._scope_signal_keys_from_bindings(component),
-        )
-
-        if window is not None:
-            ui_state = window.capture_ui_state()
-            self._scope_workbench_session.set_scope_measurements(
-                scope_id,
-                [str(key) for key in ui_state.get("measurement_keys", [])],
-            )
-            self._scope_workbench_session.set_scope_plot_groups(
-                scope_id,
-                {
-                    str(signal_name): str(leader_name)
-                    for signal_name, leader_name in ui_state.get("plot_groups", {}).items()
-                    if str(signal_name).strip() and str(leader_name).strip()
-                }
-                if isinstance(ui_state.get("plot_groups"), dict)
-                else {},
-            )
-            self._scope_workbench_session.set_scope_cursors(
-                scope_id,
-                enabled=bool(ui_state.get("cursors_enabled", False)),
-                cursor_a=(
-                    float(ui_state["cursor_a"])
-                    if isinstance(ui_state.get("cursor_a"), (int, float))
-                    else None
-                ),
-                cursor_b=(
-                    float(ui_state["cursor_b"])
-                    if isinstance(ui_state.get("cursor_b"), (int, float))
-                    else None
-                ),
-            )
-            self._scope_workbench_session.set_sidebar_collapsed(
-                not bool(ui_state.get("left_panel_visible", True))
-            )
-        self._scope_workbench_session.set_active_scope(scope_id)
-
-    def _restore_saved_scope_windows(self) -> None:
-        """Reopen scope windows that were persisted as open in the project state."""
-        if not self._project.scope_windows:
-            return
-        circuit = self._current_circuit()
-        previous = self._suppress_scope_state
-        self._suppress_scope_state = True
-        try:
-            for scope_id, state in self._project.scope_windows.items():
-                if not state.is_open:
-                    continue
-                component = self._get_component_by_id(scope_id, circuit)
-                if component is None:
-                    continue
-                if component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
-                    continue
-                self._open_scope_window(component, geometry=state.geometry, update_state=False)
-        finally:
-            self._suppress_scope_state = previous
 
     def _apply_project_simulation_settings_to_service(self) -> None:
         """Mirror project transient settings into the runtime simulation service."""
@@ -1938,7 +1808,6 @@ class MainWindow(QMainWindow):
             return
         self._close_all_scope_windows(persist_state=False)
         self._project = Project()
-        self._reset_scope_workbench_session()
         self._latest_electrical_result = None
         self._latest_thermal_waveform = None
         self._command_stack.clear()
@@ -2045,7 +1914,6 @@ class MainWindow(QMainWindow):
     def _on_save(self) -> None:
         """Save the current project."""
         self._apply_simulation_service_settings_to_project()
-        self._sync_open_scope_window_states()
         if self._project.path is None:
             self._on_save_as()
         else:
@@ -2061,7 +1929,6 @@ class MainWindow(QMainWindow):
     def _on_save_as(self) -> None:
         """Save the project with a new name."""
         self._apply_simulation_service_settings_to_project()
-        self._sync_open_scope_window_states()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
@@ -2088,7 +1955,6 @@ class MainWindow(QMainWindow):
             return
         self._close_all_scope_windows(persist_state=False)
         self._project = Project()
-        self._reset_scope_workbench_session()
         self._latest_electrical_result = None
         self._latest_thermal_waveform = None
         self._command_stack.clear()
@@ -2542,15 +2408,9 @@ class MainWindow(QMainWindow):
     def _on_component_removed(self, component) -> None:
         """Tear down scope window state when a component disappears."""
         comp_id = str(component.id)
-        window = self._scope_windows.get(comp_id)
+        window = self._scope_windows.pop(comp_id, None)
         if window is not None:
             window.close()
-        self._scope_workbench_session.discard_scope(comp_id)
-        self._persist_scope_workspace_state(mark_dirty=False)
-        if comp_id in self._project.scope_windows:
-            del self._project.scope_windows[comp_id]
-            self._project.mark_dirty()
-            self._update_modified_indicator()
 
     def _on_component_delete_requested(self, component_id: str) -> None:
         """Delete a component via command stack."""
@@ -2915,28 +2775,22 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Select a wire to rename.", 3000)
 
     def _on_scope_open_requested(self, component) -> None:
-        """Open (or focus) a dedicated window for the requested scope."""
+        """Open (or focus) the scope_v2 window for the requested component."""
         if component is None:
             return
-        # Greenfield switch: when True, opens the modular scope_v2 shell
-        # (PLECS-style live + post-sim in the same window). When False,
-        # falls back to the legacy ScopeWindow path that still ships.
-        if USE_SCOPE_V2:
-            self._open_scope_v2_window(component)
-        else:
-            self._open_scope_window(component)
+        self._open_scope_window(component)
 
-    def _open_scope_v2_window(self, component) -> None:
+    def _open_scope_window(self, component) -> None:
         """Open the modular scope_v2 ``BaseScopeWindow`` for ``component``.
 
         Resolves the wired-up probe channels via
         :func:`resolve_scope_signal_specs`, builds the live + post-sim
         capabilities, and instantiates the variant matching the scope
-        component's type (electrical / thermal).
+        component's type (electrical / thermal). Re-opening the same
+        component focuses the existing window instead of duplicating.
         """
         from pulsimgui.models.component import ComponentType
         from pulsimgui.views.scope_v2 import (
-            BaseScopeWindow,
             CursorsCapability,
             ExportCapability,
             FFTCapability,
@@ -2953,7 +2807,7 @@ class MainWindow(QMainWindow):
         )
 
         comp_id = str(component.id)
-        existing = self._scope_v2_windows.get(comp_id)
+        existing = self._scope_windows.get(comp_id)
         if existing is not None:
             existing.show()
             existing.raise_()
@@ -2982,16 +2836,8 @@ class MainWindow(QMainWindow):
             capabilities.append(LiveStreamCapability(self._simulation_service, live_specs))
         if post_specs:
             capabilities.append(PostSimCapability(self._simulation_service, post_specs))
-        # Cursors are always-on — they're a data-agnostic interaction
-        # that even an empty scope benefits from (drag the marker, see
-        # the time readout).
         capabilities.append(CursorsCapability())
-        # Math signals are gated by the toolbar fx button — attaching
-        # them with no data costs nothing and the user expects the
-        # button to always be present.
         capabilities.append(MathSignalsCapability())
-        # Trigger / SMPS macros populate the Inspector groups; Export
-        # is on the toolbar download icon; FFT is the Σ toolbar toggle.
         capabilities.append(TriggerCapability())
         capabilities.append(SMPSMacrosCapability())
         capabilities.append(ExportCapability())
@@ -3002,13 +2848,11 @@ class MainWindow(QMainWindow):
             capabilities=capabilities,
             version=_pg_version,
         )
-        # LiveStreamCapability's Run button forwards to
-        # ``run_transient_project(self._project)`` — give it the project
-        # reference up front so the user can drive the run from inside
-        # the scope window.
+        # The LiveStream capability needs the project reference so its
+        # Run button can drive ``simulation_service.run_transient_project``.
         window._project = self._project
-        window.closed.connect(lambda cid=comp_id: self._scope_v2_windows.pop(cid, None))
-        self._scope_v2_windows[comp_id] = window
+        window.closed.connect(lambda cid=comp_id: self._scope_windows.pop(cid, None))
+        self._scope_windows[comp_id] = window
         window.show()
         window.raise_()
         window.activateWindow()
@@ -3071,22 +2915,6 @@ class MainWindow(QMainWindow):
             return
 
         self._schematic_scene.request_net_label_navigation(source_component)
-
-    def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
-        """Persist window state whenever a scope window closes."""
-        window = self._scope_windows.pop(component_id, None)
-        if self._suppress_scope_state:
-            return
-        state = self._project.scope_state_for(component_id)
-        state.is_open = False
-        state.geometry = list(geometry)
-        state.ui_state = window.capture_ui_state() if window is not None else None
-        component = self._get_component_by_id(component_id, self._current_circuit())
-        if component is not None:
-            self._sync_scope_session_for_component(component, window=window)
-            self._persist_scope_workspace_state(mark_dirty=False)
-        self._project.mark_dirty()
-        self._update_modified_indicator()
 
     def _generate_component_name(self, comp_type) -> str:
         """Generate a unique component name."""
@@ -3191,90 +3019,35 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Scope window helpers
     # ------------------------------------------------------------------
-    def _open_scope_window(
-        self,
-        component,
-        geometry: list[int] | None = None,
-        update_state: bool = True,
-    ) -> ScopeWindow:
-        comp_id = str(component.id)
-        window = self._scope_windows.get(comp_id)
-        if window is None:
-            window = ScopeWindow(
-                comp_id,
-                component.name,
-                component.type,
-                theme_service=self._theme_service,
-                parent=self,
-            )
-            window.closed.connect(self._on_scope_window_closed)
-            self._scope_windows[comp_id] = window
-
-        window.set_component_name(component.name)
-        circuit = self._current_circuit()
-        window.set_bindings(build_scope_channel_bindings(component, circuit))
-
-        target_geometry = geometry
-        target_ui_state: dict[str, object] | None = None
-        state = self._project.scope_windows.get(comp_id)
-        if state and isinstance(state.ui_state, dict):
-            target_ui_state = dict(state.ui_state)
-        if target_geometry is None:
-            if state and state.geometry:
-                target_geometry = state.geometry
-        window.apply_geometry_state(target_geometry)
-        window.apply_simulation_result(self._scope_result_for_component(component))
-        if target_ui_state is not None:
-            window.apply_ui_state(target_ui_state)
-
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-        self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
-
-        if update_state and not self._suppress_scope_state:
-            state = self._project.scope_state_for(comp_id)
-            state.is_open = True
-            state.geometry = list(window.capture_geometry_state())
-            state.ui_state = window.capture_ui_state()
-            self._project.mark_dirty()
-            self._update_modified_indicator()
-        return window
-
     def _close_all_scope_windows(self, persist_state: bool = True) -> None:
-        if not self._scope_windows:
-            return
-        previous = self._suppress_scope_state
-        self._suppress_scope_state = not persist_state
-        try:
-            for window in list(self._scope_windows.values()):
-                window.close()
-        finally:
-            self._suppress_scope_state = previous
-        if not persist_state:
-            self._scope_windows.clear()
+        """Close every open scope_v2 window — used on project new/open/close."""
+        del persist_state  # legacy kwarg retained for caller compatibility
+        for window in list(self._scope_windows.values()):
+            window.close()
+        self._scope_windows.clear()
 
     def _refresh_scope_window_bindings(self) -> None:
+        """Rebuild capabilities for every open scope after a schematic edit.
+
+        When the user re-wires a probe to a scope on the canvas, the
+        ``ScopeChannelBinding``s change. We rebuild the simplest way:
+        close + reopen each open window so the resolver runs fresh.
+        """
         if not self._scope_windows:
             return
         circuit = self._current_circuit()
-        for comp_id, window in list(self._scope_windows.items()):
+        comp_ids = list(self._scope_windows.keys())
+        for comp_id in comp_ids:
             component = self._get_component_by_id(comp_id, circuit)
             if component is None:
-                window.close()
+                window = self._scope_windows.pop(comp_id, None)
+                if window is not None:
+                    window.close()
                 continue
-            window.set_component_name(component.name)
-            window.set_bindings(build_scope_channel_bindings(component, circuit))
-            window.apply_simulation_result(self._scope_result_for_component(component))
-            self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
-
-    def _scope_result_for_component(self, component) -> SimulationResult | None:
-        if component.type == ComponentType.THERMAL_SCOPE:
-            return self._ensure_thermal_waveform()
-        return self._latest_electrical_result
+            window = self._scope_windows.pop(comp_id, None)
+            if window is not None:
+                window.close()
+            self._open_scope_window(component)
 
     @staticmethod
     def _canonical_scope_token(value: str | None) -> str:
@@ -3480,7 +3253,8 @@ class MainWindow(QMainWindow):
                 scope_component = thermal_scope_by_id.get(scope_id.lower())
                 if scope_component is None:
                     continue
-                for binding in build_scope_channel_bindings(scope_component, circuit):
+                from pulsimgui.views.scope_v2.bindings import build_scope_channel_bindings as _build_bindings
+                for binding in _build_bindings(scope_component, circuit):
                     for signal in binding.signals:
                         key = str(signal.signal_key or "").strip()
                         if not key:
@@ -4058,121 +3832,13 @@ class MainWindow(QMainWindow):
         # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
-    def _on_live_stream_ready(self, stream) -> None:
-        """Open the standalone LiveScopeWidget (legacy v1.5+ streaming path).
+    def _on_live_stream_ready(self, _stream) -> None:
+        """No-op — scope_v2's ``LiveStreamCapability`` subscribes directly.
 
-        When ``USE_SCOPE_V2`` is enabled, every open ``BaseScopeWindow``
-        already subscribes to ``live_stream_ready`` via its own
-        :class:`LiveStreamCapability`. Routing the same stream into a
-        second floating window would cause double-rendering, so we
-        suppress the legacy path entirely.
+        The signal stays connected so older code paths (e.g. analytics
+        that hook into ``live_stream_ready``) keep functioning; routing
+        is done by each open ``BaseScopeWindow``'s ``LiveStreamCapability``.
         """
-        if USE_SCOPE_V2:
-            return
-
-        # Legacy path below: open a separate ``LiveScopeWidget`` so the
-        # user sees node voltages stream in real time. The polling timer
-        # starts immediately so samples arrive before simulate() exits.
-
-        # Lazy import — pyqtgraph is heavy and not all users of the
-        # GUI need the live scope.
-        try:
-            from pulsimgui.views.scope.live_scope_widget import (
-                LiveScopeWidget, LiveSignalSpec, DEFAULT_PALETTE,
-            )
-        except Exception:  # noqa: BLE001 — gracefully no-op
-            return
-
-        # Build the signal list from the stream's own ``channel_names``
-        # (pulsim ≥ v1.4.2). This list is the authority on the kernel's
-        # state-vector layout — covers node voltages AND inductor
-        # currents AND voltage-source currents (which can't be inferred
-        # from the GUI's ``circuit_data`` alone). Falls back to the old
-        # builder-introspection path on older pulsim binaries so the
-        # widget still opens with at least node voltages.
-        signals: list = []
-        channel_names = getattr(stream, "channel_names", None)
-        if channel_names:
-            # New path — kernel-authoritative names. Pre-tick scope
-            # with every state-vector column; the user can hide curves
-            # via the checkbox panel if they only care about a subset.
-            for i, name in enumerate(channel_names):
-                color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
-                # Crude unit guess from the prefix the kernel emits:
-                # V(x) → V,  I(x) / Is(x) → A,  anything else → "".
-                if name.startswith("V("):
-                    unit = "V"
-                elif name.startswith("I(") or name.startswith("Is("):
-                    unit = "A"
-                else:
-                    unit = ""
-                signals.append(LiveSignalSpec(
-                    name=name, state_idx=i, color=color, unit=unit,
-                ))
-        else:
-            # Legacy fallback — older pulsim without ``channel_names``.
-            # Walk the GUI's circuit_data to at least get node voltages
-            # (will miss inductor / source currents).
-            builder = None
-            try:
-                project = getattr(self, "_project", None)
-                if project is not None and hasattr(self._simulation_service, "convert_gui_circuit"):
-                    circuit_data = self._simulation_service.convert_gui_circuit(project)
-                    builder = circuit_data.get("circuit", None)
-                    if builder is not None:
-                        builder = getattr(builder, "builder", builder)
-            except Exception:  # noqa: BLE001
-                builder = None
-            if builder is not None:
-                try:
-                    names = list(getattr(builder.graph, "node_names", []) or [])
-                    if not names:
-                        n_nodes = int(getattr(builder.graph, "num_nodes", 0))
-                        names = [f"n{i}" for i in range(n_nodes)]
-                    for i, name in enumerate(names):
-                        try:
-                            idx = int(builder.node_id_of(name))
-                        except Exception:  # noqa: BLE001
-                            continue
-                        color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
-                        signals.append(LiveSignalSpec(
-                            name=f"V({name})", state_idx=idx,
-                            color=color, unit="V",
-                        ))
-                except Exception:  # noqa: BLE001
-                    signals = []
-
-        # Also forward the stream to every open per-component
-        # ScopeWindow so the schematic-side scopes see live data, not
-        # just the post-run static result. Each scope uses its own
-        # bindings to filter the channels it cares about; everything
-        # else in the state vector is just ignored.
-        name_to_idx = {spec.name: spec.state_idx for spec in signals}
-        if name_to_idx:
-            for scope_win in self._scope_windows.values():
-                try:
-                    scope_win.attach_live_stream(stream, name_to_idx)
-                except Exception:  # noqa: BLE001 — keep the standalone widget alive
-                    pass
-
-        # Re-use the same window across runs to avoid a window-storm
-        # when the user clicks Run repeatedly.
-        existing = getattr(self, "_live_scope_window", None)
-        if existing is not None:
-            try:
-                existing.stop_polling()
-                existing.close()
-            except Exception:  # noqa: BLE001
-                pass
-        widget = LiveScopeWidget(
-            stream, signals, window_seconds=3e-3, update_hz=60.0,
-        )
-        widget.setWindowTitle("Pulsim — Live Scope (streaming)")
-        widget.resize(1100, 600)
-        widget.stop_requested.connect(self._simulation_service.stop)
-        widget.show()
-        widget.start()
-        self._live_scope_window = widget
 
     def _on_post_processing_requested(self, jobs: list[dict]) -> None:
         """Run waveform post-processing for the latest electrical result."""
@@ -4182,37 +3848,12 @@ class MainWindow(QMainWindow):
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         pill = getattr(self, "_solver_pill", None)
-        # Stop the live polling on every per-component ScopeWindow so the
-        # full-resolution static result (delivered below) replaces the
-        # streamed preview cleanly.
-        for scope_win in self._scope_windows.values():
-            try:
-                scope_win.detach_live_stream()
-            except Exception:  # noqa: BLE001
-                pass
+        # scope_v2's PostSimCapability replaces streamed data with the
+        # full result inside each open scope window — nothing extra to
+        # do here for live → finalized transitions.
         if result.is_valid:
             # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
-
-            # NEW (v1.5+): finalise the live-streaming scope with the
-            # full result so the user sees the entire run, not just
-            # the rolling window. We pull the result's time + state
-            # matrix straight from ``result.states`` (a list of
-            # per-step numpy vectors); the widget reshapes into a 2D
-            # array internally.
-            live_scope = getattr(self, "_live_scope_window", None)
-            if live_scope is not None:
-                try:
-                    import numpy as _np
-                    t_arr = _np.asarray(result.time, dtype=_np.float64)
-                    states = getattr(result, "states", None)
-                    if states is not None and len(states) > 0:
-                        x_arr = _np.asarray(states, dtype=_np.float64)
-                    else:
-                        x_arr = _np.zeros((t_arr.size, 0), dtype=_np.float64)
-                    live_scope.finalize(t_arr, x_arr)
-                except Exception:  # noqa: BLE001 — non-critical view sync
-                    pass
 
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "

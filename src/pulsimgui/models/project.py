@@ -273,36 +273,6 @@ def _migrate_legacy_global_control_schedule(
 
 
 @dataclass
-class ScopeWindowState:
-    """Persisted UI state for a per-scope window."""
-
-    component_id: str
-    is_open: bool = False
-    geometry: list[int] | None = None  # [x, y, width, height]
-    ui_state: dict[str, object] | None = None
-
-    def to_dict(self) -> dict:
-        """Serialize the window state."""
-        return {
-            "component_id": self.component_id,
-            "is_open": self.is_open,
-            "geometry": self.geometry,
-            "ui_state": dict(self.ui_state) if isinstance(self.ui_state, dict) else None,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict, fallback_id: str | None = None) -> "ScopeWindowState":
-        """Deserialize window state."""
-        ui_state = data.get("ui_state")
-        return cls(
-            component_id=data.get("component_id") or fallback_id or "",
-            is_open=data.get("is_open", False),
-            geometry=data.get("geometry"),
-            ui_state=dict(ui_state) if isinstance(ui_state, dict) else None,
-        )
-
-
-@dataclass
 class Project:
     """A project containing one or more circuit schematics."""
 
@@ -314,8 +284,6 @@ class Project:
     simulation_settings: SimulationSettings = field(default_factory=SimulationSettings)
     created: datetime = field(default_factory=datetime.now)
     modified: datetime = field(default_factory=datetime.now)
-    scope_windows: dict[str, ScopeWindowState] = field(default_factory=dict)
-    scope_workspace_state: dict[str, object] | None = None
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self):
@@ -374,15 +342,6 @@ class Project:
             "simulation_settings": self.simulation_settings.to_dict(),
             "circuits": {name: c.to_dict() for name, c in self.circuits.items()},
             "subcircuits": [definition.to_dict() for definition in self.subcircuits.values()],
-            "scope_windows": {
-                component_id: state.to_dict()
-                for component_id, state in self.scope_windows.items()
-            },
-            "scope_workspace_state": (
-                dict(self.scope_workspace_state)
-                if isinstance(self.scope_workspace_state, dict)
-                else None
-            ),
         }
 
     @classmethod
@@ -405,17 +364,9 @@ class Project:
             definition = SubcircuitDefinition.from_dict(definition_data)
             subcircuits[definition.id] = definition
 
-        scope_windows: dict[str, ScopeWindowState] = {}
-        for component_id, state_data in data.get("scope_windows", {}).items():
-            state = ScopeWindowState.from_dict(state_data, component_id)
-            if state.component_id:
-                scope_windows[state.component_id] = state
-        scope_workspace_raw = data.get("scope_workspace_state")
-        scope_workspace_state = (
-            dict(scope_workspace_raw)
-            if isinstance(scope_workspace_raw, dict)
-            else None
-        )
+        # Legacy ``scope_windows`` + ``scope_workspace_state`` fields
+        # are silently dropped on load — scope_v2 derives window state
+        # from the live scope component on the canvas instead.
 
         return cls(
             name=data.get("name", "Untitled Project"),
@@ -426,8 +377,6 @@ class Project:
             created=datetime.fromisoformat(data["created"]) if "created" in data else datetime.now(),
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
             subcircuits=subcircuits,
-            scope_windows=scope_windows,
-            scope_workspace_state=scope_workspace_state,
         )
 
     def save(self, path: Path | None = None) -> None:
@@ -477,10 +426,3 @@ class Project:
             del self.subcircuits[definition_id]
             self.mark_dirty()
 
-    def scope_state_for(self, component_id: str) -> ScopeWindowState:
-        """Return (and create if needed) the window state for a scope component."""
-        state = self.scope_windows.get(component_id)
-        if state is None:
-            state = ScopeWindowState(component_id=component_id)
-            self.scope_windows[component_id] = state
-        return state
