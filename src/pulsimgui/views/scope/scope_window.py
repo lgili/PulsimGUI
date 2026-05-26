@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
@@ -132,6 +132,14 @@ class ScopeWindow(QWidget):
         self._stacked_decimation_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
         self._stacked_active_signal: str | None = None
         self._math_signal_counter = 0
+        # Live-stream state (pulsim>=1.4 NativeLiveStream). When attached,
+        # ``_live_timer`` polls the kernel ring buffer and refreshes the
+        # plots in place via the existing apply_simulation_result path.
+        self._live_stream: object | None = None
+        self._live_name_to_idx: dict[str, int] = {}
+        self._live_time: np.ndarray = np.array([], dtype=float)
+        self._live_signals: dict[str, list[float]] = {}
+        self._live_timer: QTimer | None = None
         self._overview_enabled = False
         self._stacked_cursors_enabled = False
         self._left_panel_visible = False
@@ -2339,10 +2347,90 @@ class ScopeWindow(QWidget):
         self._views_list_widget.setTabKeyNavigation(True)
 
     # ------------------------------------------------------------------
+    # Live streaming (pulsim>=1.4 NativeLiveStream)
+    # ------------------------------------------------------------------
+    def attach_live_stream(
+        self,
+        stream: object,
+        name_to_state_idx: Mapping[str, int],
+        *,
+        update_hz: float = 5.0,
+    ) -> None:
+        """Start streaming kernel samples into this scope's plots.
+
+        ``stream`` is a pulsim ``NativeLiveStream`` (ring buffer, zero-
+        copy, GIL-free). ``name_to_state_idx`` maps each signal name the
+        scope's bindings can reference (e.g. ``"V(N5)"``) to its column
+        in the kernel state vector.
+
+        The QTimer polls at ``update_hz`` (default 5 Hz) and re-applies
+        the accumulated samples via the existing static-result path —
+        which redraws every plot. That throttle is conservative so the
+        rebuild cost stays under control; bump ``update_hz`` for
+        smoother streaming once profiling shows it's safe.
+        """
+        self._live_stream = stream
+        self._live_name_to_idx = dict(name_to_state_idx)
+        self._live_time = np.array([], dtype=float)
+        self._live_signals = {name: [] for name in self._live_name_to_idx}
+
+        if self._live_timer is None:
+            self._live_timer = QTimer(self)
+            self._live_timer.timeout.connect(self._on_live_tick)
+        interval = max(50, int(1000.0 / max(1.0, float(update_hz))))
+        self._live_timer.setInterval(interval)
+        self._live_timer.start()
+
+    def detach_live_stream(self) -> None:
+        """Stop polling the live stream. Idempotent.
+
+        Called by the host on ``simulation_finished`` / cancel so the
+        full-resolution static result (already routed via
+        ``apply_simulation_result``) replaces the streamed preview.
+        """
+        if self._live_timer is not None:
+            self._live_timer.stop()
+        self._live_stream = None
+
+    def _on_live_tick(self) -> None:
+        """QTimer callback — drain new samples from the ring + refresh."""
+        stream = self._live_stream
+        if stream is None:
+            return
+        get_new = getattr(stream, "get_new_samples", None)
+        if get_new is None:
+            return
+        try:
+            samples = get_new()
+        except Exception:  # noqa: BLE001 — stream may close mid-read
+            self.detach_live_stream()
+            return
+        if samples is None:
+            return
+        t_new, x_new = samples
+        if t_new.size == 0:
+            return
+
+        self._live_time = np.concatenate([self._live_time, t_new])
+        for name, idx in self._live_name_to_idx.items():
+            if idx < x_new.shape[1]:
+                # ``.tolist()`` keeps SimulationResult.signals as the
+                # list[float] dialect the rest of the scope expects.
+                self._live_signals[name].extend(x_new[:, idx].tolist())
+
+        live_result = SimulationResult()
+        live_result.time = self._live_time.tolist()
+        live_result.signals = {name: list(values) for name, values in self._live_signals.items()}
+        self.apply_simulation_result(live_result)
+
+    # ------------------------------------------------------------------
     # QWidget overrides
     # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: D401 - Qt override
         """Handle the Qt closeEvent callback."""
+        # Stop any active live stream so the timer doesn't outlive the
+        # window and try to read from a freed ring buffer.
+        self.detach_live_stream()
         self.closed.emit(self._component_id, self.capture_geometry_state())
         super().closeEvent(event)
 

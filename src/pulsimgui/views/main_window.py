@@ -3978,9 +3978,8 @@ class MainWindow(QMainWindow):
         builder = None
         try:
             project = getattr(self, "_project", None)
-            converter = getattr(self._simulation_service, "_circuit_converter", None)
-            if project is not None and converter is not None:
-                circuit_data = converter.project_to_dict(project)
+            if project is not None and hasattr(self._simulation_service, "convert_gui_circuit"):
+                circuit_data = self._simulation_service.convert_gui_circuit(project)
                 builder = circuit_data.get("circuit", None)
                 if builder is not None:
                     builder = getattr(builder, "builder", builder)
@@ -4014,6 +4013,19 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 signals = []
 
+        # Also forward the stream to every open per-component
+        # ScopeWindow so the schematic-side scopes see live data, not
+        # just the post-run static result. Each scope uses its own
+        # bindings to filter the channels it cares about; everything
+        # else in the state vector is just ignored.
+        name_to_idx = {spec.name: spec.state_idx for spec in signals}
+        if name_to_idx:
+            for scope_win in self._scope_windows.values():
+                try:
+                    scope_win.attach_live_stream(stream, name_to_idx)
+                except Exception:  # noqa: BLE001 — keep the standalone widget alive
+                    pass
+
         # Re-use the same window across runs to avoid a window-storm
         # when the user clicks Run repeatedly.
         existing = getattr(self, "_live_scope_window", None)
@@ -4028,7 +4040,7 @@ class MainWindow(QMainWindow):
         )
         widget.setWindowTitle("Pulsim — Live Scope (streaming)")
         widget.resize(1100, 600)
-        widget.stop_requested.connect(self._simulation_service.cancel)
+        widget.stop_requested.connect(self._simulation_service.stop)
         widget.show()
         widget.start()
         self._live_scope_window = widget
@@ -4041,6 +4053,14 @@ class MainWindow(QMainWindow):
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         pill = getattr(self, "_solver_pill", None)
+        # Stop the live polling on every per-component ScopeWindow so the
+        # full-resolution static result (delivered below) replaces the
+        # streamed preview cleanly.
+        for scope_win in self._scope_windows.values():
+            try:
+                scope_win.detach_live_stream()
+            except Exception:  # noqa: BLE001
+                pass
         if result.is_valid:
             # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
