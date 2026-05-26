@@ -76,7 +76,7 @@ class MathSignalsCapability:
         # Reuse the existing dialog from the legacy scope package (the
         # evaluator + dialog are theme-aware and well-tested).
         try:
-            from pulsimgui.views.scope.math_expression import (
+            from ..math_expression import (
                 MathSignalDialog,
                 evaluate_math_expression,
                 infer_math_expression_unit,

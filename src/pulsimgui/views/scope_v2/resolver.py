@@ -17,7 +17,7 @@ from typing import Any
 
 from pulsimgui.models.component import Component
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.views.scope.bindings import build_scope_channel_bindings
+from .bindings import build_scope_channel_bindings
 
 from ._auto_palette import next_palette_color
 from .capabilities.live_stream import LiveSignalSpec
