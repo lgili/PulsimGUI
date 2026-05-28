@@ -859,23 +859,34 @@ class SchematicView(QGraphicsView):
                 event.accept()
                 return
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
-            item = self.itemAt(event.position().toPoint())
-            if item is not None:
-                from pulsimgui.views.schematic.items import ComponentItem
+            from pulsimgui.views.schematic.items import ComponentItem
 
-                if isinstance(item, ComponentItem):
-                    comp_type = item.component.type
-                    if comp_type == ComponentType.SUBCIRCUIT:
-                        self.subcircuit_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
-                        self.scope_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    self.component_properties_requested.emit(item.component)
+            # ``itemAt`` returns the visually topmost graphics item —
+            # which for a ComponentItem with child labels can be one
+            # of those children, NOT the ComponentItem itself. Walk
+            # up the parent chain so a double-click on the name
+            # label still opens the component.
+            hit = self.itemAt(event.position().toPoint())
+            comp_item = None
+            while hit is not None:
+                if isinstance(hit, ComponentItem):
+                    comp_item = hit
+                    break
+                hit = hit.parentItem()
+
+            if comp_item is not None:
+                comp_type = comp_item.component.type
+                if comp_type == ComponentType.SUBCIRCUIT:
+                    self.subcircuit_open_requested.emit(comp_item.component)
                     event.accept()
                     return
+                if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+                    self.scope_open_requested.emit(comp_item.component)
+                    event.accept()
+                    return
+                self.component_properties_requested.emit(comp_item.component)
+                event.accept()
+                return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

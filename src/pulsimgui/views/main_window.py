@@ -335,7 +335,14 @@ class MainWindow(QMainWindow):
         self.action_rename_signal.triggered.connect(self._on_rename_signal)
 
         self.action_create_subcircuit = QAction("Create &Subcircuit...", self)
-        self.action_create_subcircuit.setEnabled(False)
+        # Always enabled so users discover the feature exists. When
+        # invoked without a selection, the handler shows an info
+        # message explaining what's needed instead of being silently
+        # grayed out (which the user just complained about).
+        self.action_create_subcircuit.setEnabled(True)
+        self.action_create_subcircuit.setStatusTip(
+            "Group the selected components into a reusable subcircuit block."
+        )
         self.action_create_subcircuit.triggered.connect(self._on_create_subcircuit)
 
         self.action_preferences = QAction("&Preferences...", self)
@@ -1420,7 +1427,11 @@ class MainWindow(QMainWindow):
         has_selected_components = len(selected_components) > 0
         self.action_rotate_ccw.setEnabled(has_selected_components)
         self.action_rotate_cw.setEnabled(has_selected_components)
-        self.action_create_subcircuit.setEnabled(len(selected_components) > 0)
+        # action_create_subcircuit stays ALWAYS enabled so it's
+        # discoverable in the Edit menu even with no selection — the
+        # handler shows a friendly info dialog telling the user what
+        # to do next. (Was previously grayed-out on no-selection,
+        # which left users guessing why the menu item was dim.)
 
         # Don't update properties if user is editing there
         if self._has_properties_focus():
@@ -1551,13 +1562,51 @@ class MainWindow(QMainWindow):
 
     def _on_subcircuit_open_requested(self, component) -> None:
         """Handle double-click on a subcircuit instance to descend."""
+        # Two paths to the subcircuit-definition pointer:
+        # 1. ``SubcircuitInstance`` attribute set directly (live + the
+        #    Circuit.from_dict path that handles SUBCIRCUIT specially).
+        # 2. ``parameters["subcircuit_id"]`` — a fallback for older
+        #    .pulsim files that round-tripped through the plain
+        #    ``Component.from_dict`` before the type-aware loader.
         definition_id = getattr(component, "subcircuit_id", None)
         if not definition_id:
-            QMessageBox.warning(self, "Missing subcircuit", "This subcircuit has no definition attached.")
+            params = getattr(component, "parameters", {}) or {}
+            raw = params.get("subcircuit_id")
+            if raw:
+                try:
+                    from uuid import UUID
+                    definition_id = UUID(str(raw))
+                    # Repair the live instance so subsequent clicks
+                    # don't hit the fallback path.
+                    component.subcircuit_id = definition_id
+                except (ValueError, TypeError):
+                    definition_id = None
+
+        if not definition_id:
+            QMessageBox.warning(
+                self, "Missing subcircuit",
+                "This subcircuit instance has no definition attached.\n\n"
+                "It may have been imported without its subcircuit_id, "
+                "or the definition was deleted from the project.",
+            )
             return
 
+        # Make sure the HierarchyService knows about the definition.
+        # When a project loads, definitions are auto-registered in
+        # HierarchyService.__init__, but if someone calls
+        # ``project.add_subcircuit`` later (e.g., a paste from another
+        # file), the service doesn't see it until we explicitly tell it.
+        if self._hierarchy_service.get_subcircuit_definition(definition_id) is None:
+            defn = self._project.get_subcircuit(definition_id)
+            if defn is not None:
+                self._hierarchy_service.register_subcircuit(defn)
+
         if not self._hierarchy_service.descend_into(component.id, definition_id):
-            QMessageBox.warning(self, "Cannot navigate", "Subcircuit definition could not be loaded.")
+            QMessageBox.warning(
+                self, "Cannot navigate",
+                "Subcircuit definition could not be loaded — "
+                "the project may be missing the matching definition.",
+            )
 
     def _on_create_subcircuit(self) -> None:
         """Create a subcircuit definition from the current selection."""
@@ -1569,7 +1618,14 @@ class MainWindow(QMainWindow):
         wire_items = [item for item in selected_items if isinstance(item, WireItem)]
 
         if not component_items:
-            QMessageBox.information(self, "Create Subcircuit", "Select at least one component.")
+            QMessageBox.information(
+                self, "Create Subcircuit",
+                "Select one or more components on the schematic first, "
+                "then run this command to group them into a reusable "
+                "subcircuit block.\n\n"
+                "Tip: hold Shift and click to add to a selection, or "
+                "drag a rectangle around several components.",
+            )
             return
 
         current_circuit = self._current_circuit()
