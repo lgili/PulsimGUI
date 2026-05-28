@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
+import uuid
 from typing import Any
 
 from pulsimgui.models.component import ComponentType, DUTY_INPUT_PARAMETER
@@ -90,6 +92,17 @@ class CircuitConverter:
 
         Converts the GUI circuit data to Pulsim's runtime Circuit API.
         """
+        # Subcircuit instances are GUI-only containers — the backend has no
+        # native concept of a hierarchical sub-block. We expand each
+        # SUBCIRCUIT in ``circuit_data["components"]`` into its internal
+        # primitives BEFORE any other processing so the downstream code
+        # only ever sees a flat netlist. The pre-pass mutates the
+        # ``circuit_data`` dict in place: it appends translated copies of
+        # the internal components (with synthesized per-instance net
+        # names to avoid sibling-instance collisions) and removes each
+        # SUBCIRCUIT entry from both ``components`` and ``node_map``.
+        self._flatten_subcircuits(circuit_data)
+
         alias_map: dict[str, str] = circuit_data.get("node_aliases", {}) or {}
         components: list[dict] = circuit_data.get("components", []) or []
         node_map: dict[str, list[str]] = circuit_data.get("node_map", {}) or {}
@@ -217,6 +230,315 @@ class CircuitConverter:
             pass
 
         return circuit
+
+    # ------------------------------------------------------------------
+    # Subcircuit flattening
+    # ------------------------------------------------------------------
+    def _flatten_subcircuits(self, circuit_data: dict) -> None:
+        """Expand SUBCIRCUIT instances into their internal primitives.
+
+        Mutates ``circuit_data`` in place. After this call:
+          - ``circuit_data["components"]`` no longer contains any entry
+            with ``type == "SUBCIRCUIT"``. Each instance has been replaced
+            with a fresh translated copy of every component from its
+            definition's internal ``Circuit``.
+          - ``circuit_data["node_map"]`` carries pin assignments for the
+            new flattened components. The original SUBCIRCUIT entry's
+            ``node_map`` row is dropped.
+
+        Translation rules for an instance ``I`` of definition ``D``:
+          - Each port of ``D`` maps an internal net to the external net
+            that ``I``'s corresponding instance pin is wired to.
+          - All non-port internal nets are rewritten to a unique synthetic
+            name ``__sub_{instance_id_short}__{internal_net}`` so two
+            instances of the same definition cannot accidentally short
+            their internals through a shared net name.
+
+        Recursion: a definition may itself contain SUBCIRCUIT instances.
+        We track an in-progress set of definition IDs as we descend and
+        raise ``CircuitConversionError`` on a cycle (A→A, A→B→A, etc.).
+        Nested instances are expanded depth-first — by the time we
+        translate ``I``'s pins, ``D``'s internal circuit is guaranteed to
+        be fully flat.
+
+        Missing definitions are treated as conversion errors so the GUI
+        surfaces a clear "subcircuit not found" message rather than
+        silently dropping the instance.
+        """
+        components_list = circuit_data.get("components")
+        if not isinstance(components_list, list) or not components_list:
+            return
+
+        defs_raw = circuit_data.get("subcircuits") or {}
+        # ``defs_raw`` is keyed by str(definition_id). Coerce to a
+        # consistent shape so look-ups by either string or UUID succeed.
+        defs_by_id: dict[str, dict] = {
+            str(key): value for key, value in defs_raw.items() if isinstance(value, dict)
+        }
+
+        node_map: dict[str, list[str]] = circuit_data.get("node_map") or {}
+        if not isinstance(node_map, dict):
+            node_map = {}
+            circuit_data["node_map"] = node_map
+
+        # Iterate until no SUBCIRCUIT entries remain. Each pass expands
+        # one outermost layer; nested SUBCIRCUITs surfaced by the
+        # expansion get caught on the next pass. Cycle detection lives
+        # inside ``_expand_single_instance`` via the ``in_progress`` set.
+        guard = 0
+        max_iterations = 1024
+        while True:
+            guard += 1
+            if guard > max_iterations:
+                raise CircuitConversionError(
+                    "Subcircuit flattening exceeded recursion guard "
+                    f"({max_iterations} iterations); aborting."
+                )
+
+            # Snapshot indices of SUBCIRCUIT entries so we can drop them
+            # after expansion without mutating the list mid-iteration.
+            instance_indices: list[int] = []
+            for index, component in enumerate(components_list):
+                if not isinstance(component, dict):
+                    continue
+                raw_type = component.get("type")
+                if isinstance(raw_type, str) and raw_type.strip().upper() == "SUBCIRCUIT":
+                    instance_indices.append(index)
+
+            if not instance_indices:
+                return
+
+            # Expand in reverse order so list.pop(index) doesn't shift
+            # later indices we still need.
+            for index in reversed(instance_indices):
+                instance = components_list[index]
+                expanded = self._expand_single_instance(
+                    instance,
+                    defs_by_id,
+                    node_map,
+                    in_progress=set(),
+                )
+                # Drop the SUBCIRCUIT entry from the netlist + node_map
+                # before appending the expanded primitives.
+                instance_id = str(instance.get("id") or "")
+                components_list.pop(index)
+                if instance_id:
+                    node_map.pop(instance_id, None)
+                for new_component in expanded:
+                    components_list.append(new_component)
+                    new_comp_id = str(new_component.get("id") or "")
+                    if new_comp_id and "pin_nodes" in new_component:
+                        node_map[new_comp_id] = list(
+                            new_component["pin_nodes"]
+                        )
+
+    def _expand_single_instance(
+        self,
+        instance: dict,
+        defs_by_id: dict[str, dict],
+        node_map: dict[str, list[str]],
+        *,
+        in_progress: set[str],
+    ) -> list[dict]:
+        """Translate one SUBCIRCUIT instance into a list of flat component dicts.
+
+        Recurses into nested SUBCIRCUITs by pre-expanding them on a fresh
+        copy of the internal circuit data BEFORE translating ``instance``'s
+        own pins. ``in_progress`` carries the call stack of definition IDs
+        currently being expanded — if the definition we're about to enter
+        is already in the set, that's a cycle and we abort.
+        """
+        from pulsimgui.models.circuit import Circuit
+        from pulsimgui.models.subcircuit import SubcircuitDefinition
+        from pulsimgui.utils.net_utils import build_node_map
+
+        instance_id = str(instance.get("id") or "")
+        instance_name = str(instance.get("name") or "") or instance_id or "subckt"
+
+        # Find the definition ID. ``SubcircuitInstance.to_dict`` writes
+        # it at top level; older payloads may carry it inside
+        # ``parameters`` — check both for backward compatibility.
+        def_id_raw = instance.get("subcircuit_id")
+        if not def_id_raw:
+            params = instance.get("parameters") if isinstance(instance.get("parameters"), dict) else {}
+            def_id_raw = params.get("subcircuit_id") if isinstance(params, dict) else None
+        def_id = str(def_id_raw) if def_id_raw else ""
+
+        if not def_id or def_id not in defs_by_id:
+            raise CircuitConversionError(
+                f"Subcircuit instance '{instance_name}' references unknown "
+                f"definition '{def_id or '<missing>'}'"
+            )
+
+        if def_id in in_progress:
+            defn_name = str(defs_by_id[def_id].get("name") or def_id)
+            raise CircuitConversionError(
+                f"Recursive subcircuit reference detected: {defn_name}"
+            )
+
+        definition_dict = defs_by_id[def_id]
+
+        # Rehydrate the definition's internal Circuit. We work on a
+        # deepcopy of the dict so the cached project-level definition
+        # stays untouched.
+        definition = SubcircuitDefinition.from_dict(copy.deepcopy(definition_dict))
+        internal_circuit: Circuit = definition.circuit
+
+        # Build the canonical pin→net map for the internal circuit.
+        # Keys are ``(component_id_str, pin_index) → net_name``.
+        internal_node_map = build_node_map(internal_circuit)
+
+        # Build the external translation table for the instance ports:
+        # internal_net → external_net.
+        port_translation: dict[str, str] = {}
+        external_pin_nodes = list(instance.get("pin_nodes") or node_map.get(instance_id) or [])
+        for port in definition.ports:
+            internal_net = str(port.internal_node or "").strip()
+            if not internal_net:
+                continue
+            pin_idx = int(port.pin_index)
+            if pin_idx < 0 or pin_idx >= len(external_pin_nodes):
+                # Port not connected externally — synthesize an isolated
+                # external net so the internal components keep a valid
+                # netlist (matches "floating port" semantics).
+                external_net = (
+                    f"__sub_{instance_id[:8]}__port_{pin_idx}_open"
+                )
+            else:
+                external_net = str(external_pin_nodes[pin_idx] or "").strip()
+                if not external_net:
+                    external_net = (
+                        f"__sub_{instance_id[:8]}__port_{pin_idx}_open"
+                    )
+            port_translation[internal_net] = external_net
+
+        # Synthesized prefix for non-port internal nets. Includes a slice
+        # of the instance UUID so two instances of the same definition
+        # do not collide on internal nets.
+        synth_prefix = f"__sub_{instance_id[:8]}__"
+
+        def translate_net(internal_net: str) -> str:
+            net = str(internal_net or "").strip()
+            if not net:
+                return ""
+            # Ground stays ground regardless of nesting depth.
+            if net == "0":
+                return "0"
+            if net in port_translation:
+                return port_translation[net]
+            return f"{synth_prefix}{net}"
+
+        # Recurse first: expand any SUBCIRCUIT instances inside the
+        # definition. We do this by routing the internal circuit through
+        # the same flattening pass on a temporary ``circuit_data`` dict.
+        nested_data: dict[str, Any] = {
+            "components": [],
+            "node_map": {},
+            "subcircuits": defs_by_id,
+        }
+        for internal_component in internal_circuit.components.values():
+            comp_dict = internal_component.to_dict()
+            comp_id = str(internal_component.id)
+            pin_count = len(internal_component.pins)
+            pin_nodes = [
+                internal_node_map.get((comp_id, pin_idx), "") or ""
+                for pin_idx in range(pin_count)
+            ]
+            comp_dict["pin_nodes"] = pin_nodes
+            nested_data["components"].append(comp_dict)
+            nested_data["node_map"][comp_id] = list(pin_nodes)
+
+        # Recursive expansion — push this definition onto the
+        # in-progress set so any descendant referencing it bombs out.
+        in_progress_next = set(in_progress)
+        in_progress_next.add(def_id)
+        self._expand_nested_instances(
+            nested_data,
+            defs_by_id,
+            in_progress=in_progress_next,
+        )
+
+        flattened_internals = nested_data["components"]
+
+        # Now translate each flattened internal component's nets to the
+        # parent scope (external port net OR synthesized prefixed net).
+        emitted: list[dict] = []
+        for internal_component in flattened_internals:
+            new_component = copy.deepcopy(internal_component)
+            # Fresh UUID — required because the same definition may be
+            # instantiated multiple times in the parent circuit and the
+            # backend identifies components by ID.
+            new_component["id"] = str(uuid.uuid4())
+
+            # Prefix the user-facing name with the parent instance name
+            # so the flattened netlist is debuggable.
+            internal_name = str(internal_component.get("name") or "").strip() or "C"
+            new_component["name"] = f"{instance_name}__{internal_name}"
+
+            # Translate every pin net. Skip components with no pin info.
+            internal_pins = internal_component.get("pin_nodes") or []
+            translated_pins = [translate_net(net) for net in internal_pins]
+            new_component["pin_nodes"] = translated_pins
+
+            emitted.append(new_component)
+
+        return emitted
+
+    def _expand_nested_instances(
+        self,
+        nested_data: dict,
+        defs_by_id: dict[str, dict],
+        *,
+        in_progress: set[str],
+    ) -> None:
+        """Inner driver for recursive SUBCIRCUIT expansion.
+
+        Mirrors the top-level ``_flatten_subcircuits`` loop but threads
+        the ``in_progress`` set so cycles are detected.
+        """
+        components_list = nested_data["components"]
+        node_map = nested_data["node_map"]
+
+        guard = 0
+        max_iterations = 1024
+        while True:
+            guard += 1
+            if guard > max_iterations:
+                raise CircuitConversionError(
+                    "Nested subcircuit flattening exceeded recursion guard "
+                    f"({max_iterations} iterations); aborting."
+                )
+
+            instance_indices: list[int] = []
+            for index, component in enumerate(components_list):
+                if not isinstance(component, dict):
+                    continue
+                raw_type = component.get("type")
+                if isinstance(raw_type, str) and raw_type.strip().upper() == "SUBCIRCUIT":
+                    instance_indices.append(index)
+
+            if not instance_indices:
+                return
+
+            for index in reversed(instance_indices):
+                instance = components_list[index]
+                expanded = self._expand_single_instance(
+                    instance,
+                    defs_by_id,
+                    node_map,
+                    in_progress=in_progress,
+                )
+                instance_id = str(instance.get("id") or "")
+                components_list.pop(index)
+                if instance_id:
+                    node_map.pop(instance_id, None)
+                for new_component in expanded:
+                    components_list.append(new_component)
+                    new_comp_id = str(new_component.get("id") or "")
+                    if new_comp_id and "pin_nodes" in new_component:
+                        node_map[new_comp_id] = list(
+                            new_component["pin_nodes"]
+                        )
 
     def _should_skip_component(self, comp_type: ComponentType) -> bool:
         """Return True for GUI-only instrumentation components.

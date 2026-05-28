@@ -898,7 +898,18 @@ class TransformerItem(ComponentItem):
 
 
 class SubcircuitItem(ComponentItem):
-    """Graphics item for subcircuit instances."""
+    """Graphics item for subcircuit instances.
+
+    Renders a hierarchical block:
+      • Doubled rounded outline (visual cue that it's a hierarchical
+        block, not a primitive) — matches the IEEE schematic
+        convention for sub-sheets.
+      • Component name centred inside the body.
+      • Each port's name drawn next to its pin so users can tell
+        which terminal is which without opening the definition.
+      • "⊞" glyph in the top-right corner — a universal "descend
+        into" hint that telegraphs the double-click affordance.
+    """
 
     def __init__(self, component: Component, parent: QGraphicsItem | None = None):
         self._symbol_width = float(component.parameters.get("symbol_width", 120.0))
@@ -911,19 +922,92 @@ class SubcircuitItem(ComponentItem):
         """Return the local-space rectangle used for painting and hit-testing."""
         half_w = self._symbol_width / 2
         half_h = self._symbol_height / 2
-        return QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
+        # Pad slightly so port-name labels drawn just outside the
+        # rounded rect aren't clipped.
+        return QRectF(-half_w - 4, -half_h - 4,
+                      self._symbol_width + 8, self._symbol_height + 8)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        rect = self.boundingRect()
+        half_w = self._symbol_width / 2
+        half_h = self._symbol_height / 2
+        rect = QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
+
+        # Outer rounded rect (the visible body)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
         painter.drawRoundedRect(rect, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+        # Inner rect — "hierarchical block" hint, IEEE-ish convention
+        inner = rect.adjusted(3, 3, -3, -3)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(inner,
+                                 max(style.BLOCK_RADIUS - 2, 1),
+                                 max(style.BLOCK_RADIUS - 2, 1))
 
-        # Draw title centered inside block
+        # Title placed at the TOP of the body (header-bar style) so it
+        # doesn't collide with port-name labels drawn next to side pins.
         painter.save()
-        painter.setFont(style.block_label_font(self._name_label.font()))
-        painter.drawText(rect.adjusted(4, 4, -4, -4), Qt.AlignmentFlag.AlignCenter, self._component.name)
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
+        title_font = style.block_label_font(self._name_label.font())
+        title_font.setPointSize(max(title_font.pointSize() - 1, 7))
+        painter.setFont(title_font)
+        title_rect = QRectF(rect.left() + 8, rect.top() + 4,
+                             rect.width() - 22, 14)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft
+                         | Qt.AlignmentFlag.AlignVCenter,
+                         self._component.name or "Subcircuit")
         painter.restore()
+
+        # "Descend into" hint in the top-right corner (uses ⊞ which
+        # most CAD/EDA tools associate with hierarchical sub-sheets).
+        painter.save()
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        hint_font = QFont()
+        hint_font.setBold(True)
+        hint_font.setPointSize(9)
+        painter.setFont(hint_font)
+        hint_rect = QRectF(rect.right() - 16, rect.top() + 2, 14, 12)
+        painter.drawText(hint_rect, Qt.AlignmentFlag.AlignCenter, "⊞")
+        painter.restore()
+
+        # Port-name labels next to each pin so users can identify
+        # which pin is which without descending into the definition.
+        if self._component.pins:
+            painter.save()
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL,
+                                              self._muted_color()))
+            label_font = QFont()
+            label_font.setPointSize(7)
+            painter.setFont(label_font)
+            for p in self._component.pins:
+                if not p.name:
+                    continue
+                # Place the label INSIDE the body, offset away from
+                # the pin position toward the center.
+                pin_x, pin_y = float(p.x), float(p.y)
+                # Snap each label to the nearest body edge:
+                #   left edge  → label is to the right of pin (inside)
+                #   right edge → label is to the left
+                #   top edge   → label below
+                #   bottom edge → label above
+                # Labels sit close to the pin (40 px wide) so they
+                # don't reach the centered title in the body.
+                if abs(pin_x + half_w) < 4:        # pin on LEFT edge
+                    label_rect = QRectF(pin_x + 4, pin_y - 6, 40, 12)
+                    align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                elif abs(pin_x - half_w) < 4:      # pin on RIGHT edge
+                    label_rect = QRectF(pin_x - 44, pin_y - 6, 40, 12)
+                    align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                elif abs(pin_y + half_h) < 4:      # pin on TOP edge
+                    label_rect = QRectF(pin_x - 20, pin_y + 2, 40, 10)
+                    align = Qt.AlignmentFlag.AlignCenter
+                elif abs(pin_y - half_h) < 4:      # pin on BOTTOM edge
+                    label_rect = QRectF(pin_x - 20, pin_y - 12, 40, 10)
+                    align = Qt.AlignmentFlag.AlignCenter
+                else:
+                    continue  # pin floating somewhere unusual — skip
+                painter.drawText(label_rect, align, p.name)
+            painter.restore()
 
 
 class BlockComponentItem(ComponentItem):

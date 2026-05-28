@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -935,6 +935,12 @@ class MainWindow(QMainWindow):
         self._hierarchy_service.breadcrumb_updated.connect(self._on_breadcrumb_updated)
         self._hierarchy_bar.navigate_up.connect(self._hierarchy_service.ascend)
         self._hierarchy_bar.navigate_to_level.connect(self._hierarchy_service.navigate_to_level)
+        # Backspace = "go up one level" — matches the HierarchyBar tooltip.
+        # Parented to the main window so it's available anywhere in the
+        # schematic, but inert at root level (ascend() returns False).
+        self._ascend_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
+        self._ascend_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._ascend_shortcut.activated.connect(self._hierarchy_service.ascend)
 
     def _create_dock_toggle_action(self, label: str, dock: QDockWidget) -> QAction:
         """Create a stable checkable menu action for one dock widget."""
