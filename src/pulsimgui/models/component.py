@@ -126,6 +126,20 @@ class ComponentType(Enum):
     # Pre-configured networks
     SNUBBER_RC = auto()
 
+    # Diode bridges — composite rectifiers that the circuit_converter
+    # expands into individual ``add_diode`` calls. The kernel has no
+    # native ``add_diode_bridge``; we package them GUI-side so users
+    # don't have to wire 4-6 diodes by hand.
+    SINGLE_PHASE_DIODE_BRIDGE = auto()  # 4 diodes, AC+/AC- → DC+/DC-
+    THREE_PHASE_DIODE_BRIDGE = auto()   # 6 diodes, A/B/C → DC+/DC-
+
+    # MMC (Modular Multilevel Converter) submodule cell.
+    # A single ComponentType handles both half-bridge (2 switches, 4 pins)
+    # and full-bridge (4 switches, 6 pins) topologies — selected via the
+    # ``cell_topology`` parameter. The circuit_converter expands the cell
+    # into MOSFETs (with body diodes) + 1 capacitor.
+    MMC_CELL = auto()
+
     # Hierarchical
     SUBCIRCUIT = auto()
 
@@ -858,6 +872,40 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Pre-configured networks
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
 
+    # Single-phase diode bridge (Graetz). 4 external pins: 2 AC, 2 DC.
+    # Internal topology when converted:
+    #   D1: AC+ → DC+,  D2: AC- → DC+
+    #   D3: DC- → AC+,  D4: DC- → AC-
+    ComponentType.SINGLE_PHASE_DIODE_BRIDGE: [
+        Pin(0, "AC+", -35, -20),
+        Pin(1, "AC-", -35, 20),
+        Pin(2, "DC+", 35, -20),
+        Pin(3, "DC-", 35, 20),
+    ],
+
+    # Three-phase diode bridge (6-pulse rectifier). 5 pins: A, B, C, DC+, DC-.
+    # Upper diodes: A/B/C → DC+
+    # Lower diodes: DC- → A/B/C
+    ComponentType.THREE_PHASE_DIODE_BRIDGE: [
+        Pin(0, "A",   -35, -25),
+        Pin(1, "B",   -35, 0),
+        Pin(2, "C",   -35, 25),
+        Pin(3, "DC+",  35, -20),
+        Pin(4, "DC-",  35, 20),
+    ],
+
+    # MMC sub-module cell. The pin count is dynamic: half-bridge uses
+    # 4 pins (TOP, BOT, S1_G, S2_G), full-bridge uses 6 (adds S3_G,
+    # S4_G). Default pin layout below is the half-bridge variant — the
+    # ``_synchronize_mmc_cell`` hook rewrites the layout when the
+    # ``cell_topology`` parameter changes.
+    ComponentType.MMC_CELL: [
+        Pin(0, "TOP",  -30, -25),
+        Pin(1, "BOT",  -30, 25),
+        Pin(2, "S1_G",  30, -15),
+        Pin(3, "S2_G",  30, 15),
+    ],
+
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke (abc → αβγ): 3 inputs + 3 channel outputs (channels via metadata)
     ComponentType.CLARKE_TRANSFORM: [
@@ -1347,6 +1395,48 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "capacitance": 100e-9,
     },
 
+    # Power rectifier bridges (composite — expanded to primitives at convert time)
+    ComponentType.SINGLE_PHASE_DIODE_BRIDGE: {
+        # Diode model — applied to all 4 diodes (D1..D4)
+        "g_on": 1.0e3,           # conductance when conducting [S]
+        "g_off": 1.0e-9,         # conductance when blocking [S]
+        "v_forward": 0.7,        # forward drop [V]  (informational; kernel uses g_on/g_off PWL)
+        # Optional thermal (per-diode, applied uniformly)
+        "r_th_jc": 1.5,          # K/W
+        "tau_th": 0.075,         # s
+    },
+    ComponentType.THREE_PHASE_DIODE_BRIDGE: {
+        # Diode model — applied to all 6 diodes (D1..D6)
+        "g_on": 1.0e3,
+        "g_off": 1.0e-9,
+        "v_forward": 0.7,
+        "r_th_jc": 1.5,
+        "tau_th": 0.075,
+    },
+
+    # Modular Multilevel Converter sub-module cell.
+    # ``cell_topology`` picks between half-bridge (2 switches) and
+    # full-bridge (4 switches) — the converter and visual item branch
+    # on this value, and ``_synchronize_mmc_cell`` rewires the pin
+    # layout on change.
+    ComponentType.MMC_CELL: {
+        "cell_topology": "Half-Bridge",  # "Half-Bridge" | "Full-Bridge"
+        # Switch model (shared across all MOSFETs in the cell)
+        "r_ds_on": 25e-3,        # MOSFET on-resistance [Ω]
+        "g_off": 1.0e-9,         # off-state conductance [S]
+        "v_th": 3.0,             # gate threshold [V]
+        # Body diode
+        "diode_v_forward": 0.7,
+        "diode_g_on": 1.0e3,
+        "diode_g_off": 1.0e-9,
+        # Cell capacitor
+        "c_cell": 4.7e-3,        # F  (typical MMC sub-module ≈ mF range)
+        "v_cell_init": 0.0,      # initial capacitor voltage [V]
+        # Thermal (per-switch)
+        "r_th_jc": 1.0,
+        "tau_th": 0.060,
+    },
+
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke / inverse-Clarke have no numeric parameters.
     ComponentType.CLARKE_TRANSFORM: {
@@ -1489,6 +1579,9 @@ PARAM_OPTIONS: dict[str, list[str]] = {
     "thermal_network": ["single_rc", "foster", "cauer"],
     # Switching loss computation model
     "switching_loss_model": ["scalar", "datasheet"],
+    # MMC sub-module cell topology (drives pin count + converter
+    # expansion + visual symbol).
+    "cell_topology": ["Half-Bridge", "Full-Bridge"],
 }
 
 
@@ -1605,6 +1698,8 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    elif component.type == ComponentType.MMC_CELL:
+        _synchronize_mmc_cell(component)
     elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         _synchronize_sum_like_block(component)
     elif component.type == ComponentType.C_BLOCK:
@@ -1881,6 +1976,57 @@ def set_demux_output_count(component: Component, count: int) -> None:
     """Update a demux component's output count and pin layout."""
 
     _synchronize_demux(component, force_count=count)
+
+
+# ---------------------------------------------------------------------------
+# MMC sub-module cell (dynamic pin layout)
+# ---------------------------------------------------------------------------
+# Pin layouts indexed by ``cell_topology``. Half-bridge has 4 pins
+# (TOP, BOT, S1_G, S2_G), full-bridge has 6 (adds S3_G, S4_G for the
+# right H-bridge leg). Pin indices stay stable for the shared TOP/BOT/
+# S1_G/S2_G prefix so wires connecting to those pins survive a topology
+# change.
+_MMC_CELL_PIN_LAYOUTS: dict[str, list[Pin]] = {
+    "Half-Bridge": [
+        Pin(0, "TOP",  -30, -25),
+        Pin(1, "BOT",  -30, 25),
+        Pin(2, "S1_G",  30, -15),
+        Pin(3, "S2_G",  30, 15),
+    ],
+    "Full-Bridge": [
+        Pin(0, "TOP",  -30, -30),
+        Pin(1, "BOT",  -30, 30),
+        Pin(2, "S1_G",  30, -25),
+        Pin(3, "S2_G",  30, -10),
+        Pin(4, "S3_G",  30, 10),
+        Pin(5, "S4_G",  30, 25),
+    ],
+}
+
+
+def _synchronize_mmc_cell(component: Component) -> None:
+    """Rewrite ``MMC_CELL`` pin layout to match the ``cell_topology``."""
+    params = component.parameters
+    topology = str(params.get("cell_topology") or "Half-Bridge")
+    if topology not in _MMC_CELL_PIN_LAYOUTS:
+        topology = "Half-Bridge"
+    params["cell_topology"] = topology
+    component.pins = _snap_pin_layout([
+        Pin(p.index, p.name, p.x, p.y)
+        for p in _MMC_CELL_PIN_LAYOUTS[topology]
+    ])
+
+
+def set_mmc_cell_topology(component: Component, topology: str) -> None:
+    """Switch an ``MMC_CELL`` between half-bridge and full-bridge.
+
+    Trims/extends pins to match the new layout. Wires connected to
+    shared pins (TOP/BOT/S1_G/S2_G) keep their indices so they survive
+    the topology change; wires on full-bridge-only pins (S3_G/S4_G)
+    will dangle if you switch back to half-bridge.
+    """
+    component.parameters["cell_topology"] = topology
+    _synchronize_mmc_cell(component)
 
 
 def set_sum_input_count(component: Component, count: int) -> None:

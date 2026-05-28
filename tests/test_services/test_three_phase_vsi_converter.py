@@ -13,9 +13,7 @@ import pytest
 from pulsimgui.models.component import (
     ComponentType, DEFAULT_PARAMETERS, DEFAULT_PINS,
 )
-from pulsimgui.services.circuit_converter import (
-    CircuitConversionError, CircuitConverter,
-)
+from pulsimgui.services.circuit_converter import CircuitConverter
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +31,22 @@ class _FakeThreePhaseVsiParams:
     mosfet_vth = 1.0
 
 
+class _FakeBuilder:
+    """Mirrors the pulsim 1.5+ raw ``CircuitBuilder`` surface that the
+    converter's VSI fallback calls into via ``circuit._builder``."""
+
+    def __init__(self) -> None:
+        self.sine_calls: list[dict[str, Any]] = []
+
+    def add_sine_voltage_source(self, name, n_pos, n_neg,
+                                  v_dc, v_amplitude, frequency, phase):
+        self.sine_calls.append({
+            "name": name, "n_pos": n_pos, "n_neg": n_neg,
+            "v_dc": v_dc, "v_amplitude": v_amplitude,
+            "frequency": frequency, "phase": phase,
+        })
+
+
 class _FakeCircuit:
     @staticmethod
     def ground() -> int:
@@ -41,6 +55,11 @@ class _FakeCircuit:
     def __init__(self) -> None:
         self.nodes: dict[str, int] = {}
         self.vsi_calls: list[dict[str, Any]] = []
+        # ``_builder`` is the v1.5+ raw kernel handle the VSI fallback
+        # uses for ``add_sine_voltage_source``. Exposed only on the
+        # "no-native-VSI" path; the legacy native-builder path doesn't
+        # touch it.
+        self._builder = _FakeBuilder()
 
     def add_node(self, name: str) -> int:
         if name in self.nodes:
@@ -48,6 +67,16 @@ class _FakeCircuit:
         idx = len(self.nodes)
         self.nodes[name] = idx
         return idx
+
+    def _name_of(self, node_id: int) -> str:
+        """Reverse lookup used by the VSI fallback to resolve node names
+        for the raw kernel calls."""
+        if int(node_id) == -1:
+            return "gnd"
+        for name, idx in self.nodes.items():
+            if idx == int(node_id):
+                return name
+        raise KeyError(node_id)
 
     def add_three_phase_vsi(
         self, name, n_vdc_pos, n_vdc_neg, n_a, n_b, n_c, params,
@@ -173,12 +202,41 @@ def test_vsi_converter_forwards_overrides() -> None:
     assert call["mosfet_vth"] == pytest.approx(2.5)
 
 
-def test_vsi_raises_when_backend_too_old() -> None:
+def test_vsi_falls_back_to_three_sines_when_native_builder_missing() -> None:
+    """Backends without ``add_three_phase_vsi`` (pulsim 1.5+ retired
+    the native helper) fall back to a behavioral 3-sine averaged
+    model. This keeps existing GUI projects loadable without forcing
+    every user to manually rebuild their VSI from primitives.
+    """
     converter = CircuitConverter(_FakeBackendOld)
     circuit_data = {
-        "components": [_vsi_component()],
+        "components": [_vsi_component(
+            modulation_index=0.8,
+            modulation_frequency_hz=50.0,
+            phase_a_deg=0.0,
+            positive_sequence=True,
+        )],
         "node_map": {"vsi-1": ["VDC+", "VDC-", "A", "B", "C"]},
         "node_aliases": {},
     }
-    with pytest.raises(CircuitConversionError, match="pulsim>=0.10.0a5"):
-        converter.build(circuit_data)
+    circuit = converter.build(circuit_data)
+    # Should have emitted 3 sine sources (one per phase).
+    sine_calls = circuit._builder.sine_calls
+    assert len(sine_calls) == 3
+    names = {c["name"] for c in sine_calls}
+    assert names == {"INV1_VA", "INV1_VB", "INV1_VC"}
+
+    # All three reference VDC- and share the same DC offset (= V_DC/2).
+    import math
+    for call in sine_calls:
+        assert call["n_neg"] == "NVDC-"  # converter's normalized name
+        assert call["frequency"] == pytest.approx(50.0)
+        # Default V_DC_nominal is 400 → half-bus = 200, amplitude = 0.8 * 200
+        assert call["v_dc"] == pytest.approx(200.0)
+        assert call["v_amplitude"] == pytest.approx(160.0)
+
+    # Phases shifted 120° apart (in radians, positive sequence).
+    by_name = {c["name"]: c["phase"] for c in sine_calls}
+    assert by_name["INV1_VA"] == pytest.approx(0.0)
+    assert by_name["INV1_VB"] == pytest.approx(-2.0 * math.pi / 3.0)
+    assert by_name["INV1_VC"] == pytest.approx(-4.0 * math.pi / 3.0)

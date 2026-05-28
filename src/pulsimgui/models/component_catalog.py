@@ -58,6 +58,11 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.PMSM, "name": "PMSM dyn", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL", "shortcut": ""},
     ],
+    "Power Conversion": [
+        {"type": ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "name": "1φ Bridge", "shortcut": ""},
+        {"type": ComponentType.THREE_PHASE_DIODE_BRIDGE, "name": "3φ Bridge", "shortcut": ""},
+        {"type": ComponentType.MMC_CELL, "name": "MMC Cell", "shortcut": ""},
+    ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
     ],
@@ -112,6 +117,19 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.INVERSE_PARK_TRANSFORM, "Inverse Park", ["inverse park", "ipark", "dq abc"]),
     (ComponentType.PLL, "PLL", ["pll", "phase lock", "grid sync", "synchronization"]),
     (ComponentType.SVM, "SVM", ["svm", "space vector", "svpwm", "modulation", "inverter"]),
+    # Power conversion bridges & MMC sub-modules
+    (ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "Single-Phase Diode Bridge",
+        ["bridge", "rectifier", "diode bridge", "graetz", "single phase", "1 phase",
+         "monofasico", "monofásico", "ponte de diodo", "ponte retificadora",
+         "retificador", "full wave", "ac dc"]),
+    (ComponentType.THREE_PHASE_DIODE_BRIDGE, "Three-Phase Diode Bridge",
+        ["bridge", "rectifier", "diode bridge", "three phase", "3 phase",
+         "trifasico", "trifásico", "ponte trifasica", "ponte retificadora",
+         "6 pulse", "retificador trifasico", "ac dc"]),
+    (ComponentType.MMC_CELL, "MMC Sub-Module Cell",
+        ["mmc", "half bridge", "full bridge", "submodule", "sub-module", "cell",
+         "modular multilevel", "celula", "célula", "ponte h", "hvdc",
+         "media ponte", "ponte completa"]),
 ]
 
 
