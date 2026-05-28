@@ -94,12 +94,27 @@ class HierarchyService(QObject):
                 current.circuit_id, self._project.get_active_circuit()
             )
 
-        # If inside a subcircuit, get the subcircuit definition's circuit
-        definition = self._subcircuit_definitions.get(current.subcircuit_instance_id)
+        # If inside a subcircuit, get the subcircuit definition's circuit.
+        # ``descend_into`` stores the *definition* UUID (as str) in
+        # ``circuit_id``; ``_subcircuit_definitions`` is keyed by that
+        # UUID. Looking it up via ``subcircuit_instance_id`` (the
+        # component-instance UUID) silently misses every time and falls
+        # through to the root circuit — which is exactly why descending
+        # appeared to do nothing in the GUI.
+        definition = self._lookup_definition(current.circuit_id)
         if definition:
             return definition.circuit
 
         return self._project.get_active_circuit()
+
+    def _lookup_definition(self, circuit_id: str) -> SubcircuitDefinition | None:
+        """Resolve a ``HierarchyLevel.circuit_id`` (definition UUID as
+        string) to a registered ``SubcircuitDefinition``."""
+        try:
+            defn_id = UUID(circuit_id)
+        except (ValueError, TypeError):
+            return None
+        return self._subcircuit_definitions.get(defn_id)
 
     def register_subcircuit(self, definition: SubcircuitDefinition) -> None:
         """Register a subcircuit definition for navigation."""
@@ -197,7 +212,10 @@ class HierarchyService(QObject):
                 parent_level.circuit_id, self._project.get_active_circuit()
             )
 
-        definition = self._subcircuit_definitions.get(parent_level.subcircuit_instance_id)
+        # Same lookup-key mismatch as ``get_current_circuit``: resolve
+        # by definition UUID (stored in ``circuit_id``), not by the
+        # instance UUID.
+        definition = self._lookup_definition(parent_level.circuit_id)
         if definition:
             return definition.circuit
 
