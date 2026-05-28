@@ -386,6 +386,13 @@ class Circuit:
         # that wiring is outside this shim's scope.
         self.virtual_component_records: list[dict[str, Any]] = []
 
+        # Closed-loop descriptors stashed by ``CircuitConverter.build()``
+        # after it detects a PI+PWM+MOSFET chain. The backend reads this
+        # to wire ``pulsim.bind_pi_to_switch`` at simulate time. Empty
+        # list = open-loop circuit; backend uses the legacy static
+        # switch_fn path instead.
+        self.closed_loop_descriptors: list[dict[str, Any]] = []
+
         # Position metadata — never round-tripped to the builder.
         self._positions: dict[str, SchematicPosition] = {}
 
