@@ -88,9 +88,28 @@ def resolve_scope_signal_specs(
     Only channels with a resolved ``signal_key`` (i.e. a probe is wired
     to the scope pin) show up; idle channels are silently skipped so the
     sidebar doesn't list dead inputs.
+
+    The post-sim spec carries a primary ``signal_key`` plus a list of
+    ``fallback_keys`` so the lookup tolerates the several ways the same
+    signal can show up in ``SimulationResult.signals``:
+
+    * ``VP(probe_name)`` — what ``MainWindow._result_with_probe_signals``
+      synthesizes after the run.
+    * ``probe_name`` — the raw virtual channel the kernel typically
+      emits for a probe component.
+    * ``V(node_id)`` / ``V(node_label)`` — what the kernel emits when a
+      scope is wired directly to a circuit node without a probe.
+    * The binding's display name — covers user-renamed channels.
+
+    Whichever name the backend used wins; the unused fallbacks are
+    silently ignored.
     """
     bindings = build_scope_channel_bindings(scope_component, circuit)
     builder = _circuit_builder(simulation_service, project)
+
+    is_thermal = scope_component.type.name == "THERMAL_SCOPE"
+    prefix = "T" if is_thermal else "V"
+    unit = "°C" if is_thermal else "V"
 
     live: list[LiveSignalSpec] = []
     post: list[PostSimSignalSpec] = []
@@ -99,9 +118,11 @@ def resolve_scope_signal_specs(
         # into ``SimulationResult.signals``. Without a key there's nothing
         # to plot.
         signal_key: str | None = None
+        first_signal = None
         for sig in binding.signals:
             if sig.signal_key:
                 signal_key = sig.signal_key
+                first_signal = sig
                 break
         if not signal_key:
             continue
@@ -122,14 +143,51 @@ def resolve_scope_signal_specs(
             )
             state_idx = i
 
+        # Build candidate keys in priority order. We dedupe at the end
+        # so the tuple is short.
+        candidates: list[str] = []
+        if first_signal is not None:
+            label = first_signal.label
+            if label:
+                candidates.append(label)
+                candidates.append(f"{prefix}({label})")
+            node_label = first_signal.node_label
+            if node_label:
+                candidates.append(node_label)
+                candidates.append(f"{prefix}({node_label})")
+            node_id = first_signal.node_id
+            if node_id:
+                candidates.append(str(node_id))
+                candidates.append(f"{prefix}({node_id})")
+        if binding.node_label:
+            candidates.append(binding.node_label)
+            candidates.append(f"{prefix}({binding.node_label})")
+        if binding.channel_label:
+            candidates.append(binding.channel_label)
+            candidates.append(f"{prefix}({binding.channel_label})")
+        candidates.append(display)
+
+        # De-dup while preserving order; drop the primary so we don't
+        # try it twice in PostSimCapability.
+        seen = {signal_key}
+        fallback_keys: list[str] = []
+        for key in candidates:
+            if key and key not in seen:
+                seen.add(key)
+                fallback_keys.append(key)
+
         live.append(LiveSignalSpec(
             name=display,
             state_idx=state_idx,
             color=color,
-            unit="V" if scope_component.type.name == "ELECTRICAL_SCOPE" else "°C",
+            unit=unit,
             panel="Main",
         ))
-        post.append(PostSimSignalSpec(name=display, signal_key=signal_key))
+        post.append(PostSimSignalSpec(
+            name=display,
+            signal_key=signal_key,
+            fallback_keys=tuple(fallback_keys),
+        ))
 
     return live, post
 

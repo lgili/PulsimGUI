@@ -48,18 +48,15 @@ class SimulationSettingsDialog(QDialog):
 
     settings_applied = Signal()
 
+    # Pulsim 1.5+ uses a discrete-time PWL state-space simulator; the
+    # only integration scheme implemented is trapezoidal. The retired
+    # BDF1-5 / Gear / TRBDF2 / RosenbrockW / SDIRK2 options are not in
+    # the kernel anymore, so we don't expose them. ``Auto`` is kept as
+    # an alias for trapezoidal so legacy projects with ``solver="auto"``
+    # keep loading without warnings.
     _INTEGRATION_OPTIONS: tuple[tuple[str, str], ...] = (
-        ("Auto (Backend default)", "auto"),
+        ("Auto (trapezoidal)", "auto"),
         ("Trapezoidal", "trapezoidal"),
-        ("BDF1", "bdf1"),
-        ("BDF2", "bdf2"),
-        ("BDF3", "bdf3"),
-        ("BDF4", "bdf4"),
-        ("BDF5", "bdf5"),
-        ("Gear", "gear"),
-        ("TRBDF2", "trbdf2"),
-        ("RosenbrockW", "rosenbrockw"),
-        ("SDIRK2", "sdirk2"),
     )
 
     _PRESET_CARDS: tuple[tuple[str, str, str], ...] = (
@@ -228,16 +225,22 @@ class SimulationSettingsDialog(QDialog):
 
         form = self._create_form_layout()
 
+        # Integration method — pulsim 1.5 only supports trapezoidal,
+        # so this combo really only has Auto/Trapezoidal. Kept as a
+        # combo for forward-compat if more schemes ship later.
         self._solver_combo = QComboBox()
         for label_text, value in self._INTEGRATION_OPTIONS:
             self._solver_combo.addItem(label_text, value)
         self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
         form.addRow("Integration method:", self._solver_combo)
 
+        # Step mode is intentionally NOT exposed — pulsim 1.5 is a
+        # fixed-step PWL discrete-time simulator, there's no
+        # variable-step path. We keep ``_step_mode_combo`` as a hidden
+        # constant so ``_save_settings`` doesn't crash on missing attr.
         self._step_mode_combo = QComboBox()
         self._step_mode_combo.addItem("Fixed step", "fixed")
-        self._step_mode_combo.addItem("Variable step", "variable")
-        form.addRow("Step mode:", self._step_mode_combo)
+        self._step_mode_combo.hide()
 
         self._solver_desc = QLabel("")
         self._solver_desc.setObjectName("fieldHint")
@@ -249,38 +252,47 @@ class SimulationSettingsDialog(QDialog):
         sep1.setObjectName("formSeparator")
         form.addRow(sep1)
 
+        # ── Time window ─────────────────────────────────────────────
         self._t_start_edit = SILineEdit("s")
         form.addRow("Start time:", self._t_start_edit)
 
         self._t_step_edit = SILineEdit("s")
-        form.addRow("Step size:", self._t_step_edit)
+        form.addRow("Step size (dt):", self._t_step_edit)
 
         self._t_stop_edit = SILineEdit("s")
         form.addRow("Stop time:", self._t_stop_edit)
 
+        # ``max_step`` only existed for the legacy variable-step path.
+        # Keep the LineEdit hidden so legacy projects load without
+        # raising AttributeError in ``_save_settings``.
         self._max_step_edit = SILineEdit("s")
-        form.addRow("Max step:", self._max_step_edit)
+        self._max_step_edit.hide()
+
+        # rel/abs tolerance: also legacy variable-step controls.
+        self._rel_tol_spin = QDoubleSpinBox()
+        self._rel_tol_spin.setRange(1e-10, 1e-1)
+        self._rel_tol_spin.setValue(1e-4)
+        self._rel_tol_spin.hide()
+        self._abs_tol_spin = QDoubleSpinBox()
+        self._abs_tol_spin.setRange(1e-12, 1e-3)
+        self._abs_tol_spin.setValue(1e-6)
+        self._abs_tol_spin.hide()
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setObjectName("formSeparator")
         form.addRow(sep2)
 
-        self._rel_tol_spin = QDoubleSpinBox()
-        self._rel_tol_spin.setDecimals(8)
-        self._rel_tol_spin.setRange(1e-10, 1e-1)
-        self._rel_tol_spin.setValue(1e-4)
-        self._rel_tol_spin.setSingleStep(1e-5)
-        self._rel_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Relative tolerance:", self._rel_tol_spin)
-
-        self._abs_tol_spin = QDoubleSpinBox()
-        self._abs_tol_spin.setDecimals(10)
-        self._abs_tol_spin.setRange(1e-12, 1e-3)
-        self._abs_tol_spin.setValue(1e-6)
-        self._abs_tol_spin.setSingleStep(1e-7)
-        self._abs_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Absolute tolerance:", self._abs_tol_spin)
+        # ── Initial state ───────────────────────────────────────────
+        self._start_from_dc_op_check = QCheckBox(
+            "Start from DC operating point"
+        )
+        self._start_from_dc_op_check.setToolTip(
+            "When checked, the simulation starts from the steady-state "
+            "DC solution instead of an all-zero initial vector. Useful "
+            "for fast transients where you only care about disturbances."
+        )
+        form.addRow("Initial state:", self._start_from_dc_op_check)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -369,19 +381,37 @@ class SimulationSettingsDialog(QDialog):
         self._advanced_tabs.setDocumentMode(True)
         self._advanced_tabs.setUsesScrollButtons(True)
         self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
-        for content, label in (
-            (self._create_newton_card(), "Transient"),
-            (self._create_dc_card(), "DC Setup"),
-            (self._create_thermal_card(), "Thermal & Losses"),
-            (self._create_frequency_card(), "Frequency Analysis"),
-            # Wave-4 sub-A 1.6 — advanced solver-stack knobs.
-            (self._create_solver_stack_card(), "Solver Stack"),
+
+        # Newton + Events tab — the only one currently wired to
+        # pulsim 1.5's simulate() kwargs. The DC Setup / Thermal /
+        # Frequency / Solver Stack sub-tabs were authored for the
+        # legacy backend that has since retired those settings; we
+        # build the widgets (so ``_save_settings`` doesn't crash) but
+        # don't surface them as tabs. Restore as needed when pulsim
+        # ships a matching API.
+        tab_scroll = QScrollArea()
+        tab_scroll.setWidgetResizable(True)
+        tab_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        tab_scroll.setWidget(self._create_newton_card())
+        self._advanced_tabs.addTab(tab_scroll, "Newton + Events")
+
+        # Build the legacy cards once and re-parent them to ``self``
+        # so their child widgets stay alive (Qt's C++ side deletes
+        # widgets with no parent on GC). The cards themselves are
+        # never added to a layout, so the user never sees them — but
+        # ``_load_settings`` / ``_save_settings`` can still poke their
+        # inner spinboxes / combos without crashing.
+        for builder in (
+            self._create_dc_card,
+            self._create_thermal_card,
+            self._create_frequency_card,
+            self._create_solver_stack_card,
         ):
-            tab_scroll = QScrollArea()
-            tab_scroll.setWidgetResizable(True)
-            tab_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            tab_scroll.setWidget(content)
-            self._advanced_tabs.addTab(tab_scroll, label)
+            card = builder()
+            if card is not None:
+                card.setParent(self)
+                card.hide()
+
         layout.addWidget(self._advanced_tabs, 1)
         return page
 
@@ -642,83 +672,143 @@ class SimulationSettingsDialog(QDialog):
 
     def _create_newton_card(self) -> QWidget:
         card, layout = self._create_card(
-            "Transient Robustness",
-            "Newton controls for convergence.",
+            "Newton + Events",
+            "Convergence controls forwarded to pulsim.simulate().",
             compact=True,
             show_header=False,
         )
         form = self._create_form_layout()
-        form.setVerticalSpacing(4)
+        form.setVerticalSpacing(6)
 
         self._max_iterations_spin = QSpinBox()
-        self._max_iterations_spin.setRange(10, 500)
+        self._max_iterations_spin.setRange(0, 500)
         self._max_iterations_spin.setValue(50)
-        self._max_iterations_spin.setToolTip("Maximum Newton iterations per timestep")
-        form.addRow("Max iterations:", self._max_iterations_spin)
+        self._max_iterations_spin.setToolTip(
+            "Maximum Newton iterations per timestep. 0 = kernel default."
+        )
+        form.addRow("Max Newton iterations:", self._max_iterations_spin)
 
-        self._voltage_limiting_check = QCheckBox("Enable voltage limiting")
-        self._voltage_limiting_check.setToolTip("Limit voltage deltas during Newton iterations")
-        form.addRow(self._voltage_limiting_check)
+        # New: explicit Newton tolerances (pulsim 1.5+ kwargs).
+        self._tol_newton_dx_spin = QDoubleSpinBox()
+        self._tol_newton_dx_spin.setDecimals(12)
+        self._tol_newton_dx_spin.setRange(0.0, 1.0)
+        self._tol_newton_dx_spin.setValue(0.0)  # 0 = use kernel default
+        self._tol_newton_dx_spin.setSingleStep(1e-7)
+        self._tol_newton_dx_spin.setStepType(
+            QAbstractSpinBox.StepType.AdaptiveDecimalStepType,
+        )
+        self._tol_newton_dx_spin.setToolTip(
+            "Convergence tolerance on |Δx| between iterations. "
+            "0 = use pulsim's SimulationOptions default (~1e-9)."
+        )
+        form.addRow("Tol. Newton |Δx|:", self._tol_newton_dx_spin)
 
-        self._max_voltage_step_spin = QDoubleSpinBox()
+        self._tol_newton_res_spin = QDoubleSpinBox()
+        self._tol_newton_res_spin.setDecimals(12)
+        self._tol_newton_res_spin.setRange(0.0, 1.0)
+        self._tol_newton_res_spin.setValue(0.0)
+        self._tol_newton_res_spin.setSingleStep(1e-7)
+        self._tol_newton_res_spin.setStepType(
+            QAbstractSpinBox.StepType.AdaptiveDecimalStepType,
+        )
+        self._tol_newton_res_spin.setToolTip(
+            "Convergence tolerance on the residual norm. "
+            "0 = use pulsim's SimulationOptions default."
+        )
+        form.addRow("Tol. Newton residual:", self._tol_newton_res_spin)
+
+        # New: line-search + Levenberg-Marquardt + sub-step correction.
+        self._line_search_check = QCheckBox("Enable Newton line search")
+        self._line_search_check.setToolTip(
+            "Backtrack the Newton step when the residual increases. "
+            "Improves robustness on stiff transitions."
+        )
+        self._line_search_check.setChecked(True)
+        form.addRow(self._line_search_check)
+
+        self._newton_lm_check = QCheckBox("Enable Levenberg-Marquardt")
+        self._newton_lm_check.setToolTip(
+            "Damp the Newton iteration with LM regularization. Off by "
+            "default — turn on when seeing oscillating non-convergence."
+        )
+        form.addRow(self._newton_lm_check)
+
+        self._substep_correction_check = QCheckBox(
+            "Enable sub-step state correction"
+        )
+        self._substep_correction_check.setToolTip(
+            "Refine intra-step states after switching events for "
+            "tighter event capture. Default on."
+        )
+        self._substep_correction_check.setChecked(True)
+        form.addRow(self._substep_correction_check)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setObjectName("formSeparator")
+        form.addRow(sep)
+
+        # New: enable_nonlinear_refresh combo (auto / on / off).
+        self._nonlinear_refresh_combo = QComboBox()
+        self._nonlinear_refresh_combo.addItem(
+            "Auto (detect from circuit)", "auto",
+        )
+        self._nonlinear_refresh_combo.addItem("Always on", "on")
+        self._nonlinear_refresh_combo.addItem("Always off", "off")
+        self._nonlinear_refresh_combo.setToolTip(
+            "Nonlinear-refresh runs Newton per timestep. Auto turns "
+            "it on only when the circuit has smooth-blend diodes, SH1 "
+            "MOSFETs, IGBT level-1, or saturable inductors."
+        )
+        form.addRow("Nonlinear refresh:", self._nonlinear_refresh_combo)
+
+        # New: max_event_iterations.
+        self._max_event_iterations_spin = QSpinBox()
+        self._max_event_iterations_spin.setRange(0, 200)
+        self._max_event_iterations_spin.setValue(0)
+        self._max_event_iterations_spin.setToolTip(
+            "Maximum solver passes for a single switching event. "
+            "0 = use pulsim's default."
+        )
+        form.addRow("Max event iterations:", self._max_event_iterations_spin)
+
+        # ── LEGACY hidden widgets — kept so old projects load and
+        # ``_save_settings`` doesn't AttributeError. None of these are
+        # forwarded to pulsim 1.5+ anymore. They're parented to ``self``
+        # (the dialog) so the C++ side stays alive even though they're
+        # never added to any visible layout. ───────────────────────
+        self._voltage_limiting_check = QCheckBox(self)
+        self._voltage_limiting_check.hide()
+        self._max_voltage_step_spin = QDoubleSpinBox(self)
         self._max_voltage_step_spin.setRange(0.1, 100.0)
         self._max_voltage_step_spin.setValue(5.0)
-        self._max_voltage_step_spin.setSuffix(" V")
-        self._max_voltage_step_spin.setSingleStep(0.1)
-        form.addRow("Max voltage step:", self._max_voltage_step_spin)
-
-        self._transient_robust_mode_check = QCheckBox("Enable robust transient retries")
+        self._max_voltage_step_spin.hide()
+        self._transient_robust_mode_check = QCheckBox(self)
         self._transient_robust_mode_check.setChecked(True)
-        form.addRow(self._transient_robust_mode_check)
-
-        self._transient_auto_regularize_check = QCheckBox("Enable automatic regularization")
+        self._transient_robust_mode_check.hide()
+        self._transient_auto_regularize_check = QCheckBox(self)
         self._transient_auto_regularize_check.setChecked(True)
-        form.addRow(self._transient_auto_regularize_check)
-
-        self._formulation_mode_combo = QComboBox()
-        self._formulation_mode_combo.addItem(
-            "Projected wrapper (recommended)",
-            "projected_wrapper",
-        )
-        self._formulation_mode_combo.addItem("Direct DAE formulation", "direct")
-        self._formulation_mode_combo.currentIndexChanged.connect(self._on_formulation_mode_changed)
-        form.addRow("Formulation mode:", self._formulation_mode_combo)
-
-        self._direct_formulation_fallback_check = QCheckBox(
-            "Fallback to projected wrapper if direct mode fails"
-        )
+        self._transient_auto_regularize_check.hide()
+        self._formulation_mode_combo = QComboBox(self)
+        self._formulation_mode_combo.addItem("projected_wrapper", "projected_wrapper")
+        self._formulation_mode_combo.hide()
+        self._direct_formulation_fallback_check = QCheckBox(self)
         self._direct_formulation_fallback_check.setChecked(True)
-        form.addRow(self._direct_formulation_fallback_check)
-
-        self._averaged_enabled_check = QCheckBox("Enable averaged converter model")
-        self._averaged_enabled_check.setChecked(False)
-        self._averaged_enabled_check.toggled.connect(self._sync_averaged_controls)
-        form.addRow(self._averaged_enabled_check)
-
-        self._averaged_topology_combo = QComboBox()
-        self._averaged_topology_combo.addItem("Buck", "buck")
-        self._averaged_topology_combo.addItem("Boost", "boost")
-        self._averaged_topology_combo.addItem("Buck-Boost", "buckboost")
-        self._averaged_topology_combo.addItem("Flyback", "flyback")
-        self._averaged_topology_combo.addItem("Forward", "forward")
-        form.addRow("Averaged topology:", self._averaged_topology_combo)
-
-        self._averaged_mode_combo = QComboBox()
-        self._averaged_mode_combo.addItem("CCM", "ccm")
-        self._averaged_mode_combo.addItem("Auto", "auto")
-        form.addRow("Averaged mode:", self._averaged_mode_combo)
-
-        self._averaged_envelope_combo = QComboBox()
-        self._averaged_envelope_combo.addItem("Strict", "strict")
-        self._averaged_envelope_combo.addItem("Lenient", "lenient")
-        self._averaged_envelope_combo.addItem("Ignore", "ignore")
-        form.addRow("Envelope policy:", self._averaged_envelope_combo)
-
-        self._transient_robust_mode_check.toggled.connect(
-            self._transient_auto_regularize_check.setEnabled
-        )
-        self._voltage_limiting_check.toggled.connect(self._max_voltage_step_spin.setEnabled)
-        self._sync_averaged_controls(self._averaged_enabled_check.isChecked())
+        self._direct_formulation_fallback_check.hide()
+        self._averaged_enabled_check = QCheckBox(self)
+        self._averaged_enabled_check.hide()
+        self._averaged_topology_combo = QComboBox(self)
+        for v in ("buck", "boost", "buckboost", "flyback", "forward"):
+            self._averaged_topology_combo.addItem(v, v)
+        self._averaged_topology_combo.hide()
+        self._averaged_mode_combo = QComboBox(self)
+        for v in ("ccm", "auto"):
+            self._averaged_mode_combo.addItem(v, v)
+        self._averaged_mode_combo.hide()
+        self._averaged_envelope_combo = QComboBox(self)
+        for v in ("strict", "lenient", "ignore"):
+            self._averaged_envelope_combo.addItem(v, v)
+        self._averaged_envelope_combo.hide()
 
         layout.addLayout(form)
         return card
@@ -1214,12 +1304,40 @@ class SimulationSettingsDialog(QDialog):
         self._abs_tol_spin.setValue(source.abs_tol)
 
         self._max_iterations_spin.setValue(source.max_newton_iterations)
+        # New pulsim 1.5 Newton controls.
+        self._tol_newton_dx_spin.setValue(
+            float(getattr(source, "tol_newton_dx", None) or 0.0)
+        )
+        self._tol_newton_res_spin.setValue(
+            float(getattr(source, "tol_newton_res", None) or 0.0)
+        )
+        self._line_search_check.setChecked(
+            bool(getattr(source, "enable_newton_line_search", True))
+        )
+        self._newton_lm_check.setChecked(
+            bool(getattr(source, "enable_newton_lm", False))
+        )
+        self._substep_correction_check.setChecked(
+            bool(getattr(source, "enable_substep_state_correction", True))
+        )
+        self._max_event_iterations_spin.setValue(
+            max(0, int(getattr(source, "max_event_iterations", 0)))
+        )
+        # Nonlinear refresh combo: None ⇒ auto.
+        nlr = getattr(source, "enable_nonlinear_refresh", None)
+        nlr_key = "auto" if nlr is None else ("on" if nlr else "off")
+        nlr_idx = self._nonlinear_refresh_combo.findData(nlr_key)
+        self._nonlinear_refresh_combo.setCurrentIndex(nlr_idx if nlr_idx >= 0 else 0)
+        # Start-from-DC-op (lives on the Solver page).
+        self._start_from_dc_op_check.setChecked(
+            bool(getattr(source, "start_from_dc_op", False))
+        )
+        # Legacy fields — still loaded for backwards compat but the
+        # widgets are hidden in the UI now.
         self._voltage_limiting_check.setChecked(source.enable_voltage_limiting)
         self._max_voltage_step_spin.setValue(source.max_voltage_step)
-        self._max_voltage_step_spin.setEnabled(source.enable_voltage_limiting)
         self._transient_robust_mode_check.setChecked(source.transient_robust_mode)
         self._transient_auto_regularize_check.setChecked(source.transient_auto_regularize)
-        self._transient_auto_regularize_check.setEnabled(source.transient_robust_mode)
         formulation_mode = normalize_formulation_mode(
             getattr(source, "formulation_mode", "projected_wrapper")
         )
@@ -1377,6 +1495,31 @@ class SimulationSettingsDialog(QDialog):
         self._settings.abs_tol = self._abs_tol_spin.value()
 
         self._settings.max_newton_iterations = self._max_iterations_spin.value()
+        # New pulsim 1.5 Newton/Event controls.
+        dx = float(self._tol_newton_dx_spin.value())
+        self._settings.tol_newton_dx = dx if dx > 0.0 else None
+        res = float(self._tol_newton_res_spin.value())
+        self._settings.tol_newton_res = res if res > 0.0 else None
+        self._settings.enable_newton_line_search = (
+            self._line_search_check.isChecked()
+        )
+        self._settings.enable_newton_lm = self._newton_lm_check.isChecked()
+        self._settings.enable_substep_state_correction = (
+            self._substep_correction_check.isChecked()
+        )
+        self._settings.max_event_iterations = (
+            self._max_event_iterations_spin.value()
+        )
+        nlr_key = str(self._nonlinear_refresh_combo.currentData() or "auto")
+        if nlr_key == "auto":
+            self._settings.enable_nonlinear_refresh = None
+        else:
+            self._settings.enable_nonlinear_refresh = (nlr_key == "on")
+        self._settings.start_from_dc_op = (
+            self._start_from_dc_op_check.isChecked()
+        )
+        # Legacy fields — still written so old projects keep round-trip
+        # parity, but no longer forwarded to the kernel.
         self._settings.enable_voltage_limiting = self._voltage_limiting_check.isChecked()
         self._settings.max_voltage_step = self._max_voltage_step_spin.value()
         self._settings.transient_robust_mode = self._transient_robust_mode_check.isChecked()

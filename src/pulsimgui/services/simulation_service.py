@@ -271,8 +271,28 @@ class SimulationSettings:
     enable_events: bool = True
     max_step_retries: int = 8
 
-    # Newton solver settings
+    # Newton solver settings (pulsim 1.5 simulate() kwargs)
     max_newton_iterations: int = 100
+    # ``tol_newton_dx`` — convergence tolerance on the Newton step
+    # magnitude; default None lets pulsim's SimulationOptions decide.
+    tol_newton_dx: float | None = None
+    # ``tol_newton_res`` — convergence tolerance on the residual norm.
+    tol_newton_res: float | None = None
+    enable_newton_line_search: bool = True
+    enable_newton_lm: bool = False
+    enable_substep_state_correction: bool = True
+    # Auto-detect nonlinear blocks in the circuit (diode, MOSFET, etc.)
+    # so the kernel only runs Newton refresh when needed. None ⇒ auto.
+    enable_nonlinear_refresh: bool | None = None
+    # Start the run from the steady-state DC operating point instead
+    # of the all-zero initial vector. Useful for fast transients.
+    start_from_dc_op: bool = False
+    # Event-iteration cap (separate from step-retries — used when a
+    # switching event takes multiple solver passes to settle).
+    max_event_iterations: int = 0
+    # ── LEGACY: kept for backwards-compat with old projects, NOT
+    # forwarded to pulsim 1.5+; the simulator no longer accepts them
+    # but reading old .pulsim files shouldn't crash.
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
 

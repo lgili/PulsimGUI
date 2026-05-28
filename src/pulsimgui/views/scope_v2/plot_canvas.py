@@ -221,6 +221,17 @@ class PlotCanvas(QFrame):
             color = DEFAULT_PALETTE[len(self._signals) % len(DEFAULT_PALETTE)]
         pen = pg.mkPen(color=QColor(color), width=1.6)
         curve = plot.plot([], [], pen=pen, name=name)
+        # Per-curve downsampling — PLECS/Saleae-style min/max-per-pixel
+        # envelope rendering for switching waveforms. The PlotItem-level
+        # ``setDownsampling`` call in ``add_panel`` configures defaults
+        # but explicit per-curve settings are more reliable across
+        # pyqtgraph versions. ``method='peak'`` preserves max-magnitude
+        # samples per bin so transient spikes don't disappear at zoom-out.
+        try:
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setClipToView(True)
+        except Exception:  # noqa: BLE001 — old pyqtgraph fallback
+            pass
         self._signals[name] = _SignalState(
             name=name, panel=panel, color=color, unit=unit, curve=curve,
         )

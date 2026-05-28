@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -76,6 +76,7 @@ from pulsimgui.services.simulation_service import (
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.services.thermal_service import ThermalAnalysisService
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.dialogs import (
     BodePlotDialog,
@@ -100,6 +101,15 @@ from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
 
 class MainWindow(QMainWindow):
     """Main application window with docking panels."""
+
+    # Emitted whenever ``_latest_electrical_result`` is rebuilt — the
+    # payload is the *probe-enriched* SimulationResult (i.e. with the
+    # ``VP(name)`` / ``IP(name)`` / ``PP(name)`` synthetic channels
+    # appended), which is what the scope_v2 PostSimCapability needs
+    # in order for its ``signal_key`` lookups to succeed.
+    # ``simulation_service.simulation_finished`` carries the *raw*
+    # kernel result and would yield "0 of 2 matched" in the drawer.
+    electrical_result_ready = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -489,6 +499,7 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("&File")
+        self._file_menu = file_menu
         file_menu.addAction(self.action_new)
         file_menu.addAction(self.action_new_from_template)
         file_menu.addAction(self.action_open)
@@ -501,6 +512,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_close)
         file_menu.addSeparator()
         export_menu = file_menu.addMenu("&Export")
+        self._export_menu = export_menu
         export_menu.addAction(self.action_export_spice)
         export_menu.addAction(self.action_export_json)
         export_menu.addSeparator()
@@ -554,6 +566,7 @@ class MainWindow(QMainWindow):
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
+        self._sim_menu = sim_menu
         sim_menu.addAction(self.action_run)
         sim_menu.addAction(self.action_pause)
         sim_menu.addAction(self.action_stop)
@@ -575,6 +588,69 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Help")
         help_menu.addAction(self.action_about)
+
+        # Hide menu items whose backend capability isn't present in the
+        # currently-loaded pulsim kernel. Actions stay alive (Python
+        # refs + parent menus) so they reappear automatically when the
+        # kernel ships those features later — remove the matching line
+        # from ``_hide_unavailable_menu_items`` at that point.
+        self._hide_unavailable_menu_items()
+
+    def _hide_unavailable_menu_items(self) -> None:
+        """Hide menu actions for backend capabilities pulsim 1.5 doesn't ship.
+
+        Pulsim 1.5 advertises ``transient`` / ``dc`` / ``ac`` /
+        ``frequency_analysis`` / ``thermal`` via ``has_capability``.
+        Several Wave-4 actions (parameter sweep, losses dashboard,
+        FRA, periodic steady-state, harmonic balance, FMU + C99
+        export) were authored ahead of the kernel and currently sit in
+        the menus permanently disabled — clutters the user's choices.
+        """
+        sim_caps_to_action = {
+            "parameter_sweep": self.action_parameter_sweep,
+            "losses_analysis": self.action_losses_dashboard,
+            "fra": self.action_fra,
+            "periodic_steady_state": self.action_periodic_ss,
+            "harmonic_balance": self.action_harmonic_balance,
+            "fmu_export": self.action_export_fmu,
+            "c99_codegen": self.action_export_c99,
+        }
+        for cap, action in sim_caps_to_action.items():
+            if not self._simulation_service.has_capability(cap):
+                action.setVisible(False)
+        # Collapse empty separator runs that the now-hidden actions
+        # left behind, using the direct menu refs stored in
+        # ``_create_menus`` (looking up by title via menuBar().actions()
+        # was returning proxy actions whose .menu() handle gets
+        # garbage-collected before we can iterate it).
+        if getattr(self, "_sim_menu", None) is not None:
+            MainWindow._collapse_separators_flat(self._sim_menu)
+        if getattr(self, "_export_menu", None) is not None:
+            MainWindow._collapse_separators_flat(self._export_menu)
+
+    @staticmethod
+    def _collapse_separators_flat(menu) -> None:
+        """Hide consecutive / leading / trailing separators in one menu.
+
+        Strict non-recursive walk — never touches child submenus, those
+        get populated by later code paths that would crash if we'd
+        already poked their actions.
+        """
+        prev_was_visible_sep = False
+        last_visible = None
+        for action in menu.actions():
+            if not action.isVisible():
+                continue
+            if action.isSeparator():
+                if prev_was_visible_sep or last_visible is None:
+                    action.setVisible(False)
+                    continue
+                prev_was_visible_sep = True
+            else:
+                prev_was_visible_sep = False
+            last_visible = action
+        if last_visible is not None and last_visible.isSeparator():
+            last_visible.setVisible(False)
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
@@ -2829,10 +2905,20 @@ class MainWindow(QMainWindow):
         if live_specs:
             capabilities.append(LiveStreamCapability(self._simulation_service, live_specs))
         if post_specs:
-            capabilities.append(PostSimCapability(self._simulation_service, post_specs))
+            # Feed PostSim the probe-enriched result, not the raw kernel
+            # one — see ``electrical_result_ready`` on the class for why.
+            capabilities.append(PostSimCapability(
+                self._simulation_service,
+                post_specs,
+                result_signal=self.electrical_result_ready,
+                result_getter=lambda: self._latest_electrical_result,
+            ))
         capabilities.append(CursorsCapability())
         capabilities.append(MathSignalsCapability())
-        capabilities.append(TriggerCapability())
+        # TriggerCapability disabled by request — barely used in
+        # practice and was contributing visual clutter / theme stress
+        # in the Inspector. Code is kept; re-enable by uncommenting.
+        # capabilities.append(TriggerCapability())
         capabilities.append(SMPSMacrosCapability())
         capabilities.append(ExportCapability())
         capabilities.append(FFTCapability())
@@ -2841,6 +2927,10 @@ class MainWindow(QMainWindow):
             variant=variant,
             capabilities=capabilities,
             version=_pg_version,
+            # Hand the host's ThemeService over so the scope picks up
+            # the same theme as MainWindow (light ↔ dark) AND keeps
+            # following along when the user switches in Preferences.
+            theme_service=self._theme_service,
         )
         # The LiveStream capability needs the project reference so its
         # Run button can drive ``simulation_service.run_transient_project``.
@@ -3530,6 +3620,14 @@ class MainWindow(QMainWindow):
                 5000,
             )
             self._latest_electrical_result = self._result_with_probe_signals(result)
+            # Push the *enriched* result through to any open scope_v2
+            # windows — they need the ``VP(name)`` / ``IP(name)`` /
+            # ``PP(name)`` synthetic channels to match their probe
+            # ``signal_key`` lookups. The raw ``simulation_finished``
+            # signal that scope_v2's PostSimCapability used to listen
+            # to carries only the kernel-native keys and produced
+            # "0 of N signals matched" in the drawer.
+            self.electrical_result_ready.emit(self._latest_electrical_result)
             # P1.3 — surface convergence health on the solver pill.
             if pill is not None:
                 stats = getattr(result, "statistics", {}) or {}
@@ -3549,10 +3647,22 @@ class MainWindow(QMainWindow):
             if pill is not None:
                 pill.set_state(pill.STATE_FAILED)
 
-        self._refresh_scope_window_bindings()
+        # Intentionally do NOT call ``_refresh_scope_window_bindings``
+        # here — that helper closes + reopens every scope window, which
+        # is appropriate after a *schematic* edit (probe wiring changed)
+        # but wasteful right after a run. The enriched-result signal
+        # above already delivers fresh data to every open scope.
 
     def _result_with_probe_signals(self, result: SimulationResult) -> SimulationResult:
-        """Build an enriched result view with probe-exported scope channels."""
+        """Build an enriched result view with probe-exported scope channels.
+
+        The kernel emits node voltages under ``V(<wire-label>)`` keys
+        (e.g. ``V(SW)``, ``V(VOUT)``) using the wire alias from the
+        schematic — *not* the probe component name. So we resolve each
+        probe to its connected node first, then look up the data by
+        ``V(<node-label>)`` (with case variants) before falling back to
+        the probe's own name.
+        """
         circuit = self._current_circuit()
         if circuit is None or not result.time:
             return result
@@ -3564,13 +3674,24 @@ class MainWindow(QMainWindow):
             error_message=result.error_message,
         )
 
+        # Resolve the schematic topology once — used to find which node
+        # each probe component is wired to and what alias the kernel
+        # likely used for that node.
+        node_map = build_node_map(circuit)
+        alias_map = build_node_alias_map(circuit, node_map)
+
         for component in circuit.components.values():
             if component.type == ComponentType.VOLTAGE_PROBE:
                 probe_name = component.name or "VoltageProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="V",
                 )
                 if backend_series is not None:
                     scale = float(component.parameters.get("scale", 1.0) or 1.0)
@@ -3582,10 +3703,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.VOLTAGE_PROBE_GND:
                 probe_name = component.name or "VoltageProbeGND"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="V",
                 )
                 if backend_series is not None:
                     scale = float(component.parameters.get("scale", 1.0) or 1.0)
@@ -3597,10 +3723,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.CURRENT_PROBE:
                 probe_name = component.name or "CurrentProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="I",
                 )
                 if backend_series is None:
                     continue
@@ -3613,10 +3744,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.POWER_PROBE:
                 probe_name = component.name or "PowerProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="P",
                 )
                 if backend_series is None:
                     continue
@@ -3629,16 +3765,73 @@ class MainWindow(QMainWindow):
         return enriched
 
     @staticmethod
+    def _probe_node_label(
+        component,
+        node_map: dict[tuple[str, int], str],
+        alias_map: dict[str, str],
+        *,
+        pin_index: int = 0,
+    ) -> str | None:
+        """Return the wire-alias label for the node a probe pin connects to.
+
+        Falls back to the raw node-id (e.g. ``"7"``) when the wire has no
+        explicit alias — caller can still try ``V(7)`` style lookups.
+        """
+        node_id = node_map.get((str(component.id), pin_index))
+        if not node_id:
+            return None
+        return alias_map.get(node_id) or node_id
+
+    @staticmethod
     def _probe_backend_series(
         result: SimulationResult,
         component_name: str,
         component_id: str,
+        *,
+        node_label: str | None = None,
+        kernel_prefix: str = "V",
     ) -> list[float] | None:
-        """Resolve backend-native probe channel names to a signal series."""
-        for key in (component_name, component_id):
+        """Resolve backend-native probe channel names to a signal series.
+
+        Tries, in order:
+
+        1. ``component_name`` (e.g. ``"Xsw"``) — works when the kernel
+           registers the probe under its component name.
+        2. ``component_id`` (UUID).
+        3. ``node_label`` directly, ``V(node_label)``, plus case
+           variants — works when the kernel emits the node's voltage
+           under the wire alias (e.g. ``"V(SW)"``).
+        4. Last-resort: a case-insensitive sweep of ``result.signals``
+           keys whose body inside ``V(…)`` / ``I(…)`` matches
+           ``node_label``.
+        """
+        candidates: list[str] = [component_name, component_id]
+        if node_label:
+            label_variants = {
+                node_label,
+                node_label.upper(),
+                node_label.lower(),
+            }
+            for variant in label_variants:
+                candidates.append(variant)
+                candidates.append(f"{kernel_prefix}({variant})")
+
+        for key in candidates:
+            if not key:
+                continue
             series = result.signals.get(key)
             if series is not None:
                 return list(series)
+
+        # Case-insensitive fuzzy sweep using the node label's body.
+        if node_label:
+            needle = node_label.lower()
+            for key, series in result.signals.items():
+                key_str = str(key)
+                if "(" in key_str and key_str.endswith(")"):
+                    body = key_str[key_str.index("(") + 1 : -1]
+                    if body.lower() == needle:
+                        return list(series)
         return None
 
     def _on_dc_finished(self, result) -> None:

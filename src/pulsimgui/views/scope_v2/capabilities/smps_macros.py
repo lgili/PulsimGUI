@@ -113,6 +113,15 @@ class SMPSMacrosCapability:
     def attach(self, shell: BaseScopeWindow) -> None:
         self._shell = shell
         self._build_ui(shell.inspector.smps_group)
+        # Populate the Source combo with signals already registered
+        # on the plot canvas (LiveStreamCapability registers up-front
+        # in its own ``attach`` AND the PostSim catch-up has already
+        # filled them when re-opening a scope after a finished run).
+        # Without this the combo opens stuck on "(none)" until the
+        # user manually re-runs.
+        self._refresh_sources()
+        # ``run_clicked`` keeps it in sync for subsequent runs (e.g.
+        # new channels appearing after a schematic edit).
         shell.toolbar.run_clicked.connect(self._refresh_sources)
 
     def _build_ui(self, group_frame: QWidget) -> None:
@@ -132,21 +141,25 @@ class SMPSMacrosCapability:
         r1.setContentsMargins(0, 0, 0, 0)
         r1.setSpacing(8)
         k = QLabel("Source")
+        k.setObjectName("ScopeFormFieldLabel")
         kf = QFont()
         kf.setPointSize(10)
-        kf.setWeight(QFont.Weight.DemiBold)
+        kf.setWeight(QFont.Weight.Medium)
         k.setFont(kf)
+        k.setMinimumWidth(52)
         r1.addWidget(k)
         self._source_combo = QComboBox()
         self._source_combo.addItem("(none)")
         r1.addWidget(self._source_combo, stretch=1)
         layout.addWidget(row1)
 
-        # Three macro buttons.
+        # Three macro buttons. Vertical spacing 6 px between rows so
+        # the two Tsw+Fsw / Duty buttons don't crowd the Ripple row.
         row2 = QWidget()
         r2 = QGridLayout(row2)
-        r2.setContentsMargins(0, 4, 0, 0)
-        r2.setHorizontalSpacing(4)
+        r2.setContentsMargins(0, 8, 0, 0)
+        r2.setHorizontalSpacing(6)
+        r2.setVerticalSpacing(6)
 
         def _mk_btn(label: str, slot) -> QPushButton:
             b = QPushButton(label)

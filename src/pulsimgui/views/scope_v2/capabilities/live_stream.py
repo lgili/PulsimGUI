@@ -107,8 +107,9 @@ class LiveStreamCapability:
                 "Waiting for live data…",
                 "Click ▶ Run on the toolbar to start streaming.",
             )
-            shell.drawer.summary.setText(
-                f"{len(self._signal_specs)} signals connected — click Run to start streaming."
+            shell.set_drawer_status(
+                "idle",
+                f"{len(self._signal_specs)} signals connected — click Run to start streaming.",
             )
 
         # Wire shell transport buttons to the simulation service so the
@@ -117,7 +118,8 @@ class LiveStreamCapability:
         shell.toolbar.stop_clicked.connect(self._on_stop_clicked)
 
         # Listen for the kernel allocating a fresh ring buffer.
-        sig = getattr(simulation_service := self._simulation_service, "live_stream_ready", None)
+        simulation_service = self._simulation_service
+        sig = getattr(simulation_service, "live_stream_ready", None)
         if sig is not None:
             sig.connect(self._on_stream_ready)
         else:
@@ -125,6 +127,18 @@ class LiveStreamCapability:
                 "LiveStreamCapability: %s has no live_stream_ready signal",
                 type(simulation_service).__name__,
             )
+
+        # Subscribe to simulation_finished eagerly — one connection per
+        # capability lifetime. Doing this lazily inside ``_on_stream_ready``
+        # caused two issues: (a) duplicate connections piled up on each
+        # run (each run reconnected) so ``_on_sim_finished`` fired N
+        # times after N runs, and (b) if the worker thread completed
+        # fast enough that ``simulation_finished`` arrived before
+        # ``_on_stream_ready`` had a chance to wire the slot, the final
+        # ``_tick`` + ``stop_polling`` were skipped entirely.
+        finished = getattr(simulation_service, "simulation_finished", None)
+        if finished is not None:
+            finished.connect(self._on_sim_finished)
 
     # ── Transport buttons ───────────────────────────────────────────────
 
@@ -163,17 +177,16 @@ class LiveStreamCapability:
             "Streaming…",
             "Live samples will appear here as the kernel produces them.",
         )
+        self._shell.set_drawer_status(
+            "running",
+            f"Streaming — {len(self._signal_specs)} signal(s) live from kernel.",
+        )
 
         if self._timer is None:
             self._timer = QTimer(self._shell)
             self._timer.setInterval(self._update_interval_ms)
             self._timer.timeout.connect(self._tick)
         self._timer.start()
-
-        # Stop polling once the run finishes; PostSimCapability takes over.
-        finished = getattr(self._simulation_service, "simulation_finished", None)
-        if finished is not None:
-            finished.connect(self._on_sim_finished)
 
     def _on_sim_finished(self, _result: Any) -> None:
         # Drain any last samples before we hand off to the post-sim

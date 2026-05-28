@@ -67,12 +67,16 @@ class TriggerCapability:
 
     def attach(self, shell: BaseScopeWindow) -> None:
         self._shell = shell
+        # Trigger group is hidden by default in the Inspector — show
+        # it now that this capability is actively using it.
+        shell.inspector.trigger_group.show()
         self._build_ui(shell.inspector.trigger_group)
 
-        # Periodically refresh the source combo so newly added signals
-        # become selectable without the user having to re-open the
-        # group. We just hook into the toolbar's run signal — every Run
-        # is a natural moment to refresh.
+        # Populate the Source combo with signals already on the canvas
+        # so the user doesn't open a stuck "(none)" combo on first
+        # show. Subsequent runs add new channels via the toolbar hook
+        # below.
+        self._refresh_sources()
         shell.toolbar.run_clicked.connect(self._refresh_sources)
 
     # ── UI ──────────────────────────────────────────────────────────────
@@ -96,11 +100,13 @@ class TriggerCapability:
 
         def _add_row(row: int, label: str, widget: QWidget) -> None:
             k = QLabel(label)
+            k.setObjectName("ScopeFormFieldLabel")
             kf = QFont()
             kf.setPointSize(10)
-            kf.setWeight(QFont.Weight.DemiBold)
+            kf.setWeight(QFont.Weight.Medium)
             k.setFont(kf)
-            grid.addWidget(k, row, 0)
+            k.setMinimumWidth(52)
+            grid.addWidget(k, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(widget, row, 1)
             grid.setColumnStretch(1, 1)
 
@@ -121,7 +127,11 @@ class TriggerCapability:
 
         self._level_spin = QDoubleSpinBox()
         self._level_spin.setRange(-1e12, 1e12)
-        self._level_spin.setDecimals(6)
+        # 3 decimals is enough resolution for typical voltage/current
+        # thresholds (mV, mA) while keeping the spinbox compact —
+        # 6 decimals rendered "0.000000" and overflowed the 240 px
+        # inspector. Users who need finer steps can type the value in.
+        self._level_spin.setDecimals(3)
         self._level_spin.setSingleStep(0.1)
         self._level_spin.valueChanged.connect(self._on_level_changed)
         _add_row(3, "Level", self._level_spin)
@@ -139,6 +149,7 @@ class TriggerCapability:
         layout.addWidget(row_btn)
 
         self._status_lbl = QLabel("Free Run — capturing continuously.")
+        self._status_lbl.setObjectName("ScopeInspectorStatusHint")
         sf = QFont()
         sf.setPointSize(9)
         self._status_lbl.setFont(sf)
