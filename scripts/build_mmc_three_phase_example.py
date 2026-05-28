@@ -225,39 +225,148 @@ gnd_neutral = comp(
 )
 components.append(gnd_neutral)
 
-# ---- Probes ----
-vp_phaseA = comp(
-    type="VOLTAGE_PROBE_GND", name="V_phaseA",
-    x=PHASE_X[0] + 80, y=Y_PHASE_TAP - 80,
-    parameters={"display_name": "V_phA", "scale": 1.0},
-    pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
-)
-components.append(vp_phaseA)
-
+# ---- Voltage probes ----
+# V_BUS: measure the DC bus rail (VDC+) wrt ground
 vp_bus = comp(
     type="VOLTAGE_PROBE_GND", name="V_BUS",
-    x=-800, y=-200,
+    x=-820, y=-460,
     parameters={"display_name": "V_BUS", "scale": 1.0},
     pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
 )
 components.append(vp_bus)
 
-# ---- Scope ----
-scope = comp(
-    type="ELECTRICAL_SCOPE", name="Scope_MMC", x=800, y=-200,
+# Per-phase voltage probes — each phase tap to ground
+vp_phaseA = comp(
+    type="VOLTAGE_PROBE_GND", name="V_phaseA",
+    x=PHASE_X[0] + 100, y=Y_PHASE_TAP - 60,
+    parameters={"display_name": "V_phA", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
+)
+components.append(vp_phaseA)
+
+vp_phaseB = comp(
+    type="VOLTAGE_PROBE_GND", name="V_phaseB",
+    x=PHASE_X[1] + 100, y=Y_PHASE_TAP - 60,
+    parameters={"display_name": "V_phB", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
+)
+components.append(vp_phaseB)
+
+vp_phaseC = comp(
+    type="VOLTAGE_PROBE_GND", name="V_phaseC",
+    x=PHASE_X[2] + 100, y=Y_PHASE_TAP - 60,
+    parameters={"display_name": "V_phC", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
+)
+components.append(vp_phaseC)
+
+# ---- Current probes ----
+# I_arm_uA: upper arm A inductor current (in series with L_uA)
+ip_arm_uA = comp(
+    type="CURRENT_PROBE", name="I_arm_uA",
+    x=PHASE_X[0], y=Y_L_UPPER + 80,
+    parameters={"display_name": "I_arm_uA", "scale": 1.0},
+    pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25),
+          pin(2, "OUT", 30, 0)],
+)
+components.append(ip_arm_uA)
+
+# I_arm_lA: lower arm A inductor current (in series with L_lA)
+ip_arm_lA = comp(
+    type="CURRENT_PROBE", name="I_arm_lA",
+    x=PHASE_X[0], y=Y_L_LOWER - 80,
+    parameters={"display_name": "I_arm_lA", "scale": 1.0},
+    pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25),
+          pin(2, "OUT", 30, 0)],
+)
+components.append(ip_arm_lA)
+
+# I_phaseA/B/C: phase-line current (in series with each load R)
+ip_phaseA = comp(
+    type="CURRENT_PROBE", name="I_phA",
+    x=LOAD_X_R - 100, y=Y_PHASE_TAP - 80,
+    parameters={"display_name": "I_phA", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0),
+          pin(2, "OUT", 0, 25)],
+)
+components.append(ip_phaseA)
+
+ip_phaseB = comp(
+    type="CURRENT_PROBE", name="I_phB",
+    x=LOAD_X_R - 100, y=Y_PHASE_TAP,
+    parameters={"display_name": "I_phB", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0),
+          pin(2, "OUT", 0, 25)],
+)
+components.append(ip_phaseB)
+
+ip_phaseC = comp(
+    type="CURRENT_PROBE", name="I_phC",
+    x=LOAD_X_R - 100, y=Y_PHASE_TAP + 80,
+    parameters={"display_name": "I_phC", "scale": 1.0},
+    pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0),
+          pin(2, "OUT", 0, 25)],
+)
+components.append(ip_phaseC)
+
+# ---- Scopes ----
+# Scope #1: DC bus + 3-phase voltages (4 channels)
+scope_voltages = comp(
+    type="ELECTRICAL_SCOPE", name="Scope_Voltages",
+    x=900, y=-380,
+    parameters={
+        "channel_count": 4,
+        "channels": [
+            {"label": "V_BUS", "overlay": False},
+            {"label": "V_phA", "overlay": False},
+            {"label": "V_phB", "overlay": False},
+            {"label": "V_phC", "overlay": False},
+        ],
+    },
+    pins=[pin(0, "CH1", -40, -30),
+          pin(1, "CH2", -40, -10),
+          pin(2, "CH3", -40, 10),
+          pin(3, "CH4", -40, 30)],
+)
+components.append(scope_voltages)
+
+# Scope #2: 3-phase load currents (3 channels)
+scope_load_currents = comp(
+    type="ELECTRICAL_SCOPE", name="Scope_LoadCurrents",
+    x=900, y=-120,
     parameters={
         "channel_count": 3,
         "channels": [
-            {"label": "V_phA", "overlay": False},
-            {"label": "V_BUS", "overlay": False},
-            {"label": "I_LA",  "overlay": False},
+            {"label": "I_phA", "overlay": False},
+            {"label": "I_phB", "overlay": False},
+            {"label": "I_phC", "overlay": False},
         ],
     },
     pins=[pin(0, "CH1", -40, -25),
           pin(1, "CH2", -40, 0),
           pin(2, "CH3", -40, 25)],
 )
-components.append(scope)
+components.append(scope_load_currents)
+
+# Scope #3: Phase-A arm currents (upper vs lower) — circulating-
+# current insight: I_arm_uA + I_arm_lA = I_dc/3 + I_circ, while
+# I_arm_uA - I_arm_lA = I_phA (the AC line current). A user can
+# eyeball these to verify the arm-balance behavior of each
+# fidelity model.
+scope_arm_currents = comp(
+    type="ELECTRICAL_SCOPE", name="Scope_ArmCurrents",
+    x=900, y=140,
+    parameters={
+        "channel_count": 2,
+        "channels": [
+            {"label": "I_arm_uA", "overlay": False},
+            {"label": "I_arm_lA", "overlay": False},
+        ],
+    },
+    pins=[pin(0, "CH1", -40, -15),
+          pin(1, "CH2", -40, 15)],
+)
+components.append(scope_arm_currents)
 
 
 # ---------------------------------------------------------------------------
@@ -290,35 +399,58 @@ w(v_dc, 1, gnd_dc, 0, node_name="VDC_NEG")
 for ll in L_lower:
     w(gnd_dc, 0, ll, 1, node_name="VDC_NEG")
 
-# Per-phase column: L_upper.2 → ARM_upper.TOP, ARM_upper.BOT → phase tap,
-# phase tap → ARM_lower.TOP, ARM_lower.BOT → L_lower.1
+# Phase A column: L_upper → I_arm_uA → ARM_upper → phase tap →
+# ARM_lower → I_arm_lA → L_lower (probes break the chain on phase A)
+w(L_upper[0], 1, ip_arm_uA, 0, node_name="ARM_uA_TOP_PRE")
+w(ip_arm_uA, 1, arm_upper[0], 0, node_name="ARM_uA_TOP")
+w(arm_upper[0], 1, arm_lower[0], 0, node_name="PHASE_A")
+w(arm_lower[0], 1, ip_arm_lA, 0, node_name="ARM_lA_BOT_PRE")
+w(ip_arm_lA, 1, L_lower[0], 0, node_name="ARM_lA_BOT")
+
+# Phases B and C — same chain, no arm probes (cheaper sim)
 for lu, au, al, ll, phase_label in zip(
-    L_upper, arm_upper, arm_lower, L_lower, ("A", "B", "C"),
+    L_upper[1:], arm_upper[1:], arm_lower[1:],
+    L_lower[1:], ("B", "C"),
 ):
     w(lu, 1, au, 0, node_name=f"ARM_u{phase_label}_TOP")
-    # Upper-arm BOT → lower-arm TOP forms the phase tap
     w(au, 1, al, 0, node_name=f"PHASE_{phase_label}")
     w(al, 1, ll, 0, node_name=f"ARM_l{phase_label}_BOT")
 
-# Phase A voltage probe taps off ARM_uA.BOT (phase A tap)
+# Phase voltage probes tap off each phase node
 w(arm_upper[0], 1, vp_phaseA, 0, node_name="PHASE_A")
+w(arm_upper[1], 1, vp_phaseB, 0, node_name="PHASE_B")
+w(arm_upper[2], 1, vp_phaseC, 0, node_name="PHASE_C")
 
 # ========================
-# AC load wires
+# AC load wires — each phase tap → I_phX → R_X → L_X → neutral
 # ========================
-# Phase X tap → R_X.1 → L_X.1, L_X.2 → ground (star neutral)
-for au, r_load, l_load, phase_label in zip(
-    arm_upper, load_r, load_l, ("A", "B", "C"),
+phase_taps = arm_upper  # phase tap is the BOT pin of the upper arm
+ip_phases = (ip_phaseA, ip_phaseB, ip_phaseC)
+for au, ip_ph, r_load, l_load, phase_label in zip(
+    phase_taps, ip_phases, load_r, load_l, ("A", "B", "C"),
 ):
-    w(au, 1, r_load, 0, node_name=f"PHASE_{phase_label}")
+    w(au, 1, ip_ph, 0, node_name=f"PHASE_{phase_label}")
+    w(ip_ph, 1, r_load, 0, node_name=f"LOAD_{phase_label}_PRE")
     w(r_load, 1, l_load, 0, node_name=f"LOAD_{phase_label}_MID")
     w(l_load, 1, gnd_neutral, 0, node_name="NEUTRAL")
 
 # ========================
 # Scope wires
 # ========================
-w(vp_phaseA, 1, scope, 0)        # CH1: V_phA
-w(vp_bus, 1, scope, 1)           # CH2: V_BUS
+# Scope_Voltages: V_BUS, V_phA, V_phB, V_phC
+w(vp_bus, 1, scope_voltages, 0, node_name="SIG_VBUS")
+w(vp_phaseA, 1, scope_voltages, 1, node_name="SIG_VPHA")
+w(vp_phaseB, 1, scope_voltages, 2, node_name="SIG_VPHB")
+w(vp_phaseC, 1, scope_voltages, 3, node_name="SIG_VPHC")
+
+# Scope_LoadCurrents: I_phA, I_phB, I_phC
+w(ip_phaseA, 2, scope_load_currents, 0, node_name="SIG_IPHA")
+w(ip_phaseB, 2, scope_load_currents, 1, node_name="SIG_IPHB")
+w(ip_phaseC, 2, scope_load_currents, 2, node_name="SIG_IPHC")
+
+# Scope_ArmCurrents: I_arm_uA, I_arm_lA
+w(ip_arm_uA, 2, scope_arm_currents, 0, node_name="SIG_IARMUA")
+w(ip_arm_lA, 2, scope_arm_currents, 1, node_name="SIG_IARMLA")
 
 
 # ---------------------------------------------------------------------------
