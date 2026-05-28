@@ -97,8 +97,15 @@ def wire(a_id: str, a_pin: int, b_id: str, b_pin: int,
 components: list[dict] = []
 
 # ------------------ AC mains + rectifier ------------------
+# All positions are snapped to the 20-px grid the router uses, with
+# generous spacing so the orthogonal router can place L/Z corners
+# in the routing channels between component bodies. Layout rows:
+#   y = -300   control row (V_REF → SUB_V → PI_V → SUB_I → PI_I → PWM)
+#   y =    0   power row (Vac → BR1 → I_L → L → M → D → C_bus → V_DC → VSI → motor)
+#   y = +100   grounds + DC bus load (below their connection points)
+#   y = ±200   scopes (top = PFC, bottom = Motor) on the far right
 v_ac = comp(
-    type="VOLTAGE_SOURCE", name="Vac", x=-900, y=0,
+    type="VOLTAGE_SOURCE", name="Vac", x=-1100, y=0,
     parameters={
         "waveform": {
             "type": "sine",
@@ -113,14 +120,14 @@ v_ac = comp(
 components.append(v_ac)
 
 gnd_ac = comp(
-    type="GROUND", name="GND_ac", x=-840, y=60,
+    type="GROUND", name="GND_ac", x=-1040, y=120,
     parameters={},
     pins=[pin(0, "gnd", 0, -20)],
 )
 components.append(gnd_ac)
 
 br1 = comp(
-    type="SINGLE_PHASE_DIODE_BRIDGE", name="BR1", x=-700, y=0,
+    type="SINGLE_PHASE_DIODE_BRIDGE", name="BR1", x=-900, y=0,
     parameters={
         "g_on": 1.0e3,
         "g_off": 1.0e-9,
@@ -139,14 +146,14 @@ components.append(br1)
 
 # ------------------ Boost PFC stage ------------------
 l_boost = comp(
-    type="INDUCTOR", name="L_boost", x=-560, y=-20,
+    type="INDUCTOR", name="L_boost", x=-540, y=-20,
     parameters={"inductance": 2.0e-3, "initial_current": 0.0},
     pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)],
 )
 components.append(l_boost)
 
 m_boost = comp(
-    type="MOSFET_N", name="M_boost", x=-420, y=20,
+    type="MOSFET_N", name="M_boost", x=-300, y=20,
     parameters={
         "is_nmos": True,
         "R_on": 25e-3,
@@ -158,14 +165,14 @@ m_boost = comp(
 components.append(m_boost)
 
 d_boost = comp(
-    type="DIODE", name="D_boost", x=-320, y=-20,
+    type="DIODE", name="D_boost", x=-120, y=-20,
     parameters={"g_on": 1.0e3, "g_off": 1.0e-9, "v_forward": 0.7},
     pins=[pin(0, "A", -25, 0), pin(1, "K", 25, 0)],
 )
 components.append(d_boost)
 
 c_bus = comp(
-    type="CAPACITOR", name="C_bus", x=-200, y=20,
+    type="CAPACITOR", name="C_bus", x=40, y=20,
     # Start at the rectified DC peak (~310 V) so the diode bridge has
     # already pre-charged the cap before the boost engages. Avoids a
     # huge current inrush at t=0.
@@ -178,15 +185,17 @@ components.append(c_bus)
 # against. Sized for ~50 W (R = V²/P = 400²/50 = 3.2 kΩ). Without
 # this, the cap voltage is static at its initial value because the
 # behavioral VSI fallback doesn't actually pull power from the bus.
+# Placed BELOW the C_bus row so its body sits in the "load" band,
+# not on the VBUS rail (keeps the rail visually clean).
 r_bus_load = comp(
-    type="RESISTOR", name="R_bus_load", x=-40, y=80,
+    type="RESISTOR", name="R_bus_load", x=180, y=120,
     parameters={"resistance": 3.2e3},
     pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)],
 )
 components.append(r_bus_load)
 
 gnd_dc = comp(
-    type="GROUND", name="GND_dc", x=-200, y=100,
+    type="GROUND", name="GND_dc", x=40, y=160,
     parameters={},
     pins=[pin(0, "gnd", 0, -20)],
 )
@@ -194,7 +203,7 @@ components.append(gnd_dc)
 
 # ------------------ Sensors ------------------
 ip_l = comp(
-    type="CURRENT_PROBE", name="I_L", x=-490, y=-20,
+    type="CURRENT_PROBE", name="I_L", x=-720, y=-20,
     parameters={"display_name": "I_L", "scale": 1.0},
     pins=[
         pin(0, "1", -25, 0),
@@ -205,7 +214,7 @@ ip_l = comp(
 components.append(ip_l)
 
 vp_dc = comp(
-    type="VOLTAGE_PROBE_GND", name="V_DC", x=-120, y=0,
+    type="VOLTAGE_PROBE_GND", name="V_DC", x=300, y=-20,
     parameters={"display_name": "V_DC", "scale": 1.0},
     pins=[
         pin(0, "1", -25, 0),
@@ -223,15 +232,18 @@ components.append(vp_dc)
 # backend then binds the INNER PI to the MOSFET via bind_pi_to_switch
 # using a time-varying setpoint that's the OUTER PI's output (updated
 # once per PWM cycle from the V_DC measurement).
+# Control row: every block at y=-300 in a clean left-to-right cascade
+# at 200 px spacing. That gives the router 140 px of clear routing
+# channel between adjacent component bodies for the inter-block wires.
 v_ref = comp(
-    type="CONSTANT", name="V_REF", x=-820, y=-260,
+    type="CONSTANT", name="V_REF", x=-1180, y=-300,
     parameters={"value": 400.0, "sample_time": 2.0e-5},
     pins=[pin(0, "OUT", 30, 0)],
 )
 components.append(v_ref)
 
 sub_v = comp(
-    type="SUBTRACTOR", name="SUB_V", x=-680, y=-260,
+    type="SUBTRACTOR", name="SUB_V", x=-820, y=-300,
     parameters={"input_count": 2, "signs": ["+", "-"], "sample_time": 2.0e-5},
     pins=[
         pin(0, "IN1", -30, -15),
@@ -242,25 +254,29 @@ sub_v = comp(
 components.append(sub_v)
 
 pi_v = comp(
-    type="PI_CONTROLLER", name="PI_V", x=-520, y=-260,
+    type="PI_CONTROLLER", name="PI_V", x=-620, y=-300,
     parameters={
         # Outer voltage loop — generates the inductor-current
-        # reference. Slow loop (~5 Hz crossover) so it doesn't react
-        # to 100 Hz DC-bus ripple. Output limited to 0..3 A peak
-        # inductor current command.
-        "kp": 0.015,
-        "ki": 1.5,
+        # reference. Slow loop (a few Hz crossover) so it doesn't
+        # react to 100 Hz DC-bus ripple. Pulsim 1.5 doesn't propagate
+        # capacitor ICs, so V_BUS starts at 0 V and the integrator
+        # must charge it up: use low ki + wide output clamp + anti-
+        # windup so the integrator doesn't run away during the
+        # startup transient.
+        "kp": 0.04,
+        "ki": 5.0,
         "output_min": 0.0,
-        "output_max": 3.0,         # max inner I_L reference [A]
+        "output_max": 5.0,         # max inner I_L reference [A]
         "anti_windup": True,
-        "sample_time": 2.0e-5,
+        "sample_time": 1.0e-3,     # outer loop runs at 1 kHz (backend
+                                    # honors this via throttled PI tick)
     },
     pins=[pin(0, "IN", -30, 0), pin(1, "OUT", 30, 0)],
 )
 components.append(pi_v)
 
 sub_i = comp(
-    type="SUBTRACTOR", name="SUB_I", x=-360, y=-260,
+    type="SUBTRACTOR", name="SUB_I", x=-380, y=-300,
     parameters={"input_count": 2, "signs": ["+", "-"], "sample_time": 2.0e-5},
     pins=[
         pin(0, "IN1", -30, -15),   # setpoint side (from PI_V.OUT)
@@ -271,16 +287,16 @@ sub_i = comp(
 components.append(sub_i)
 
 pi_i = comp(
-    type="PI_CONTROLLER", name="PI_I", x=-200, y=-260,
+    type="PI_CONTROLLER", name="PI_I", x=-180, y=-300,
     parameters={
         # Inner current loop — generates the duty command. Fast
-        # (~ kHz crossover). Steady-state duty for 220 Vrms → 400 V
-        # is D ≈ 0.23, so clamp 0..0.45 leaves the integrator headroom
-        # without letting it run away.
-        "kp": 0.10,
-        "ki": 500.0,
+        # (~kHz crossover). Steady-state duty for 220 Vrms → 400 V
+        # is D ≈ 0.23. We clamp 0..0.55 to give headroom for the
+        # transient. Moderate ki avoids ringing.
+        "kp": 0.04,
+        "ki": 100.0,
         "output_min": 0.0,
-        "output_max": 0.45,
+        "output_max": 0.55,
         "anti_windup": True,
         "sample_time": 2.0e-5,
     },
@@ -289,7 +305,7 @@ pi_i = comp(
 components.append(pi_i)
 
 pwm_boost = comp(
-    type="PWM_GENERATOR", name="PWM_BOOST", x=-40, y=-260,
+    type="PWM_GENERATOR", name="PWM_BOOST", x=40, y=-300,
     parameters={
         "frequency": 50e3,
         "duty_cycle": 0.5,
@@ -302,45 +318,62 @@ pwm_boost = comp(
 )
 components.append(pwm_boost)
 
-# Goto/From labels — route control signals across the schematic without
-# spaghetti wires.
+# Goto/From labels — route control signals across the schematic
+# without spaghetti wires. Each label is placed RIGHT NEXT TO its
+# target pin so the wire becomes a single short horizontal segment.
 goto_pwm = comp(
-    type="GOTO_LABEL", name="Xpwm_out", x=40, y=-260,
+    type="GOTO_LABEL", name="Xpwm_out", x=200, y=-300,
     parameters={"net_label": "PWM_GATE"},
     pins=[pin(0, "NET", -25, 0)],
 )
 components.append(goto_pwm)
 
+# Sits just to the right of V_DC.OUT on the power row so the
+# probe→label wire is a short horizontal. y matches V_DC.y so the
+# pins line up exactly.
 goto_v = comp(
-    type="GOTO_LABEL", name="Xv_dc", x=-60, y=0,
+    type="GOTO_LABEL", name="Xv_dc", x=380, y=-20,
     parameters={"net_label": "V_DC_MEAS"},
     pins=[pin(0, "NET", -25, 0)],
 )
 components.append(goto_v)
 
+# Sits BELOW the V_REF→SUB_V row (whose y is -300) so the long
+# V_REF→SUB_V.IN1 horizontal wire passes cleanly ABOVE this label.
+# y=-260 puts the label body well clear of the y=-300 wire (router
+# snaps the IN2 pin to y=-280, which the label aligns with via the
+# vertical jog the router adds).
 from_v = comp(
-    type="FROM_LABEL", name="Xv_dc_in", x=-640, y=-245,
+    type="FROM_LABEL", name="Xv_dc_in", x=-980, y=-260,
     parameters={"net_label": "V_DC_MEAS"},
     pins=[pin(0, "NET", 25, 0)],
 )
 components.append(from_v)
 
+# Above I_L (in the empty band between power row y=-20 and control
+# row y=-300). Wire from I_L.OUT (pin at y=+5) routes vertically up
+# then a short horizontal into the GOTO label.
 goto_i = comp(
-    type="GOTO_LABEL", name="Xi_l", x=-460, y=10,
+    type="GOTO_LABEL", name="Xi_l", x=-640, y=-120,
     parameters={"net_label": "I_L_MEAS"},
     pins=[pin(0, "NET", -25, 0)],
 )
 components.append(goto_i)
 
+# Sits BELOW the PI_V→SUB_I row (whose y is -300) so the long
+# PI_V.OUT→SUB_I.IN1 horizontal wire passes cleanly ABOVE this label.
 from_i = comp(
-    type="FROM_LABEL", name="Xi_l_in", x=-380, y=-245,
+    type="FROM_LABEL", name="Xi_l_in", x=-500, y=-260,
     parameters={"net_label": "I_L_MEAS"},
     pins=[pin(0, "NET", 25, 0)],
 )
 components.append(from_i)
 
+# Sits in the open channel BETWEEN L_boost and M_boost on the gate
+# row (y=20 = M_boost.G world y). NET pin at world (-395, 20)
+# drops a short straight wire into M_boost.G at (-325, 20).
 from_pwm = comp(
-    type="FROM_LABEL", name="Xpwm_gate", x=-470, y=20,
+    type="FROM_LABEL", name="Xpwm_gate", x=-420, y=20,
     parameters={"net_label": "PWM_GATE"},
     pins=[pin(0, "NET", 25, 0)],
 )
@@ -348,7 +381,7 @@ components.append(from_pwm)
 
 # ------------------ 3-phase VSI + PMSM motor ------------------
 vsi = comp(
-    type="THREE_PHASE_VSI", name="VSI", x=100, y=0,
+    type="THREE_PHASE_VSI", name="VSI", x=540, y=0,
     parameters={
         "switching_frequency_hz": 10000.0,
         "modulation_index": 0.8,
@@ -376,11 +409,17 @@ components.append(vsi)
 # tied to ground so the inverter can settle. A future revision can
 # swap this group for ComponentType.PMSM once the kernel ships a
 # replacement helper.
-phase_x = 300        # column where the load network sits
-phase_y_a = -40
+#
+# Layout: three parallel horizontal R-L branches stacked vertically
+# (A on top, B in middle, C on bottom), then meeting at the neutral
+# ground on the right. 80 px between phases is enough for the router
+# to drop dedicated short verticals into GND_motor without sharing
+# corners.
+phase_x = 800        # column where the resistors sit
+phase_y_a = -80
 phase_y_b = 0
-phase_y_c = 40
-neutral_x = 460
+phase_y_c = 80
+neutral_x = 1060
 
 motor_rs = []
 motor_ls = []
@@ -394,7 +433,7 @@ for phase_label, py in (("A", phase_y_a), ("B", phase_y_b), ("C", phase_y_c)):
     motor_rs.append(r)
 
     l = comp(
-        type="INDUCTOR", name=f"L_{phase_label}", x=phase_x + 100, y=py,
+        type="INDUCTOR", name=f"L_{phase_label}", x=phase_x + 160, y=py,
         parameters={"inductance": 2.0e-3, "initial_current": 0.0},
         pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)],
     )
@@ -402,15 +441,18 @@ for phase_label, py in (("A", phase_y_a), ("B", phase_y_b), ("C", phase_y_c)):
     motor_ls.append(l)
 
 gnd_motor = comp(
-    type="GROUND", name="GND_motor", x=neutral_x, y=80,
+    type="GROUND", name="GND_motor", x=neutral_x, y=180,
     parameters={},
     pins=[pin(0, "gnd", 0, -20)],
 )
 components.append(gnd_motor)
 
 # ------------------ Scopes ------------------
+# Far-right column so they don't sit on top of any signal path.
+# Scope_PFC on the upper deck (y=-220) for the PFC loop signals,
+# Scope_Motor on the lower deck (y=+240) for the motor signals.
 scope_bus = comp(
-    type="ELECTRICAL_SCOPE", name="Scope_PFC", x=560, y=-200,
+    type="ELECTRICAL_SCOPE", name="Scope_PFC", x=1320, y=-220,
     parameters={
         "channel_count": 3,
         "channels": [
@@ -428,7 +470,7 @@ scope_bus = comp(
 components.append(scope_bus)
 
 scope_mot = comp(
-    type="ELECTRICAL_SCOPE", name="Scope_Motor", x=560, y=60,
+    type="ELECTRICAL_SCOPE", name="Scope_Motor", x=1320, y=240,
     parameters={
         "channel_count": 3,
         "channels": [
@@ -445,9 +487,14 @@ scope_mot = comp(
 )
 components.append(scope_mot)
 
-# Pull a scope probe directly off the motor's A phase via a voltage probe
+# Pull a scope probe directly off the motor's A phase. The probe is
+# wired as a Y-tap on the MOT_A node (both VSI.A and R_A connect to
+# the probe's pin 1 — pin 0 in pulsim terms). Placed ABOVE the motor
+# rows so the probe body doesn't obstruct the straight phase wires
+# at y=-80/0/+80, and the long .OUT→Scope_Motor wire heads down-and-
+# right through a clean channel between the motor and the scope.
 vp_motor_a = comp(
-    type="VOLTAGE_PROBE_GND", name="V_motor_A", x=420, y=-25,
+    type="VOLTAGE_PROBE_GND", name="V_motor_A", x=680, y=-160,
     parameters={"display_name": "V(A)", "scale": 1.0},
     pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)],
 )
@@ -553,10 +600,12 @@ w(pwm_boost, 0, goto_pwm, 0, node_name="GATE_SIG")
 w(from_pwm, 0, m_boost, 1, node_name="GATE_SIG")
 
 # ===== Scope wires =====
-# Scope_PFC channels (V_DC, I_L, DUTY)
-# Re-fan the signals from the labels — add small FROM labels for the scope
+# Scope_PFC channels (V_DC, I_L, DUTY). Re-fan V_DC_MEAS and I_L_MEAS
+# via small FROM labels placed IMMEDIATELY left of the scope's input
+# pins so each wire is a single short horizontal segment (≤60 px).
+# Scope_PFC at (1200, -220) → CH1 world (1160, -245), CH2 world (1160, -220).
 from_v_scope = comp(
-    type="FROM_LABEL", name="Xscope_vdc", x=470, y=-225,
+    type="FROM_LABEL", name="Xscope_vdc", x=1200, y=-245,
     parameters={"net_label": "V_DC_MEAS"},
     pins=[pin(0, "NET", 25, 0)],
 )
@@ -564,7 +613,7 @@ components.append(from_v_scope)
 comp_by_id[from_v_scope["id"]] = from_v_scope
 
 from_i_scope = comp(
-    type="FROM_LABEL", name="Xscope_il", x=470, y=-200,
+    type="FROM_LABEL", name="Xscope_il", x=1200, y=-220,
     parameters={"net_label": "I_L_MEAS"},
     pins=[pin(0, "NET", 25, 0)],
 )

@@ -6330,9 +6330,10 @@ class PulsimBackend(SimulationBackend):
                 continue
 
             # Cascaded? Build a time-varying setpoint that's the
-            # output of an outer PI controller (updated each PWM
-            # cycle by ``measured`` on the inner side — see comment
-            # below).
+            # output of an outer PI controller. The outer PI runs at
+            # its OWN sample rate (typically slower than the PWM)
+            # via a throttle counter in the inner ``measured``
+            # closure — see the cascaded block below.
             outer_spec = desc.get("outer_pi") if isinstance(desc.get("outer_pi"), dict) else None
             if outer_spec is not None:
                 try:
@@ -6352,15 +6353,31 @@ class PulsimBackend(SimulationBackend):
                     outer_setpoint_val = float(outer_spec.get("setpoint_value", 0.0))
                     pwm_freq = float(desc.get("pwm_frequency", 100_000.0))
                     T_pwm = 1.0 / max(pwm_freq, 1.0)
+                    # Outer PI sample period. If the descriptor carries
+                    # an explicit ``sample_time``, use that; otherwise
+                    # default to 1 ms so the voltage loop runs at
+                    # 1 kHz — slow enough that the integrator doesn't
+                    # wind up over a single PWM cycle, fast enough to
+                    # track DC-bus transients in normal use.
+                    outer_dt = float(outer_spec.get("sample_time") or 1.0e-3)
+                    if outer_dt < T_pwm:
+                        # Outer can't be faster than the inner PWM tick
+                        outer_dt = T_pwm
+                    # How many PWM ticks per outer update
+                    outer_period_ticks = max(1, int(round(outer_dt / T_pwm)))
                 except Exception:  # noqa: BLE001
                     outer_spec = None  # fall through to single-loop binding
 
             if outer_spec is not None:
                 # Cascaded path: shared cell stores the outer PI's last
-                # output. The INNER ``measured_fn`` is wrapped to ALSO
-                # tick the outer PI (using the same state vector — both
-                # PIs see the same circuit state at each PWM tick).
-                outer_state: dict[str, float] = {"output": outer_setpoint_val * 0.0}
+                # output and a throttle counter. The INNER
+                # ``measured_fn`` wraps the raw one — every call ticks
+                # the throttle, and the outer PI updates only when
+                # ``outer_period_ticks`` PWM cycles have elapsed.
+                outer_state: dict[str, Any] = {
+                    "output": outer_setpoint_val * 0.0,
+                    "tick": 0,
+                }
                 inner_measured_raw = measured_fn
 
                 def _measured_and_tick_outer(
@@ -6369,18 +6386,22 @@ class PulsimBackend(SimulationBackend):
                     _outer_sp=outer_setpoint_val,
                     _fb_idx=outer_fb_idx,
                     _fb_neg_idx=outer_fb_neg_idx,
-                    _dt=T_pwm,
+                    _outer_dt=outer_dt,
+                    _period=outer_period_ticks,
                     _state=outer_state,
                     _inner=inner_measured_raw,
                 ) -> float:
-                    v_pos = float(x[_fb_idx])
-                    v_neg = 0.0 if _fb_neg_idx < 0 else float(x[_fb_neg_idx])
-                    outer_meas = v_pos - v_neg
-                    _state["output"] = float(_outer_pi.update(
-                        setpoint=_outer_sp,
-                        measured=outer_meas,
-                        dt=_dt,
-                    ))
+                    _state["tick"] += 1
+                    if _state["tick"] >= _period:
+                        _state["tick"] = 0
+                        v_pos = float(x[_fb_idx])
+                        v_neg = 0.0 if _fb_neg_idx < 0 else float(x[_fb_neg_idx])
+                        outer_meas = v_pos - v_neg
+                        _state["output"] = float(_outer_pi.update(
+                            setpoint=_outer_sp,
+                            measured=outer_meas,
+                            dt=_outer_dt,
+                        ))
                     return _inner(x)
 
                 setpoint_callable: Any = (

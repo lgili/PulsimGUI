@@ -1791,6 +1791,11 @@ class CircuitConverter:
                             "feedback_node_neg": self._node_label(
                                 outer_feedback_pair[1], alias_map,
                             ),
+                            # Outer-loop sample period — the backend
+                            # uses this to throttle outer PI updates
+                            # to a slower rate than the inner PWM
+                            # tick (typical: 1 ms vs 20 µs).
+                            "sample_time": _float(outer_params, "sample_time", 1.0e-3),
                         }
                         # Suppress the outer sub + outer setpoint constant
                         # so they don't get emitted as virtual blocks too.
