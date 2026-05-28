@@ -151,6 +151,59 @@ def test_route_from_components_obstacles_blocks_body_passthrough() -> None:
                                           allow_endpoints=True)
 
 
+def test_obstacle_sized_smaller_than_pin_positions() -> None:
+    """Critical fix: a component's obstacle MUST be smaller than its
+    pin offsets so that wires can exit pins without being flagged as
+    "passing through" the body. Otherwise the router falls all the
+    way through to its diagonal fallback for every pin connection.
+    """
+    r = WireRouter()
+    # A typical 2-pin component (resistor-like): centred at origin,
+    # pins at ±25 horizontally on the body edge.
+    r.add_obstacles_from_components([
+        {"x": 0, "y": 0,
+         "pins": [{"index": 0, "name": "1", "x": -25, "y": 0},
+                  {"index": 1, "name": "2", "x":  25, "y": 0}]},
+    ], padding=4, pin_clearance=4)
+    obs = r.obstacles[0]
+    # The pin at x=-25 must be OUTSIDE the padded obstacle (i.e., the
+    # obstacle's left() boundary must be GREATER than -25).
+    assert obs.left() > -25, (
+        f"obstacle left()={obs.left()} must be > pin x=-25"
+    )
+    assert obs.right() < 25, (
+        f"obstacle right()={obs.right()} must be < pin x=+25"
+    )
+
+
+def test_route_between_two_real_component_pins_stays_orthogonal() -> None:
+    """End-to-end regression for the diagonal-fallback bug: wires
+    between actual component pins should produce L/Z routes, not
+    fall through to the diagonal last resort."""
+    r = WireRouter()
+    r.add_obstacles_from_components([
+        # Vac at x=-900 with pins at ±25 (so pin at x=-925)
+        {"x": -900, "y": 0,
+         "pins": [{"index": 0, "name": "+", "x": -25, "y": 0},
+                  {"index": 1, "name": "-", "x":  25, "y": 0}]},
+        # BR1 at x=-700 with pins at ±35 (so AC+ pin at x=-735, y=-20)
+        {"x": -700, "y": 0,
+         "pins": [{"index": 0, "name": "AC+", "x": -35, "y": -20},
+                  {"index": 1, "name": "AC-", "x": -35, "y":  20},
+                  {"index": 2, "name": "DC+", "x":  35, "y": -20},
+                  {"index": 3, "name": "DC-", "x":  35, "y":  20}]},
+    ], padding=4)
+    # Route Vac.+ (-925, 0) → BR1.AC+ (-735, -20)
+    segs = r.route(-925, 0, -735, -20)
+    # Must NOT be a single diagonal segment
+    assert len(segs) >= 2, f"expected L/Z route, got diagonal: {segs}"
+    # Each segment must be axis-aligned (router only emits orthogonal
+    # legs unless the diagonal fallback fires — which we just ruled out)
+    for x1, y1, x2, y2 in segs:
+        assert (abs(x1 - x2) < 1.0 or abs(y1 - y2) < 1.0), \
+            f"non-orthogonal segment: {(x1, y1, x2, y2)}"
+
+
 # ---------------------------------------------------------------------------
 # Router — colinear overlap avoidance (the deeper net-merge bug)
 # ---------------------------------------------------------------------------

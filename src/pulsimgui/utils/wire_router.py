@@ -171,23 +171,67 @@ class WireRouter:
         *,
         body_half_w: float = 30.0,
         body_half_h: float = 25.0,
-        padding: float = 6.0,
+        padding: float = 4.0,
+        pin_clearance: float | None = None,
     ) -> None:
-        """Add an obstacle per component using its (x, y) centre and a
-        default body half-extent. Pin positions are exempt — pins sit
-        on the body edge and shouldn't be treated as forbidden.
+        """Add an obstacle per component sized to its actual pin layout.
 
-        For tighter routing pass a smaller ``body_half_w/h``; for
-        wider clearance bump ``padding``.
+        The obstacle for each component is shrunk so that **every pin
+        sits OUTSIDE the obstacle's padded rectangle even after the
+        router's grid snap**. This is critical for the router to be
+        able to start/end wires at pins without triggering a "segment
+        passes through component body" rejection.
+
+        If a component declares ``pins``, the obstacle is sized to
+        ``min_pin_offset - pin_clearance - padding`` per axis (i.e.,
+        body just inside the closest pin). Otherwise the
+        ``body_half_w/h`` defaults are used.
+
+        Parameters
+        ----------
+        body_half_w, body_half_h
+            Fallback half-extents for components without ``pins``.
+        padding
+            Extra clearance around the body the router must respect.
+        pin_clearance
+            How far INSIDE the closest pin the obstacle edge should
+            sit. Defaults to ``grid / 2 + 2`` — that's the maximum
+            grid-snap displacement plus a small safety margin, which
+            guarantees a snapped pin coordinate lands strictly
+            outside the padded obstacle.
         """
+        if pin_clearance is None:
+            # Worst-case grid snap shifts a coordinate by up to grid/2
+            # in either direction. Add a small safety margin so the
+            # snapped pin definitively sits outside the padded body.
+            pin_clearance = self.grid / 2.0 + 2.0
+
         for comp in components:
             cx = float(comp.get("x", 0.0) or 0.0)
             cy = float(comp.get("y", 0.0) or 0.0)
+
+            pins = comp.get("pins") or []
+            if pins:
+                # Body must be SMALLER than the smallest pin offset so
+                # every pin lies outside the padded obstacle zone after
+                # grid snapping.
+                pin_offsets_x = [abs(float(p.get("x", 0.0) or 0.0))
+                                  for p in pins]
+                pin_offsets_y = [abs(float(p.get("y", 0.0) or 0.0))
+                                  for p in pins]
+                min_x = min(pin_offsets_x) if pin_offsets_x else body_half_w
+                min_y = min(pin_offsets_y) if pin_offsets_y else body_half_h
+                hw = max(min_x - pin_clearance - padding, 2.0)
+                hh = max(min_y - pin_clearance - padding, 2.0)
+            else:
+                hw = body_half_w
+                hh = body_half_h
+
             self.obstacles.append(Obstacle(
-                x=cx - body_half_w,
-                y=cy - body_half_h,
-                width=2 * body_half_w,
-                height=2 * body_half_h,
+                x=cx - hw,
+                y=cy - hh,
+                width=2 * hw,
+                height=2 * hh,
                 padding=padding,
             ))
 
@@ -230,6 +274,11 @@ class WireRouter:
                 return segs
 
         # --- L-routing ---
+        # Try the two natural L corners first, then OFFSET variants
+        # (small jogs along x or y) so we can find a clean corner
+        # even when many wires have already claimed the obvious ones.
+        # Each offset variant produces a 3-segment "stepped L" that's
+        # still orthogonal and visually close to a plain L.
         corner_candidates: list[tuple[float, float]] = []
         if prefer_h_first:
             corner_candidates.append((bx, ay))
@@ -237,11 +286,30 @@ class WireRouter:
         else:
             corner_candidates.append((ax, by))
             corner_candidates.append((bx, ay))
+        # Offset L corners: shift the natural corner along one axis
+        # by ±1..±4 grid steps. The resulting "L" uses 3 segments but
+        # is still much cleaner than a Z or a diagonal fallback.
+        for step in range(1, 5):
+            d = step * self.grid
+            corner_candidates.extend([
+                (bx + d, ay), (bx - d, ay),
+                (bx, ay + d), (bx, ay - d),
+                (ax + d, by), (ax - d, by),
+                (ax, by + d), (ax, by - d),
+            ])
 
         for cx, cy in corner_candidates:
             if self._corner_in_use(cx, cy):
                 continue
-            segs = self._l_segments(ax, ay, cx, cy, bx, by)
+            # If the corner is one of the natural L corners, emit a
+            # 2-segment route. Otherwise emit a 3-segment stepped L
+            # that visits the offset corner.
+            if (cx == bx and cy == ay) or (cx == ax and cy == by):
+                segs = self._l_segments(ax, ay, cx, cy, bx, by)
+            else:
+                segs = self._stepped_l_segments(ax, ay, cx, cy, bx, by)
+            if not segs:
+                continue
             if self._segments_clear(segs, anchor_endpoints={(ax, ay), (bx, by)}):
                 self._record(segs, corners=[(cx, cy)])
                 return segs
@@ -304,14 +372,70 @@ class WireRouter:
             segs.append((cx, cy, bx, by))
         return segs
 
+    def _stepped_l_segments(self, ax, ay, cx, cy, bx, by):
+        """Build an orthogonal 3-segment path from ``(ax, ay)`` to
+        ``(bx, by)`` that visits a "stepped" corner ``(cx, cy)`` —
+        i.e., one of the natural L corners offset by a small step.
+
+        The structure depends on which natural L corner the stepped
+        corner is offset from:
+
+        * Offset from ``(bx, ay)`` along Y: the route stays at y=ay
+          until reaching cx (= bx ± step), drops to cy (= ay ± step),
+          then runs horizontally to bx and vertically to by.
+        * Offset along X: analogous.
+        """
+        # Distinguish 4 cases based on which axis (cx, cy) is offset on
+        if abs(cy - ay) < PIN_HIT_TOLERANCE and abs(cx - bx) > PIN_HIT_TOLERANCE:
+            # Same y as ay; cx is offset from bx → step along x
+            return [
+                (ax, ay, cx, ay),
+                (cx, ay, cx, by),
+                (cx, by, bx, by),
+            ]
+        if abs(cx - ax) < PIN_HIT_TOLERANCE and abs(cy - by) > PIN_HIT_TOLERANCE:
+            # Same x as ax; cy is offset from by → step along y
+            return [
+                (ax, ay, ax, cy),
+                (ax, cy, bx, cy),
+                (bx, cy, bx, by),
+            ]
+        if abs(cx - bx) < PIN_HIT_TOLERANCE:
+            # Same x as bx; cy is offset → step along y
+            return [
+                (ax, ay, bx, ay),
+                (bx, ay, bx, cy),
+                (bx, cy, bx, by),
+            ]
+        if abs(cy - by) < PIN_HIT_TOLERANCE:
+            # Same y as by; cx is offset → step along x
+            return [
+                (ax, ay, ax, by),
+                (ax, by, cx, by),
+                (cx, by, bx, by),
+            ]
+        # Generic 3-segment fallback (shouldn't reach here for the
+        # candidates this router actually generates)
+        return [
+            (ax, ay, cx, ay),
+            (cx, ay, cx, by),
+            (cx, by, bx, by),
+        ]
+
     def _candidate_mid_axes(self, a: float, b: float):
         """Yield grid-aligned candidate mid coordinates that aren't
-        equal to either endpoint. Order: midpoint first, then ±1, ±2
-        grid steps."""
+        equal to either endpoint. Order: midpoint first, then ±1, ±2,
+        … grid steps, OUT to the full distance between endpoints. This
+        lets long routes detour far around obstacles when the midpoint
+        and nearby positions are all blocked."""
         mid = self._snap((a + b) / 2.0)
-        seen = {mid, self._snap(a), self._snap(b)}
+        seen: set[float] = {mid, self._snap(a), self._snap(b)}
         yield mid
-        for delta in range(1, 8):
+        # Search out to the full distance between a and b, plus a
+        # generous buffer (3 × grid) on either side so we can route
+        # AROUND obstacles that extend slightly past the endpoints.
+        max_steps = int(abs(b - a) / self.grid) + 3
+        for delta in range(1, max(max_steps, 8)):
             for sign in (1, -1):
                 cand = mid + sign * delta * self.grid
                 if cand in seen:
@@ -352,47 +476,54 @@ class WireRouter:
         anchor_endpoints: set[tuple[float, float]],
     ) -> bool:
         """True iff two segments are colinear AND overlap at a region
-        of length > PIN_HIT_TOLERANCE that ISN'T just a shared
-        endpoint at one of the anchor pin positions."""
+        of length > PIN_HIT_TOLERANCE WITHOUT touching one of the new
+        wire's pin endpoints.
+
+        Key insight: if a new wire's segment is colinear with an
+        earlier wire's segment AND the overlap zone touches the new
+        wire's pin endpoint, then both wires necessarily belong to
+        the SAME electrical net (the union-find will merge them at
+        that pin anyway). So the "overlap is dangerous" rule only
+        applies when neither endpoint of the new segment lies inside
+        the overlap zone — that's a corner-to-corner collision
+        between wires of unrelated nets.
+        """
         # Both horizontal at same Y?
         if abs(y1 - y2) < PIN_HIT_TOLERANCE and abs(py1 - py2) < PIN_HIT_TOLERANCE \
                 and abs(y1 - py1) < PIN_HIT_TOLERANCE:
             a_lo, a_hi = sorted((x1, x2))
             b_lo, b_hi = sorted((px1, px2))
             overlap = min(a_hi, b_hi) - max(a_lo, b_lo)
-            if overlap > PIN_HIT_TOLERANCE:
-                # Allow if the overlap is anchored at a legitimate pin
-                lo = max(a_lo, b_lo)
-                hi = min(a_hi, b_hi)
-                for ax, ay in anchor_endpoints:
-                    if (abs(ay - y1) < PIN_HIT_TOLERANCE
-                            and lo - PIN_HIT_TOLERANCE <= ax <= hi + PIN_HIT_TOLERANCE):
-                        # The overlap zone touches a pin — that's a
-                        # legitimate fan-out, not a corner collision.
-                        # But if the overlap EXTENDS beyond the pin
-                        # in both directions, that's still a problem.
-                        if (lo + PIN_HIT_TOLERANCE < ax < hi - PIN_HIT_TOLERANCE
-                                or abs(overlap - 0) > 8 * PIN_HIT_TOLERANCE):
-                            return True
-                        return False
-                return True
+            if overlap <= PIN_HIT_TOLERANCE:
+                return False
+            # Overlap exists. Check if any anchor pin sits at the
+            # overlap zone (i.e., the new wire ENDS at a pin that's
+            # touching the prior wire). If so, both wires are on the
+            # same net by construction — overlap is safe.
+            lo = max(a_lo, b_lo)
+            hi = min(a_hi, b_hi)
+            for ax, ay in anchor_endpoints:
+                if (abs(ay - y1) < PIN_HIT_TOLERANCE
+                        and lo - PIN_HIT_TOLERANCE <= ax <= hi + PIN_HIT_TOLERANCE):
+                    return False
+            return True
+
         # Both vertical at same X?
         if abs(x1 - x2) < PIN_HIT_TOLERANCE and abs(px1 - px2) < PIN_HIT_TOLERANCE \
                 and abs(x1 - px1) < PIN_HIT_TOLERANCE:
             a_lo, a_hi = sorted((y1, y2))
             b_lo, b_hi = sorted((py1, py2))
             overlap = min(a_hi, b_hi) - max(a_lo, b_lo)
-            if overlap > PIN_HIT_TOLERANCE:
-                lo = max(a_lo, b_lo)
-                hi = min(a_hi, b_hi)
-                for ax, ay in anchor_endpoints:
-                    if (abs(ax - x1) < PIN_HIT_TOLERANCE
-                            and lo - PIN_HIT_TOLERANCE <= ay <= hi + PIN_HIT_TOLERANCE):
-                        if (lo + PIN_HIT_TOLERANCE < ay < hi - PIN_HIT_TOLERANCE
-                                or abs(overlap - 0) > 8 * PIN_HIT_TOLERANCE):
-                            return True
-                        return False
-                return True
+            if overlap <= PIN_HIT_TOLERANCE:
+                return False
+            lo = max(a_lo, b_lo)
+            hi = min(a_hi, b_hi)
+            for ax, ay in anchor_endpoints:
+                if (abs(ax - x1) < PIN_HIT_TOLERANCE
+                        and lo - PIN_HIT_TOLERANCE <= ay <= hi + PIN_HIT_TOLERANCE):
+                    return False
+            return True
+
         return False
 
     def _record(self,
