@@ -62,6 +62,7 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "name": "1φ Bridge", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_DIODE_BRIDGE, "name": "3φ Bridge", "shortcut": ""},
         {"type": ComponentType.MMC_CELL, "name": "MMC Cell", "shortcut": ""},
+        {"type": ComponentType.MMC_ARM, "name": "MMC Arm", "shortcut": ""},
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
@@ -130,6 +131,11 @@ QUICK_ADD_COMPONENTS = [
         ["mmc", "half bridge", "full bridge", "submodule", "sub-module", "cell",
          "modular multilevel", "celula", "célula", "ponte h", "hvdc",
          "media ponte", "ponte completa"]),
+    (ComponentType.MMC_ARM, "MMC Arm (L0..L3)",
+        ["mmc", "arm", "braço", "braco", "modular multilevel", "hvdc",
+         "averaged", "average value", "multilevel", "equivalent",
+         "detailed", "l0", "l1", "l2", "l3", "thevenin",
+         "n submodules", "cadeia"]),
 ]
 
 

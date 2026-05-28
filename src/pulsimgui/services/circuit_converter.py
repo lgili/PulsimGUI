@@ -970,6 +970,125 @@ class CircuitConverter:
                 circuit.add_capacitor(f"{name}_C", cap_top, bot, c_cell, v_cell_init)
             return
 
+        if comp_type == ComponentType.MMC_ARM:
+            # Pin layout: 0=TOP, 1=BOT, 2=M_REF (signal — ignored in
+            # this initial mapping; pulsim's add_mmc_arm_* takes m_ref
+            # as a float constant unless wired to a callable).
+            n_top, n_bot, _n_mref = self._require_nodes(name, nodes, 3)
+            top = self._node_index(circuit, n_top, node_cache)
+            bot = self._node_index(circuit, n_bot, node_cache)
+            top_name = circuit._name_of(top)
+            bot_name = circuit._name_of(bot)
+
+            fidelity = str(params.get("model_fidelity") or "L3 Detailed")
+            level = fidelity.split(" ", 1)[0].upper()  # "L0".."L3"
+
+            # Resolve pulsim.mmc module on the backend (pulsim 1.5+
+            # exposes it as ``pulsim.mmc``). Older runtimes that lack
+            # it raise a clear error instead of failing silently.
+            ps_module = getattr(self._sl, "_wrapped", None) or self._sl
+            mmc_mod = getattr(ps_module, "mmc", None)
+            if mmc_mod is None:
+                raise CircuitConversionError(
+                    f"MMC_ARM component '{name}' requires pulsim>=1.5 "
+                    "with the ``pulsim.mmc`` module. Upgrade pulsim."
+                )
+
+            n_sm = max(1, int(self._as_float(
+                params.get("n_submodules"), default=4)))
+            c_sm = self._as_float(params.get("c_sm"), default=4.7e-3)
+            v_c0 = self._as_float(params.get("v_c0"), default=0.0)
+            r_arm = self._as_float(params.get("r_arm"), default=0.01)
+            f_carrier = self._as_float(params.get("f_carrier"), default=1e3)
+            m_ref_const = self._as_float(
+                params.get("m_ref_constant"), default=0.5)
+
+            # Submodule type — pulsim.mmc.SubmoduleType is Literal
+            # ['half_bridge', 'full_bridge'] (a typing.Literal type,
+            # not an enum). Map the GUI label to the literal string.
+            sm_type_str = str(params.get("submodule_type") or "Half-Bridge")
+            sm_type_value = ("full_bridge" if "Full" in sm_type_str
+                              else "half_bridge")
+
+            # Modulation scheme — Literal ['ps_pwm', 'ipd']. Map the
+            # GUI's PSC/PD/POD/APOD labels to pulsim's 2 supported
+            # variants: PSC → ps_pwm (phase-shifted PWM), anything
+            # else falls back to 'ipd' (in-phase disposition).
+            mod_scheme_str = str(params.get("modulation_scheme") or "PSC")
+            mod_scheme_value = (
+                "ps_pwm" if mod_scheme_str.upper().startswith("PS")
+                else "ipd"
+            )
+
+            # Pick the helper + params class per fidelity level
+            level_table = {
+                "L0": ("add_mmc_arm_average",    "MmcArmAverageParams"),
+                "L1": ("add_mmc_arm_multilevel", "MmcArmMultilevelParams"),
+                "L2": ("add_mmc_arm_equivalent", "MmcArmEquivalentParams"),
+                "L3": ("add_mmc_arm_detailed",   "MmcArmDetailedParams"),
+            }
+            if level not in level_table:
+                raise CircuitConversionError(
+                    f"MMC_ARM '{name}': unknown model_fidelity={fidelity!r}; "
+                    f"expected one of {list(level_table.keys())}."
+                )
+            helper_name, params_cls_name = level_table[level]
+            helper = getattr(mmc_mod, helper_name, None)
+            params_cls = getattr(mmc_mod, params_cls_name, None)
+            if helper is None or params_cls is None:
+                raise CircuitConversionError(
+                    f"MMC_ARM '{name}': pulsim.mmc lacks {helper_name} / "
+                    f"{params_cls_name}. Upgrade pulsim."
+                )
+
+            # Build the params instance. n_sm + c_sm are required;
+            # everything else is optional with sensible defaults.
+            mmc_kwargs: dict[str, Any] = {
+                "n_sm": n_sm,
+                "c_sm": c_sm,
+                "sm_type": sm_type_value,
+                "v_c0": v_c0,
+                "r_p": r_arm,
+            }
+            # L1/L2/L3 take a carrier frequency and modulation scheme
+            if level in {"L1", "L2", "L3"}:
+                mmc_kwargs["f_carrier"] = f_carrier
+                mmc_kwargs["modulation_scheme"] = mod_scheme_value
+            # L2 also takes dead-time + minimum-on-time
+            if level == "L2":
+                mmc_kwargs["t_dead"] = self._as_float(
+                    params.get("t_dead"), default=1.0e-6)
+                mmc_kwargs["t_min"] = self._as_float(
+                    params.get("t_min"), default=1.0e-7)
+            # L3 takes a balancing strategy (Literal, not bool)
+            if level == "L3":
+                balancing_val = params.get("balancing", True)
+                # GUI used to expose a bool; pulsim wants a literal.
+                if isinstance(balancing_val, bool):
+                    mmc_kwargs["balancing"] = (
+                        "sort_and_select" if balancing_val else "none"
+                    )
+                else:
+                    mmc_kwargs["balancing"] = str(balancing_val)
+
+            mmc_p = params_cls(**mmc_kwargs)
+
+            # Call the helper. Modulation reference is a constant
+            # for now — callable references (signal-driven
+            # modulation) need backend observer wiring, which is a
+            # separate task. The kwarg name differs between L0
+            # (``m_b``, branch modulation) and L1/L2/L3 (``m_ref``).
+            mod_kw = {"m_b" if level == "L0" else "m_ref": m_ref_const}
+            helper(
+                circuit._builder,
+                name=name,
+                node_a=top_name,
+                node_b=bot_name,
+                params=mmc_p,
+                **mod_kw,
+            )
+            return
+
         if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
             n1, n2 = self._require_nodes(name, nodes, 2)
             circuit.add_snubber_rc(

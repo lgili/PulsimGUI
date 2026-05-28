@@ -3179,6 +3179,132 @@ class MMCCellItem(ComponentItem):
         return f"{topology} · {format_si_value(c, 'F')}" if c else topology
 
 
+# ---------------------------------------------------------------------------
+# MMC arm — chain of N sub-modules with selectable fidelity (L0..L3)
+# ---------------------------------------------------------------------------
+class MMCArmItem(ComponentItem):
+    """MMC arm block. Visually a tall rectangle representing a chain
+    of N sub-modules; the model-fidelity badge (L0/L1/L2/L3) sits in
+    the top-right corner, the N submodule count + SM type in the
+    bottom-left, and the M_REF input pin sticks out on the right.
+
+    Pin layout: TOP / BOT (chain endpoints, on the LEFT) + M_REF
+    (modulation input, on the RIGHT).
+    """
+
+    def _fidelity_short(self) -> str:
+        """Return the 2-char fidelity tag (L0..L3)."""
+        full = str(self._component.parameters.get("model_fidelity")
+                   or "L3 Detailed")
+        return full.split(" ", 1)[0] if " " in full else full[:2]
+
+    def _submodule_short(self) -> str:
+        smt = str(self._component.parameters.get("submodule_type")
+                   or "Half-Bridge")
+        return "FB" if smt.startswith("Full") else "HB"
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._with_pin_bounds(QRectF(-38, -52, 76, 104))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        top = self._pin_position_by_name("TOP", QPointF(-35, -40))
+        bot = self._pin_position_by_name("BOT", QPointF(-35, 40))
+        mref = self._pin_position_by_name("M_REF", QPointF(35, 0))
+
+        body = QRectF(-34, -48, 68, 96)
+        line = self._line_color()
+        surface = self._surface_color()
+        muted = self._muted_color()
+        red = self._accent_red()
+
+        # Body
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+
+        # Power leads on the LEFT (heavy)
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(top, QPointF(body.left(), top.y()))
+        painter.drawLine(bot, QPointF(body.left(), bot.y()))
+        # M_REF input on the RIGHT (muted, signal-style)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        painter.drawLine(QPointF(body.right(), mref.y()), mref)
+
+        # Render the chain as N stacked sub-module mini-boxes inside
+        # the body. We cap the visual count at 6 so very long chains
+        # don't degenerate into a flat strip.
+        try:
+            n_sm = max(1, min(6, int(self._component.parameters.get(
+                "n_submodules", 4))))
+        except (TypeError, ValueError):
+            n_sm = 4
+
+        margin_top = body.top() + 8
+        margin_bot = body.bottom() - 14   # leave room for label band
+        slot_h = (margin_bot - margin_top) / max(n_sm, 1)
+        sm_x_left = body.left() + 10
+        sm_x_right = body.right() - 22
+
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, line))
+        painter.setBrush(surface)
+        for i in range(n_sm):
+            y_top = margin_top + i * slot_h + 1
+            y_bot = margin_top + (i + 1) * slot_h - 1
+            rect = QRectF(sm_x_left, y_top, sm_x_right - sm_x_left,
+                          max(y_bot - y_top, 4))
+            painter.drawRect(rect)
+            # Tiny "C" marker inside each cell to suggest a capacitor
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+            font_sm = QFont()
+            font_sm.setBold(True)
+            font_sm.setPointSize(6)
+            painter.setFont(font_sm)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "C")
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, line))
+
+        # Connecting trace down the chain (left edge of mini-boxes)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        painter.drawLine(QPointF(body.left() + 6, margin_top - 2),
+                         QPointF(body.left() + 6, margin_bot + 2))
+
+        # Fidelity badge (top-right)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.right() - 24, body.top() + 2, 22, 11),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+            self._fidelity_short(),
+        )
+
+        # Submodule type + count (bottom-left band)
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.left() + 3, body.bottom() - 12, body.width() - 6, 10),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{self._submodule_short()} × {n_sm}",
+        )
+
+        # "MMC ARM" header text
+        painter.drawText(
+            QRectF(body.left() + 3, body.top() + 2, body.width() - 28, 10),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            "MMC ARM",
+        )
+
+    def _get_value_text(self) -> str:
+        from pulsimgui.utils.si_prefix import format_si_value
+        c = self._component.parameters.get("c_sm", 0)
+        n = self._component.parameters.get("n_submodules", 0)
+        fid = self._fidelity_short()
+        if c and n:
+            return f"{fid} · {n} SM · {format_si_value(c, 'F')}"
+        return fid
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -3290,6 +3416,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.SINGLE_PHASE_DIODE_BRIDGE: SinglePhaseDiodeBridgeItem,
         ComponentType.THREE_PHASE_DIODE_BRIDGE: ThreePhaseDiodeBridgeItem,
         ComponentType.MMC_CELL: MMCCellItem,
+        ComponentType.MMC_ARM: MMCArmItem,
 
         # Hierarchical
         ComponentType.SUBCIRCUIT: SubcircuitItem,

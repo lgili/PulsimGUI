@@ -140,6 +140,13 @@ class ComponentType(Enum):
     # into MOSFETs (with body diodes) + 1 capacitor.
     MMC_CELL = auto()
 
+    # MMC arm — a chain of N sub-module cells modeled at a selectable
+    # fidelity level (L0 average / L1 multilevel / L2 SM-equivalent /
+    # L3 detailed). Maps to pulsim's native ``add_mmc_arm_*`` family.
+    # Represents a WHOLE arm (TOP → BOT) — for a 3-phase MMC you'd
+    # instantiate 6 arms (upper + lower per phase).
+    MMC_ARM = auto()
+
     # Hierarchical
     SUBCIRCUIT = auto()
 
@@ -906,6 +913,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "S2_G",  30, 15),
     ],
 
+    # MMC arm. 3 pins:
+    #   TOP, BOT — the two arm terminals (chain endpoints)
+    #   M_REF   — modulation reference input (constant or driven by a
+    #             signal block); pulsim's add_mmc_arm_* takes this
+    #             value to drive the per-step arm voltage.
+    ComponentType.MMC_ARM: [
+        Pin(0, "TOP",  -35, -40),
+        Pin(1, "BOT",  -35, 40),
+        Pin(2, "M_REF", 35, 0),
+    ],
+
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke (abc → αβγ): 3 inputs + 3 channel outputs (channels via metadata)
     ComponentType.CLARKE_TRANSFORM: [
@@ -1437,6 +1455,32 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "tau_th": 0.060,
     },
 
+    # MMC arm — full chain of N sub-modules with selectable fidelity.
+    # ``model_fidelity`` maps to pulsim's native arm helpers:
+    #   L0 Average   → add_mmc_arm_average    (single equivalent V src)
+    #   L1 Multilevel→ add_mmc_arm_multilevel (per-level voltage steps)
+    #   L2 Equivalent→ add_mmc_arm_equivalent (SM-equivalent model)
+    #   L3 Detailed  → add_mmc_arm_detailed   (every switch + cap)
+    ComponentType.MMC_ARM: {
+        "model_fidelity": "L3 Detailed",
+        "submodule_type": "Half-Bridge",       # or "Full-Bridge"
+        "n_submodules": 4,                      # # SMs in the arm chain
+        # Capacitor + arm impedance
+        "c_sm": 4.7e-3,                         # per-SM capacitance [F]
+        "v_c0": 0.0,                            # initial SM voltage [V]
+        "r_arm": 0.01,                          # arm series resistance [Ω]
+        # Modulation
+        "m_ref_constant": 0.5,                  # used when M_REF pin unwired
+        # Switching (used by L1/L2/L3 — not L0)
+        "f_carrier": 1000.0,                    # PWM carrier [Hz]
+        "modulation_scheme": "PSC",             # "PSC" (ps_pwm) | "IPD"
+        # L2-only (dead-time / min on-time)
+        "t_dead": 1.0e-6,
+        "t_min": 1.0e-7,
+        # L3-only (cap-voltage balancing strategy)
+        "balancing": "sort_and_select",         # "sort_and_select" | "none"
+    },
+
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke / inverse-Clarke have no numeric parameters.
     ComponentType.CLARKE_TRANSFORM: {
@@ -1582,6 +1626,23 @@ PARAM_OPTIONS: dict[str, list[str]] = {
     # MMC sub-module cell topology (drives pin count + converter
     # expansion + visual symbol).
     "cell_topology": ["Half-Bridge", "Full-Bridge"],
+    # MMC arm fidelity level (drives which pulsim native helper
+    # the converter calls — see DEFAULT_PARAMETERS for the mapping).
+    "model_fidelity": [
+        "L0 Average",
+        "L1 Multilevel",
+        "L2 Equivalent",
+        "L3 Detailed",
+    ],
+    # MMC arm sub-module flavor (passed to pulsim's SubmoduleType
+    # Literal[..]). Maps to 'half_bridge' / 'full_bridge'.
+    "submodule_type": ["Half-Bridge", "Full-Bridge"],
+    # MMC arm modulation scheme (passed to pulsim's ModulationScheme
+    # Literal[..]). pulsim 1.5 supports two: PSC (= ps_pwm,
+    # phase-shifted PWM) and IPD (= ipd, in-phase disposition).
+    "modulation_scheme": ["PSC", "IPD"],
+    # MMC L3 cap-voltage balancing strategy.
+    "balancing": ["sort_and_select", "none"],
 }
 
 
