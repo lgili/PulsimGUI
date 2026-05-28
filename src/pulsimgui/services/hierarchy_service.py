@@ -134,6 +134,19 @@ class HierarchyService(QObject):
         """Get a registered subcircuit definition."""
         return self._subcircuit_definitions.get(definition_id)
 
+    def get_current_definition(self) -> SubcircuitDefinition | None:
+        """Return the ``SubcircuitDefinition`` of the level currently
+        being viewed, or None if at the root (or no definition was
+        registered for that level). Callers that want to auto-sync
+        port markers while the user edits inside a subcircuit use
+        this to find the definition to refresh."""
+        if self.is_at_root:
+            return None
+        current = self.current_level
+        if current is None or current.circuit_id is None:
+            return None
+        return self._lookup_definition(current.circuit_id)
+
     def descend_into(self, subcircuit_instance_id: UUID, definition_id: UUID) -> bool:
         """Navigate into a subcircuit instance.
 

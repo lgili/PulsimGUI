@@ -2060,6 +2060,216 @@ class FromLabelItem(_NetLabelItem):
     _ARROW_RIGHT = False
 
 
+class SubcircuitPortItem(ComponentItem):
+    """Marker placed inside a subcircuit definition that declares a
+    named input/output. Renders as a pentagonal flag pointing toward
+    the outer edge of the symbol (i.e., outward from the subcircuit).
+    The pin always faces inward, so wires from other inner components
+    attach naturally.
+
+    Parameters consumed:
+        port_name (str): label shown inside the flag and used as the
+            outer-symbol pin name when the definition is synced.
+        direction (input|output|bidir): tints the flag and chooses
+            the arrow-head direction (input → into body, output →
+            out of body, bidir → diamond/no chevron).
+        side (left|right|top|bottom): which edge of the marker the
+            flag points to. The matching pin location is computed by
+            ``_synchronize_subcircuit_port_pin`` in the model layer.
+    """
+
+    _BODY_LENGTH = 56.0
+    _BODY_THICKNESS = 22.0
+    _HEAD_LENGTH = 12.0
+
+    def _params(self) -> tuple[str, str, str]:
+        params = getattr(self._component, "parameters", {}) or {}
+        port_name = str(params.get("port_name", "port")).strip() or "port"
+        direction = str(params.get("direction", "bidir")).lower().strip()
+        if direction not in ("input", "output", "bidir"):
+            direction = "bidir"
+        side = str(params.get("side", "left")).lower().strip()
+        if side not in ("left", "right", "top", "bottom"):
+            side = "left"
+        return port_name, direction, side
+
+    def boundingRect(self) -> QRectF:
+        _, _, side = self._params()
+        body = self._BODY_LENGTH
+        thick = self._BODY_THICKNESS
+        # Flag extends from the pin outward. For left side the pin is
+        # on the right (+40), flag stretches to the left.
+        margin = 4.0
+        if side == "left":
+            rect = QRectF(-body - margin, -thick / 2 - margin,
+                          body + margin * 2, thick + margin * 2)
+        elif side == "right":
+            rect = QRectF(-margin, -thick / 2 - margin,
+                          body + margin * 2, thick + margin * 2)
+        elif side == "top":
+            rect = QRectF(-thick / 2 - margin, -body - margin,
+                          thick + margin * 2, body + margin * 2)
+        else:  # bottom
+            rect = QRectF(-thick / 2 - margin, -margin,
+                          thick + margin * 2, body + margin * 2)
+        return self._with_pin_bounds(rect)
+
+    def _flag_color(self, direction: str) -> QColor:
+        if direction == "input":
+            return self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
+        if direction == "output":
+            return self._accent_green()
+        return self._line_color()
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        port_name, direction, side = self._params()
+        edge_color = self._flag_color(direction)
+        fill_color = self._surface_color().lighter(105)
+        fill_color = self._blend_color(fill_color, edge_color,
+                                       0.25 if self._dark_mode else 0.18)
+
+        self.setToolTip(f"Subcircuit port: {port_name} ({direction}, {side})")
+
+        # The pin lives on the inward-facing side. Build the flag
+        # pointing from the pin outward.
+        pin_pt = self._pin_position_by_index(0, QPointF(0.0, 0.0))
+        body = self._BODY_LENGTH
+        thick = self._BODY_THICKNESS
+        head = self._HEAD_LENGTH
+
+        path = QPainterPath()
+        if side == "left":
+            # pin on the right, flag stretches left, point at x=-body
+            top_y, bot_y = -thick / 2, thick / 2
+            body_x = -body + head
+            path.moveTo(QPointF(pin_pt.x(), top_y))
+            path.lineTo(QPointF(body_x, top_y))
+            path.lineTo(QPointF(-body, 0.0))
+            path.lineTo(QPointF(body_x, bot_y))
+            path.lineTo(QPointF(pin_pt.x(), bot_y))
+            path.closeSubpath()
+            text_rect = QRectF(-body + head + 2, top_y, body - head - 4, thick)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        elif side == "right":
+            top_y, bot_y = -thick / 2, thick / 2
+            body_x = body - head
+            path.moveTo(QPointF(pin_pt.x(), top_y))
+            path.lineTo(QPointF(body_x, top_y))
+            path.lineTo(QPointF(body, 0.0))
+            path.lineTo(QPointF(body_x, bot_y))
+            path.lineTo(QPointF(pin_pt.x(), bot_y))
+            path.closeSubpath()
+            text_rect = QRectF(2, top_y, body - head - 4, thick)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        elif side == "top":
+            left_x, right_x = -thick / 2, thick / 2
+            body_y = -body + head
+            path.moveTo(QPointF(left_x, pin_pt.y()))
+            path.lineTo(QPointF(left_x, body_y))
+            path.lineTo(QPointF(0.0, -body))
+            path.lineTo(QPointF(right_x, body_y))
+            path.lineTo(QPointF(right_x, pin_pt.y()))
+            path.closeSubpath()
+            text_rect = QRectF(left_x, -body + head + 2, thick, body - head - 4)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        else:  # bottom
+            left_x, right_x = -thick / 2, thick / 2
+            body_y = body - head
+            path.moveTo(QPointF(left_x, pin_pt.y()))
+            path.lineTo(QPointF(left_x, body_y))
+            path.lineTo(QPointF(0.0, body))
+            path.lineTo(QPointF(right_x, body_y))
+            path.lineTo(QPointF(right_x, pin_pt.y()))
+            path.closeSubpath()
+            text_rect = QRectF(left_x, 2, thick, body - head - 4)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, edge_color))
+        painter.setBrush(fill_color)
+        painter.drawPath(path)
+
+        # Direction chevron — input/output only; bidir omits it.
+        if direction in ("input", "output") and arrow_pts:
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, edge_color))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolyline(QPolygonF(list(arrow_pts)))
+
+        # Port name label
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._line_color()))
+        font = QFont(painter.font())
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        if side in ("top", "bottom"):
+            # Rotate text to fit vertical orientation
+            painter.save()
+            painter.translate(text_rect.center())
+            painter.rotate(-90)
+            rotated = QRectF(-text_rect.height() / 2, -text_rect.width() / 2,
+                             text_rect.height(), text_rect.width())
+            painter.drawText(rotated,
+                             Qt.AlignmentFlag.AlignCenter, port_name)
+            painter.restore()
+        else:
+            painter.drawText(text_rect,
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter,
+                             port_name)
+
+    def _direction_chevron(
+        self,
+        direction: str,
+        side: str,
+        body: float,
+        thick: float,
+        head: float,
+    ) -> tuple[QPointF, ...]:
+        """Build a 3-point chevron pointing along the signal flow.
+
+        - input: signal flows from outside → into the body (toward
+          the pin), so chevron points inward
+        - output: signal flows from body → outward, chevron points
+          outward
+        - bidir: empty (no chevron)
+        """
+        if direction not in ("input", "output"):
+            return ()
+        inward = direction == "input"  # input: arrow head toward pin
+        # Pick a center along the flag where the chevron sits, and a
+        # direction unit vector pointing the way the arrow should go.
+        if side == "left":
+            cx = -body + head + 8.0
+            dx = +1.0 if inward else -1.0
+            return (
+                QPointF(cx - dx * 4, -4),
+                QPointF(cx + dx * 4, 0),
+                QPointF(cx - dx * 4, +4),
+            )
+        if side == "right":
+            cx = body - head - 8.0
+            dx = -1.0 if inward else +1.0
+            return (
+                QPointF(cx - dx * 4, -4),
+                QPointF(cx + dx * 4, 0),
+                QPointF(cx - dx * 4, +4),
+            )
+        if side == "top":
+            cy = -body + head + 8.0
+            dy = +1.0 if inward else -1.0
+            return (
+                QPointF(-4, cy - dy * 4),
+                QPointF(0, cy + dy * 4),
+                QPointF(+4, cy - dy * 4),
+            )
+        # bottom
+        cy = body - head - 8.0
+        dy = -1.0 if inward else +1.0
+        return (
+            QPointF(-4, cy - dy * 4),
+            QPointF(0, cy + dy * 4),
+            QPointF(+4, cy - dy * 4),
+        )
+
+
 class CurrentProbeItem(ComponentItem):
     """Graphics item for current probe (clamp meter style)."""
 
@@ -3472,6 +3682,9 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.SIGNAL_DEMUX: SignalDemuxItem,
         ComponentType.GOTO_LABEL: GotoLabelItem,
         ComponentType.FROM_LABEL: FromLabelItem,
+
+        # Hierarchical
+        ComponentType.SUBCIRCUIT_PORT: SubcircuitPortItem,
 
         # Magnetic
         ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,

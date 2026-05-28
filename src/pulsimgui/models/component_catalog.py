@@ -67,6 +67,13 @@ COMPONENT_LIBRARY = {
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
     ],
+    "Hierarchy": [
+        # Port marker for subcircuit editing. Only meaningful when
+        # placed inside a SubcircuitDefinition's body — at root it
+        # silently no-ops. Kept always-visible so the user can drop
+        # one in after descending without re-opening the palette.
+        {"type": ComponentType.SUBCIRCUIT_PORT, "name": "Port", "shortcut": ""},
+    ],
 }
 
 

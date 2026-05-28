@@ -216,6 +216,8 @@ class MainWindow(QMainWindow):
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
+        self._schematic_scene.component_added.connect(self._on_component_added_for_port_sync)
+        self._schematic_scene.wire_added.connect(self._on_wire_added_for_port_sync)
         self._schematic_scene.component_moved.connect(self._on_component_moved)
         self._schematic_scene.net_label_navigation_requested.connect(
             self._on_net_label_navigation_requested
@@ -2543,6 +2545,49 @@ class MainWindow(QMainWindow):
         window = self._scope_windows.pop(comp_id, None)
         if window is not None:
             window.close()
+        # If we're editing inside a subcircuit, removing any component
+        # (including a SUBCIRCUIT_PORT marker) can shift the port list.
+        # Re-sync so the outer symbol stays consistent.
+        self._sync_subcircuit_ports_if_editing()
+
+    def _on_component_added_for_port_sync(self, _component) -> None:
+        """Re-sync subcircuit port markers when a component lands in
+        the body. No-op at root."""
+        self._sync_subcircuit_ports_if_editing()
+
+    def _on_wire_added_for_port_sync(self, _wire) -> None:
+        """Re-sync subcircuit port markers when a wire changes the
+        internal connectivity (which net the marker pin sits on)."""
+        self._sync_subcircuit_ports_if_editing()
+
+    def _sync_subcircuit_ports_if_editing(self) -> None:
+        """If the user is currently editing the body of a subcircuit
+        definition, rebuild ``definition.ports`` from any
+        SUBCIRCUIT_PORT markers inside, then propagate the new pin
+        layout to every instance of this definition in the project.
+
+        Cheap no-op when at root (most common case).
+        """
+        from pulsimgui.models.subcircuit import (
+            refresh_subcircuit_instance_pins,
+            sync_definition_ports_from_markers,
+        )
+
+        definition = self._hierarchy_service.get_current_definition()
+        if definition is None:
+            return
+
+        changed = sync_definition_ports_from_markers(definition)
+        if not changed:
+            return
+
+        # Mirror the new pin list onto every instance pointing at us.
+        refresh_subcircuit_instance_pins(self._project, definition)
+
+        # If the parent circuit happens to be visible elsewhere
+        # (e.g. a backed-up scene), force-redraw the current scene so
+        # users see the marker name update on the inner schematic.
+        self._schematic_scene.update()
 
     def _on_component_delete_requested(self, component_id: str) -> None:
         """Delete a component via command stack."""
@@ -3137,9 +3182,32 @@ class MainWindow(QMainWindow):
                     "n_inputs",
                     "n_outputs",
                     "signs",
+                    # SUBCIRCUIT_PORT marker: ``side`` moves the pin to
+                    # a different edge of the marker; ``port_name``
+                    # rewrites the pin label. Both demand a geometry
+                    # refresh + a definition re-sync so the parent
+                    # symbol updates immediately.
+                    "side",
+                    "port_name",
                 }
                 if pin_layout_changed:
                     item.prepareGeometryChange()
+                # When the edited component is a SUBCIRCUIT_PORT and
+                # any of its identity-affecting params changed, push
+                # the change through to the SubcircuitDefinition so
+                # outer-symbol pins update without an explicit save.
+                if name in {"port_name", "side", "direction"}:
+                    from pulsimgui.models.component import ComponentType as _CT
+                    if edited_component.type == _CT.SUBCIRCUIT_PORT:
+                        # Re-run the model-level pin sync so the
+                        # marker's own pin moves to the new ``side``
+                        # / picks up the new ``port_name`` before we
+                        # rebuild the definition's port list.
+                        from pulsimgui.models.component import (
+                            _synchronize_special_component,
+                        )
+                        _synchronize_special_component(edited_component)
+                        self._sync_subcircuit_ports_if_editing()
                 # Update position if changed
                 if name == "position_x":
                     item.setPos(edited_component.x, edited_component.y)

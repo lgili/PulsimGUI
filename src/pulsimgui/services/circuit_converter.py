@@ -384,6 +384,14 @@ class CircuitConverter:
         definition = SubcircuitDefinition.from_dict(copy.deepcopy(definition_dict))
         internal_circuit: Circuit = definition.circuit
 
+        # If the user placed SUBCIRCUIT_PORT markers inside the body,
+        # rebuild ``definition.ports`` from them as a safety net.
+        # (The GUI already auto-syncs on every edit, but the converter
+        # owns the contract here — if any path skipped the live sync,
+        # we fix it before reading port.internal_node below.)
+        from pulsimgui.models.subcircuit import sync_definition_ports_from_markers
+        sync_definition_ports_from_markers(definition)
+
         # Build the canonical pin→net map for the internal circuit.
         # Keys are ``(component_id_str, pin_index) → net_name``.
         internal_node_map = build_node_map(internal_circuit)
@@ -436,7 +444,15 @@ class CircuitConverter:
             "node_map": {},
             "subcircuits": defs_by_id,
         }
+        from pulsimgui.models.component import ComponentType as _CT
         for internal_component in internal_circuit.components.values():
+            # SUBCIRCUIT_PORT markers are not devices — they're a
+            # bridging hint for the outer instance. Their effect on
+            # the netlist is already captured by port.internal_node
+            # (which sync_definition_ports_from_markers refreshed
+            # above), so we drop them from the flattened output.
+            if internal_component.type == _CT.SUBCIRCUIT_PORT:
+                continue
             comp_dict = internal_component.to_dict()
             comp_id = str(internal_component.id)
             pin_count = len(internal_component.pins)
