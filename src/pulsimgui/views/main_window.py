@@ -193,18 +193,6 @@ class MainWindow(QMainWindow):
         self._schematic_view = SchematicView(self._schematic_scene)
         self._hierarchy_bar = HierarchyBar()
 
-        # Wave-1 P1.2 — Run Bar slots above the schematic so users see
-        # the primary simulation controls without scanning the toolbar.
-        from pulsimgui.views.widgets.run_bar import RunBar, wire_run_bar_to_service
-        self._run_bar = RunBar(self)
-        wire_run_bar_to_service(
-            self._run_bar,
-            self._simulation_service,
-            run_callback=self._on_run_from_run_bar,
-            pause_callback=self._on_pause_from_run_bar,
-            stop_callback=self._on_stop_from_run_bar,
-        )
-
         # Document tab row (PSIM-style): one tab per open project, with a
         # trailing "+" button to open a fresh circuit. A single shared
         # scene/view renders whichever document is active; switching tabs
@@ -217,7 +205,6 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.addWidget(tab_row)
         layout.addWidget(self._hierarchy_bar)
-        layout.addWidget(self._run_bar)
         layout.addWidget(self._schematic_view)
         self.setCentralWidget(central)
 
@@ -3777,17 +3764,6 @@ class MainWindow(QMainWindow):
     # P1.2 — Run Bar callbacks (delegate to the existing action handlers
     # so the run/pause/stop logic stays centralised in one place).
     # ------------------------------------------------------------------
-
-    def _on_run_from_run_bar(self) -> None:
-        self.action_run.trigger()
-
-    def _on_pause_from_run_bar(self) -> None:
-        if self.action_pause.isEnabled():
-            self.action_pause.trigger()
-
-    def _on_stop_from_run_bar(self) -> None:
-        if self.action_stop.isEnabled():
-            self.action_stop.trigger()
 
     def _on_run_simulation(self) -> None:
         """Run transient simulation."""
