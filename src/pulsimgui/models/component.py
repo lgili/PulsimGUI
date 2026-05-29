@@ -1352,12 +1352,24 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.C_BLOCK: {
         "n_inputs": 1,
         "n_outputs": 1,
+        # ``implementation`` picks the authoring backend:
+        #   "source"        — C source (legacy / PSIM-style, compiled
+        #                      by the kernel toolchain).
+        #   "lib"           — pre-built shared library path.
+        #   "python_numba"  — pulsim 1.5 fast_block: a Python control
+        #                      law JIT-compiled via Numba (or run
+        #                      pure-Python when numba is absent).
         "implementation": "source",
         "source": "",
         "lib_path": "",
         "source_code": "",
         "extra_cflags": [],
         "sample_time": 0.0,
+        # python_numba authoring: the control-law function body + its
+        # persistent-state vector length. Empty by default; the
+        # properties editor seeds a PI template on first switch.
+        "python_source": "",
+        "n_states": 1,
     },
 
     # Measurement

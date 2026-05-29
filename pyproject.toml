@@ -46,6 +46,14 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+# Numba JIT for the C_BLOCK "fast block" Python control law. Optional:
+# without it, C_BLOCK python_numba mode still runs (pure-Python
+# fallback), just not at native speed. Mirrors pulsim's own [fast]
+# extra so `pip install pulsimgui[fast]` lights up both layers.
+fast = [
+    "numba>=0.58",
+    "pulsim[fast]>=1.6.1",
+]
 build = [
     # PyInstaller for creating standalone executables
     "pyinstaller>=6.0.0",
