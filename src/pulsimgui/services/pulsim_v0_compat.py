@@ -144,6 +144,17 @@ class CompatModule:
     SineParams = staticmethod(lambda: SineParams())  # noqa: N815
     PulseParams = staticmethod(lambda: PulseParams())  # noqa: N815
     PWMParams = staticmethod(lambda: PWMParams())  # noqa: N815
+    # Dynamic-PMSM params bag (pulsim 1.6.4 only has the module-level
+    # ``add_pmsm`` free function — no ``PmsmParams`` class — so the shim
+    # supplies one for the converter's ``getattr(self._sl, "PmsmParams")``
+    # capability check + attribute-style fill (pmsm_p.Rs = …).
+    PmsmParams = staticmethod(lambda: PmsmParams())  # noqa: N815
+    # 3φ VSI params bag — same rationale (pulsim 1.6.4 exposes the
+    # topology builder ``add_three_phase_vsi`` as a free function with
+    # keyword args; the converter still fills a params object).
+    ThreePhaseVsiParams = staticmethod(  # noqa: N815
+        lambda: ThreePhaseVsiParams()
+    )
     @property
     def SchematicPosition(self) -> type:  # noqa: N802 — v0 API name
         # Expose the dataclass directly — the GUI converter calls it
@@ -323,6 +334,98 @@ class PWMParams:
 
 
 @dataclass
+class PmsmParams:
+    """Dynamic-PMSM params bag the converter fills attribute-by-attribute
+    (``pmsm_p.Rs = …``). pulsim 1.6.4 has no ``PmsmParams`` class — only
+    the module-level ``add_pmsm(builder, *, R_s, L_s, psi_pm, …)`` free
+    function — so :class:`Circuit.add_pmsm` reads these fields and maps
+    them onto that call.
+
+    Field names mirror the converter's writes (Rs/Ld/Lq/psi_pm/…).
+    ``Ld`` maps to the kernel's single ``L_s`` (the 1.6.4 PMSM model is
+    sinusoidal-back-EMF with one stator inductance; saliency Lq≠Ld is
+    not modelled — Lq is accepted and ignored). Unknown fields land in
+    ``extras`` so future params don't explode the shim.
+    """
+
+    name: str = ""
+    Rs: float = 0.5
+    Ld: float = 2e-3
+    Lq: float = 2e-3
+    psi_pm: float = 0.1
+    pole_pairs: int = 2
+    J: float = 1e-3
+    b_friction: float = 1e-4
+    friction_coulomb: float = 0.0
+    i_d_init: float = 0.0
+    i_q_init: float = 0.0
+    omega_init: float = 0.0
+    theta_init: float = 0.0
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {
+            "name", "Rs", "Ld", "Lq", "psi_pm", "pole_pairs",
+            "J", "b_friction", "friction_coulomb",
+            "i_d_init", "i_q_init", "omega_init", "theta_init", "extras",
+        }:
+            object.__setattr__(self, name, value)
+        else:
+            try:
+                bucket = object.__getattribute__(self, "extras")
+            except AttributeError:
+                object.__setattr__(self, "extras", {})
+                bucket = self.extras
+            bucket[name] = value
+
+
+@dataclass
+class ThreePhaseVsiParams:
+    """3φ VSI params bag. pulsim 1.6.4 builds the inverter *topology* via
+    ``add_three_phase_vsi(builder, name, *, vdc_pos, …, R_on, R_off)`` and
+    drives it with a separate SPWM ``switch_fn`` from
+    ``make_three_phase_spwm_fn``. :class:`Circuit.add_three_phase_vsi`
+    reads these fields, calls the topology builder, and stashes the SPWM
+    parameters on ``circuit.vsi_specs`` so the backend can build the
+    switch_fn at simulate time.
+
+    Field names mirror the converter's writes. ``mosfet_r_on_ohm`` maps
+    to the kernel's ``R_on``; ``v_gate_on/off`` and ``mosfet_vth`` are
+    accepted for API compatibility but unused (the native VSI switches
+    are ideal — gate drive is the SPWM mask, not a gate voltage).
+    """
+
+    switching_frequency_hz: float = 10e3
+    modulation_index: float = 0.8
+    modulation_frequency_hz: float = 50.0
+    phase_a_deg: float = 0.0
+    positive_sequence: bool = True
+    dead_time_s: float = 0.0
+    v_gate_on: float = 12.0
+    v_gate_off: float = 0.0
+    mosfet_r_on_ohm: float = 0.01
+    mosfet_r_off_ohm: float = 1e9
+    mosfet_vth: float = 1.0
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {
+            "switching_frequency_hz", "modulation_index",
+            "modulation_frequency_hz", "phase_a_deg", "positive_sequence",
+            "dead_time_s", "v_gate_on", "v_gate_off",
+            "mosfet_r_on_ohm", "mosfet_r_off_ohm", "mosfet_vth", "extras",
+        }:
+            object.__setattr__(self, name, value)
+        else:
+            try:
+                bucket = object.__getattribute__(self, "extras")
+            except AttributeError:
+                object.__setattr__(self, "extras", {})
+                bucket = self.extras
+            bucket[name] = value
+
+
+@dataclass
 class SchematicPosition:
     """v0 layout-position struct. Tracked but not propagated — v1.3's
     schematic module lives outside the runtime builder and reads
@@ -402,6 +505,17 @@ class Circuit:
         # observer chain so the device's nonlinear back-EMF / dM/dt
         # contribution is driven every step.
         self.nonlinear_observer_specs: list[dict[str, Any]] = []
+
+        # Native 3φ VSI descriptors (pulsim 1.6.4 ``add_three_phase_vsi``
+        # + ``make_three_phase_spwm_fn``). ``Circuit.add_three_phase_vsi``
+        # appends one entry per inverter holding the topology result's
+        # high/low-side switch indices (builder-global) + the SPWM drive
+        # parameters (carrier/mod freq, mod index, dead-time, phase). The
+        # backend reads this list at simulate time to build the SPWM
+        # ``switch_fn`` (composed via ``make_combined_switch_fn`` with any
+        # other PWM-driven switches, e.g. a PFC boost MOSFET, so neither
+        # clobbers the other's switch bits). Empty = no native VSI.
+        self.vsi_specs: list[dict[str, Any]] = []
 
         # C_BLOCK control-loop descriptors (pulsim 1.5 fast_block).
         # Populated by ``CircuitConverter`` when it detects a
@@ -1041,6 +1155,173 @@ class Circuit:
         self.nonlinear_observer_specs.append(
             {"kind": "hysteretic_inductor", "name": name, "handle": hyst}
         )
+
+    def add_pmsm(
+        self,
+        name: str,
+        a: int,
+        b: int,
+        c: int,
+        n: int,
+        params: Any,
+    ) -> None:
+        """Add a dynamic 3-phase PMSM via pulsim 1.6.4's module-level
+        ``add_pmsm`` and stash its handle so the backend can wire
+        ``make_pmsm_observer`` into the step-observer chain at simulate
+        time (the observer integrates the d-q current + mechanical ODE
+        and injects the rotating back-EMF as a residual ``b_extra_fn``).
+
+        ``a/b/c`` are the stator phase terminal node ids, ``n`` the
+        star-point neutral. ``params`` is the shim's :class:`PmsmParams`
+        bag the converter filled (``params.Rs``, ``.Ld``, ``.psi_pm``,
+        ``.pole_pairs``, ``.J``, ``.b_friction``, …). ``Ld`` maps to the
+        kernel's single ``L_s``; ``Lq`` (saliency) and the per-axis
+        current inits aren't modelled by the 1.6.4 sinusoidal PMSM and
+        are accepted-but-ignored. ``omega_init`` / ``theta_init`` seed
+        the mechanical state on the returned handle.
+
+        Raises ``AttributeError`` if the host pulsim predates the
+        ``add_pmsm`` free function so the converter surfaces a clear
+        capability error instead of a silent skip.
+        """
+        add_pmsm = getattr(self._pm, "add_pmsm", None)
+        if add_pmsm is None:
+            raise AttributeError(
+                "pulsim runtime has no add_pmsm "
+                "(requires pulsim >= 1.6 dynamic-PMSM helper)"
+            )
+        motor = add_pmsm(
+            self._builder,
+            name=name,
+            phase_nodes=(self._name_of(a), self._name_of(b), self._name_of(c)),
+            neutral_node=self._name_of(n),
+            R_s=float(getattr(params, "Rs", 0.5)),
+            L_s=float(getattr(params, "Ld", 2e-3)),
+            psi_pm=float(getattr(params, "psi_pm", 0.1)),
+            pole_pairs=int(getattr(params, "pole_pairs", 2)),
+            J=float(getattr(params, "J", 1e-3)),
+            B=float(getattr(params, "b_friction", 1e-4)),
+            T_load=float(getattr(params, "tau_load", 0.0)),
+        )
+        # Seed the mechanical initial conditions on the returned handle
+        # when the kernel exposes a mutable ``mech`` sub-object (pulsim
+        # 1.6.4). omega_init in rad/s (electrical-frame ω the converter
+        # collects is the mechanical ω here), theta_init in rad.
+        mech = getattr(motor, "mech", None)
+        if mech is not None:
+            omega_init = float(getattr(params, "omega_init", 0.0))
+            theta_init = float(getattr(params, "theta_init", 0.0))
+            if omega_init != 0.0 and hasattr(mech, "omega_rad_s"):
+                try:
+                    mech.omega_rad_s = omega_init
+                except (AttributeError, TypeError):  # pragma: no cover
+                    pass
+            if theta_init != 0.0 and hasattr(mech, "theta_rad"):
+                try:
+                    mech.theta_rad = theta_init
+                except (AttributeError, TypeError):  # pragma: no cover
+                    pass
+        self.nonlinear_observer_specs.append(
+            {"kind": "pmsm", "name": name, "handle": motor}
+        )
+
+    def set_pmsm_tau_load(self, name: str, tau: float) -> None:
+        """Set the external load torque on a previously-added PMSM.
+
+        The converter calls this *after* :meth:`add_pmsm` (mirroring the
+        DC-motor flow) only when the user gave a non-zero load. pulsim
+        1.6.4 has no such method — ``T_load`` is a constructor arg — so
+        the shim mutates the kernel handle's mechanical state in place
+        (``motor.mech.T_load_Nm``). No-op if the device or the mutable
+        field is absent.
+        """
+        for spec in self.nonlinear_observer_specs:
+            if spec.get("kind") == "pmsm" and spec.get("name") == name:
+                motor = spec.get("handle")
+                mech = getattr(motor, "mech", None)
+                if mech is not None and hasattr(mech, "T_load_Nm"):
+                    try:
+                        mech.T_load_Nm = float(tau)
+                    except (AttributeError, TypeError):  # pragma: no cover
+                        pass
+                return
+
+    def add_three_phase_vsi(
+        self,
+        name: str,
+        vdc_pos: int,
+        vdc_neg: int,
+        a: int,
+        b: int,
+        c: int,
+        params: Any,
+    ) -> None:
+        """Add a native switched 3-phase 2-level VSI (6 ideal switches)
+        via pulsim 1.6.4's ``add_three_phase_vsi`` topology builder and
+        stash the SPWM drive parameters on :attr:`vsi_specs` so the
+        backend can build the ``make_three_phase_spwm_fn`` ``switch_fn``
+        at simulate time.
+
+        ``vdc_pos`` / ``vdc_neg`` are the DC-rail node ids; ``a/b/c`` the
+        AC output node ids. ``params`` is the shim's
+        :class:`ThreePhaseVsiParams` bag (``switching_frequency_hz``,
+        ``modulation_index``, ``modulation_frequency_hz``,
+        ``phase_a_deg``, ``dead_time_s``, ``mosfet_r_on_ohm``, …).
+
+        The topology builder registers six switches as
+        ``{name}__HSa/LSa/…/LSc`` and returns their **builder-global**
+        switch indices (``high_side_switch_indices`` /
+        ``low_side_switch_indices``). We record those so the backend can
+        target exactly the inverter's bits — leaving any other switching
+        device (a PFC boost MOSFET, etc.) untouched.
+
+        Raises ``AttributeError`` if the host pulsim lacks
+        ``add_three_phase_vsi`` so the converter can fall back to the
+        behavioral averaged (3-sine) model for old runtimes.
+        """
+        add_vsi = getattr(self._pm, "add_three_phase_vsi", None)
+        if add_vsi is None:
+            raise AttributeError(
+                "pulsim runtime has no add_three_phase_vsi "
+                "(requires pulsim >= 1.6 native-VSI helper)"
+            )
+        result = add_vsi(
+            self._builder,
+            name,
+            vdc_pos=self._name_of(vdc_pos),
+            vdc_neg=self._name_of(vdc_neg),
+            out_a=self._name_of(a),
+            out_b=self._name_of(b),
+            out_c=self._name_of(c),
+            R_on=float(getattr(params, "mosfet_r_on_ohm", 1e-3)),
+            R_off=float(getattr(params, "mosfet_r_off_ohm", 1e9)),
+        )
+        hs = [int(i) for i in result.high_side_switch_indices]
+        ls = [int(i) for i in result.low_side_switch_indices]
+        self.vsi_specs.append({
+            "name": name,
+            # Builder-global switch indices for the 6 power devices.
+            "high_side_switch_indices": hs,
+            "low_side_switch_indices": ls,
+            "switch_indices": [int(i) for i in result.switch_indices],
+            # SPWM drive parameters consumed by make_three_phase_spwm_fn.
+            "carrier_frequency": float(
+                getattr(params, "switching_frequency_hz", 10e3)
+            ),
+            "modulation_frequency": float(
+                getattr(params, "modulation_frequency_hz", 50.0)
+            ),
+            "modulation_index": float(
+                getattr(params, "modulation_index", 0.8)
+            ),
+            "dead_time": float(getattr(params, "dead_time_s", 0.0)),
+            "modulation_phase_deg": float(
+                getattr(params, "phase_a_deg", 0.0)
+            ),
+            "positive_sequence": bool(
+                getattr(params, "positive_sequence", True)
+            ),
+        })
 
     # --- virtual / control components ---------------------------------
     def add_virtual_component(

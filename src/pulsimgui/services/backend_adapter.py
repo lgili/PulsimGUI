@@ -5969,6 +5969,39 @@ class PulsimBackend(SimulationBackend):
         configs = configs_from_pwm_records(circuit)
         switch_fn = assemble_switch_fn(circuit, configs, self._module)
 
+        # Native 3φ VSI SPWM (pulsim 1.6.4): the converter recorded each
+        # inverter's six builder-global switch indices + SPWM drive on
+        # ``circuit.vsi_specs``. Build one SPWM switch_fn per inverter and
+        # compose with the rest of the circuit's switch_fn via
+        # ``make_combined_switch_fn`` (bitwise-OR of masks). This handles
+        # both (a) VSI-only — ``assemble_switch_fn`` returned an all-OFF
+        # mask for the non-VSI bits, OR'd with SPWM leaves just the
+        # inverter pattern — and (b) VSI + PFC boost MOSFET — the PFC's
+        # PWM mask (from ``assemble_switch_fn``) and the SPWM mask drive
+        # disjoint switch bits, so the OR preserves both. The SPWM
+        # callables emit a full-width mask touching only the inverter's
+        # bits, so no index clobbers another.
+        vsi_switch_fns = self._build_vsi_switch_fns(circuit, builder)
+        if vsi_switch_fns:
+            num_switches = int(getattr(builder.graph, "num_switches", 0))
+            make_combined = getattr(
+                self._module, "make_combined_switch_fn", None
+            )
+            sub_fns = list(vsi_switch_fns)
+            # Include the base switch_fn only when it actually drives
+            # something — the all-OFF constant fn contributes nothing to
+            # the OR and would just add a per-step GIL hop.
+            if switch_fn is not None and bool(
+                getattr(circuit, "switch_indices", {})
+            ):
+                sub_fns.append(switch_fn)
+            if make_combined is not None and num_switches > 0 and (
+                len(sub_fns) > 1
+            ):
+                switch_fn = make_combined(num_switches, sub_fns)
+            elif len(sub_fns) == 1:
+                switch_fn = sub_fns[0]
+
         # Step-observer adapter: translate per-step ``(t, x)`` into
         # the existing data / progress / cancel callbacks.
         t_start = float(settings.t_start)
@@ -6033,6 +6066,15 @@ class PulsimBackend(SimulationBackend):
         device_step_observers, device_b_extra_fn = (
             self._build_nonlinear_device_observers(circuit, builder, dt)
         )
+        # A dynamic PMSM observer integrates the d-q current ODE off the
+        # terminal voltages each step — its back-EMF residual only stays
+        # consistent if the kernel re-evaluates the nonlinear sources
+        # between substeps. Force enable_nonlinear_refresh on when one is
+        # present (overrides the Simulation-Settings default below).
+        has_pmsm = any(
+            str(spec.get("kind") or "") == "pmsm"
+            for spec in (getattr(circuit, "nonlinear_observer_specs", []) or [])
+        )
         if device_step_observers:
             base_step_observer = step_observer
 
@@ -6087,6 +6129,10 @@ class PulsimBackend(SimulationBackend):
             simulate_kwargs["enable_nonlinear_refresh"] = bool(
                 settings.enable_nonlinear_refresh,
             )
+        if has_pmsm:
+            # PMSM back-EMF residual requires per-substep nonlinear
+            # refresh — override whatever the settings default was.
+            simulate_kwargs["enable_nonlinear_refresh"] = True
         if settings.start_from_dc_op:
             simulate_kwargs["start_from_dc_op"] = True
 
@@ -6491,6 +6537,13 @@ class PulsimBackend(SimulationBackend):
         maker_by_kind = {
             "induction_motor": getattr(ps, "make_induction_motor_observer", None),
             "hysteretic_inductor": getattr(ps, "make_hysteretic_inductor_observer", None),
+            # Dynamic PMSM (pulsim 1.6.4). make_pmsm_observer(builder,
+            # motor, dt=) returns (step_observer, b_extra_fn): the
+            # step advances the d-q current + mechanical ODE, b_extra
+            # injects the rotating back-EMF into the residual. Needs
+            # enable_nonlinear_refresh=True (set by the caller when a
+            # pmsm spec is present).
+            "pmsm": getattr(ps, "make_pmsm_observer", None),
         }
 
         for spec in specs:
@@ -6533,6 +6586,70 @@ class PulsimBackend(SimulationBackend):
             return total if total is not None else []
 
         return step_observers, combined_b_extra
+
+    def _build_vsi_switch_fns(
+        self,
+        circuit: Any,
+        builder: Any,
+    ) -> list[Callable[[float], Any]]:
+        """Build one SPWM ``switch_fn`` per native 3φ VSI the converter
+        recorded on ``circuit.vsi_specs``.
+
+        Each spec carries the inverter's builder-global high/low-side
+        switch indices (from ``add_three_phase_vsi``'s result) plus the
+        SPWM drive parameters. We map them onto pulsim 1.6.4's
+        ``ThreePhaseLegIndices(hs_a, ls_a, hs_b, ls_b, hs_c, ls_c)`` +
+        ``make_three_phase_spwm_fn(carrier_f, mod_f, mod_index, legs,
+        num_switches, dead_time, modulation_phase=…)``.
+
+        The returned callables each emit a ``SwitchStateMask`` that sets
+        ONLY that inverter's six bits (every other bit stays 0). The
+        caller composes them with the rest of the circuit's switch_fn via
+        ``make_combined_switch_fn`` (bitwise-OR), so a co-resident PFC
+        boost MOSFET keeps its own gate pattern. Returns ``[]`` when no
+        native VSI is present or the kernel lacks the SPWM helpers.
+        """
+        specs = list(getattr(circuit, "vsi_specs", []) or [])
+        if not specs:
+            return []
+
+        ps = self._module
+        make_spwm = getattr(ps, "make_three_phase_spwm_fn", None)
+        leg_cls = getattr(ps, "ThreePhaseLegIndices", None)
+        if make_spwm is None or leg_cls is None:
+            return []
+
+        num_switches = int(getattr(builder.graph, "num_switches", 0))
+        if num_switches <= 0:
+            return []
+
+        import math
+        fns: list[Callable[[float], Any]] = []
+        for spec in specs:
+            hs = list(spec.get("high_side_switch_indices") or [])
+            ls = list(spec.get("low_side_switch_indices") or [])
+            if len(hs) != 3 or len(ls) != 3:
+                continue
+            try:
+                legs = leg_cls(
+                    int(hs[0]), int(ls[0]),
+                    int(hs[1]), int(ls[1]),
+                    int(hs[2]), int(ls[2]),
+                )
+                fn = make_spwm(
+                    float(spec.get("carrier_frequency", 10e3)),
+                    float(spec.get("modulation_frequency", 50.0)),
+                    float(spec.get("modulation_index", 0.8)),
+                    legs,
+                    num_switches,
+                    float(spec.get("dead_time", 0.0)),
+                    math.radians(float(spec.get("modulation_phase_deg", 0.0))),
+                )
+            except Exception:  # noqa: BLE001 - one bad VSI shouldn't abort
+                continue
+            if callable(fn):
+                fns.append(fn)
+        return fns
 
     def _build_cblock_closed_loops(
         self,

@@ -1150,9 +1150,31 @@ class CircuitConverter:
                 vsi_p.mosfet_vth = self._as_float(
                     params.get("mosfet_vth"), default=1.0
                 )
-                add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
-                        n_a_idx, n_b_idx, n_c_idx, vsi_p)
-                return
+                # pulsim 1.6.4 native switched VSI extras. dead_time_s
+                # feeds make_three_phase_spwm_fn's symmetric dead-time;
+                # mosfet_r_off_ohm sizes the switch OFF resistance. Both
+                # default sanely when the GUI/template omits them.
+                vsi_p.dead_time_s = self._as_float(
+                    params.get("dead_time_s"), default=0.0
+                )
+                vsi_p.mosfet_r_off_ohm = self._as_float(
+                    params.get("mosfet_r_off_ohm"), default=1e9
+                )
+                # NATIVE switched path (pulsim 1.6.4): the shim's
+                # ``add_three_phase_vsi`` builds the 6-switch topology and
+                # records the SPWM drive params on ``circuit.vsi_specs``;
+                # the backend assembles the real ``make_three_phase_spwm_fn``
+                # switch_fn at simulate time (true per-cycle switching, not
+                # an averaged fundamental). A genuinely old kernel whose
+                # shim re-raises ``AttributeError`` (no ``add_three_phase_vsi``
+                # free function) drops through to the averaged fallback
+                # below so legacy projects still load.
+                try:
+                    add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
+                            n_a_idx, n_b_idx, n_c_idx, vsi_p)
+                    return
+                except AttributeError:
+                    pass
 
             # Pulsim 1.5+ retired the native VSI builder. Fall back to a
             # BEHAVIORAL averaged model: three ideal sine voltage sources
