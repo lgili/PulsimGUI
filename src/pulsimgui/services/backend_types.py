@@ -10,7 +10,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # =============================================================================
 # Version Management
 # =============================================================================
@@ -33,7 +32,7 @@ class BackendVersion:
     api_version: int = 1
 
     @classmethod
-    def from_string(cls, version: str) -> "BackendVersion":
+    def from_string(cls, version: str) -> BackendVersion:
         """Parse a version string into a BackendVersion.
 
         Supports formats:
@@ -74,7 +73,7 @@ class BackendVersion:
 
         return cls(major=major, minor=minor, patch=patch, api_version=api_version)
 
-    def is_compatible_with(self, required: "BackendVersion") -> bool:
+    def is_compatible_with(self, required: BackendVersion) -> bool:
         """Check if this version satisfies the required version.
 
         Compatibility is determined by:
@@ -106,7 +105,7 @@ class BackendVersion:
 
 
 # Minimum required backend API version for full functionality
-MIN_BACKEND_API = BackendVersion(0, 2, 0, api_version=1)
+MIN_BACKEND_API = BackendVersion(0, 7, 0, api_version=1)
 
 
 # =============================================================================
@@ -205,6 +204,152 @@ class ConvergenceInfo:
 # =============================================================================
 # Result Types
 # =============================================================================
+
+
+@dataclass
+class ScalarMetric:
+    """A single scalar metric from a post-processing job."""
+
+    name: str
+    value: float
+    unit: str = ""
+    domain: str = ""
+    signal_name: str = ""
+    source_signal: str = ""
+
+
+@dataclass
+class SpectralBin:
+    """A single spectral bin from FFT."""
+
+    frequency_hz: float
+    amplitude: float
+    phase_deg: float = 0.0
+
+
+@dataclass
+class HarmonicEntry:
+    """A single harmonic from spectral analysis."""
+
+    order: int
+    frequency_hz: float
+    amplitude: float
+    phase_deg: float = 0.0
+    amplitude_db: float | None = None
+    magnitude_pct_fundamental: float | None = None
+
+
+@dataclass
+class UndefinedMetricEntry:
+    """Metric that could not be computed, including a stable diagnostic reason."""
+
+    name: str
+    reason: str
+    reason_message: str = ""
+
+
+@dataclass
+class PostProcessingJobResult:
+    """Result of a single post-processing job.
+
+    Attributes:
+        job_id: Job identifier.
+        kind: Job kind ("time_domain", "spectral", "power_efficiency").
+        success: Whether the job completed successfully.
+        diagnostic: Diagnostic code string.
+        diagnostic_message: Human-readable diagnostic message.
+        scalar_metrics: Dict of metric name → ScalarMetric.
+        spectrum_bins: FFT spectrum bins (Spectral jobs).
+        harmonics: Harmonic table (Spectral jobs).
+        thd_pct: Total harmonic distortion % (Spectral jobs).
+        fundamental_hz: Fundamental frequency (Spectral jobs).
+        average_input_power: Average input power W (PowerEfficiency jobs).
+        average_output_power: Average output power W (PowerEfficiency jobs).
+        efficiency: Efficiency 0–1 (PowerEfficiency jobs).
+        power_factor: Power factor 0–1 (PowerEfficiency jobs).
+        signal_names: Signal names this job covered.
+    """
+
+    job_id: str = ""
+    kind: str = ""
+    success: bool = True
+    diagnostic: str = ""
+    diagnostic_message: str = ""
+    scalar_metrics: dict[str, ScalarMetric] = field(default_factory=dict)
+    spectrum_bins: list[SpectralBin] = field(default_factory=list)
+    harmonics: list[HarmonicEntry] = field(default_factory=list)
+    thd_pct: float | None = None
+    fundamental_hz: float | None = None
+    average_input_power: float | None = None
+    average_output_power: float | None = None
+    efficiency: float | None = None
+    power_factor: float | None = None
+    undefined_metrics: list[UndefinedMetricEntry] = field(default_factory=list)
+    signal_names: list[str] = field(default_factory=list)
+    sample_count: int = 0
+    runtime_seconds: float = 0.0
+
+
+@dataclass
+class PostProcessingResult:
+    """Result of running post-processing on a transient result.
+
+    Attributes:
+        jobs: List of individual job results.
+        success: True when no top-level error occurred.
+        error_message: Top-level error message (empty on success).
+    """
+
+    jobs: list[PostProcessingJobResult] = field(default_factory=list)
+    success: bool = True
+    error_message: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        """Compatibility alias for callers expecting ``is_valid`` semantics."""
+        return self.success and not self.error_message
+
+
+@dataclass
+class FrequencyAnalysisResult:
+    """Result of a frequency-domain analysis (Bode sweep).
+
+    Attributes:
+        frequencies: Frequency points (Hz).
+        magnitude_db: Dict of transfer-function key → magnitude list (dB).
+        phase_deg: Dict of transfer-function key → phase list (degrees).
+        gain_margin_db: Gain margin (dB); None if not available.
+        phase_margin_deg: Phase margin (degrees); None if not available.
+        gain_crossover_hz: Gain crossover frequency (Hz); None if not available.
+        phase_crossover_hz: Phase crossover frequency (Hz); None if not available.
+        success: Whether the analysis completed successfully.
+        diagnostic_code: Short code string for failure reason.
+        diagnostic_message: Human-readable failure description.
+    """
+
+    frequencies: list[float] = field(default_factory=list)
+    magnitude_db: dict[str, list[float]] = field(default_factory=dict)
+    phase_deg: dict[str, list[float]] = field(default_factory=dict)
+    gain_margin_db: float | None = None
+    phase_margin_deg: float | None = None
+    gain_crossover_hz: float | None = None
+    phase_crossover_hz: float | None = None
+    success: bool = True
+    diagnostic_code: str = ""
+    diagnostic_message: str = ""
+    mode: str = ""
+    anchor_mode_selected: str = ""
+    failed_point_index: int = -1
+    failed_frequency_hz: float | None = None
+    gain_crossover_reason: str = ""
+    phase_crossover_reason: str = ""
+    phase_margin_reason: str = ""
+    gain_margin_reason: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        """True when analysis succeeded and has at least one frequency point."""
+        return self.success and len(self.frequencies) > 0
 
 
 @dataclass
@@ -429,6 +574,10 @@ class TransientSettings:
     max_iterations: int = 50
     enable_limiting: bool = True
     max_voltage_step: float = 5.0
+    # Averaged converter options (pulsim >= 0.7.0).
+    # Dict with keys: topology, mode, envelope (all strings).
+    # None means switching-mode simulation (default behaviour).
+    averaged_options: dict | None = None
 
 
 @dataclass
@@ -478,6 +627,184 @@ class ACSettings:
     points_per_decade: int = 10
     input_source: str = ""
     output_nodes: list[str] = field(default_factory=list)
+    # Extended frequency analysis options (pulsim >= 0.7.0)
+    anchor_mode: str = "auto"  # auto, dc, periodic, averaged
+    sweep_scale: str = "decade"  # decade, log, linear
+    injection_node: str = ""
+    measurement_node: str = ""
+
+
+@dataclass
+class FmuExportSettings:
+    """Settings for FMU 2.0 co-simulation export.
+
+    Attributes:
+        out_path: Absolute target path for the ``.fmu`` archive.
+        dt: Fixed-step integration period inside the FMU (seconds).
+        model_name: Human-readable model name. Defaults to the output stem.
+        outputs: Names of circuit nodes to expose as FMI outputs.
+        inputs: Names of FMI input variables.
+        cc: C compiler. Defaults to ``cc`` from PATH.
+    """
+
+    out_path: str
+    dt: float
+    model_name: str = ""
+    outputs: tuple[str, ...] = ()
+    inputs: tuple[str, ...] = ()
+    cc: str = ""
+
+
+@dataclass
+class FmuExportResult:
+    """Summary returned after a successful FMU export.
+
+    Mirrors :class:`pulsim.fmu.FmuExportSummary` but keeps the GUI layer
+    independent of the runtime's concrete dataclass.
+    """
+
+    path: str
+    model_name: str
+    model_identifier: str
+    guid: str
+    fmi_version: str
+    state_size: int
+    input_size: int
+    output_size: int
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    files_in_archive: tuple[str, ...] = ()
+
+
+@dataclass
+class FraSettings:
+    """Settings for closed-loop Frequency Response Analysis (wave-4 sub-B 2.1).
+
+    Maps onto :class:`pulsim.FraOptions`. ``perturbation_source`` is the
+    component name to inject the perturbation into; ``measurement_nodes``
+    is the list of nodes to record.
+    """
+
+    f_start: float = 1.0
+    f_stop: float = 1e6
+    points_per_decade: int = 10
+    scale: str = "decade"  # decade / linear
+    perturbation_amplitude: float = 0.01
+    perturbation_phase: float = 0.0
+    perturbation_source: str = ""
+    measurement_nodes: tuple[str, ...] = ()
+    samples_per_cycle: int = 64
+    n_cycles: int = 4
+    discard_cycles: int = 1
+
+
+@dataclass
+class FraResultEntry:
+    """Per-frequency FRA result."""
+
+    frequency: float
+    magnitude_db: float
+    phase_deg: float
+
+
+@dataclass
+class FraResult:
+    """Aggregated FRA result (GUI-side mirror)."""
+
+    success: bool = False
+    failure_reason: str = ""
+    wall_seconds: float = 0.0
+    total_transient_steps: int = 0
+    frequencies: tuple[float, ...] = ()
+    entries: tuple[FraResultEntry, ...] = ()
+
+
+@dataclass
+class PeriodicSteadyStateSettings:
+    """Settings for shooting-based periodic steady-state (wave-4 sub-B 2.2).
+
+    Maps onto :class:`pulsim.PeriodicSteadyStateOptions`.
+    """
+
+    period: float = 1e-3
+    max_iterations: int = 50
+    tolerance: float = 1e-6
+    relaxation: float = 1.0
+    store_last_transient: bool = True
+
+
+@dataclass
+class PeriodicSteadyStateResult:
+    """Aggregated periodic-steady-state result (GUI-side mirror)."""
+
+    success: bool = False
+    message: str = ""
+    iterations: int = 0
+    residual_norm: float = 0.0
+    diagnostic: str = ""
+
+
+@dataclass
+class HarmonicBalanceSettings:
+    """Settings for harmonic balance (wave-4 sub-B 2.3).
+
+    Maps onto :class:`pulsim.HarmonicBalanceOptions`.
+    """
+
+    period: float = 1e-3
+    num_samples: int = 64
+    max_iterations: int = 50
+    tolerance: float = 1e-6
+    relaxation: float = 1.0
+    initialize_from_transient: bool = True
+
+
+@dataclass
+class HarmonicBalanceResult:
+    """Aggregated harmonic balance result (GUI-side mirror)."""
+
+    success: bool = False
+    message: str = ""
+    iterations: int = 0
+    residual_norm: float = 0.0
+    diagnostic: str = ""
+    sample_count: int = 0
+
+
+@dataclass
+class C99CodegenSettings:
+    """Settings for real-time C99 controller codegen.
+
+    Attributes:
+        out_dir: Target directory for the generated ``.c`` / ``.h`` files.
+        dt: Fixed-step discretization period (seconds).
+        target: Code generator target ID. Only ``"c99"`` is supported today.
+        t_op: Time at which to linearize the operating point.
+    """
+
+    out_dir: str
+    dt: float
+    target: str = "c99"
+    t_op: float = 0.0
+
+
+@dataclass
+class C99CodegenResult:
+    """Summary returned after a successful C99 codegen call.
+
+    Mirrors :class:`pulsim.codegen.CodegenSummary` but keeps the GUI
+    layer independent of the runtime dataclass.
+    """
+
+    out_dir: str
+    target: str
+    state_size: int
+    input_size: int
+    output_size: int
+    stability_radius: float
+    rom_estimate_bytes: int
+    ram_estimate_bytes: int
+    files_written: tuple[str, ...] = ()
 
 
 @dataclass
@@ -513,9 +840,28 @@ __all__ = [
     "ThermalDeviceResult",
     "FosterStage",
     "LossBreakdown",
+    "PostProcessingResult",
+    "PostProcessingJobResult",
+    "ScalarMetric",
+    "SpectralBin",
+    "HarmonicEntry",
+    "UndefinedMetricEntry",
+    "FrequencyAnalysisResult",
     # Settings
     "TransientSettings",
     "DCSettings",
     "ACSettings",
     "ThermalSettings",
+    "FmuExportSettings",
+    "FmuExportResult",
+    "C99CodegenSettings",
+    "C99CodegenResult",
+    # Sub-wave B — analysis modes
+    "FraSettings",
+    "FraResult",
+    "FraResultEntry",
+    "PeriodicSteadyStateSettings",
+    "PeriodicSteadyStateResult",
+    "HarmonicBalanceSettings",
+    "HarmonicBalanceResult",
 ]

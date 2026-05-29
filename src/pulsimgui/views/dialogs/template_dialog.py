@@ -4,23 +4,21 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
+    QDialogButtonBox,
+    QFrame,
+    QGroupBox,
+    QLabel,
     QListWidget,
     QListWidgetItem,
-    QLabel,
-    QTextBrowser,
-    QDialogButtonBox,
     QSplitter,
-    QGroupBox,
-    QFrame,
+    QTextBrowser,
+    QVBoxLayout,
     QWidget,
 )
 
 from pulsimgui.services.template_service import (
-    TemplateService,
     TemplateInfo,
-    TemplateCategory,
+    TemplateService,
 )
 
 

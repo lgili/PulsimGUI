@@ -6,7 +6,7 @@ from uuid import UUID
 from pulsimgui.commands.base import Command
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component
-from pulsimgui.models.wire import Wire
+from pulsimgui.models.wire import Wire, WireConnection
 
 
 class AddComponentCommand(Command):
@@ -26,6 +26,7 @@ class AddComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         return f"Add {self._component.name}"
 
 
@@ -65,6 +66,7 @@ class DeleteComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         name = self._component.name if self._component else str(self._component_id)[:8]
         return f"Delete {name}"
 
@@ -115,6 +117,7 @@ class MoveComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Move {name}"
@@ -154,6 +157,7 @@ class RotateComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Rotate {name}"
@@ -182,6 +186,7 @@ class FlipComponentCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         axis = "H" if self._horizontal else "V"
@@ -205,6 +210,7 @@ class UpdateComponentStateCommand(Command):
         self._new_state = deepcopy(new_state)
         self._old_state = deepcopy(old_state) if old_state is not None else None
         self._already_applied = already_applied
+        self._detached_endpoints: list[tuple[UUID, str, int]] = []
 
     @staticmethod
     def snapshot(component: Component) -> dict:
@@ -231,6 +237,96 @@ class UpdateComponentStateCommand(Command):
         component.parameters = deepcopy(state["parameters"])
         component.pins = deepcopy(state["pins"])
 
+    @staticmethod
+    def _pin_name(pin: object) -> str:
+        if hasattr(pin, "name"):
+            return str(getattr(pin, "name") or "")
+        if isinstance(pin, dict):
+            return str(pin.get("name") or "")
+        return ""
+
+    @classmethod
+    def _build_pin_index_remap(cls, from_state: dict, to_state: dict) -> dict[int, int | None]:
+        from_pins = list(from_state.get("pins") or [])
+        to_pins = list(to_state.get("pins") or [])
+        to_indices_by_name: dict[str, list[int]] = {}
+        for index, pin in enumerate(to_pins):
+            name = cls._pin_name(pin)
+            if not name:
+                continue
+            to_indices_by_name.setdefault(name, []).append(index)
+
+        used_indices: set[int] = set()
+        remap: dict[int, int | None] = {index: None for index in range(len(from_pins))}
+
+        # Pass 1: map by stable pin names first.
+        for from_index, pin in enumerate(from_pins):
+            name = cls._pin_name(pin)
+            for candidate in to_indices_by_name.get(name, []):
+                if candidate not in used_indices:
+                    remap[from_index] = candidate
+                    used_indices.add(candidate)
+                    break
+
+        # Pass 2: fallback to positional indices for pins without a name match.
+        for from_index in range(len(from_pins)):
+            if remap[from_index] is not None:
+                continue
+            if from_index < len(to_pins) and from_index not in used_indices:
+                remap[from_index] = from_index
+                used_indices.add(from_index)
+
+        return remap
+
+    def _remap_connected_wires(
+        self,
+        component: Component,
+        remap: dict[int, int | None],
+        *,
+        record_detached: bool = False,
+    ) -> None:
+        if not remap:
+            return
+        for wire in self._circuit.wires.values():
+            for endpoint_name in ("start_connection", "end_connection"):
+                connection = getattr(wire, endpoint_name, None)
+                if connection is None or connection.component_id != self._component_id:
+                    continue
+                old_pin_index = int(connection.pin_index)
+                if old_pin_index not in remap:
+                    if 0 <= old_pin_index < len(component.pins):
+                        try:
+                            px, py = component.get_pin_position(old_pin_index)
+                        except IndexError:
+                            continue
+                        if endpoint_name == "start_connection" and wire.segments:
+                            wire.segments[0].x1 = px
+                            wire.segments[0].y1 = py
+                        elif endpoint_name == "end_connection" and wire.segments:
+                            wire.segments[-1].x2 = px
+                            wire.segments[-1].y2 = py
+                    continue
+
+                new_pin_index = remap[old_pin_index]
+                if new_pin_index is None:
+                    if record_detached:
+                        self._detached_endpoints.append((wire.id, endpoint_name, old_pin_index))
+                    setattr(wire, endpoint_name, None)
+                    continue
+
+                connection.pin_index = int(new_pin_index)
+                try:
+                    px, py = component.get_pin_position(connection.pin_index)
+                except IndexError:
+                    setattr(wire, endpoint_name, None)
+                    continue
+                if endpoint_name == "start_connection" and wire.segments:
+                    wire.segments[0].x1 = px
+                    wire.segments[0].y1 = py
+                elif endpoint_name == "end_connection" and wire.segments:
+                    wire.segments[-1].x2 = px
+                    wire.segments[-1].y2 = py
+
     def execute(self) -> None:
         """Apply the new state."""
         component = self._circuit.get_component(self._component_id)
@@ -240,21 +336,48 @@ class UpdateComponentStateCommand(Command):
         if self._old_state is None:
             self._old_state = self.snapshot(component)
 
+        remap = self._build_pin_index_remap(self._old_state, self._new_state)
+        self._detached_endpoints = []
+
         if self._already_applied:
+            self._remap_connected_wires(component, remap, record_detached=True)
             self._already_applied = False
             return
 
         self._apply(component, self._new_state)
+        self._remap_connected_wires(component, remap, record_detached=True)
 
     def undo(self) -> None:
         """Restore the old state."""
         component = self._circuit.get_component(self._component_id)
         if component is None or self._old_state is None:
             return
+        remap = self._build_pin_index_remap(self._new_state, self._old_state)
         self._apply(component, self._old_state)
+        self._remap_connected_wires(component, remap)
+        for wire_id, endpoint_name, pin_index in self._detached_endpoints:
+            wire = self._circuit.get_wire(wire_id)
+            if wire is None:
+                continue
+            if getattr(wire, endpoint_name, None) is not None:
+                continue
+            connection = WireConnection(component_id=self._component_id, pin_index=int(pin_index))
+            setattr(wire, endpoint_name, connection)
+            try:
+                px, py = component.get_pin_position(connection.pin_index)
+            except IndexError:
+                setattr(wire, endpoint_name, None)
+                continue
+            if endpoint_name == "start_connection" and wire.segments:
+                wire.segments[0].x1 = px
+                wire.segments[0].y1 = py
+            elif endpoint_name == "end_connection" and wire.segments:
+                wire.segments[-1].x2 = px
+                wire.segments[-1].y2 = py
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         if component is not None:
             return f"Edit {component.name}"
@@ -310,6 +433,7 @@ class ChangeParameterCommand(Command):
 
     @property
     def description(self) -> str:
+        """Return the command text displayed in the undo/redo history."""
         component = self._circuit.get_component(self._component_id)
         name = component.name if component else str(self._component_id)[:8]
         return f"Change {name}.{self._param_name}"

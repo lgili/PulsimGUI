@@ -47,7 +47,7 @@ class ExportService:
             filepath: Path to save the netlist
         """
         lines = [
-            f"* SPICE Netlist exported from PulsimGui",
+            "* SPICE Netlist exported from PulsimGui",
             f"* Circuit: {circuit.name}",
             "",
         ]
@@ -60,7 +60,6 @@ class ExportService:
             if comp.type == ComponentType.GROUND:
                 continue  # Ground is implicit in SPICE (node 0)
 
-            spice_prefix = SPICE_COMPONENT_MAP.get(comp.type, "X")
             spice_line = ExportService._component_to_spice(comp, node_map)
             if spice_line:
                 lines.append(spice_line)
@@ -206,32 +205,41 @@ class ExportService:
             filepath: Path to save the image
             scale: Scale factor for higher resolution (default 2.0 for 2x resolution)
         """
-        # Get scene bounds with some padding
+        image = ExportService.render_schematic_image(scene, scale=scale)
+        image.save(filepath)
+
+    @staticmethod
+    def render_schematic_image(
+        scene: "SchematicScene",
+        *,
+        scale: float = 2.0,
+        padding: int = 50,
+    ) -> QImage:
+        """Render the schematic scene to a QImage without writing to disk.
+
+        Reused by ``export_schematic_png`` and by the clipboard action
+        ``Edit → Copy Schematic as Image`` so both code paths produce
+        an identical render.
+        """
         bounds = scene.itemsBoundingRect()
-        padding = 50
         bounds = bounds.adjusted(-padding, -padding, padding, padding)
 
-        # Create image with scaled dimensions
         width = int(bounds.width() * scale)
         height = int(bounds.height() * scale)
-
         if width <= 0 or height <= 0:
-            # Empty scene - create minimal image
             width = 100
             height = 100
 
         image = QImage(width, height, QImage.Format.Format_ARGB32)
         image.fill(scene.background_color)
 
-        # Render scene to image
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.scale(scale, scale)
         painter.translate(-bounds.topLeft())
         scene.render(painter, QRectF(), bounds)
         painter.end()
-
-        image.save(filepath)
+        return image
 
     @staticmethod
     def export_schematic_svg(scene: "SchematicScene", filepath: str) -> None:

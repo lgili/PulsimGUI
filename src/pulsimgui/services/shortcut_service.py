@@ -1,7 +1,6 @@
 """Keyboard shortcut service for managing customizable shortcuts."""
 
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence

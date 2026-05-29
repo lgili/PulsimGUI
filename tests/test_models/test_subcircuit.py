@@ -2,12 +2,11 @@
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.models.subcircuit import (
-    BoundaryPortCandidate,
     create_subcircuit_from_selection,
     detect_boundary_ports,
 )
+from pulsimgui.models.wire import Wire, WireSegment
 
 
 def _build_simple_circuit() -> tuple[Circuit, Component, Component]:

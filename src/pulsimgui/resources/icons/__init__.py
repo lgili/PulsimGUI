@@ -27,7 +27,7 @@ ICON_MAP = {
     "trash": "ph.trash",
     "delete": "ph.x",
     "edit": "ph.pencil-simple",
-    "rename": "ph.textbox",
+    "rename": "ph.text-t",
 
     # View/Zoom
     "zoom-in": "ph.magnifying-glass-plus",
@@ -40,6 +40,8 @@ ICON_MAP = {
     "stop": "ph.stop",
     "pause": "ph.pause",
     "square": "ph.stop",
+    "step-forward": "ph.skip-forward",
+    "step-forward-filled": "ph.skip-forward-fill",
 
     # Navigation
     "chevron-right": "ph.caret-right",
@@ -51,6 +53,10 @@ ICON_MAP = {
     "search": "ph.magnifying-glass",
     "settings": "ph.gear",
     "menu": "ph.list",
+    "sidebar": "ph.sidebar-simple",
+    "sidebar-filled": "ph.sidebar-simple-fill",
+    "panel-left": "mdi6.page-layout-sidebar-left",
+    "panel-right": "mdi6.page-layout-sidebar-right",
     "x": "ph.x",
     "plus": "ph.plus",
     "minus": "ph.minus",
@@ -63,17 +69,27 @@ ICON_MAP = {
     "zap": "ph.lightning",  # Sources
     "cpu": "ph.cpu",  # Semiconductors
     "box": "ph.cube",  # Passive
-    "activity": "ph.pulse",  # Measurements
+    "activity": "ph.activity",  # Measurements
     "tool": "ph.wrench",  # Misc
     "grid": "ph.grid-four",  # Grid
+    "grid-filled": "ph.grid-four-fill",  # Dense grid icon for compact toolbars
     "wire": "ph.path",  # Schematic wire tool
     "hand": "ph.hand",  # Selection/hand tool
+    # P0.3 — rotate-cw/ccw used to share Phosphor's `arrow-clockwise`
+    # glyph, which is visually indistinguishable from the redo/undo
+    # icons. Switching to the `arrows-clockwise` set (round-trip object-
+    # rotation glyphs) avoids the "duplicate undo/redo" misread in the
+    # toolbar. Falls back to the original glyph names on older
+    # qtawesome versions.
+    "rotate-cw": "ph.arrows-clockwise",
+    "rotate-ccw": "ph.arrows-counter-clockwise",
     "star": "ph.star",  # Favorites
     "heart": "ph.heart",  # Favorites alt
     "clock": "ph.clock",  # Recently Used
 
     # Status bar icons
     "crosshairs": "ph.crosshair",
+    "crosshair-simple": "ph.crosshair-simple",
     "zoom": "ph.magnifying-glass",
     "selection": "ph.selection",
     "cursor": "ph.cursor",
@@ -90,6 +106,19 @@ ICON_MAP = {
 
     # Additional icons
     "layers": "ph.stack",
+    "table": "ph.table",
+    "wave": "ph.wave-sine",
+    "waveform": "ph.waveform",
+    "fit-view": "ph.corners-out",
+    "measurements": "ph.ruler",
+    "measurements-filled": "ph.ruler-fill",
+    "math": "ph.function",
+    "math-function": "mdi6.function-variant",
+    "fft-chart": "mdi6.chart-bell-curve-cumulative",
+    "brand-wave": "ph.wave-sine",
+    "sliders-horizontal": "ph.sliders-horizontal",
+    "style-tune": "mdi6.tune-variant",
+    "copy-filled": "ph.copy-fill",
     "lock": "ph.lock",
     "unlock": "ph.lock-open",
     "eye": "ph.eye",
@@ -112,6 +141,18 @@ class IconService:
 
     _cache: dict[tuple[str, str], QIcon] = {}
 
+    @staticmethod
+    def _resolve_qta_name(name: str) -> str:
+        """Resolve logical icon aliases or accept explicit QtAwesome names.
+
+        When callers pass names with a font prefix (e.g. ``mdi6.chart-line``),
+        we use them directly. Otherwise we map aliases from ``ICON_MAP`` and
+        fallback to Phosphor for backward compatibility.
+        """
+        if "." in name:
+            return name
+        return ICON_MAP.get(name, f"ph.{name}")
+
     @classmethod
     def get_icon(cls, name: str, color: str = "#666666", size: int = 16) -> QIcon:
         """Get a QIcon for the given icon name.
@@ -127,12 +168,10 @@ class IconService:
         if not HAS_QTAWESOME:
             return QIcon()
 
-        cache_key = (name, color)
+        qta_name = cls._resolve_qta_name(name)
+        cache_key = (qta_name, color)
         if cache_key in cls._cache:
             return cls._cache[cache_key]
-
-        # Get the QtAwesome icon name
-        qta_name = ICON_MAP.get(name, f"ph.{name}")
 
         try:
             icon = qta.icon(qta_name, color=color)

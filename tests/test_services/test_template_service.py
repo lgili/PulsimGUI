@@ -102,6 +102,17 @@ def test_template_project_loads_with_saved_simulation_settings() -> None:
     assert project.simulation_settings.dt > 0.0
 
 
+def test_buck_template_uses_robust_transient_defaults() -> None:
+    """Buck template should ship with convergence-safe transient defaults."""
+    project = TemplateService.create_project_from_template("buck_converter")
+
+    assert project is not None
+    settings = project.simulation_settings
+    assert settings.transient_robust_mode is True
+    assert settings.transient_auto_regularize is True
+    assert settings.max_iterations >= 50
+
+
 def test_template_loading_falls_back_to_packaged_resources(monkeypatch) -> None:
     """Release builds should load templates from bundled resources."""
 
@@ -117,3 +128,5 @@ def test_template_loading_falls_back_to_packaged_resources(monkeypatch) -> None:
     circuit = project.get_active_circuit()
     assert len(circuit.components) > 0
     assert len(circuit.wires) > 0
+    assert project.simulation_settings.transient_robust_mode is True
+    assert project.simulation_settings.transient_auto_regularize is True

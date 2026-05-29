@@ -9,21 +9,17 @@ These tests verify robust error handling for:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-import time
+from unittest.mock import MagicMock
 
 import pytest
 
 from pulsimgui.services import backend_adapter
 from pulsimgui.services.backend_adapter import (
+    BackendCallbacks,
     BackendLoader,
-    BackendInfo,
     PlaceholderBackend,
-    PulsimBackend,
 )
-from pulsimgui.services.backend_types import DCSettings, ACSettings
-from pulsimgui.services.backend_adapter import BackendCallbacks
+from pulsimgui.services.backend_types import ACSettings, DCSettings
 from pulsimgui.services.simulation_service import SimulationSettings
 
 
@@ -192,26 +188,14 @@ class TestInvalidCircuitData:
         2. But imported files might have unknown types
         3. Should show clear error message
         """
-        from pulsimgui.services.circuit_converter import CircuitConversionError
-
-        circuit_data = {
-            "components": [
-                {
-                    "id": "x1",
-                    "type": "INVALID_TYPE",
-                    "name": "X1",
-                    "pin_nodes": ["a", "b"],
-                }
-            ],
-            "node_map": {"x1": ["a", "b"]},
-        }
 
         # This would fail in CircuitConverter
         # The actual conversion happens in PulsimBackend
         # We test the error type exists
-        with pytest.raises(Exception):
+        with pytest.raises(KeyError):
             # CircuitConverter would raise this
             from pulsimgui.models.component import ComponentType
+
             ComponentType["INVALID_TYPE"]
 
     def test_missing_node_connectivity(self) -> None:
@@ -280,7 +264,7 @@ class TestConvergenceFailures:
         4. Suggestions should appear for improving convergence
         """
         # Create mock result with convergence failure
-        from pulsimgui.services.backend_types import DCResult, ConvergenceInfo
+        from pulsimgui.services.backend_types import ConvergenceInfo, DCResult
 
         failed_result = DCResult(
             convergence_info=ConvergenceInfo(
@@ -399,7 +383,7 @@ class TestTimeoutHandling:
         )
 
         settings = SimulationSettings(t_start=0, t_stop=1e-3, t_step=1e-6)
-        result = backend.run_transient({}, settings, callbacks)
+        backend.run_transient({}, settings, callbacks)
 
         # Should have received some progress updates
         assert len(progress_updates) > 0

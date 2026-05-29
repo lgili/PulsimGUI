@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.component import Component, ComponentType, set_thermal_port_enabled
 from pulsimgui.models.project import Project
-from pulsimgui.models.wire import Wire, WireSegment
-from pulsimgui.services.circuit_converter import CircuitConverter
+from pulsimgui.models.wire import Wire, WireConnection, WireSegment
+from pulsimgui.services.circuit_converter import CircuitConversionError, CircuitConverter
 from pulsimgui.utils.net_utils import build_node_map
 
 
@@ -86,6 +86,24 @@ class _CircuitWithVirtual(_CircuitNoAddNode):
         initial_voltage: float,
     ) -> None:
         self.snubbers.append((name, n1, n2, resistance, capacitance, initial_voltage))
+
+
+class _CircuitWithVirtualAndSource(_CircuitWithVirtual):
+    def __init__(self) -> None:
+        super().__init__()
+        self.voltage_sources: list[tuple[str, int, int, float]] = []
+
+    def add_voltage_source(self, name: str, n1: int, n2: int, value: float) -> None:
+        self.voltage_sources.append((name, n1, n2, value))
+
+
+class _CircuitWithVirtualAndSourceAndMosfet(_CircuitWithVirtualAndSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mosfets: list[tuple[str, int, int, int]] = []
+
+    def add_mosfet(self, name: str, gate: int, drain: int, source: int, params: object) -> None:
+        self.mosfets.append((name, gate, drain, source))
 
 
 class _CircuitWithDiode(_CircuitNoAddNode):
@@ -225,6 +243,888 @@ def test_converter_uses_virtual_component_for_unmapped_types() -> None:
     assert metadata["component_type"] == "BJT_NPN"
     assert metadata["model"] == "npn"
     assert metadata["notes"] == "[\"demo\", \"virtual\"]"
+
+
+def test_converter_normalizes_cblock_virtual_component_metadata() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "source",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "source": "C:\\workspace\\blocks\\ctrl.c",
+                    "extra_cflags": ["-O3", "-DGAIN=2"],
+                    "compiler": "clang",
+                    "source_code": "int main(void){return 0;}",
+                },
+                "pin_nodes": ["1", "2", "3"],
+            }
+        ],
+        "node_map": {"cb1": ["1", "2", "3"]},
+        "node_aliases": {"1": "IN_A", "2": "IN_B", "3": "OUT"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    comp_type, name, _nodes, numeric_params, metadata = converted.virtual_components[0]
+    assert comp_type == "c_block"
+    assert name == "CB1"
+    assert numeric_params["n_inputs"] == 2.0
+    assert numeric_params["n_outputs"] == 1.0
+    assert "compiler" not in metadata
+    assert "source_code" not in metadata
+    assert metadata["source"] == "C:/workspace/blocks/ctrl.c"
+    assert metadata["extra_cflags"] == "[\"-O3\", \"-DGAIN=2\"]"
+
+
+def test_converter_allows_unmapped_cblock_pins_when_inputs_metadata_is_present() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                    "inputs": ["CTRL_A", "CTRL_B"],
+                },
+                "pin_nodes": ["", "", ""],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "IN1"},
+                    {"index": 2, "name": "OUT"},
+                ],
+            }
+        ],
+        "node_map": {"cb1": ["", "", ""]},
+        "node_aliases": {},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    _comp_type, _name, nodes, _numeric_params, metadata = converted.virtual_components[0]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"CTRL_A\", \"CTRL_B\"]"
+    assert "input_channel_0" not in metadata
+    assert "input_channel_1" not in metadata
+
+
+def test_converter_derives_cblock_input_channels_from_signal_wiring() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["10"],
+            },
+            {
+                "id": "xout",
+                "type": "VOLTAGE_PROBE",
+                "name": "Xout",
+                "parameters": {},
+                "pin_nodes": ["2", "0", "11"],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["10", "11", "12"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "IN1"},
+                    {"index": 2, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "xout": ["2", "0", "11"],
+            "cb1": ["10", "11", "12"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    assert len(converted.virtual_components) == 3
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "CB1" in by_name
+    _comp_type, nodes, _numeric, metadata = by_name["CB1"]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"K1\", \"Xout\"]"
+    assert "input_channel_0" not in metadata
+    assert "input_channel_1" not in metadata
+
+
+def test_converter_falls_back_to_wired_cblock_inputs_when_metadata_is_stale() -> None:
+    """Stale C-Block input channel metadata should be auto-healed from pin wiring."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["10"],
+            },
+            {
+                "id": "xout",
+                "type": "VOLTAGE_PROBE",
+                "name": "Xout",
+                "parameters": {},
+                "pin_nodes": ["2", "0", "11"],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 2,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                    "inputs": ["Xil", "Xout"],
+                },
+                "pin_nodes": ["10", "11", "12"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "IN1"},
+                    {"index": 2, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "xout": ["2", "0", "11"],
+            "cb1": ["10", "11", "12"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    _comp_type, nodes, _numeric, metadata = by_name["CB1"]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"K1\", \"Xout\"]"
+
+
+def test_converter_derives_cblock_inputs_through_goto_from_router() -> None:
+    """C-Block channel mapping should resolve Goto->From label routers."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 2.0},
+                "pin_nodes": ["10"],
+                "pins": [{"index": 0, "name": "OUT"}],
+            },
+            {
+                "id": "g1",
+                "type": "GOTO_LABEL",
+                "name": "G1",
+                "parameters": {"net_label": "BUS_CTRL"},
+                "pin_nodes": ["10"],
+                "pins": [{"index": 0, "name": "NET"}],
+            },
+            {
+                "id": "f1",
+                "type": "FROM_LABEL",
+                "name": "F1",
+                "parameters": {"net_label": "BUS_CTRL"},
+                "pin_nodes": ["20"],
+                "pins": [{"index": 0, "name": "NET"}],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["20", "30"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "g1": ["10"],
+            "f1": ["20"],
+            "cb1": ["20", "30"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    _comp_type, nodes, _numeric, metadata = by_name["CB1"]
+    assert nodes == [0]
+    assert metadata["inputs"] == "[\"K1\"]"
+
+
+def test_converter_emits_constant_cblock_input_as_probe_channel_when_supported() -> None:
+    """Backends that support sources should get CONSTANT->C_BLOCK channels as probe channels."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtualAndSource)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "k1",
+                "type": "CONSTANT",
+                "name": "K1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["10"],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["10", "12"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {
+            "k1": ["10"],
+            "cb1": ["10", "12"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "K1" in by_name
+    k1_type, _k1_nodes, _k1_numeric, _k1_metadata = by_name["K1"]
+    assert k1_type == "voltage_probe"
+
+    assert any(
+        source_name == "__CONST_SRC_K1" and abs(value - 6.0) < 1e-12
+        for source_name, _npos, _nneg, value in converted.voltage_sources
+    )
+
+    _cb_type, cb_nodes, _cb_numeric, cb_metadata = by_name["CB1"]
+    assert cb_nodes == [0]
+    assert cb_metadata["inputs"] == "[\"K1\"]"
+
+
+def test_converter_rejects_cblock_input_without_control_signal_source() -> None:
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "vin",
+                "type": "VOLTAGE_SOURCE",
+                "name": "Vin",
+                "parameters": {"waveform": {"type": "dc", "value": 12.0}},
+                "pin_nodes": ["1", "0"],
+            },
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "implementation": "library",
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "lib_path": "/tmp/libcb.so",
+                },
+                "pin_nodes": ["1", "2"],
+                "pins": [
+                    {"index": 0, "name": "IN0"},
+                    {"index": 1, "name": "OUT"},
+                ],
+            },
+        ],
+        "node_map": {"vin": ["1", "0"], "cb1": ["1", "2"]},
+        "node_aliases": {"0": "0"},
+    }
+
+    with pytest.raises(CircuitConversionError, match="must be driven by a control signal output"):
+        converter.build(circuit_data)
+
+
+def test_converter_maps_delay_block_delay_time_to_backend_delay() -> None:
+    """Delay block should forward delay_time using backend's expected delay key."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "dly1",
+                "type": "DELAY_BLOCK",
+                "name": "DLY1",
+                "parameters": {"delay_time": 2.5e-4},
+                "pin_nodes": ["1", "2"],
+            }
+        ],
+        "node_map": {"dly1": ["1", "2"]},
+        "node_aliases": {"1": "IN", "2": "OUT"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert len(converted.virtual_components) == 1
+    comp_type, _name, _nodes, numeric_params, _metadata = converted.virtual_components[0]
+    assert comp_type == "delay_block"
+    assert numeric_params["delay_time"] == pytest.approx(2.5e-4)
+    assert numeric_params["delay"] == pytest.approx(2.5e-4)
+
+
+def test_converter_promotes_buck_closed_loop_chain_to_native_pi_pwm() -> None:
+    """Buck-style X1->SUB->PI->PWM chain should map to backend-native PI/PWM controls."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtualAndSource)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "xout",
+                "type": "VOLTAGE_PROBE",
+                "name": "Xout",
+                "parameters": {"display_name": "Vout"},
+                "pin_nodes": ["4", "0", "6"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {"frequency": 10000.0, "duty_cycle": 0.5},
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "x1",
+                "type": "CONSTANT",
+                "name": "X1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["8"],
+            },
+            {
+                "id": "sub1",
+                "type": "SUBTRACTOR",
+                "name": "SUB1",
+                "parameters": {"input_count": 2},
+                "pin_nodes": ["8", "6", "9"],
+            },
+            {
+                "id": "pi1",
+                "type": "PI_CONTROLLER",
+                "name": "PI1",
+                "parameters": {"kp": 0.08, "ki": 100.0, "output_min": 0.0, "output_max": 0.95},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "s1",
+                "type": "SWITCH",
+                "name": "S1",
+                "parameters": {"v_threshold": 2.5, "ron": 0.001, "roff": 1e9},
+                "pin_nodes": ["1", "3", "2"],
+            },
+        ],
+        "node_map": {
+            "xout": ["4", "0", "6"],
+            "pwm1": ["2", "7"],
+            "x1": ["8"],
+            "sub1": ["8", "6", "9"],
+            "pi1": ["9", "7"],
+            "s1": ["1", "3", "2"],
+        },
+        "node_aliases": {"4": "VOUT", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+
+    assert "PI1" in by_name
+    assert "PWM1" in by_name
+    assert "SUB1" not in by_name
+    assert "X1" not in by_name
+
+    _ptype, pi_nodes, _pi_numeric, _pi_meta = by_name["PI1"]
+    assert len(pi_nodes) == 3
+
+    _ptype, _pwm_nodes, _pwm_numeric, pwm_meta = by_name["PWM1"]
+    assert pwm_meta.get("duty_from_channel") == "PI1"
+    assert pwm_meta.get("target_component") == "S1"
+
+    assert any(name == "PI1_REF" for name, *_rest in converted.voltage_sources)
+
+
+def test_converter_grounds_controlled_mosfet_gate_for_native_pwm_target() -> None:
+    """Native PWM target should tie MOSFET gate to ground to avoid floating control nodes."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "xout",
+                "type": "VOLTAGE_PROBE",
+                "name": "Xout",
+                "parameters": {"display_name": "Vout"},
+                "pin_nodes": ["4", "0", "6"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {"frequency": 10000.0, "duty_cycle": 0.5},
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "x1",
+                "type": "CONSTANT",
+                "name": "X1",
+                "parameters": {"value": 6.0},
+                "pin_nodes": ["8"],
+            },
+            {
+                "id": "sub1",
+                "type": "SUBTRACTOR",
+                "name": "SUB1",
+                "parameters": {"input_count": 2},
+                "pin_nodes": ["8", "6", "9"],
+            },
+            {
+                "id": "pi1",
+                "type": "PI_CONTROLLER",
+                "name": "PI1",
+                "parameters": {"kp": 0.08, "ki": 100.0, "output_min": 0.0, "output_max": 0.95},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {
+            "xout": ["4", "0", "6"],
+            "pwm1": ["2", "7"],
+            "x1": ["8"],
+            "sub1": ["8", "6", "9"],
+            "pi1": ["9", "7"],
+            "m1": ["10", "2", "0"],
+        },
+        "node_aliases": {"4": "VOUT", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+
+    assert by_name["PWM1"][3].get("target_component") == "M1"
+    assert converted.mosfets
+    _name, gate, _drain, _source = converted.mosfets[0]
+    assert gate == 0
+
+
+def test_converter_infers_cblock_pwm_duty_channel_from_wiring() -> None:
+    """C-Block output wired to PWM DUTY_IN should drive native PWM duty metadata."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "source": "examples/cblocks/buck_pi_controller.c",
+                },
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {"frequency": 10000.0, "duty_cycle": 0.5, "duty_min": 0.0, "duty_max": 0.95},
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {
+            "cb1": ["9", "7"],
+            "pwm1": ["2", "7"],
+            "m1": ["10", "2", "0"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+
+    assert "PWM1" in by_name
+    _ptype, _nodes, _numeric, pwm_meta = by_name["PWM1"]
+    assert pwm_meta.get("duty_from_channel") == "CB1"
+    assert pwm_meta.get("target_component") == "M1"
+
+    assert converted.mosfets
+    _name, gate, _drain, _source = converted.mosfets[0]
+    assert gate == 0
+
+
+def test_converter_virtual_pwm_drops_period_locked_sample_time() -> None:
+    """Virtual PWM should avoid sample_time values that lock carrier at phase reset."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "examples/cblocks/buck_pi_controller.c"},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {
+                    "frequency": 10000.0,
+                    "duty_cycle": 0.5,
+                    "duty_min": 0.0,
+                    "duty_max": 0.95,
+                    "sample_time": 1e-4,
+                },
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {"cb1": ["9", "7"], "pwm1": ["2", "7"], "m1": ["10", "2", "0"]},
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "PWM1" in by_name
+    _ptype, _nodes, pwm_numeric, pwm_meta = by_name["PWM1"]
+    assert pwm_meta.get("duty_from_channel") == "CB1"
+    assert pwm_meta.get("target_component") == "M1"
+    assert pwm_numeric.get("sample_time") == pytest.approx(0.0)
+    assert pwm_numeric.get("sample_period") == pytest.approx(0.0)
+
+
+def test_converter_virtual_pwm_keeps_fast_sample_time() -> None:
+    """Virtual PWM should preserve sample_time values well below switching period."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {"n_inputs": 1, "n_outputs": 1, "source": "examples/cblocks/buck_pi_controller.c"},
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {
+                    "frequency": 10000.0,
+                    "duty_cycle": 0.5,
+                    "duty_min": 0.0,
+                    "duty_max": 0.95,
+                    "sample_time": 1e-6,
+                },
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {"cb1": ["9", "7"], "pwm1": ["2", "7"], "m1": ["10", "2", "0"]},
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "PWM1" in by_name
+    _ptype, _nodes, pwm_numeric, _pwm_meta = by_name["PWM1"]
+    assert pwm_numeric.get("sample_time") == pytest.approx(1e-6)
+    assert pwm_numeric.get("sample_period") == pytest.approx(1e-6)
+
+
+def test_converter_normalizes_explicit_cblock_duty_channel_to_first_output() -> None:
+    """Explicit C-Block duty binding should be normalized to the first output channel."""
+    fake_module = SimpleNamespace(
+        Circuit=_CircuitWithVirtualAndSourceAndMosfet,
+        MOSFETParams=SimpleNamespace,
+    )
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "cb1",
+                "type": "C_BLOCK",
+                "name": "CB1",
+                "parameters": {
+                    "n_inputs": 1,
+                    "n_outputs": 1,
+                    "source": "examples/cblocks/buck_pi_controller.c",
+                },
+                "pin_nodes": ["9", "7"],
+            },
+            {
+                "id": "pwm1",
+                "type": "PWM_GENERATOR",
+                "name": "PWM1",
+                "parameters": {
+                    "frequency": 10000.0,
+                    "duty_cycle": 0.5,
+                    "duty_from_channel": "CB1",
+                    "duty_min": 0.0,
+                    "duty_max": 0.95,
+                },
+                "pin_nodes": ["2", "7"],
+            },
+            {
+                "id": "m1",
+                "type": "MOSFET_N",
+                "name": "M1",
+                "parameters": {"vth": 3.0, "kp": 0.35, "lambda_": 0.01, "g_off": 1e-8},
+                "pin_nodes": ["10", "2", "0"],
+            },
+        ],
+        "node_map": {
+            "cb1": ["9", "7"],
+            "pwm1": ["2", "7"],
+            "m1": ["10", "2", "0"],
+        },
+        "node_aliases": {"0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+    by_name = {
+        name: (comp_type, nodes, numeric_params, metadata)
+        for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components
+    }
+    assert "PWM1" in by_name
+    _ptype, _nodes, _numeric, pwm_meta = by_name["PWM1"]
+    assert pwm_meta.get("duty_from_channel") == "CB1"
+
+
+def test_converter_maps_current_probe_to_virtual_backend_component() -> None:
+    """Current probe should be emitted as backend current_probe virtual component."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "ip1",
+                "type": "CURRENT_PROBE",
+                "name": "IP1",
+                "parameters": {},
+                "pin_nodes": ["1", "2", ""],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 10.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"ip1": ["1", "2", ""], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VIN", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {name: (comp_type, nodes, numeric_params, metadata) for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components}
+    assert "IP1" in by_name
+    comp_type, nodes, _numeric_params, metadata = by_name["IP1"]
+    assert comp_type == "current_probe"
+    assert nodes == [1, 2]
+    assert metadata.get("target_component") == "R1"
+    assert ("__IP_BYPASS_IP1", 1, 2, 1e-4) in converted.devices
+
+
+def test_converter_current_probe_keeps_branch_continuity_without_virtual_support() -> None:
+    """Current probe must not open the branch even when virtual probes are unavailable."""
+    fake_module = SimpleNamespace(Circuit=_CircuitNoAddNode)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "ip1",
+                "type": "CURRENT_PROBE",
+                "name": "IP1",
+                "parameters": {},
+                "pin_nodes": ["1", "2", ""],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 10.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"ip1": ["1", "2", ""], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VIN", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    assert ("__IP_BYPASS_IP1", 1, 2, 1e-4) in converted.devices
+    assert ("R1", 2, 0, 10.0) in converted.devices
+
+
+def test_converter_maps_power_probe_to_virtual_backend_component() -> None:
+    """Power probe should be emitted as backend power_probe virtual component."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    converter = CircuitConverter(fake_module)
+
+    circuit_data = {
+        "components": [
+            {
+                "id": "pp1",
+                "type": "POWER_PROBE",
+                "name": "PP1",
+                "parameters": {},
+                "pin_nodes": ["1", "0", "2", "0"],
+            },
+            {
+                "id": "r1",
+                "type": "RESISTOR",
+                "name": "R1",
+                "parameters": {"resistance": 5.0},
+                "pin_nodes": ["2", "0"],
+            },
+        ],
+        "node_map": {"pp1": ["1", "0", "2", "0"], "r1": ["2", "0"]},
+        "node_aliases": {"1": "VOUT", "2": "SW", "0": "0"},
+    }
+
+    converted = converter.build(circuit_data)
+
+    by_name = {name: (comp_type, nodes, numeric_params, metadata) for comp_type, name, nodes, numeric_params, metadata in converted.virtual_components}
+    assert "PP1" in by_name
+    comp_type, nodes, _numeric_params, metadata = by_name["PP1"]
+    assert comp_type == "power_probe"
+    assert nodes == [1, 0]
+    assert metadata.get("target_component") == "R1"
 
 
 def test_converter_prefers_native_switch_and_snubber_methods() -> None:
@@ -403,6 +1303,109 @@ def test_build_node_map_does_not_merge_cross_domain_shared_points() -> None:
     resistor_node = node_map[(str(resistor.id), 1)]
     controller_node = node_map[(str(controller.id), 0)]
     assert resistor_node != controller_node
+
+
+def test_build_node_map_uses_explicit_wire_endpoint_metadata_for_thermal_pin() -> None:
+    """Explicit wire endpoint metadata should survive stale endpoint geometry."""
+
+    circuit = Circuit(name="thermal-explicit-endpoints")
+    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=120.0, y=120.0)
+    set_thermal_port_enabled(resistor, True)
+    scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1", x=260.0, y=120.0)
+    circuit.add_component(resistor)
+    circuit.add_component(scope)
+
+    r_th_x, r_th_y = resistor.get_pin_position(2)
+    s_in_x, s_in_y = scope.get_pin_position(0)
+
+    # Simulate a legacy file with stale wire geometry no longer touching pins.
+    wire = Wire(
+        segments=[WireSegment(r_th_x + 25.0, r_th_y + 25.0, s_in_x + 25.0, s_in_y + 25.0)],
+        start_connection=WireConnection(component_id=resistor.id, pin_index=2),
+        end_connection=WireConnection(component_id=scope.id, pin_index=0),
+    )
+    circuit.add_wire(wire)
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(resistor.id), 2)] == node_map[(str(scope.id), 0)]
+
+
+def test_build_node_map_merges_goto_from_with_same_label() -> None:
+    """Goto/From labels with same net name should bridge distant wires."""
+    circuit = Circuit(name="goto-from-merge")
+    r1 = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    r2 = Component(type=ComponentType.RESISTOR, name="R2", x=320.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="G1", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=240.0, y=100.0)
+    goto.parameters["net_label"] = "BUS_A"
+    from_label.parameters["net_label"] = "BUS_A"
+
+    circuit.add_component(r1)
+    circuit.add_component(r2)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    x1, y1 = r1.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    x2, y2 = r2.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, x2, y2)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(r1.id), 1)] == node_map[(str(r2.id), 0)]
+
+
+def test_build_node_map_merges_goto_from_by_name_when_label_missing() -> None:
+    """Goto/From should bridge nets by component name when net_label is empty."""
+    circuit = Circuit(name="goto-from-name-fallback")
+    r1 = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    r2 = Component(type=ComponentType.RESISTOR, name="R2", x=320.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="BUS_A", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="BUS_A", x=240.0, y=100.0)
+    goto.parameters["net_label"] = ""
+    from_label.parameters["net_label"] = ""
+
+    circuit.add_component(r1)
+    circuit.add_component(r2)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    x1, y1 = r1.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    x2, y2 = r2.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, x2, y2)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(r1.id), 1)] == node_map[(str(r2.id), 0)]
+
+
+def test_build_node_map_does_not_merge_goto_from_across_domains() -> None:
+    """Same label must not short circuit and signal domains together."""
+    circuit = Circuit(name="goto-from-domain-isolation")
+    resistor = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
+    controller = Component(type=ComponentType.PI_CONTROLLER, name="PI1", x=300.0, y=100.0)
+    goto = Component(type=ComponentType.GOTO_LABEL, name="G1", x=180.0, y=100.0)
+    from_label = Component(type=ComponentType.FROM_LABEL, name="F1", x=240.0, y=100.0)
+    goto.parameters["net_label"] = "BUS_X"
+    from_label.parameters["net_label"] = "BUS_X"
+
+    circuit.add_component(resistor)
+    circuit.add_component(controller)
+    circuit.add_component(goto)
+    circuit.add_component(from_label)
+
+    xr, yr = resistor.get_pin_position(1)
+    xg, yg = goto.get_pin_position(0)
+    xf, yf = from_label.get_pin_position(0)
+    xc, yc = controller.get_pin_position(0)
+    circuit.add_wire(Wire(segments=[WireSegment(xr, yr, xg, yg)]))
+    circuit.add_wire(Wire(segments=[WireSegment(xf, yf, xc, yc)]))
+
+    node_map = build_node_map(circuit)
+    assert node_map[(str(resistor.id), 1)] != node_map[(str(controller.id), 0)]
 
 
 def test_buck_example_keeps_vin_sw_and_vout_as_distinct_nets() -> None:

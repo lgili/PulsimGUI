@@ -1,13 +1,12 @@
 """Minimap widget for navigating large schematics."""
 
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QWidget,
-    QGraphicsView,
-    QGraphicsScene,
     QFrame,
+    QGraphicsView,
     QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.services.theme_service import Theme

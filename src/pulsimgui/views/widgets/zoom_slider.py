@@ -2,11 +2,11 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget,
     QHBoxLayout,
-    QSlider,
-    QPushButton,
     QLabel,
+    QPushButton,
+    QSlider,
+    QWidget,
 )
 
 from pulsimgui.resources.icons import IconService

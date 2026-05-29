@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
+from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.models.project import Project
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.backend_runtime_service import (
     DEFAULT_BACKEND_TARGET_VERSION,
     BackendInstallResult,
     BackendRuntimeConfig,
 )
-from pulsimgui.services.simulation_service import SimulationService, SimulationSettings
+from pulsimgui.services.simulation_service import (
+    SimulationResult,
+    SimulationService,
+    SimulationSettings,
+    SimulationState,
+    SimulationWorker,
+)
 
 
 class _DummyBackend:
@@ -98,8 +107,13 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
         thermal_include_switching_losses=False,
         thermal_include_conduction_losses=True,
         thermal_network="cauer",
+        thermal_policy="loss_only",
+        thermal_default_rth=2.5,
+        thermal_default_cth=0.4,
         formulation_mode="direct",
         direct_formulation_fallback=False,
+        control_mode="discrete",
+        control_sample_time=2e-6,
     )
 
     assert fake_settings.sim_settings is not None
@@ -118,8 +132,13 @@ def test_settings_assignment_persists_simulation_and_solver(monkeypatch) -> None
     assert fake_settings.solver_settings["thermal_include_switching_losses"] is False
     assert fake_settings.solver_settings["thermal_include_conduction_losses"] is True
     assert fake_settings.solver_settings["thermal_network"] == "cauer"
+    assert fake_settings.solver_settings["thermal_policy"] == "loss_only"
+    assert fake_settings.solver_settings["thermal_default_rth"] == 2.5
+    assert fake_settings.solver_settings["thermal_default_cth"] == 0.4
     assert fake_settings.solver_settings["formulation_mode"] == "direct"
     assert fake_settings.solver_settings["direct_formulation_fallback"] is False
+    assert fake_settings.solver_settings["control_mode"] == "discrete"
+    assert fake_settings.solver_settings["control_sample_time"] == 2e-6
 
 
 def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch) -> None:
@@ -134,8 +153,13 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
             "thermal_include_switching_losses": False,
             "thermal_include_conduction_losses": False,
             "thermal_network": "cauer",
+            "thermal_policy": "loss_only",
+            "thermal_default_rth": 1.8,
+            "thermal_default_cth": 0.22,
             "formulation_mode": "direct",
             "direct_formulation_fallback": False,
+            "control_mode": "discrete",
+            "control_sample_time": 1e-6,
         }
     )
     service = SimulationService(settings_service=fake_settings)
@@ -148,8 +172,13 @@ def test_solver_settings_loaded_without_forcing_voltage_limiting_off(monkeypatch
     assert service.settings.thermal_include_switching_losses is False
     assert service.settings.thermal_include_conduction_losses is False
     assert service.settings.thermal_network == "cauer"
+    assert service.settings.thermal_policy == "loss_only"
+    assert service.settings.thermal_default_rth == 1.8
+    assert service.settings.thermal_default_cth == 0.22
     assert service.settings.formulation_mode == "direct"
     assert service.settings.direct_formulation_fallback is False
+    assert service.settings.control_mode == "discrete"
+    assert service.settings.control_sample_time == 1e-6
 
 
 def test_default_runtime_target_version_loaded_when_settings_empty(monkeypatch) -> None:
@@ -209,3 +238,934 @@ def test_install_backend_runtime_success_reloads_backends(monkeypatch) -> None:
 
     assert result.success
     assert reloaded["called"] is True
+
+
+def test_prevalidate_uses_payload_control_contract(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(control_mode="discrete", control_sample_time=0.0)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {"control": {"mode": "auto"}},
+            "components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}],
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_invalid_pwm_target_component(monkeypatch) -> None:
+    class _ReadyBackend:
+        def __init__(self) -> None:
+            self.info = BackendInfo(
+                identifier="pulsim",
+                name="Pulsim",
+                version="0.6.0",
+                status="available",
+            )
+            self.run_transient_calls = 0
+
+        def has_capability(self, _name: str) -> bool:
+            return True
+
+        def run_transient(self, *_args, **_kwargs):
+            self.run_transient_calls += 1
+            raise AssertionError("run_transient should not be called for invalid PWM target")
+
+    backend = _ReadyBackend()
+
+    class _ReadyLoader:
+        def __init__(self, preferred_backend_id: str | None = None) -> None:
+            _ = preferred_backend_id
+            self.backend = backend
+            self.available_backends = [backend.info]
+            self.active_backend_id = backend.info.identifier
+
+        def activate(self, identifier: str):
+            if identifier != backend.info.identifier:
+                raise ValueError(identifier)
+            return self.backend.info
+
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
+    service = SimulationService()
+
+    errors: list[str] = []
+    service.error.connect(errors.append)
+    service.run_transient(
+        {
+            "components": [
+                {"type": "RESISTOR", "name": "R1", "parameters": {}},
+                {
+                    "type": "PWM_GENERATOR",
+                    "name": "PWM1",
+                    "parameters": {"target_component": "R1"},
+                },
+            ]
+        }
+    )
+
+    assert errors
+    assert "PULSIM_YAML_E_CONTROL_TARGET_INVALID" in errors[-1]
+    assert service.state == SimulationState.IDLE
+    assert backend.run_transient_calls == 0
+
+
+def test_prevalidate_blocks_unsupported_thermal_component(monkeypatch) -> None:
+    class _ReadyBackend:
+        def __init__(self) -> None:
+            self.info = BackendInfo(
+                identifier="pulsim",
+                name="Pulsim",
+                version="0.6.0",
+                status="available",
+            )
+            self.run_transient_calls = 0
+
+        def has_capability(self, _name: str) -> bool:
+            return True
+
+        def run_transient(self, *_args, **_kwargs):
+            self.run_transient_calls += 1
+            raise AssertionError("run_transient should not be called for invalid thermal component")
+
+    backend = _ReadyBackend()
+
+    class _ReadyLoader:
+        def __init__(self, preferred_backend_id: str | None = None) -> None:
+            _ = preferred_backend_id
+            self.backend = backend
+            self.available_backends = [backend.info]
+            self.active_backend_id = backend.info.identifier
+
+        def activate(self, identifier: str):
+            if identifier != backend.info.identifier:
+                raise ValueError(identifier)
+            return self.backend.info
+
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _ReadyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    errors: list[str] = []
+    service.error.connect(errors.append)
+    service.run_transient(
+        {
+            "components": [
+                {
+                    "type": "CAPACITOR",
+                    "name": "C1",
+                    "parameters": {
+                        "thermal_enabled": True,
+                        "thermal_rth": 1.0,
+                        "thermal_cth": 0.1,
+                        "thermal_temp_init": 25.0,
+                        "thermal_temp_ref": 25.0,
+                        "thermal_alpha": 0.004,
+                    },
+                }
+            ]
+        }
+    )
+
+    assert errors
+    assert "PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT" in errors[-1]
+    assert service.state == SimulationState.IDLE
+    assert backend.run_transient_calls == 0
+
+
+def test_worker_adds_runtime_consistency_kpis() -> None:
+    worker = SimulationWorker(
+        backend=_DummyBackend(),
+        circuit_data={
+            "components": [
+                {"type": "MOSFET_N", "name": "M1", "parameters": {}},
+                {"type": "RESISTOR", "name": "Rload", "parameters": {}},
+                {"type": "PI_CONTROLLER", "name": "PI1", "parameters": {}},
+                {"type": "PWM_GENERATOR", "name": "PWM1", "parameters": {"duty_min": 0.0, "duty_max": 0.95}},
+            ]
+        },
+        settings=SimulationSettings(t_stop=1e-3, t_step=1e-6, enable_losses=True),
+    )
+
+    result = SimulationResult(
+        time=[0.0, 1e-3],
+        signals={
+            "PI1": [0.1, 0.2],
+            "PWM1.duty": [0.4, 0.5],
+        },
+        statistics={
+            "loss_summary": {"total_loss": 10.0},
+            "thermal_summary": {
+                "enabled": True,
+                "ambient": 25.0,
+                "max_temperature": 50.0,
+                "device_temperatures": [
+                    {"device_name": "M1", "peak_temperature": 50.0},
+                    {"device_name": "Rload", "peak_temperature": 30.0},
+                ],
+            },
+            "component_electrothermal": [
+                {"component_name": "M1", "total_energy": 0.006, "peak_temperature": 50.0},
+                {"component_name": "Rload", "total_energy": 0.004, "peak_temperature": 30.0},
+            ],
+        },
+    )
+
+    worker._append_runtime_contract_checks(result)
+
+    assert result.statistics["runtime_contract_ok"] is True
+    assert result.statistics["component_coverage_rate"] == 1.0
+    assert result.statistics["component_coverage_gap"] == 0
+    assert result.statistics["component_loss_summary_consistency_error"] == 0.0
+    assert result.statistics["component_thermal_summary_consistency_error"] == 0.0
+
+
+def test_convert_gui_circuit_emits_pulsim_v1_simulation_contract(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(
+        t_start=0.0,
+        t_stop=2e-3,
+        t_step=2e-6,
+        step_mode="variable",
+        formulation_mode="direct",
+        direct_formulation_fallback=False,
+        enable_events=True,
+        enable_losses=True,
+        control_mode="discrete",
+        control_sample_time=5e-6,
+        thermal_ambient=30.0,
+        thermal_policy="loss_only",
+        thermal_default_rth=2.5,
+        thermal_default_cth=0.2,
+    )
+
+    project = Project(name="Contract")
+    circuit = project.get_active_circuit()
+    circuit.add_component(Component(type=ComponentType.VOLTAGE_SOURCE, name="Vin"))
+    circuit.add_component(Component(type=ComponentType.RESISTOR, name="R1"))
+
+    data = service.convert_gui_circuit(project)
+    sim = data["simulation"]
+
+    assert data["schema"] == "pulsim-v1"
+    assert data["version"] == 1
+    assert sim["tstart"] == 0.0
+    assert sim["tstop"] == 2e-3
+    assert sim["dt"] == 2e-6
+    assert sim["step_mode"] == "variable"
+    assert sim["formulation"] == "direct"
+    assert sim["direct_formulation_fallback"] is False
+    assert sim["control"]["mode"] == "discrete"
+    assert sim["control"]["sample_time"] == 5e-6
+    assert sim["thermal"]["enabled"] is True
+    assert sim["thermal"]["policy"] == "loss_only"
+    assert "backend" not in sim
+    assert "sundials" not in sim
+
+
+def test_convert_gui_circuit_derives_control_schedule_from_component_ts(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(
+        control_mode="continuous",
+        control_sample_time=0.0,
+    )
+
+    project = Project(name="ControlTs")
+    circuit = project.get_active_circuit()
+
+    pi = Component(type=ComponentType.PI_CONTROLLER, name="PI1")
+    pi.parameters["sample_time"] = 20e-6
+    pwm = Component(type=ComponentType.PWM_GENERATOR, name="PWM1")
+    pwm.parameters["sample_time"] = 5e-6
+    circuit.add_component(pi)
+    circuit.add_component(pwm)
+
+    data = service.convert_gui_circuit(project)
+    sim = data["simulation"]
+
+    assert sim["control"]["mode"] == "discrete"
+    assert sim["control"]["sample_time"] == 5e-6
+
+
+def test_convert_gui_circuit_returns_detached_cached_payload(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="DetachedPayload")
+    circuit = project.get_active_circuit()
+    resistor = Component(type=ComponentType.RESISTOR, name="R1")
+    resistor.parameters["resistance"] = 10.0
+    circuit.add_component(resistor)
+
+    first = service.convert_gui_circuit(project)
+    comp_first = next(comp for comp in first["components"] if comp.get("name") == "R1")
+    comp_first["parameters"]["resistance"] = 999.0
+
+    second = service.convert_gui_circuit(project)
+    comp_second = next(comp for comp in second["components"] if comp.get("name") == "R1")
+
+    assert comp_second["parameters"]["resistance"] == 10.0
+
+
+def test_convert_gui_circuit_emits_component_thermal_and_loss_blocks(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="ElectrothermalBlocks")
+    circuit = project.get_active_circuit()
+    m1 = Component(type=ComponentType.MOSFET_N, name="M1")
+    m1.parameters.update(
+        {
+            "thermal_enabled": True,
+            "thermal_network": "cauer",
+            "thermal_rth_stages": "0.2,0.3",
+            "thermal_cth_stages": "0.01,0.02",
+            "thermal_shared_sink_id": "HS1",
+            "thermal_shared_sink_rth": 0.25,
+            "thermal_shared_sink_cth": 0.04,
+            "switching_loss_model": "datasheet",
+            "switching_loss_axes_current": "0,10",
+            "switching_loss_axes_voltage": "0,20",
+            "switching_loss_axes_temperature": "25,125",
+            "switching_loss_eon_table": "1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6",
+            "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6",
+        }
+    )
+    circuit.add_component(m1)
+
+    payload = service.convert_gui_circuit(project)
+    comp = next(item for item in payload["components"] if item.get("name") == "M1")
+
+    assert comp["thermal"]["enabled"] is True
+    assert comp["thermal"]["network"] == "cauer"
+    assert comp["thermal"]["rth_stages"] == [0.2, 0.3]
+    assert comp["thermal"]["cth_stages"] == [0.01, 0.02]
+    assert comp["thermal"]["shared_sink_id"] == "HS1"
+    assert comp["loss"]["model"] == "datasheet"
+    assert comp["loss"]["axes"]["current"] == [0.0, 10.0]
+    assert len(comp["loss"]["eon"]) == 8
+    assert len(comp["loss"]["eoff"]) == 8
+
+
+def test_worker_conversion_reuses_cache_until_project_changes(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    project = Project(name="WorkerCache")
+    circuit = project.get_active_circuit()
+    circuit.add_component(Component(type=ComponentType.VOLTAGE_SOURCE, name="Vin"))
+    circuit.add_component(Component(type=ComponentType.RESISTOR, name="R1"))
+
+    first = service.convert_gui_circuit_cached(project)
+    second = service.convert_gui_circuit_cached(project)
+    assert first is second
+
+    circuit.add_component(Component(type=ComponentType.CAPACITOR, name="C1"))
+    project.mark_dirty()
+
+    third = service.convert_gui_circuit_cached(project)
+    assert third is not second
+    assert any(comp.get("name") == "C1" for comp in third["components"])
+
+
+def test_worker_conversion_cache_invalidated_when_settings_change(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    project = Project(name="SettingsCache")
+    circuit = project.get_active_circuit()
+    circuit.add_component(Component(type=ComponentType.RESISTOR, name="R1"))
+
+    first = service.convert_gui_circuit_cached(project)
+    assert first["simulation"]["tstop"] == service.settings.t_stop
+
+    service.settings = SimulationSettings(t_stop=2e-3, t_step=2e-6)
+    second = service.convert_gui_circuit_cached(project)
+
+    assert second is not first
+    assert second["simulation"]["tstop"] == 2e-3
+
+
+def test_run_transient_project_syncs_project_settings_before_worker(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(
+        t_stop=1e-3,
+        t_step=1e-6,
+        abs_tol=1e-12,
+        max_newton_iterations=50,
+    )
+
+    project = Project(name="ProjectRunSync")
+    project.simulation_settings.tstop = 0.02
+    project.simulation_settings.dt = 5e-6
+    project.simulation_settings.abstol = 1e-15
+    project.simulation_settings.max_iterations = 88
+    project.simulation_settings.control_mode = "discrete"
+    project.simulation_settings.control_sample_time = 2e-6
+
+    captured: dict[str, float | int | str] = {}
+
+    monkeypatch.setattr(service, "_ensure_backend_ready", lambda: True)
+
+    def _capture_worker(worker: SimulationWorker) -> None:
+        captured["t_stop"] = worker._settings.t_stop
+        captured["t_step"] = worker._settings.t_step
+        captured["abs_tol"] = worker._settings.abs_tol
+        captured["max_newton_iterations"] = worker._settings.max_newton_iterations
+        captured["control_mode"] = worker._settings.control_mode
+        captured["control_sample_time"] = worker._settings.control_sample_time
+
+    monkeypatch.setattr(service, "_attach_and_schedule_worker", _capture_worker)
+
+    service.run_transient_project(project)
+
+    assert service.state == SimulationState.RUNNING
+    assert captured["t_stop"] == 0.02
+    assert captured["t_step"] == 5e-6
+    assert captured["abs_tol"] == 1e-10
+    assert captured["max_newton_iterations"] == 88
+    assert captured["control_mode"] == "discrete"
+    assert captured["control_sample_time"] == 2e-6
+
+
+def test_prevalidate_blocks_component_thermal_when_global_thermal_disabled(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": False},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.0,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                    },
+                    "parameters": {},
+                }
+            ],
+        }
+    )
+
+    assert issue is not None
+    assert "simulation.thermal.enabled=true" in issue
+
+
+def test_prevalidate_accepts_staged_component_thermal_network(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "network": "foster",
+                        "rth_stages": [0.4, 0.6],
+                        "cth_stages": [0.01, 0.02],
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                    },
+                    "parameters": {},
+                }
+            ],
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_invalid_loss_model(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "lookup2d",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_LOSS_MODEL_INVALID" in issue
+
+
+def test_prevalidate_accepts_valid_datasheet_loss_tables(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "datasheet",
+                        "switching_loss_axes_current": "0,10",
+                        "switching_loss_axes_voltage": "0,20",
+                        "switching_loss_axes_temperature": "25,125",
+                        "switching_loss_eon_table": "1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6,1e-6",
+                        "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6,2e-6",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_invalid_datasheet_loss_dimensions(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "switching_loss_model": "datasheet",
+                        "switching_loss_axes_current": "0,10",
+                        "switching_loss_axes_voltage": "0,20",
+                        "switching_loss_axes_temperature": "25,125",
+                        "switching_loss_eon_table": "1e-6,1e-6,1e-6",
+                        "switching_loss_eoff_table": "2e-6,2e-6,2e-6,2e-6",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_LOSS_DIMENSION_INVALID" in issue
+
+
+def test_prevalidate_blocks_shared_sink_fields_without_sink_id(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.0,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_rth": 0.25,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                }
+            ],
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_THERMAL_RANGE_INVALID" in issue
+    assert "shared_sink_id" in issue
+
+
+def test_prevalidate_accepts_default_shared_sink_values_without_sink_id(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "parameters": {
+                        "thermal_enabled": True,
+                        "thermal_rth": 1.0,
+                        "thermal_cth": 0.1,
+                        "thermal_temp_init": 25.0,
+                        "thermal_temp_ref": 25.0,
+                        "thermal_alpha": 0.004,
+                        "thermal_shared_sink_id": "",
+                        "thermal_shared_sink_rth": 0.0,
+                        "thermal_shared_sink_cth": 0.0,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_blocks_inconsistent_shared_sink_parameters(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service.settings = SimulationSettings(enable_losses=True)
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "simulation": {
+                "thermal": {"enabled": True},
+            },
+            "components": [
+                {
+                    "type": "mosfet",
+                    "name": "M1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.0,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_id": "HS1",
+                        "shared_sink_rth": 0.25,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                },
+                {
+                    "type": "diode",
+                    "name": "D1",
+                    "thermal": {
+                        "enabled": True,
+                        "rth": 1.2,
+                        "cth": 0.1,
+                        "temp_init": 25.0,
+                        "temp_ref": 25.0,
+                        "alpha": 0.004,
+                        "shared_sink_id": "HS1",
+                        "shared_sink_rth": 0.30,
+                        "shared_sink_cth": 0.04,
+                    },
+                    "parameters": {},
+                },
+            ],
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_THERMAL_RANGE_INVALID" in issue
+    assert "HS1" in issue
+
+
+def test_worker_maps_invalid_thermal_configuration_diagnostic_to_error() -> None:
+    worker = SimulationWorker(
+        backend=_DummyBackend(),
+        circuit_data={"components": []},
+        settings=SimulationSettings(),
+    )
+
+    result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={},
+        statistics={"diagnostic": "invalid_thermal_configuration"},
+    )
+    worker._append_runtime_contract_checks(result)
+
+    assert "invalid_thermal_configuration" in result.error_message
+    assert result.statistics["runtime_contract_ok"] is False
+
+
+def test_worker_flags_compatibility_fallback_after_simulation_options_failure() -> None:
+    worker = SimulationWorker(
+        backend=_DummyBackend(),
+        circuit_data={"components": []},
+        settings=SimulationSettings(t_stop=1e-6, t_step=1e-6, enable_losses=False),
+    )
+
+    result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={},
+        statistics={
+            "execution_path": "chunked",
+            "simulator_options_error": "simulator boom",
+        },
+    )
+    worker._append_runtime_contract_checks(result)
+
+    assert result.statistics["runtime_used_compatibility_fallback"] is True
+    warnings = result.statistics.get("runtime_contract_warnings", [])
+    assert any("compatibility transient fallback" in warning for warning in warnings)
+    assert result.statistics["runtime_contract_ok"] is False
+
+
+def test_worker_builds_circuit_data_before_running_backend() -> None:
+    seen: dict[str, object] = {}
+
+    class _Backend:
+        def run_transient(self, circuit_data, _settings, _callbacks):  # noqa: ANN001
+            seen["backend_circuit_data"] = circuit_data
+            return SimpleNamespace(
+                time=[0.0, 1e-6],
+                signals={"V(out)": [0.0, 1.0]},
+                statistics={},
+                error_message="",
+            )
+
+    source = {"source": "project"}
+
+    def _builder(payload):  # noqa: ANN001
+        seen["builder_payload"] = payload
+        return {"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]}
+
+    def _validator(circuit_data):  # noqa: ANN001
+        seen["validator_data"] = circuit_data
+        return None
+
+    worker = SimulationWorker(
+        backend=_Backend(),  # type: ignore[arg-type]
+        circuit_data=None,
+        settings=SimulationSettings(),
+        circuit_source=source,
+        circuit_builder=_builder,
+        contract_validator=_validator,
+    )
+
+    results: list[SimulationResult] = []
+    errors: list[str] = []
+    worker.finished_signal.connect(results.append)
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert not errors
+    assert seen["builder_payload"] == source
+    assert seen["validator_data"] == seen["backend_circuit_data"]
+    assert isinstance(seen["backend_circuit_data"], dict)
+    assert results
+    assert results[0].error_message == ""
+    assert results[0].time == [0.0, 1e-6]
+
+
+def test_worker_reuses_backend_buffers_for_transient_vectors() -> None:
+    backend_time = [0.0, 1e-6, 2e-6]
+    backend_signal = [0.1, 0.2, 0.3]
+    backend_stats: dict[str, object] = {"meta": "ok"}
+
+    class _Backend:
+        def run_transient(self, _circuit_data, _settings, _callbacks):  # noqa: ANN001
+            return SimpleNamespace(
+                time=backend_time,
+                signals={"V(out)": backend_signal},
+                statistics=backend_stats,
+                error_message="",
+            )
+
+    worker = SimulationWorker(
+        backend=_Backend(),  # type: ignore[arg-type]
+        circuit_data={"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]},
+        settings=SimulationSettings(),
+    )
+
+    results: list[SimulationResult] = []
+    worker.finished_signal.connect(results.append)
+    worker.run()
+
+    assert results
+    assert results[0].time is backend_time
+    assert results[0].signals["V(out)"] is backend_signal
+    assert results[0].statistics is backend_stats
+
+
+def test_worker_stops_before_backend_when_contract_validator_fails() -> None:
+    class _Backend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_transient(self, _circuit_data, _settings, _callbacks):  # noqa: ANN001
+            self.calls += 1
+            return SimpleNamespace(time=[], signals={}, statistics={}, error_message="")
+
+    backend = _Backend()
+    worker = SimulationWorker(
+        backend=backend,  # type: ignore[arg-type]
+        circuit_data={"components": [{"type": "RESISTOR", "name": "R1", "parameters": {}}]},
+        settings=SimulationSettings(control_mode="discrete", control_sample_time=0.0),
+        contract_validator=lambda _data: "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED",
+    )
+
+    results: list[SimulationResult] = []
+    errors: list[str] = []
+    worker.finished_signal.connect(results.append)
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert backend.calls == 0
+    assert errors == ["PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"]
+    assert results
+    assert results[0].error_message == "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED"
+
+
+def test_prevalidate_blocks_cblock_without_source_or_library(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "extra_cflags": [],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED" in issue
+
+
+def test_prevalidate_blocks_cblock_invalid_extra_cflags_type(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb1.c"
+    source.write_text("/* test */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 1,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": "-O2",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_RANGE_INVALID" in issue
+
+
+def test_prevalidate_accepts_valid_cblock_source_configuration(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    source = tmp_path / "cb_ok.c"
+    source.write_text("/* valid */\n", encoding="utf-8")
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "implementation": "source",
+                        "n_inputs": 2,
+                        "n_outputs": 1,
+                        "source": source.as_posix(),
+                        "extra_cflags": ["-O3"],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
+def test_run_post_processing_forwards_transient_payload_to_service(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+        statistics={"steps": 2},
+    )
+
+    seen: dict[str, object] = {}
+
+    class _PPService:
+        def run_jobs(self, transient_result, jobs):  # noqa: ANN001
+            seen["transient"] = transient_result
+            seen["jobs"] = jobs
+
+    service._post_processing_service = _PPService()  # type: ignore[assignment]
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert "transient" in seen
+    transient = seen["transient"]
+    assert transient.time == [0.0, 1e-6]
+    assert transient.signals["V(out)"] == [0.0, 1.0]
+    assert seen["jobs"] == [{"kind": "time_domain", "signals": ["V(out)"]}]
+
+
+def test_run_post_processing_fails_when_result_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([{"kind": "time_domain", "signals": ["V(out)"]}])
+
+    assert failures
+    assert "No valid transient result" in failures[-1]
+
+
+def test_run_post_processing_fails_when_jobs_missing(monkeypatch) -> None:
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+    service._last_result = SimulationResult(
+        time=[0.0, 1e-6],
+        signals={"V(out)": [0.0, 1.0]},
+    )
+    failures: list[str] = []
+    service.post_processing_failed.connect(failures.append)
+
+    service.run_post_processing([])
+
+    assert failures == ["No post-processing jobs were provided."]

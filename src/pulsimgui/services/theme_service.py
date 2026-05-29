@@ -1,8 +1,8 @@
 """Theme management service with customizable color schemes."""
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
@@ -879,6 +879,56 @@ QTabBar::tab:selected {{
 
 QTabBar::tab:hover:!selected {{
     background-color: {c.tab_hover};
+}}
+
+/* ===== Document tabs (PSIM-style editor tab strip) =====
+   Higher-specificity overrides (ID selector) so the top-of-canvas
+   document tabs read as flat editor tabs — rounded only on top, the
+   active tab blending into the schematic background — rather than the
+   floating pills used by dialog QTabWidgets. */
+QWidget#documentTabRow {{
+    background-color: {c.toolbar_background};
+    border-bottom: 1px solid {c.toolbar_border};
+}}
+QTabBar#documentTabBar {{
+    background: transparent;
+}}
+QTabBar#documentTabBar::tab {{
+    background-color: {c.tab_background};
+    color: {c.foreground_muted};
+    border: 1px solid {c.tab_border};
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 0px;
+    padding: 6px 12px;
+    margin-right: 2px;
+    margin-top: 3px;
+    font-weight: 500;
+}}
+QTabBar#documentTabBar::tab:selected {{
+    background-color: {c.background};
+    color: {c.foreground};
+    border-color: {c.tab_border};
+    margin-top: 0px;
+    padding-top: 9px;
+}}
+QTabBar#documentTabBar::tab:hover:!selected {{
+    background-color: {c.tab_hover};
+}}
+QToolButton#newTabButton {{
+    background: transparent;
+    color: {c.foreground_muted};
+    border: none;
+    font-size: 18px;
+    font-weight: 600;
+    padding: 0px 8px;
+}}
+QToolButton#newTabButton:hover {{
+    color: {c.primary};
+    background-color: {c.tab_hover};
+    border-radius: 6px;
 }}
 
 /* ===== Buttons - Modern rounded style ===== */

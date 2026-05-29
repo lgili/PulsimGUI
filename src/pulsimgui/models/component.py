@@ -1,9 +1,9 @@
 """Component model for circuit elements."""
 
+import math
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum, auto
-import math
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -73,9 +73,11 @@ class ComponentType(Enum):
     DELAY_BLOCK = auto()
     SAMPLE_HOLD = auto()
     STATE_MACHINE = auto()
+    C_BLOCK = auto()
 
     # Measurement
     VOLTAGE_PROBE = auto()
+    VOLTAGE_PROBE_GND = auto()
     CURRENT_PROBE = auto()
     POWER_PROBE = auto()
 
@@ -86,13 +88,80 @@ class ComponentType(Enum):
     # Signal routing
     SIGNAL_MUX = auto()
     SIGNAL_DEMUX = auto()
+    GOTO_LABEL = auto()
+    FROM_LABEL = auto()
+
+    # Hierarchical schematic port marker.
+    # Placed inside a SubcircuitDefinition's body to declare a named
+    # input/output that surfaces on the outer SubcircuitInstance pin.
+    # Not a real device — flattening bridges its connected net to the
+    # external net of the matching port name.
+    SUBCIRCUIT_PORT = auto()
 
     # Magnetic
     SATURABLE_INDUCTOR = auto()
     COUPLED_INDUCTOR = auto()
+    # Jiles-Atherton hysteretic inductor (pulsim 1.5+:
+    # pulsim.add_hysteretic_inductor + a step-observer that modulates
+    # an internal dummy source to encode N·A·µ₀·dM/dt).
+    HYSTERETIC_INDUCTOR = auto()
+
+    # Three-phase / vector control (Pulsim Phase 28)
+    CLARKE_TRANSFORM = auto()
+    INVERSE_CLARKE_TRANSFORM = auto()
+    PARK_TRANSFORM = auto()
+    INVERSE_PARK_TRANSFORM = auto()
+    PLL = auto()
+    SVM = auto()
+
+    # Three-phase grid source (Pulsim 0.10.0a1+: Circuit::add_three_phase_source)
+    THREE_PHASE_SOURCE = auto()
+
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5+: 6 MOSFETs + 6 SPWM
+    # gates packaged into a single drop-in inverter component).
+    THREE_PHASE_VSI = auto()
+
+    # Motors (Pulsim 0.10.0a2+: full device-variant integration)
+    DC_MOTOR = auto()
+
+    # 3-phase RL load (Pulsim 0.10.0a3+: Y/Δ topology, balanced/unbalanced)
+    THREE_PHASE_RL_LOAD = auto()
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3+: R_s + L_s + back-EMF per phase)
+    PMSM_STEADY_STATE = auto()
+
+    # PMSM dynamic device-variant (Pulsim 0.10.0a4+: 4 internal states —
+    # i_d, i_q, ω_m, θ_m — with mechanical inertia and torque feedback).
+    PMSM = auto()
+
+    # 3-phase squirrel-cage induction motor (pulsim 1.5+:
+    # pulsim.add_induction_motor — 5-state Krause αβ model + a
+    # step-observer driving per-phase back-EMF sources).
+    INDUCTION_MOTOR = auto()
 
     # Pre-configured networks
     SNUBBER_RC = auto()
+
+    # Diode bridges — composite rectifiers that the circuit_converter
+    # expands into individual ``add_diode`` calls. The kernel has no
+    # native ``add_diode_bridge``; we package them GUI-side so users
+    # don't have to wire 4-6 diodes by hand.
+    SINGLE_PHASE_DIODE_BRIDGE = auto()  # 4 diodes, AC+/AC- → DC+/DC-
+    THREE_PHASE_DIODE_BRIDGE = auto()   # 6 diodes, A/B/C → DC+/DC-
+
+    # MMC (Modular Multilevel Converter) submodule cell.
+    # A single ComponentType handles both half-bridge (2 switches, 4 pins)
+    # and full-bridge (4 switches, 6 pins) topologies — selected via the
+    # ``cell_topology`` parameter. The circuit_converter expands the cell
+    # into MOSFETs (with body diodes) + 1 capacitor.
+    MMC_CELL = auto()
+
+    # MMC arm — a chain of N sub-module cells modeled at a selectable
+    # fidelity level (L0 average / L1 multilevel / L2 SM-equivalent /
+    # L3 detailed). Maps to pulsim's native ``add_mmc_arm_*`` family.
+    # Represents a WHOLE arm (TOP → BOT) — for a 3-phase MMC you'd
+    # instantiate 6 arms (upper + lower per phase).
+    MMC_ARM = auto()
 
     # Hierarchical
     SUBCIRCUIT = auto()
@@ -204,6 +273,25 @@ def _default_demux_pins(output_count: int) -> list[Pin]:
     return pins
 
 
+def _default_c_block_pins(input_count: int, output_count: int) -> list[Pin]:
+    """Create IN/OUT pins for C-Block with canonical ABI naming."""
+    pins: list[Pin] = []
+    for index, pin in enumerate(_generate_stacked_pins(input_count, -35, "IN", start_index=0)):
+        pin.index = index
+        pin.name = f"IN{index}"
+        pins.append(pin)
+
+    if output_count == 1:
+        pins.append(Pin(len(pins), "OUT", 35, 0))
+    else:
+        out_pins = _generate_stacked_pins(output_count, 35, "OUT", start_index=len(pins))
+        for out_index, pin in enumerate(out_pins):
+            pin.name = f"OUT{out_index}"
+            pins.append(pin)
+
+    return pins
+
+
 def _default_unary_block_pins() -> list[Pin]:
     """Create IN/OUT pin pair for unary signal blocks."""
     return [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)]
@@ -224,8 +312,13 @@ def _scope_label_prefix(comp_type: ComponentType) -> str:
 
 THERMAL_PORT_PARAMETER = "enable_thermal_port"
 THERMAL_PORT_PIN_NAME = "TH"
+DUTY_INPUT_PARAMETER = "enable_duty_input"
+DUTY_INPUT_PIN_NAME = "DUTY_IN"
 VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
 CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.SATURABLE_INDUCTOR,
+}
 THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.RESISTOR,
     ComponentType.CAPACITOR,
@@ -252,11 +345,27 @@ THERMAL_PORT_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SNUBBER_RC,
 }
 
+THERMAL_PARAMETER_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.RESISTOR,
+    ComponentType.DIODE,
+    ComponentType.MOSFET_N,
+    ComponentType.MOSFET_P,
+    ComponentType.IGBT,
+    ComponentType.BJT_NPN,
+    ComponentType.BJT_PNP,
+}
+
 
 def supports_thermal_port(component_type: ComponentType) -> bool:
     """Return True when component type can expose a thermal measurement port."""
 
     return component_type in THERMAL_PORT_SUPPORTED_TYPES
+
+
+def supports_electrothermal_parameters(component_type: ComponentType) -> bool:
+    """Return True when the component supports electrothermal Rth/Cth parameters."""
+
+    return component_type in THERMAL_PARAMETER_SUPPORTED_TYPES
 
 
 def _pin_name(component: "Component", pin_index: int) -> str:
@@ -274,7 +383,7 @@ def is_scope_input_pin(component: "Component", pin_index: int) -> bool:
 
 def is_voltage_probe_output_pin(component: "Component", pin_index: int) -> bool:
     """Return True when pin is the scope-facing output of a voltage probe."""
-    if component.type != ComponentType.VOLTAGE_PROBE:
+    if component.type not in (ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND):
         return False
     return _pin_name(component, pin_index) == VOLTAGE_PROBE_OUTPUT_PIN_NAME
 
@@ -321,12 +430,22 @@ def can_connect_measurement_pins(
 
     left_is_e_probe_out = is_electrical_probe_output_pin(left_component, left_pin_index)
     right_is_e_probe_out = is_electrical_probe_output_pin(right_component, right_pin_index)
+    left_is_signal_scope_source = is_signal_scope_source_pin(left_component, left_pin_index)
+    right_is_signal_scope_source = is_signal_scope_source_pin(right_component, right_pin_index)
     left_is_t_out = is_thermal_output_pin(left_component, left_pin_index)
     right_is_t_out = is_thermal_output_pin(right_component, right_pin_index)
 
-    electrical_group = left_is_e_scope or right_is_e_scope or left_is_e_probe_out or right_is_e_probe_out
-    if electrical_group:
-        return (left_is_e_scope and right_is_e_probe_out) or (right_is_e_scope and left_is_e_probe_out)
+    # Scope routing constraints apply only when an Electrical Scope is involved.
+    # Otherwise, direct signal-to-signal links (e.g. CONSTANT -> C_BLOCK,
+    # PI -> PWM DUTY_IN, probe OUT -> C_BLOCK) should be accepted.
+    if left_is_e_scope or right_is_e_scope:
+        return (
+            left_is_e_scope
+            and (right_is_e_probe_out or right_is_signal_scope_source)
+        ) or (
+            right_is_e_scope
+            and (left_is_e_probe_out or left_is_signal_scope_source)
+        )
 
     thermal_group = left_is_t_scope or right_is_t_scope or left_is_t_out or right_is_t_out
     if thermal_group:
@@ -338,6 +457,7 @@ def can_connect_measurement_pins(
 CONNECTION_DOMAIN_CIRCUIT = "circuit"
 CONNECTION_DOMAIN_SIGNAL = "signal"
 CONNECTION_DOMAIN_THERMAL = "thermal"
+CONNECTION_DOMAIN_ANY = "any"
 
 # Map switching-device component types to their gate/base/control pin indices.
 # These pins accept signal-domain connections (e.g. PWM output).
@@ -355,6 +475,7 @@ _CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
 SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.ELECTRICAL_SCOPE,
     ComponentType.VOLTAGE_PROBE,
+    ComponentType.VOLTAGE_PROBE_GND,
     ComponentType.CURRENT_PROBE,
     ComponentType.POWER_PROBE,
     ComponentType.SIGNAL_MUX,
@@ -377,17 +498,172 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.DELAY_BLOCK,
     ComponentType.SAMPLE_HOLD,
     ComponentType.STATE_MACHINE,
+    ComponentType.C_BLOCK,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
+    # Three-phase / vector control
+    ComponentType.CLARKE_TRANSFORM,
+    ComponentType.INVERSE_CLARKE_TRANSFORM,
+    ComponentType.PARK_TRANSFORM,
+    ComponentType.INVERSE_PARK_TRANSFORM,
+    ComponentType.PLL,
+    ComponentType.SVM,
 }
 
 THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.THERMAL_SCOPE,
 }
 
+ANY_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
+    ComponentType.GOTO_LABEL,
+    ComponentType.FROM_LABEL,
+    # Port markers don't have a domain of their own — they inherit
+    # whatever the connected net is (electrical or signal).
+    ComponentType.SUBCIRCUIT_PORT,
+}
+
+CONTROL_SAMPLE_TIME_PARAM = "sample_time"
+LEGACY_CONTROL_SAMPLE_TIME_PARAM = "sample_period"
+CONTROL_SAMPLE_TIME_ALIASES: tuple[str, ...] = (
+    CONTROL_SAMPLE_TIME_PARAM,
+    LEGACY_CONTROL_SAMPLE_TIME_PARAM,
+)
+_MIN_CONTROL_SAMPLE_TIME = 1e-12
+
+# Components that support Simulink-style per-block sampling (Ts).
+# Scopes/probes are intentionally excluded.
+CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
+    {
+        ComponentType.SIGNAL_MUX,
+        ComponentType.SIGNAL_DEMUX,
+        ComponentType.PI_CONTROLLER,
+        ComponentType.PID_CONTROLLER,
+        ComponentType.MATH_BLOCK,
+        ComponentType.PWM_GENERATOR,
+        ComponentType.GAIN,
+        ComponentType.SUM,
+        ComponentType.SUBTRACTOR,
+        ComponentType.CONSTANT,
+        ComponentType.INTEGRATOR,
+        ComponentType.DIFFERENTIATOR,
+        ComponentType.LIMITER,
+        ComponentType.RATE_LIMITER,
+        ComponentType.HYSTERESIS,
+        ComponentType.LOOKUP_TABLE,
+        ComponentType.TRANSFER_FUNCTION,
+        ComponentType.DELAY_BLOCK,
+        ComponentType.SAMPLE_HOLD,
+        ComponentType.STATE_MACHINE,
+        ComponentType.C_BLOCK,
+        # Three-phase / vector control
+        ComponentType.CLARKE_TRANSFORM,
+        ComponentType.INVERSE_CLARKE_TRANSFORM,
+        ComponentType.PARK_TRANSFORM,
+        ComponentType.INVERSE_PARK_TRANSFORM,
+        ComponentType.PLL,
+        ComponentType.SVM,
+    }
+)
+CONTROL_SAMPLE_TIME_COMPONENT_TYPE_NAMES: frozenset[str] = frozenset(
+    component_type.name for component_type in CONTROL_SAMPLE_TIME_COMPONENT_TYPES
+)
+
+
+def supports_control_sample_time(component_type: ComponentType) -> bool:
+    """Return True when a component type supports per-block sample time (Ts)."""
+    return component_type in CONTROL_SAMPLE_TIME_COMPONENT_TYPES
+
+
+def _normalize_control_mode_literal(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "sampled": "discrete",
+        "sample": "discrete",
+        "continuous_time": "continuous",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
+
+def _coerce_sample_time(value: Any, *, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        parsed = 0.0
+    return parsed
+
+
+def get_control_sample_time(parameters: dict[str, Any], *, default: float = 0.0) -> float:
+    """Read sample time from either canonical or legacy parameter names."""
+    if not isinstance(parameters, dict):
+        return _coerce_sample_time(default, default=0.0)
+
+    for key in CONTROL_SAMPLE_TIME_ALIASES:
+        if key not in parameters:
+            continue
+        return _coerce_sample_time(parameters.get(key), default=default)
+
+    return _coerce_sample_time(default, default=0.0)
+
+
+def set_control_sample_time(parameters: dict[str, Any], sample_time: Any) -> float:
+    """Store canonical sample time and drop legacy alias keys."""
+    normalized = _coerce_sample_time(sample_time, default=0.0)
+    parameters[CONTROL_SAMPLE_TIME_PARAM] = normalized
+    parameters.pop(LEGACY_CONTROL_SAMPLE_TIME_PARAM, None)
+    return normalized
+
+
+def derive_control_schedule_from_serialized_components(
+    components: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    fallback_mode: Any = "auto",
+    fallback_sample_time: Any = 0.0,
+) -> tuple[str, float | None]:
+    """Derive aggregate control scheduling from per-block Ts values.
+
+    If at least one eligible control block exists, per-block Ts is authoritative:
+    - any Ts > 0 => aggregate discrete mode using the smallest positive Ts
+    - all Ts <= 0 => aggregate auto mode
+
+    Fallback settings are used only when no Ts-capable block exists.
+    """
+    has_sampled_block = False
+    min_positive_sample_time: float | None = None
+
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        type_name = str(component.get("type") or "").strip().upper().replace("-", "_")
+        if type_name not in CONTROL_SAMPLE_TIME_COMPONENT_TYPE_NAMES:
+            continue
+        has_sampled_block = True
+        params = component.get("parameters")
+        sample_time = get_control_sample_time(params if isinstance(params, dict) else {}, default=0.0)
+        if sample_time > 0.0:
+            if min_positive_sample_time is None or sample_time < min_positive_sample_time:
+                min_positive_sample_time = sample_time
+
+    if has_sampled_block:
+        if min_positive_sample_time is not None:
+            return "discrete", max(min_positive_sample_time, _MIN_CONTROL_SAMPLE_TIME)
+        return "auto", None
+
+    mode = _normalize_control_mode_literal(fallback_mode)
+    sample_time = _coerce_sample_time(fallback_sample_time, default=0.0)
+    if mode == "discrete":
+        return mode, max(sample_time, _MIN_CONTROL_SAMPLE_TIME)
+    if sample_time > 0.0:
+        return mode, max(sample_time, _MIN_CONTROL_SAMPLE_TIME)
+    return mode, None
+
 
 def component_connection_domain(component_type: ComponentType) -> str:
     """Return the default wiring domain used by a component family."""
+    if component_type in ANY_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_ANY
     if component_type in THERMAL_DOMAIN_COMPONENT_TYPES:
         return CONNECTION_DOMAIN_THERMAL
     if component_type in SIGNAL_DOMAIN_COMPONENT_TYPES:
@@ -395,14 +671,53 @@ def component_connection_domain(component_type: ComponentType) -> str:
     return CONNECTION_DOMAIN_CIRCUIT
 
 
+def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
+    """Return True when the pin can feed an electrical scope with control-domain data."""
+    if pin_index < 0 or pin_index >= len(component.pins):
+        return False
+    if component.type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+        return False
+
+    pin_name = _pin_name(component, pin_index).strip().upper()
+    if not pin_name:
+        return False
+
+    if component.type == ComponentType.PWM_GENERATOR:
+        # OUT carries switched gate waveform; DUTY_IN maps to duty telemetry channel.
+        return pin_name in {"OUT", "DUTY_IN"}
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block control outputs follow OUT / OUTn ABI pin naming.
+        return pin_name == "OUT" or pin_name.startswith("OUT")
+
+    if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
+        return False
+
+    return pin_name.startswith("OUT")
+
+
 def pin_connection_domain(component: "Component", pin_index: int) -> str:
     """Return the effective connection domain for a specific pin."""
+    if component.type in ANY_DOMAIN_COMPONENT_TYPES:
+        return CONNECTION_DOMAIN_ANY
+
+    if component.type == ComponentType.C_BLOCK:
+        # C-Block is pure control-domain: inputs and outputs must be signal wires.
+        return CONNECTION_DOMAIN_SIGNAL
+
     if component.type == ComponentType.THERMAL_SCOPE:
         return CONNECTION_DOMAIN_THERMAL
     if is_thermal_output_pin(component, pin_index):
         return CONNECTION_DOMAIN_THERMAL
 
     if component.type == ComponentType.VOLTAGE_PROBE:
+        return (
+            CONNECTION_DOMAIN_SIGNAL
+            if is_voltage_probe_output_pin(component, pin_index)
+            else CONNECTION_DOMAIN_CIRCUIT
+        )
+
+    if component.type == ComponentType.VOLTAGE_PROBE_GND:
         return (
             CONNECTION_DOMAIN_SIGNAL
             if is_voltage_probe_output_pin(component, pin_index)
@@ -537,12 +852,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "IN2", -35, 12),
         Pin(2, "OUT", 35, 0),
     ],
+    ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: [
         Pin(0, "+", 0, -20),
         Pin(1, "-", 0, 20),
         Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+    ],
+    ComponentType.VOLTAGE_PROBE_GND: [
+        Pin(0, "IN", -25, 0),
+        Pin(1, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
     ],
     ComponentType.CURRENT_PROBE: [
         Pin(0, "IN", -20, 0),
@@ -563,6 +883,12 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Signal routing
     ComponentType.SIGNAL_MUX: _default_mux_pins(4),
     ComponentType.SIGNAL_DEMUX: _default_demux_pins(4),
+    ComponentType.GOTO_LABEL: [Pin(0, "NET", -40, 0)],
+    ComponentType.FROM_LABEL: [Pin(0, "NET", 40, 0)],
+    # SUBCIRCUIT_PORT default sits on the left edge. The pin position
+    # is regenerated by _synchronize_subcircuit_port_pin based on the
+    # ``side`` parameter (left/right/top/bottom).
+    ComponentType.SUBCIRCUIT_PORT: [Pin(0, "P", -40, 0)],
 
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
@@ -572,9 +898,168 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "L2_1", 30, -15),
         Pin(3, "L2_2", 30, 15),
     ],
+    # Jiles-Atherton hysteretic inductor — 2-terminal like an
+    # ordinary inductor (the L0 + V_M internal split is invisible).
+    ComponentType.HYSTERETIC_INDUCTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
 
     # Pre-configured networks
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
+
+    # Single-phase diode bridge (Graetz). 4 external pins: 2 AC, 2 DC.
+    # Internal topology when converted:
+    #   D1: AC+ → DC+,  D2: AC- → DC+
+    #   D3: DC- → AC+,  D4: DC- → AC-
+    ComponentType.SINGLE_PHASE_DIODE_BRIDGE: [
+        Pin(0, "AC+", -35, -20),
+        Pin(1, "AC-", -35, 20),
+        Pin(2, "DC+", 35, -20),
+        Pin(3, "DC-", 35, 20),
+    ],
+
+    # Three-phase diode bridge (6-pulse rectifier). 5 pins: A, B, C, DC+, DC-.
+    # Upper diodes: A/B/C → DC+
+    # Lower diodes: DC- → A/B/C
+    ComponentType.THREE_PHASE_DIODE_BRIDGE: [
+        Pin(0, "A",   -35, -25),
+        Pin(1, "B",   -35, 0),
+        Pin(2, "C",   -35, 25),
+        Pin(3, "DC+",  35, -20),
+        Pin(4, "DC-",  35, 20),
+    ],
+
+    # MMC sub-module cell. The pin count is dynamic: half-bridge uses
+    # 4 pins (TOP, BOT, S1_G, S2_G), full-bridge uses 6 (adds S3_G,
+    # S4_G). Default pin layout below is the half-bridge variant — the
+    # ``_synchronize_mmc_cell`` hook rewrites the layout when the
+    # ``cell_topology`` parameter changes.
+    ComponentType.MMC_CELL: [
+        Pin(0, "TOP",  -30, -25),
+        Pin(1, "BOT",  -30, 25),
+        Pin(2, "S1_G",  30, -15),
+        Pin(3, "S2_G",  30, 15),
+    ],
+
+    # MMC arm. 3 pins:
+    #   TOP, BOT — the two arm terminals (chain endpoints)
+    #   M_REF   — modulation reference input (constant or driven by a
+    #             signal block); pulsim's add_mmc_arm_* takes this
+    #             value to drive the per-step arm voltage.
+    ComponentType.MMC_ARM: [
+        Pin(0, "TOP",  -35, -40),
+        Pin(1, "BOT",  -35, 40),
+        Pin(2, "M_REF", 35, 0),
+    ],
+
+    # Three-phase / vector control (Pulsim Phase 28)
+    # Clarke (abc → αβγ): 3 inputs + 3 channel outputs (channels via metadata)
+    ComponentType.CLARKE_TRANSFORM: [
+        Pin(0, "A", -35, -20),
+        Pin(1, "B", -35, 0),
+        Pin(2, "C", -35, 20),
+        Pin(3, "ALPHA", 35, -20),
+        Pin(4, "BETA", 35, 0),
+        Pin(5, "GAMMA", 35, 20),
+    ],
+    ComponentType.INVERSE_CLARKE_TRANSFORM: [
+        Pin(0, "ALPHA", -35, -20),
+        Pin(1, "BETA", -35, 0),
+        Pin(2, "GAMMA", -35, 20),
+        Pin(3, "A", 35, -20),
+        Pin(4, "B", 35, 0),
+        Pin(5, "C", 35, 20),
+    ],
+    # Park (αβ + θ → dq): nodes [alpha, beta], θ via metadata
+    ComponentType.PARK_TRANSFORM: [
+        Pin(0, "ALPHA", -35, -15),
+        Pin(1, "BETA", -35, 15),
+        Pin(2, "D", 35, -15),
+        Pin(3, "Q", 35, 15),
+    ],
+    ComponentType.INVERSE_PARK_TRANSFORM: [
+        Pin(0, "D", -35, -15),
+        Pin(1, "Q", -35, 15),
+        Pin(2, "ALPHA", 35, -15),
+        Pin(3, "BETA", 35, 15),
+    ],
+    # Single-phase PLL: 1 input → θ, ω, lock_error channels
+    ComponentType.PLL: [
+        Pin(0, "IN", -35, 0),
+        Pin(1, "THETA", 35, -15),
+        Pin(2, "OMEGA", 35, 0),
+        Pin(3, "ERR", 35, 15),
+    ],
+    # SVM (αβ → 3 duties)
+    ComponentType.SVM: [
+        Pin(0, "ALPHA", -35, -15),
+        Pin(1, "BETA", -35, 15),
+        Pin(2, "DA", 35, -20),
+        Pin(3, "DB", 35, 0),
+        Pin(4, "DC", 35, 20),
+    ],
+    # Three-phase grid source (pulsim>=0.10.0a1).
+    # 4 pins: A, B, C, Neutral. The runtime decomposes this into 3 internal
+    # SineVoltageSource branches sharing the neutral.
+    ComponentType.THREE_PHASE_SOURCE: [
+        Pin(0, "A", 30, -25),
+        Pin(1, "B", 30, 0),
+        Pin(2, "C", 30, 25),
+        Pin(3, "N", -30, 0),
+    ],
+
+    # Three-phase 2-level VSI (pulsim>=0.10.0a5).
+    # 5 pins: VDC+, VDC-, A, B, C. The runtime decomposes into 6 MOSFETs +
+    # 6 PWM gate drivers in 3 half-bridge legs.
+    ComponentType.THREE_PHASE_VSI: [
+        Pin(0, "VDC+", -35, -25),
+        Pin(1, "VDC-", -35, 25),
+        Pin(2, "A", 35, -25),
+        Pin(3, "B", 35, 0),
+        Pin(4, "C", 35, 25),
+    ],
+
+    # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
+    # mechanical state (ω, θ). Pulsim's runtime reserves one branch row for
+    # the armature current and advances ω, θ each accepted timestep.
+    ComponentType.DC_MOTOR: [
+        Pin(0, "A+", -30, 0),
+        Pin(1, "A-", 30, 0),
+    ],
+
+    # 3-phase RL load (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral.
+    # The runtime decomposes into R+L series branches (Y or Δ topology).
+    ComponentType.THREE_PHASE_RL_LOAD: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into
+    # 3 phases of R_s + L_s + sinusoidal back-EMF source.
+    ComponentType.PMSM_STEADY_STATE: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+
+    # PMSM dynamic (pulsim>=0.10.0a4). 4 pins: A, B, C, Neutral. Full
+    # device-variant: rotor inertia + electromagnetic torque feedback,
+    # 4 internal states tracked by the runtime.
+    ComponentType.PMSM: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+    # Induction motor: 3 stator phase terminals + star-point neutral,
+    # same terminal layout convention as PMSM.
+    ComponentType.INDUCTION_MOTOR: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
 }
 
 
@@ -585,6 +1070,35 @@ def _normalize_default_pin_map() -> None:
 
 
 _normalize_default_pin_map()
+
+
+DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
+    "thermal_enabled": True,
+    "thermal_network": "single_rc",
+    "thermal_rth": 1.0,
+    "thermal_cth": 0.1,
+    "thermal_rth_stages": "",
+    "thermal_cth_stages": "",
+    "thermal_temp_init": 25.0,
+    "thermal_temp_ref": 25.0,
+    "thermal_alpha": 0.004,
+    "thermal_shared_sink_id": "",
+    "thermal_shared_sink_rth": 0.0,
+    "thermal_shared_sink_cth": 0.0,
+}
+
+DEFAULT_SWITCHING_ENERGY_PARAMS: dict[str, Any] = {
+    "switching_loss_model": "scalar",
+    "switching_eon_j": 0.0,
+    "switching_eoff_j": 0.0,
+    "switching_err_j": 0.0,
+    "switching_loss_axes_current": "",
+    "switching_loss_axes_voltage": "",
+    "switching_loss_axes_temperature": "",
+    "switching_loss_eon_table": "",
+    "switching_loss_eoff_table": "",
+    "switching_loss_err_table": "",
+}
 
 
 # Default parameter templates for each component type
@@ -600,37 +1114,114 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     ComponentType.GROUND: {},
 
     # Diodes
-    ComponentType.DIODE: {"is_": 1e-14, "n": 1.0, "rs": 0.0},
-    ComponentType.ZENER_DIODE: {"vz": 5.1, "iz_test": 0.02, "zz": 5.0, "is_": 1e-14},
-    ComponentType.LED: {"vf": 2.0, "color": "red", "wavelength": 620},
+    ComponentType.DIODE: {
+        "is_": 1e-14,
+        "n": 1.0,
+        "rs": 0.0,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.ZENER_DIODE: {
+        "vz": 5.1,
+        "iz_test": 0.02,
+        "zz": 5.0,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.LED: {
+        "vf": 2.0,
+        "color": "red",
+        "wavelength": 620,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Transistors
-    ComponentType.MOSFET_N: {"vth": 2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
-    ComponentType.MOSFET_P: {"vth": -2.0, "kp": 0.1, "lambda_": 0.0, "rds_on": 0.01},
-    ComponentType.IGBT: {"vth": 3.0, "vce_sat": 2.0},
-    ComponentType.BJT_NPN: {"beta": 100.0, "vbe_sat": 0.7, "vce_sat": 0.2, "is_": 1e-14},
-    ComponentType.BJT_PNP: {"beta": 100.0, "vbe_sat": -0.7, "vce_sat": -0.2, "is_": 1e-14},
-    ComponentType.THYRISTOR: {"vgt": 1.0, "igt": 0.03, "holding_current": 0.05, "vf": 1.5},
-    ComponentType.TRIAC: {"vgt": 1.5, "igt": 0.05, "holding_current": 0.05, "vf": 1.5},
+    ComponentType.MOSFET_N: {
+        "vth": 2.0,
+        "kp": 0.1,
+        "lambda_": 0.0,
+        "g_off": 1e-9,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.MOSFET_P: {
+        "vth": -2.0,
+        "kp": 0.1,
+        "lambda_": 0.0,
+        "g_off": 1e-9,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.IGBT: {
+        "vth": 3.0,
+        "g_on": 1e4,
+        "g_off": 1e-9,
+        "v_ce_sat": 2.0,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.BJT_NPN: {
+        "beta": 100.0,
+        "vbe_sat": 0.7,
+        "vce_sat": 0.2,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.BJT_PNP: {
+        "beta": 100.0,
+        "vbe_sat": -0.7,
+        "vce_sat": -0.2,
+        "is_": 1e-14,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.THYRISTOR: {
+        "vgt": 1.0,
+        "igt": 0.03,
+        "holding_current": 0.05,
+        "vf": 1.5,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    ComponentType.TRIAC: {
+        "vgt": 1.5,
+        "igt": 0.05,
+        "holding_current": 0.05,
+        "vf": 1.5,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Switching
-    ComponentType.SWITCH: {"ron": 0.001, "roff": 1e9, "initial_state": False},
+    ComponentType.SWITCH: {
+        "ron": 0.001,
+        "roff": 1e9,
+        "initial_state": False,
+        **DEFAULT_SWITCHING_ENERGY_PARAMS,
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
 
     # Transformer
     ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3},
 
     # Analog
     ComponentType.OP_AMP: {
-        "gain": 1e5,
+        "open_loop_gain": 1e5,
         "gbw": 1e6,
         "slew_rate": 1e6,
-        "vos": 0.0,
+        "offset": 0.0,
+        "rail_low": -15.0,
+        "rail_high": 15.0,
         "rail_to_rail": False,
     },
     ComponentType.COMPARATOR: {
-        "vos": 0.0,
+        "threshold": 0.0,
         "hysteresis": 0.0,
-        "response_time": 1e-6,
+        "high": 1.0,
+        "low": 0.0,
     },
 
     # Protection
@@ -657,6 +1248,8 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "ki": 100.0,
         "output_min": -1.0,
         "output_max": 1.0,
+        "anti_windup": True,
+        "sample_time": 0.0,
     },
     ComponentType.PID_CONTROLLER: {
         "kp": 1.0,
@@ -664,30 +1257,39 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "kd": 0.01,
         "output_min": -1.0,
         "output_max": 1.0,
+        "anti_windup": True,
+        "sample_time": 0.0,
     },
     ComponentType.MATH_BLOCK: {
         "operation": "sum",
         "gain": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.PWM_GENERATOR: {
         "frequency": 10000.0,
         "duty_cycle": 0.5,
         "carrier": "sawtooth",
         "amplitude": 20.0,
+        "sample_time": 0.0,
+        DUTY_INPUT_PARAMETER: False,
     },
     ComponentType.GAIN: {
         "gain": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.SUM: {
         "input_count": 2,
         "signs": ["+", "+"],
+        "sample_time": 0.0,
     },
     ComponentType.SUBTRACTOR: {
         "input_count": 2,
         "signs": ["+", "-"],
+        "sample_time": 0.0,
     },
     ComponentType.CONSTANT: {
         "value": 0.0,
+        "sample_time": 0.0,
     },
 
     # Control blocks - signal processing
@@ -696,24 +1298,29 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "initial_value": 0.0,
         "output_min": -1e6,
         "output_max": 1e6,
+        "sample_time": 0.0,
     },
     ComponentType.DIFFERENTIATOR: {
         "gain": 1.0,
-        "filter_tau": 1e-6,
+        "alpha": 0.0,
+        "sample_time": 0.0,
     },
     ComponentType.LIMITER: {
-        "lower_limit": -1.0,
-        "upper_limit": 1.0,
+        "output_min": -1.0,
+        "output_max": 1.0,
+        "sample_time": 0.0,
     },
     ComponentType.RATE_LIMITER: {
         "rising_rate": 1e6,
         "falling_rate": -1e6,
+        "sample_time": 0.0,
     },
     ComponentType.HYSTERESIS: {
-        "upper_threshold": 0.5,
-        "lower_threshold": -0.5,
-        "output_high": 1.0,
-        "output_low": 0.0,
+        "threshold": 0.0,
+        "hysteresis": 1.0,
+        "high": 1.0,
+        "low": 0.0,
+        "sample_time": 0.0,
     },
 
     # Control blocks - advanced
@@ -721,26 +1328,56 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "table_x": [0.0, 0.5, 1.0],
         "table_y": [0.0, 0.25, 1.0],
         "interpolation": "linear",
+        "sample_time": 0.0,
     },
     ComponentType.TRANSFER_FUNCTION: {
         "numerator": [1.0],
         "denominator": [1.0, 1.0],
+        "sample_time": 0.0,
     },
     ComponentType.DELAY_BLOCK: {
         "delay_time": 1e-3,
+        "sample_time": 0.0,
     },
     ComponentType.SAMPLE_HOLD: {
-        "sample_time": 1e-4,
+        "sample_time": 0.0,
     },
     ComponentType.STATE_MACHINE: {
         "states": ["S0", "S1"],
         "initial_state": "S0",
         "transitions": [],
+        "sample_time": 0.0,
+    },
+    ComponentType.C_BLOCK: {
+        "n_inputs": 1,
+        "n_outputs": 1,
+        # ``implementation`` picks the authoring backend:
+        #   "source"        — C source (legacy / PSIM-style, compiled
+        #                      by the kernel toolchain).
+        #   "lib"           — pre-built shared library path.
+        #   "python_numba"  — pulsim 1.5 fast_block: a Python control
+        #                      law JIT-compiled via Numba (or run
+        #                      pure-Python when numba is absent).
+        "implementation": "source",
+        "source": "",
+        "lib_path": "",
+        "source_code": "",
+        "extra_cflags": [],
+        "sample_time": 0.0,
+        # python_numba authoring: the control-law function body + its
+        # persistent-state vector length. Empty by default; the
+        # properties editor seeds a PI template on first switch.
+        "python_source": "",
+        "n_states": 1,
     },
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: {
         "display_name": "V",
+        "scale": 1.0,
+    },
+    ComponentType.VOLTAGE_PROBE_GND: {
+        "display_name": "Vg",
         "scale": 1.0,
     },
     ComponentType.CURRENT_PROBE: {
@@ -773,18 +1410,49 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "input_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+        "sample_time": 0.0,
     },
     ComponentType.SIGNAL_DEMUX: {
         "output_count": 4,
         "channel_labels": ["Ch1", "Ch2", "Ch3", "Ch4"],
         "ordering": [0, 1, 2, 3],
+        "sample_time": 0.0,
+    },
+    ComponentType.GOTO_LABEL: {
+        "net_label": "NET1",
+    },
+    ComponentType.FROM_LABEL: {
+        "net_label": "NET1",
+    },
+    # Hierarchical port marker. ``port_name`` is what appears as the
+    # pin label on the outer SubcircuitInstance symbol; ``direction``
+    # is cosmetic + governs flattening for control signals; ``side``
+    # places the pin on the outer rectangle.
+    ComponentType.SUBCIRCUIT_PORT: {
+        "port_name": "port",
+        "direction": "bidir",
+        "side": "left",
     },
 
     # Magnetic
     ComponentType.SATURABLE_INDUCTOR: {
         "inductance": 1e-3,
+        # Saturation model
         "saturation_current": 10.0,
         "saturation_inductance": 1e-6,
+        "saturation_exponent": 2.0,
+        # Magnetic core config (pulsimcore v0.7.9+)
+        "magnetic_core_enabled": True,
+        "magnetic_core_model": "saturation",
+        "magnetic_core_loss_policy": "telemetry_only",
+        "core_loss_k": 0.0,
+        "core_loss_alpha": 2.0,
+        "core_loss_freq_coeff": 0.0,
+        "i_equiv_init": 0.0,
+        "hysteresis_band": 0.0,
+        "hysteresis_strength": 0.15,
+        "hysteresis_loss_coeff": 0.2,
+        "hysteresis_state_init": 1.0,
     },
     ComponentType.COUPLED_INDUCTOR: {
         "l1": 1e-3,
@@ -798,6 +1466,222 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "resistance": 100.0,
         "capacitance": 100e-9,
     },
+
+    # Power rectifier bridges (composite — expanded to primitives at convert time)
+    ComponentType.SINGLE_PHASE_DIODE_BRIDGE: {
+        # Diode model — applied to all 4 diodes (D1..D4)
+        "g_on": 1.0e3,           # conductance when conducting [S]
+        "g_off": 1.0e-9,         # conductance when blocking [S]
+        "v_forward": 0.7,        # forward drop [V]  (informational; kernel uses g_on/g_off PWL)
+        # Optional thermal (per-diode, applied uniformly)
+        "r_th_jc": 1.5,          # K/W
+        "tau_th": 0.075,         # s
+    },
+    ComponentType.THREE_PHASE_DIODE_BRIDGE: {
+        # Diode model — applied to all 6 diodes (D1..D6)
+        "g_on": 1.0e3,
+        "g_off": 1.0e-9,
+        "v_forward": 0.7,
+        "r_th_jc": 1.5,
+        "tau_th": 0.075,
+    },
+
+    # Modular Multilevel Converter sub-module cell.
+    # ``cell_topology`` picks between half-bridge (2 switches) and
+    # full-bridge (4 switches) — the converter and visual item branch
+    # on this value, and ``_synchronize_mmc_cell`` rewires the pin
+    # layout on change.
+    ComponentType.MMC_CELL: {
+        "cell_topology": "Half-Bridge",  # "Half-Bridge" | "Full-Bridge"
+        # Switch model (shared across all MOSFETs in the cell)
+        "r_ds_on": 25e-3,        # MOSFET on-resistance [Ω]
+        "g_off": 1.0e-9,         # off-state conductance [S]
+        "v_th": 3.0,             # gate threshold [V]
+        # Body diode
+        "diode_v_forward": 0.7,
+        "diode_g_on": 1.0e3,
+        "diode_g_off": 1.0e-9,
+        # Cell capacitor
+        "c_cell": 4.7e-3,        # F  (typical MMC sub-module ≈ mF range)
+        "v_cell_init": 0.0,      # initial capacitor voltage [V]
+        # Thermal (per-switch)
+        "r_th_jc": 1.0,
+        "tau_th": 0.060,
+    },
+
+    # MMC arm — full chain of N sub-modules with selectable fidelity.
+    # ``model_fidelity`` maps to pulsim's native arm helpers:
+    #   L0 Average   → add_mmc_arm_average    (single equivalent V src)
+    #   L1 Multilevel→ add_mmc_arm_multilevel (per-level voltage steps)
+    #   L2 Equivalent→ add_mmc_arm_equivalent (SM-equivalent model)
+    #   L3 Detailed  → add_mmc_arm_detailed   (every switch + cap)
+    ComponentType.MMC_ARM: {
+        "model_fidelity": "L3 Detailed",
+        "submodule_type": "Half-Bridge",       # or "Full-Bridge"
+        "n_submodules": 4,                      # # SMs in the arm chain
+        # Capacitor + arm impedance
+        "c_sm": 4.7e-3,                         # per-SM capacitance [F]
+        "v_c0": 0.0,                            # initial SM voltage [V]
+        "r_arm": 0.01,                          # arm series resistance [Ω]
+        # Modulation
+        "m_ref_constant": 0.5,                  # used when M_REF pin unwired
+        # Switching (used by L1/L2/L3 — not L0)
+        "f_carrier": 1000.0,                    # PWM carrier [Hz]
+        "modulation_scheme": "PSC",             # "PSC" (ps_pwm) | "IPD"
+        # L2-only (dead-time / min on-time)
+        "t_dead": 1.0e-6,
+        "t_min": 1.0e-7,
+        # L3-only (cap-voltage balancing strategy)
+        "balancing": "sort_and_select",         # "sort_and_select" | "none"
+    },
+
+    # Three-phase / vector control (Pulsim Phase 28)
+    # Clarke / inverse-Clarke have no numeric parameters.
+    ComponentType.CLARKE_TRANSFORM: {
+        "sample_time": 0.0,
+    },
+    ComponentType.INVERSE_CLARKE_TRANSFORM: {
+        "sample_time": 0.0,
+    },
+    # Park reads θ (and optionally α / β) from a channel — set via
+    # the parameters panel: "theta_from_channel: PLL.theta", etc.
+    ComponentType.PARK_TRANSFORM: {
+        "theta_from_channel": "",
+        "alpha_from_channel": "",
+        "beta_from_channel": "",
+        "sample_time": 0.0,
+    },
+    ComponentType.INVERSE_PARK_TRANSFORM: {
+        "theta_from_channel": "",
+        "d_from_channel": "",
+        "q_from_channel": "",
+        "sample_time": 0.0,
+    },
+    # Single-phase PLL: PI loop on q-axis projection.
+    ComponentType.PLL: {
+        "kp": 200.0,
+        "ki": 2000.0,
+        "f_nominal_hz": 60.0,
+        "sample_time": 0.0,
+    },
+    # Space-Vector Modulation: takes (α, β) refs (channel) + V_dc.
+    ComponentType.SVM: {
+        "v_dc": 200.0,
+        "alpha_from_channel": "",
+        "beta_from_channel": "",
+        "sample_time": 0.0,
+    },
+    # Three-phase voltage source (Pulsim 0.10.0a1).
+    # Decomposes into 3 internal SineVoltageSource branches sharing
+    # the neutral pin. ``positive_sequence`` flips B/C; ``unbalance_factor``
+    # in [0, 1) scales |V_b|=(1-u) and |V_c|=(1+u) keeping A at nominal.
+    ComponentType.THREE_PHASE_SOURCE: {
+        "line_to_line_voltage_rms": 400.0,
+        "frequency_hz": 50.0,
+        "phase_a_deg": 0.0,
+        "positive_sequence": True,
+        "unbalance_factor": 0.0,
+    },
+    # Three-phase 2-level VSI helper (Pulsim 0.10.0a5). Decomposes into
+    # 6 MOSFETs + 6 SPWM gate drivers (forced to Ideal switching mode).
+    ComponentType.THREE_PHASE_VSI: {
+        "switching_frequency_hz":  10e3,   # Hz — PWM carrier
+        "modulation_index":        0.8,    # 0..1 linear SPWM
+        "modulation_frequency_hz": 50.0,   # Hz — output fundamental
+        "phase_a_deg":             0.0,    # Reference angle for phase A
+        "positive_sequence":       True,
+        "v_gate_on":               12.0,   # V — gate drive amplitude
+        "v_gate_off":              0.0,    # V
+        "mosfet_r_on_ohm":         0.01,   # Ω — R_ds(on)
+        "mosfet_vth":              1.0,    # V — gate threshold
+    },
+    # DC Motor (Pulsim 0.10.0a2). Full device-variant — runtime advances
+    # ω and θ internally; user only needs to wire the armature terminals.
+    # Defaults match the analytical small-motor example used in Pulsim's
+    # examples/cpp/02_dc_motor_step.cpp.
+    ComponentType.DC_MOTOR: {
+        "R_a": 0.5,           # Ω — armature resistance
+        "L_a": 10e-3,         # H — armature inductance
+        "K_e": 0.05,          # V·s/rad — back-EMF constant
+        "K_t": 0.05,          # N·m/A — torque constant (= K_e in SI)
+        "J":   1e-4,          # kg·m² — rotor inertia
+        "b":   1e-5,          # N·m·s — viscous friction (linear in ω)
+        "tau_load_quad_coeff": 0.0,  # N·m·s² — quadratic load (fan/pump)
+        "i_a_init":   0.0,    # A — initial armature current
+        "omega_init": 0.0,    # rad/s — initial speed
+        "theta_init": 0.0,    # rad — initial rotor angle
+        "tau_load":   0.0,    # N·m — external load torque (constant)
+    },
+
+    # 3-phase RL load (Pulsim 0.10.0a3). Decomposes into 3 R+L branches
+    # in Star (Y) or Delta (Δ) topology.
+    ComponentType.THREE_PHASE_RL_LOAD: {
+        "resistance_per_phase": 30.0,    # Ω
+        "inductance_per_phase": 50e-3,   # H
+        "topology": "Star",              # "Star" or "Delta"
+        "unbalance_factor": 0.0,         # [0, 1)
+    },
+
+    # PMSM at fixed rotor speed (Pulsim 0.10.0a3). Per-phase R_s + L_s +
+    # sinusoidal back-EMF (amplitude = ω_e · λ_pm).
+    ComponentType.PMSM_STEADY_STATE: {
+        "R_s": 0.5,                      # Ω — stator phase resistance
+        "L_s": 2e-3,                     # H — stator phase inductance
+        "lambda_pm": 0.1,                # V·s/rad — rotor flux linkage
+        "omega_electrical": 314.16,      # rad/s — fixed electrical speed (~50 Hz)
+        "phase_a_offset_deg": 0.0,       # rotor angle offset
+        "positive_sequence": True,       # False flips B/C
+    },
+
+    # PMSM dynamic device (Pulsim 0.10.0a4). Full device-variant: 4
+    # internal states (i_d, i_q, ω_m, θ_m), 3 reserved MNA branch rows,
+    # Park-frame torque, forward-Euler mechanical step.
+    ComponentType.PMSM: {
+        "Rs":            0.5,        # Ω — stator phase resistance
+        "Ld":            2e-3,       # H — d-axis inductance
+        "Lq":            2e-3,       # H — q-axis inductance (Lq > Ld → IPM)
+        "psi_pm":        0.1,        # Wb — magnet flux linkage
+        "pole_pairs":    2,          # poles / 2
+        "J":             1e-3,       # kg·m² — rotor inertia
+        "b_friction":    1e-4,       # N·m·s — linear viscous friction
+        "friction_coulomb": 0.0,     # N·m — Coulomb friction
+        "i_d_init":      0.0,        # A
+        "i_q_init":      0.0,        # A
+        "omega_init":    0.0,        # rad/s
+        "theta_init":    0.0,        # rad
+        "tau_load":      0.0,        # N·m — external shaft load
+    },
+
+    # 3-phase squirrel-cage induction motor (pulsim.add_induction_motor).
+    # Rotor R/L are REFERRED to the stator side (IEEE equivalent-
+    # circuit convention). Hard constraint enforced by pulsim:
+    # L_m² < L_s·L_r so the leakage factor σ = 1 − Lm²/(Ls·Lr) ∈ (0, 1).
+    # These defaults give σ = 0.19 (typical small machine).
+    ComponentType.INDUCTION_MOTOR: {
+        "R_s":          0.5,    # Ω — stator phase resistance
+        "L_s":          0.05,   # H — stator self-inductance
+        "R_r":          0.4,    # Ω — rotor resistance (referred)
+        "L_r":          0.05,   # H — rotor self-inductance (referred)
+        "L_m":          0.045,  # H — mutual inductance (referred)
+        "pole_pairs":   2,      # poles / 2
+        "J":            1e-3,   # kg·m² — rotor + load inertia
+        "B":            0.0,    # N·m·s — viscous friction
+        "T_load":       0.0,    # N·m — constant shaft load torque
+    },
+
+    # Jiles-Atherton hysteretic inductor (pulsim.add_hysteretic_inductor).
+    # ``material`` selects a built-in J-A parameter set (see
+    # PARAM_OPTIONS); the converter resolves it via
+    # pulsim.reference_material(). Geometry (N_turns / l_m / A_core)
+    # sets the linear air-core inductance L0 = N²·A·µ₀/l_m and scales
+    # the hysteresis contribution. All three must be positive (pulsim
+    # raises otherwise).
+    ComponentType.HYSTERETIC_INDUCTOR: {
+        "material":     "si_steel_m19",  # J-A catalog key
+        "N_turns":      100,             # turns on the coil
+        "l_m":          0.1,             # m — mean magnetic path length
+        "A_core":       1e-4,            # m² — effective core area
+    },
 }
 
 # Parameters that are intentionally hidden from the default properties UI.
@@ -807,7 +1691,61 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
 # the amplitude invites users to lower it below the device threshold, breaking
 # simulation convergence without obvious explanation.
 HIDDEN_PARAMS: dict[ComponentType, frozenset[str]] = {
-    ComponentType.PWM_GENERATOR: frozenset({"amplitude"}),
+    ComponentType.PWM_GENERATOR: frozenset({"amplitude", "duty_from_channel", "target_component"}),
+}
+
+# Maps string parameter names to their allowed values.
+# The properties panel renders these as dropdowns instead of free-text fields.
+PARAM_OPTIONS: dict[str, list[str]] = {
+    # Magnetic core (SATURABLE_INDUCTOR)
+    "magnetic_core_model": ["saturation", "hysteresis"],
+    "magnetic_core_loss_policy": ["telemetry_only", "loss_summary"],
+    # PWM carrier waveform
+    "carrier": ["sawtooth", "triangle"],
+    # LED body color (drives schematic rendering)
+    "color": ["red", "green", "blue", "yellow", "white"],
+    # Electrothermal: RC network topology
+    "thermal_network": ["single_rc", "foster", "cauer"],
+    # Switching loss computation model
+    "switching_loss_model": ["scalar", "datasheet"],
+    # MMC sub-module cell topology (drives pin count + converter
+    # expansion + visual symbol).
+    "cell_topology": ["Half-Bridge", "Full-Bridge"],
+    # MMC arm fidelity level (drives which pulsim native helper
+    # the converter calls — see DEFAULT_PARAMETERS for the mapping).
+    "model_fidelity": [
+        "L0 Average",
+        "L1 Multilevel",
+        "L2 Equivalent",
+        "L3 Detailed",
+    ],
+    # MMC arm sub-module flavor (passed to pulsim's SubmoduleType
+    # Literal[..]). Maps to 'half_bridge' / 'full_bridge'.
+    "submodule_type": ["Half-Bridge", "Full-Bridge"],
+    # MMC arm modulation scheme (passed to pulsim's ModulationScheme
+    # Literal[..]). pulsim 1.5 supports two: PSC (= ps_pwm,
+    # phase-shifted PWM) and IPD (= ipd, in-phase disposition).
+    "modulation_scheme": ["PSC", "IPD"],
+    # MMC L3 cap-voltage balancing strategy.
+    "balancing": ["sort_and_select", "none"],
+    # Jiles-Atherton soft-magnetic material catalog for the
+    # HYSTERETIC_INDUCTOR. Each maps to a built-in 5-parameter J-A
+    # set via pulsim.reference_material(). Order = widest→narrowest
+    # loss loop is roughly annealed_iron > si_steel > permalloy >
+    # ferrite, but the user picks by material name, not loss.
+    "material": [
+        "si_steel_m19",
+        "annealed_iron",
+        "ferrite_n87",
+        "permalloy",
+    ],
+    # SUBCIRCUIT_PORT direction: cosmetic (arrow head) + signals to
+    # the converter how to treat the bridge for control signals.
+    # ``bidir`` is the default for electrical nets.
+    "direction": ["input", "output", "bidir"],
+    # Which edge of the outer SubcircuitInstance symbol the pin
+    # lands on.
+    "side": ["left", "right", "top", "bottom"],
 }
 
 
@@ -896,13 +1834,25 @@ class Component:
         )
 
 
-SCOPE_CHANNEL_LIMITS = (1, 8)
+SCOPE_CHANNEL_LIMITS = (1, 16)
 MUX_CHANNEL_LIMITS = (2, 16)
 SUM_INPUT_LIMITS = (2, 16)
+C_BLOCK_IO_LIMITS = (1, 32)
 
 
 def _clamp(value: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
+
+
+def _synchronize_control_sample_time(component: "Component") -> None:
+    """Normalize Ts fields for components that support per-block sampling."""
+    if not supports_control_sample_time(component.type):
+        component.parameters.pop(CONTROL_SAMPLE_TIME_PARAM, None)
+        component.parameters.pop(LEGACY_CONTROL_SAMPLE_TIME_PARAM, None)
+        return
+
+    sample_time = get_control_sample_time(component.parameters, default=0.0)
+    set_control_sample_time(component.parameters, sample_time)
 
 
 def _synchronize_special_component(component: Component) -> None:
@@ -912,14 +1862,76 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_mux(component)
     elif component.type == ComponentType.SIGNAL_DEMUX:
         _synchronize_demux(component)
+    elif component.type == ComponentType.MMC_CELL:
+        _synchronize_mmc_cell(component)
     elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         _synchronize_sum_like_block(component)
-    elif component.type in (ComponentType.PI_CONTROLLER, ComponentType.PWM_GENERATOR, ComponentType.GAIN):
+    elif component.type == ComponentType.C_BLOCK:
+        _synchronize_c_block(component)
+    elif component.type == ComponentType.PWM_GENERATOR:
+        _synchronize_pwm_duty_pin(component)
+    elif component.type in (
+        ComponentType.PI_CONTROLLER,
+        ComponentType.GAIN,
+        ComponentType.GOTO_LABEL,
+        ComponentType.FROM_LABEL,
+    ):
         _synchronize_default_pin_layout(component)
-    elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.CURRENT_PROBE):
+    elif component.type == ComponentType.SUBCIRCUIT_PORT:
+        _synchronize_subcircuit_port_pin(component)
+    elif component.type in (
+        ComponentType.VOLTAGE_PROBE,
+        ComponentType.VOLTAGE_PROBE_GND,
+        ComponentType.CURRENT_PROBE,
+    ):
         _synchronize_measurement_probe_pins(component)
     else:
         _synchronize_thermal_port(component)
+
+    _synchronize_control_sample_time(component)
+
+
+def _synchronize_subcircuit_port_pin(component: Component) -> None:
+    """Place the SUBCIRCUIT_PORT marker's single pin based on its
+    ``side`` parameter (left/right/top/bottom).
+
+    The pin always faces *into* the subcircuit body (so wires from
+    inner components attach naturally). The marker badge is drawn on
+    the opposite side, pointing outward to suggest the direction the
+    signal travels relative to the parent symbol.
+
+    side=left  → pin at ( +40,   0)  (badge on the left side)
+    side=right → pin at ( -40,   0)
+    side=top   → pin at (   0, +25)
+    side=bottom→ pin at (   0, -25)
+
+    The pin's name mirrors the ``port_name`` parameter so the inner
+    schematic shows the port label right at the connection point.
+    """
+    params = component.parameters or {}
+    side = str(params.get("side", "left")).lower().strip()
+    port_name = str(params.get("port_name", "port")).strip() or "port"
+
+    PIN_OFFSETS = {
+        "left":   ( 40.0,   0.0),
+        "right":  (-40.0,   0.0),
+        "top":    (  0.0,  25.0),
+        "bottom": (  0.0, -25.0),
+    }
+    px, py = PIN_OFFSETS.get(side, PIN_OFFSETS["left"])
+
+    new_pins = _snap_pin_layout([Pin(0, port_name, px, py)])
+
+    # Don't rewrite pin list if it already matches — avoids spurious
+    # change notifications on every property edit.
+    if (
+        len(component.pins) == 1
+        and component.pins[0].name == new_pins[0].name
+        and abs(component.pins[0].x - new_pins[0].x) < 0.1
+        and abs(component.pins[0].y - new_pins[0].y) < 0.1
+    ):
+        return
+    component.pins = new_pins
 
 
 def _synchronize_default_pin_layout(component: Component) -> None:
@@ -980,14 +1992,97 @@ def _synchronize_sum_like_block(component: Component, force_count: int | None = 
     component.pins = _snap_pin_layout(_default_sum_pins(input_count))
 
 
+def _synchronize_c_block(
+    component: Component,
+    force_n_inputs: int | None = None,
+    force_n_outputs: int | None = None,
+) -> None:
+    """Synchronize C-Block pin layout and ABI parameter defaults."""
+    params = component.parameters
+    requested_inputs = force_n_inputs if force_n_inputs is not None else params.get("n_inputs", 1)
+    requested_outputs = (
+        force_n_outputs if force_n_outputs is not None else params.get("n_outputs", 1)
+    )
+    try:
+        n_inputs = _clamp(int(requested_inputs), *C_BLOCK_IO_LIMITS)
+    except (TypeError, ValueError):
+        n_inputs = 1
+    try:
+        n_outputs = _clamp(int(requested_outputs), *C_BLOCK_IO_LIMITS)
+    except (TypeError, ValueError):
+        n_outputs = 1
+
+    params["n_inputs"] = n_inputs
+    params["n_outputs"] = n_outputs
+    params.setdefault("implementation", "source")
+    params.setdefault("source", "")
+    params.setdefault("lib_path", "")
+    params.setdefault("source_code", "")
+
+    raw_flags = params.get("extra_cflags", [])
+    if isinstance(raw_flags, list):
+        params["extra_cflags"] = [str(flag) for flag in raw_flags if str(flag).strip()]
+    else:
+        params["extra_cflags"] = []
+
+    component.pins = _snap_pin_layout(_default_c_block_pins(n_inputs, n_outputs))
+
+
+def _synchronize_pwm_duty_pin(component: Component) -> None:
+    """Synchronize the optional DUTY_IN pin on PWM_GENERATOR.
+
+    When *enable_duty_input* is False (default) the DUTY_IN pin is hidden and
+    the fixed *duty_cycle* parameter is used by the simulator.  When True the
+    pin is visible and the converter wires the connected signal as the duty
+    source; leaving it unconnected will raise a validation error at simulation
+    time.
+    """
+    if component.type != ComponentType.PWM_GENERATOR:
+        return
+
+    # Backward-compat: infer enabled state from serialised pin list when the
+    # parameter is absent (e.g. files saved before this feature existed).
+    serialized_has_duty_pin = any(pin.name == DUTY_INPUT_PIN_NAME for pin in component.pins)
+    raw_enabled = component.parameters.get(DUTY_INPUT_PARAMETER, None)
+    if raw_enabled is None and serialized_has_duty_pin:
+        enabled = True
+    else:
+        enabled = bool(raw_enabled)
+    component.parameters[DUTY_INPUT_PARAMETER] = enabled
+
+    # Rebuild pin list: always keep OUT, conditionally keep DUTY_IN.
+    pins = [Pin(pin.index, pin.name, pin.x, pin.y) for pin in component.pins if pin.name != DUTY_INPUT_PIN_NAME]
+    if not pins:
+        # Fallback: restore OUT from defaults if lost somehow.
+        base = DEFAULT_PINS.get(ComponentType.PWM_GENERATOR, [])
+        pins = [Pin(p.index, p.name, p.x, p.y) for p in base if p.name != DUTY_INPUT_PIN_NAME]
+
+    if enabled:
+        pins.append(Pin(index=len(pins), name=DUTY_INPUT_PIN_NAME, x=-35.0, y=20.0))
+
+    for index, pin in enumerate(pins):
+        pin.index = index
+    component.pins = _snap_pin_layout(pins)
+
+
 def _synchronize_thermal_port(component: Component) -> None:
     """Synchronize optional thermal measurement pin on supported components."""
     if not supports_thermal_port(component.type):
         component.parameters.pop(THERMAL_PORT_PARAMETER, None)
         return
 
-    enabled = bool(component.parameters.get(THERMAL_PORT_PARAMETER, False))
+    serialized_has_thermal_pin = any(pin.name == THERMAL_PORT_PIN_NAME for pin in component.pins)
+    raw_enabled = component.parameters.get(THERMAL_PORT_PARAMETER, None)
+    if raw_enabled is None and serialized_has_thermal_pin:
+        enabled = True
+    else:
+        enabled = bool(raw_enabled)
     component.parameters[THERMAL_PORT_PARAMETER] = enabled
+
+    thermal_active = bool(component.parameters.get("thermal_enabled", False) or enabled)
+    if supports_electrothermal_parameters(component.type) and thermal_active:
+        for key, default in DEFAULT_THERMAL_DEVICE_PARAMS.items():
+            component.parameters.setdefault(key, default)
 
     base_pins = DEFAULT_PINS.get(component.type, [])
     if not base_pins:
@@ -1092,6 +2187,57 @@ def set_demux_output_count(component: Component, count: int) -> None:
     _synchronize_demux(component, force_count=count)
 
 
+# ---------------------------------------------------------------------------
+# MMC sub-module cell (dynamic pin layout)
+# ---------------------------------------------------------------------------
+# Pin layouts indexed by ``cell_topology``. Half-bridge has 4 pins
+# (TOP, BOT, S1_G, S2_G), full-bridge has 6 (adds S3_G, S4_G for the
+# right H-bridge leg). Pin indices stay stable for the shared TOP/BOT/
+# S1_G/S2_G prefix so wires connecting to those pins survive a topology
+# change.
+_MMC_CELL_PIN_LAYOUTS: dict[str, list[Pin]] = {
+    "Half-Bridge": [
+        Pin(0, "TOP",  -30, -25),
+        Pin(1, "BOT",  -30, 25),
+        Pin(2, "S1_G",  30, -15),
+        Pin(3, "S2_G",  30, 15),
+    ],
+    "Full-Bridge": [
+        Pin(0, "TOP",  -30, -30),
+        Pin(1, "BOT",  -30, 30),
+        Pin(2, "S1_G",  30, -25),
+        Pin(3, "S2_G",  30, -10),
+        Pin(4, "S3_G",  30, 10),
+        Pin(5, "S4_G",  30, 25),
+    ],
+}
+
+
+def _synchronize_mmc_cell(component: Component) -> None:
+    """Rewrite ``MMC_CELL`` pin layout to match the ``cell_topology``."""
+    params = component.parameters
+    topology = str(params.get("cell_topology") or "Half-Bridge")
+    if topology not in _MMC_CELL_PIN_LAYOUTS:
+        topology = "Half-Bridge"
+    params["cell_topology"] = topology
+    component.pins = _snap_pin_layout([
+        Pin(p.index, p.name, p.x, p.y)
+        for p in _MMC_CELL_PIN_LAYOUTS[topology]
+    ])
+
+
+def set_mmc_cell_topology(component: Component, topology: str) -> None:
+    """Switch an ``MMC_CELL`` between half-bridge and full-bridge.
+
+    Trims/extends pins to match the new layout. Wires connected to
+    shared pins (TOP/BOT/S1_G/S2_G) keep their indices so they survive
+    the topology change; wires on full-bridge-only pins (S3_G/S4_G)
+    will dangle if you switch back to half-bridge.
+    """
+    component.parameters["cell_topology"] = topology
+    _synchronize_mmc_cell(component)
+
+
 def set_sum_input_count(component: Component, count: int) -> None:
     """Update SUM/SUBTRACTOR input count and pin layout."""
 
@@ -1100,8 +2246,43 @@ def set_sum_input_count(component: Component, count: int) -> None:
     _synchronize_sum_like_block(component, force_count=count)
 
 
+def set_cblock_io_counts(
+    component: Component,
+    *,
+    n_inputs: int | None = None,
+    n_outputs: int | None = None,
+) -> None:
+    """Update C-Block input/output counts and pin layout."""
+    if component.type != ComponentType.C_BLOCK:
+        return
+    _synchronize_c_block(component, force_n_inputs=n_inputs, force_n_outputs=n_outputs)
+
+
+def set_cblock_input_count(component: Component, count: int) -> None:
+    """Update only C-Block input count."""
+    set_cblock_io_counts(component, n_inputs=count)
+
+
+def set_cblock_output_count(component: Component, count: int) -> None:
+    """Update only C-Block output count."""
+    set_cblock_io_counts(component, n_outputs=count)
+
+
 def set_thermal_port_enabled(component: Component, enabled: bool) -> None:
     """Enable or disable thermal measurement pin for compatible components."""
 
     component.parameters[THERMAL_PORT_PARAMETER] = bool(enabled)
+    _synchronize_special_component(component)
+
+
+def set_pwm_duty_input_enabled(component: Component, enabled: bool) -> None:
+    """Enable or disable the DUTY_IN port on a PWM_GENERATOR component.
+
+    When disabled (default) the block uses the fixed *duty_cycle* parameter.
+    When enabled the DUTY_IN pin appears on the schematic and the connected
+    signal is used as the duty command; the simulation will reject the circuit
+    if the pin is left unconnected.
+    """
+
+    component.parameters[DUTY_INPUT_PARAMETER] = bool(enabled)
     _synchronize_special_component(component)

@@ -1,12 +1,13 @@
 """Tests for solver options in SimulationSettingsDialog."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
+from PySide6.QtCore import Qt
 
 from pulsimgui.services.backend_adapter import BackendInfo
-from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.services.backend_types import DCSettings
+from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.views.dialogs.simulation_settings_dialog import SimulationSettingsDialog
 
 
@@ -52,6 +53,9 @@ class TestUIValueChanges:
         assert dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 25.0
         assert dialog._thermal_network_combo.currentData() == "foster"
+        assert dialog._thermal_policy_combo.currentData() == "loss_with_temperature_scaling"
+        assert dialog._thermal_default_rth_spin.value() == 1.0
+        assert dialog._thermal_default_cth_spin.value() == 0.1
         assert dialog._thermal_include_conduction_check.isChecked()
         assert dialog._thermal_include_switching_check.isChecked()
 
@@ -82,6 +86,9 @@ class TestUIValueChanges:
             thermal_include_switching_losses=False,
             thermal_include_conduction_losses=True,
             thermal_network="cauer",
+            thermal_policy="loss_only",
+            thermal_default_rth=2.4,
+            thermal_default_cth=0.35,
             formulation_mode="direct",
             direct_formulation_fallback=False,
         )
@@ -123,6 +130,9 @@ class TestUIValueChanges:
         assert not dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 40.0
         assert dialog._thermal_network_combo.currentData() == "cauer"
+        assert dialog._thermal_policy_combo.currentData() == "loss_only"
+        assert dialog._thermal_default_rth_spin.value() == pytest.approx(2.4)
+        assert dialog._thermal_default_cth_spin.value() == pytest.approx(0.35)
         assert dialog._thermal_include_conduction_check.isChecked()
         assert not dialog._thermal_include_switching_check.isChecked()
 
@@ -160,6 +170,11 @@ class TestUIValueChanges:
         dialog._thermal_network_combo.setCurrentIndex(
             dialog._thermal_network_combo.findData("cauer")
         )
+        dialog._thermal_policy_combo.setCurrentIndex(
+            dialog._thermal_policy_combo.findData("loss_only")
+        )
+        dialog._thermal_default_rth_spin.setValue(3.3)
+        dialog._thermal_default_cth_spin.setValue(0.44)
         dialog._thermal_include_conduction_check.setChecked(True)
         dialog._thermal_include_switching_check.setChecked(False)
 
@@ -190,6 +205,9 @@ class TestUIValueChanges:
         assert settings.enable_losses is False
         assert settings.thermal_ambient == 42.0
         assert settings.thermal_network == "cauer"
+        assert settings.thermal_policy == "loss_only"
+        assert settings.thermal_default_rth == pytest.approx(3.3)
+        assert settings.thermal_default_cth == pytest.approx(0.44)
         assert settings.thermal_include_conduction_losses is True
         assert settings.thermal_include_switching_losses is False
 
@@ -432,7 +450,6 @@ class TestBackendReceivesOptions:
 
     def test_backend_build_dc_options_integration(self) -> None:
         """Test that PulsimBackend._build_dc_options uses DCSettings correctly."""
-        from unittest.mock import MagicMock
 
         # Create mock module with NewtonOptions
         mock_module = MagicMock()
@@ -452,7 +469,7 @@ class TestBackendReceivesOptions:
         )
 
         # Import and create backend
-        from pulsimgui.services.backend_adapter import PulsimBackend, BackendInfo
+        from pulsimgui.services.backend_adapter import BackendInfo, PulsimBackend
 
         backend_info = BackendInfo(
             identifier="test",
@@ -538,3 +555,80 @@ class TestEffectiveStepCalculation:
 
         # Label should have changed (smaller step)
         assert dialog._effective_step_label.text() != initial_text
+
+
+class TestAdvancedAnalysisSettings:
+    """Tests for averaged and frequency-analysis controls."""
+
+    def test_advanced_section_uses_tabs_to_avoid_horizontal_overflow(self, qapp) -> None:
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+
+        # Advanced tabs are always visible (no toggle needed after dialog refactor).
+        # Wave-4 sub-A 1.6 added a fifth tab ("Solver Stack") for the new
+        # advanced solver-stack knobs.
+        assert hasattr(dialog, "_advanced_tabs")
+        assert dialog._advanced_tabs.count() == 5
+        assert dialog._advanced_tabs.tabText(0) == "Transient"
+        assert dialog._advanced_tabs.tabText(1) == "DC Setup"
+        assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
+        assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
+        assert dialog._advanced_tabs.tabText(4) == "Solver Stack"
+
+    def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
+        settings = SimulationSettings()
+        dialog = SimulationSettingsDialog(settings)
+
+        dialog._averaged_enabled_check.setChecked(True)
+        dialog._averaged_topology_combo.setCurrentIndex(
+            dialog._averaged_topology_combo.findData("flyback")
+        )
+        dialog._averaged_mode_combo.setCurrentIndex(
+            dialog._averaged_mode_combo.findData("auto")
+        )
+        dialog._averaged_envelope_combo.setCurrentIndex(
+            dialog._averaged_envelope_combo.findData("lenient")
+        )
+        dialog._ac_start_freq_spin.setValue(10.0)
+        dialog._ac_stop_freq_spin.setValue(250_000.0)
+        dialog._ac_points_spin.setValue(25)
+        dialog._ac_anchor_mode_combo.setCurrentIndex(
+            dialog._ac_anchor_mode_combo.findData("dc")
+        )
+        dialog._ac_sweep_scale_combo.setCurrentIndex(
+            dialog._ac_sweep_scale_combo.findData("log")
+        )
+        dialog._ac_injection_node_edit.setText("vin,0")
+        dialog._ac_measurement_node_edit.setText("vout,0")
+
+        dialog._on_accept()
+
+        assert settings.averaged_options == {
+            "topology": "flyback",
+            "mode": "auto",
+            "envelope": "lenient",
+        }
+        assert settings.ac_f_start == pytest.approx(10.0)
+        assert settings.ac_f_stop == pytest.approx(250_000.0)
+        assert settings.ac_points_per_decade == 25
+        assert settings.ac_anchor_mode == "dc"
+        assert settings.ac_sweep_scale == "log"
+        assert settings.ac_injection_node == "vin,0"
+        assert settings.ac_measurement_node == "vout,0"
+
+    def test_dialog_disables_averaged_when_backend_capability_missing(self, qapp) -> None:
+        settings = SimulationSettings(
+            averaged_options={"topology": "buck", "mode": "ccm", "envelope": "strict"}
+        )
+        backend_info = BackendInfo(
+            identifier="pulsim",
+            name="Pulsim",
+            version="0.6.9",
+            status="available",
+            capabilities={"transient", "ac"},
+        )
+        dialog = SimulationSettingsDialog(settings, backend_info=backend_info)
+
+        assert not dialog._averaged_enabled_check.isEnabled()
+        assert not dialog._averaged_topology_combo.isEnabled()
+        assert not dialog._ac_start_freq_spin.isEnabled()

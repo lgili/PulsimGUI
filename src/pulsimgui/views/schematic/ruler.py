@@ -1,7 +1,7 @@
 """Ruler widgets for schematic view measurement."""
 
-from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QFont
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 
@@ -74,12 +74,6 @@ class RulerWidget(QWidget):
         Returns:
             Tuple of (major_interval_pixels, minor_divisions)
         """
-        # Base interval at 100% zoom
-        base_interval = self.MAJOR_INTERVAL
-
-        # Adjust for zoom - we want labels to be readable
-        scaled_interval = base_interval * self._zoom_level
-
         # Find a nice interval that keeps labels from overlapping
         nice_intervals = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
 

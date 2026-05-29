@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pulsimgui.services.backend_adapter import BackendInfo
-from pulsimgui.services.backend_types import BackendVersion, MIN_BACKEND_API
+from pulsimgui.services.backend_types import MIN_BACKEND_API, BackendVersion
 
 
 class TestBackendVersion:
@@ -93,20 +93,31 @@ class TestBackendInfoCompatibility:
 
     def test_check_compatibility_with_valid_version(self) -> None:
         """Test compatibility check with valid version."""
+        min_version = (
+            f"{MIN_BACKEND_API.major}.{MIN_BACKEND_API.minor}.{MIN_BACKEND_API.patch}"
+        )
         info = BackendInfo(
             identifier="test",
             name="Test",
-            version="0.3.0",
+            version=min_version,
             status="available",
-            capabilities={"dc", "ac", "transient"},
+            capabilities={
+                "dc",
+                "ac",
+                "transient",
+                "thermal",
+                "post_processing",
+                "frequency_analysis",
+                "averaged",
+            },
         )
         info.check_compatibility()
 
         assert info.is_compatible
         assert info.compatibility_warning == ""
         assert info.parsed_version is not None
-        assert info.parsed_version.major == 0
-        assert info.parsed_version.minor == 3
+        assert info.parsed_version.major == MIN_BACKEND_API.major
+        assert info.parsed_version.minor == MIN_BACKEND_API.minor
 
     def test_check_compatibility_with_old_version(self) -> None:
         """Test compatibility check with old version."""
@@ -121,7 +132,10 @@ class TestBackendInfoCompatibility:
 
         assert not info.is_compatible
         assert "older than minimum required" in info.compatibility_warning
-        assert "0.2.0" in info.compatibility_warning  # MIN_BACKEND_API version
+        min_version = (
+            f"{MIN_BACKEND_API.major}.{MIN_BACKEND_API.minor}.{MIN_BACKEND_API.patch}"
+        )
+        assert min_version in info.compatibility_warning
 
     def test_check_compatibility_with_invalid_version(self) -> None:
         """Test compatibility check with unparseable version."""
@@ -157,9 +171,17 @@ class TestBackendInfoCompatibility:
         info = BackendInfo(
             identifier="test",
             name="Test",
-            version="0.3.0",
+            version="0.7.0",
             status="available",
-            capabilities={"transient", "dc", "ac", "thermal"},
+            capabilities={
+                "transient",
+                "dc",
+                "ac",
+                "thermal",
+                "post_processing",
+                "frequency_analysis",
+                "averaged",
+            },
         )
         info.check_compatibility()
 
@@ -172,13 +194,15 @@ class TestMinBackendAPI:
     def test_min_backend_api_defined(self) -> None:
         """Test that MIN_BACKEND_API is properly defined."""
         assert MIN_BACKEND_API.major == 0
-        assert MIN_BACKEND_API.minor == 2
+        assert MIN_BACKEND_API.minor == 7
         assert MIN_BACKEND_API.patch == 0
         assert MIN_BACKEND_API.api_version == 1
 
     def test_current_version_compatible(self) -> None:
         """Test that typical current versions are compatible."""
-        current = BackendVersion.from_string("0.3.0")
+        current = BackendVersion.from_string(
+            f"{MIN_BACKEND_API.major}.{MIN_BACKEND_API.minor}.{MIN_BACKEND_API.patch}"
+        )
         assert current.is_compatible_with(MIN_BACKEND_API)
 
         current = BackendVersion.from_string("1.0.0")

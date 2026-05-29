@@ -1,7 +1,7 @@
 """Base command classes for undo/redo support."""
 
 from abc import ABC, abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -30,8 +30,11 @@ class Command(ABC):
         return False
 
     def merge(self, other: "Command") -> None:
-        """Merge another command into this one."""
-        pass
+        """Merge another command into this one.
+
+        Base implementation intentionally does nothing.
+        """
+        _ = other
 
 
 class CommandStack(QObject):

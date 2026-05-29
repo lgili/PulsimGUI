@@ -10,20 +10,17 @@ These tests measure:
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
-import pytest
-
-from pulsimgui.services.backend_adapter import PlaceholderBackend
-from pulsimgui.services.backend_types import DCSettings, ACSettings
-from pulsimgui.services.backend_adapter import BackendCallbacks
+from pulsimgui.services.backend_adapter import BackendCallbacks, PlaceholderBackend
+from pulsimgui.services.backend_types import ACSettings, DCSettings
 from pulsimgui.services.simulation_service import SimulationSettings
 
 from .example_circuits import (
-    voltage_divider,
+    mosfet_switch,
     rc_lowpass_filter,
     rc_transient,
-    mosfet_switch,
+    voltage_divider,
 )
 
 
@@ -226,7 +223,7 @@ class TestMemoryUsage:
         settings = SimulationSettings(t_start=0, t_stop=100e-6, t_step=100e-9)
 
         # Run multiple times
-        for i in range(10):
+        for _ in range(10):
             result = backend.run_transient(circuit_data, settings, callbacks)
             assert result is not None
 

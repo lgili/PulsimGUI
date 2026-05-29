@@ -34,7 +34,7 @@ class BackendCapabilities(Protocol):
     """
 
     @property
-    def info(self) -> "BackendInfo":
+    def info(self) -> BackendInfo:
         """Return metadata about this backend."""
         ...
 
@@ -64,9 +64,9 @@ class BackendCapabilities(Protocol):
     def run_transient(
         self,
         circuit_data: dict,
-        settings: "TransientSettings",
-        callbacks: "BackendCallbacks",
-    ) -> "TransientResult":
+        settings: TransientSettings,
+        callbacks: BackendCallbacks,
+    ) -> TransientResult:
         """Run time-domain transient simulation.
 
         Args:
@@ -82,8 +82,8 @@ class BackendCapabilities(Protocol):
     def run_dc(
         self,
         circuit_data: dict,
-        settings: "DCSettings",
-    ) -> "DCResult":
+        settings: DCSettings,
+    ) -> DCResult:
         """Run DC operating point analysis.
 
         Args:
@@ -101,8 +101,8 @@ class BackendCapabilities(Protocol):
     def run_ac(
         self,
         circuit_data: dict,
-        settings: "ACSettings",
-    ) -> "ACResult":
+        settings: ACSettings,
+    ) -> ACResult:
         """Run AC frequency-domain analysis.
 
         Args:
@@ -120,9 +120,9 @@ class BackendCapabilities(Protocol):
     def run_thermal(
         self,
         circuit_data: dict,
-        electrical_result: "TransientResult",
-        settings: "ThermalSettings",
-    ) -> "ThermalResult":
+        electrical_result: TransientResult,
+        settings: ThermalSettings,
+    ) -> ThermalResult:
         """Run thermal simulation based on electrical results.
 
         Args:

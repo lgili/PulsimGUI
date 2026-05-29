@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pulsimgui.services.backend_types import (
+    MIN_BACKEND_API,
     ACResult,
     ACSettings,
     BackendVersion,
@@ -14,8 +15,6 @@ from pulsimgui.services.backend_types import (
     FosterStage,
     IterationRecord,
     LossBreakdown,
-    MIN_BACKEND_API,
-    ProblematicVariable,
     ThermalDeviceResult,
     ThermalResult,
     ThermalSettings,

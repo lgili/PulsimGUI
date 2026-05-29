@@ -65,8 +65,11 @@ nav:
       - GUI Overview: gui/visao-geral.md
       - Simulation Configuration: gui/configuracao-simulacao.md
       - User Manual: user-manual.md
+      - Examples Gallery: examples-gallery.md
   - Technical Reference:
       - Backend Adapter: backend-adapter.md
       - Developer Guide: developer-guide.md
+      - Frontend Architecture and Performance: frontend-architecture.md
+      - UI/UX Audit (May 2026): ux-audit-2026-05.md
   - Support:
       - FAQ and Troubleshooting: faq.md

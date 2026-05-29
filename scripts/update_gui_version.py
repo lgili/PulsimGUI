@@ -2,8 +2,8 @@
 """Update PulsimGui version across release-managed files.
 
 Usage:
-    python scripts/update_gui_version.py 0.5.4
-    python scripts/update_gui_version.py v0.5.4 --dry-run
+    python scripts/update_gui_version.py 0.6.1
+    python scripts/update_gui_version.py v0.6.1 --dry-run
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")

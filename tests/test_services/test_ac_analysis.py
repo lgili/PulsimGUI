@@ -1,10 +1,9 @@
 """Tests for AC frequency analysis."""
 
 import math
-import pytest
 
 from pulsimgui.services.backend_adapter import PlaceholderBackend
-from pulsimgui.services.backend_types import ACSettings, ACResult
+from pulsimgui.services.backend_types import ACResult, ACSettings
 
 
 class TestACSettings:
@@ -275,9 +274,6 @@ class TestStabilityMargins:
 
     def test_gain_margin_calculation(self):
         """Gain margin should be calculated from phase crossover."""
-        # Test data: simple low-pass filter response
-        frequencies = [100, 1000, 10000]
-        magnitude = [0.0, -3.0, -20.0]
         phase = [-10.0, -45.0, -85.0]
 
         # At -180 degrees, there's no crossover in this data
@@ -293,9 +289,7 @@ class TestStabilityMargins:
     def test_phase_margin_calculation(self):
         """Phase margin should be calculated from gain crossover."""
         # Test data where magnitude crosses 0 dB
-        frequencies = [100, 1000, 10000]
         magnitude = [10.0, -3.0, -20.0]
-        phase = [-10.0, -45.0, -85.0]
 
         # Find gain crossover (magnitude crosses 0 dB)
         gain_crossover_idx = None

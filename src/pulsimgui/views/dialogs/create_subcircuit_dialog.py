@@ -3,17 +3,17 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
+    QDialogButtonBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QTextEdit,
-    QDialogButtonBox,
-    QGroupBox,
-    QFormLayout,
     QListWidget,
     QListWidgetItem,
     QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -52,11 +52,21 @@ class CreateSubcircuitDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Info label
-        info_label = QLabel(
-            f"Create a reusable subcircuit from {self._selected_count} "
-            f"selected component{'s' if self._selected_count != 1 else ''}."
-        )
+        # Info label — wording branches on whether the user is
+        # grouping an existing selection or creating an empty block.
+        if self._selected_count == 0:
+            info_text = (
+                "Create an empty subcircuit. After it lands on the "
+                "canvas, double-click to enter and add components + "
+                "port markers (palette → Hierarchy → Port) inside."
+            )
+        else:
+            info_text = (
+                f"Create a reusable subcircuit from "
+                f"{self._selected_count} selected component"
+                f"{'s' if self._selected_count != 1 else ''}."
+            )
+        info_label = QLabel(info_text)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
@@ -99,8 +109,16 @@ class CreateSubcircuitDialog(QDialog):
                 item.setCheckState(Qt.CheckState.Checked)
                 self._ports_list.addItem(item)
         else:
-            # If no boundary nets detected, show placeholder
-            item = QListWidgetItem("(Ports will be auto-detected)")
+            # No boundary nets — wording branches on whether the user
+            # is creating an empty subcircuit (add markers later) or
+            # grouping a selection (auto-detect at create time).
+            placeholder = (
+                "(Add 'Port' markers from the palette inside the "
+                "subcircuit later)"
+                if self._selected_count == 0
+                else "(Ports will be auto-detected)"
+            )
+            item = QListWidgetItem(placeholder)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             self._ports_list.addItem(item)
 

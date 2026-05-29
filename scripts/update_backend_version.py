@@ -2,8 +2,8 @@
 """Update Pulsim backend target/minimum version across PulsimGui files.
 
 Usage:
-    python scripts/update_backend_version.py 0.5.3
-    python scripts/update_backend_version.py v0.5.3 --dry-run
+    python scripts/update_backend_version.py 0.6.4
+    python scripts/update_backend_version.py v0.6.4 --dry-run
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION_RE = r"\d+\.\d+\.\d+"
+TAG_VERSION_RE = rf"v{VERSION_RE}(?:\+)?"
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class Rule:
 RULES: dict[str, list[Rule]] = {
     "pyproject.toml": [
         Rule(
-            pattern=re.compile(r'(?m)^    "pulsim>=\d+\.\d+\.\d+",$'),
+            pattern=re.compile(r'(?m)^    "pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?",$'),
             replacement='    "pulsim>={backend_version}",',
             expected_count=2,
             description="Runtime/build pulsim minimum version",
@@ -38,7 +39,7 @@ RULES: dict[str, list[Rule]] = {
     ],
     "scripts/build.py": [
         Rule(
-            pattern=re.compile(r'(?m)^        "pulsim>=\d+\.\d+\.\d+",$'),
+            pattern=re.compile(r'(?m)^        "pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?",$'),
             replacement='        "pulsim>={backend_version}",',
             description="Build dependency pulsim minimum version",
         ),
@@ -60,7 +61,7 @@ RULES: dict[str, list[Rule]] = {
     "README.md": [
         Rule(
             pattern=re.compile(
-                r"(?m)^For reproducible behavior, use \*\*`pulsim v\d+\.\d+\.\d+`\*\*\.$"
+                rf"(?m)^For reproducible behavior, use \*\*`pulsim {TAG_VERSION_RE}`\*\*\.$"
             ),
             replacement="For reproducible behavior, use **`pulsim v{backend_version}`**.",
             description="README backend recommendation",
@@ -69,55 +70,59 @@ RULES: dict[str, list[Rule]] = {
     "docs/index.md": [
         Rule(
             pattern=re.compile(
-                r"(?m)^The recommended runtime baseline is \*\*`pulsim v\d+\.\d+\.\d+`\*\*\.$"
+                rf"(?m)^The recommended runtime baseline is \*\*`pulsim {TAG_VERSION_RE}`\*\*\.$"
             ),
             replacement="The recommended runtime baseline is **`pulsim v{backend_version}`**.",
             description="Docs backend baseline",
         ),
         Rule(
-            pattern=re.compile(r"(?m)^(    .*`Target version = )v\d+\.\d+\.\d+(`.*)$"),
+            pattern=re.compile(rf"(?m)^(    .*`Target version = ){TAG_VERSION_RE}(`.*)$"),
             replacement=r"\g<1>{backend_tag}\g<2>",
             description="Docs recommended target setting",
         ),
     ],
     "docs/backend-adapter.md": [
         Rule(
-            pattern=re.compile(r"(?m)^- Pin backend to `v\d+\.\d+\.\d+` for reproducibility\.$"),
+            pattern=re.compile(rf"(?m)^- Pin backend to `{TAG_VERSION_RE}` for reproducibility\.$"),
             replacement="- Pin backend to `{backend_tag}` for reproducibility.",
             description="Backend adapter reproducibility note",
         ),
     ],
     "docs/user-manual.md": [
         Rule(
-            pattern=re.compile(r"(?m)^- Keep backend pinned to `v\d+\.\d+\.\d+` in shared environments\.$"),
+            pattern=re.compile(
+                rf"(?m)^- Keep backend pinned to `{TAG_VERSION_RE}` in shared environments\.$"
+            ),
             replacement="- Keep backend pinned to `{backend_tag}` in shared environments.",
             description="User manual backend recommendation",
         ),
     ],
     "docs/instalacao.md": [
         Rule(
-            pattern=re.compile(r"(?m)^- `Target version`: `v\d+\.\d+\.\d+`$"),
+            pattern=re.compile(rf"(?m)^- `Target version`: `{TAG_VERSION_RE}`$"),
             replacement="- `Target version`: `{backend_tag}`",
             description="Installation recommended target setting",
         ),
     ],
     "docs/gui/configuracao-simulacao.md": [
         Rule(
-            pattern=re.compile(r"(?m)^- Backend target: `v\d+\.\d+\.\d+`$"),
+            pattern=re.compile(rf"(?m)^- Backend target: `{TAG_VERSION_RE}`$"),
             replacement="- Backend target: `{backend_tag}`",
             description="Simulation config backend target",
         ),
     ],
     "docs/faq.md": [
         Rule(
-            pattern=re.compile(r"(?m)^3\. Reinstall/update backend to `v\d+\.\d+\.\d+` from runtime settings\.$"),
+            pattern=re.compile(
+                rf"(?m)^3\. Reinstall/update backend to `{TAG_VERSION_RE}` from runtime settings\.$"
+            ),
             replacement="3. Reinstall/update backend to `{backend_tag}` from runtime settings.",
             description="FAQ backend update guidance",
         ),
     ],
     "BUILD.md": [
         Rule(
-            pattern=re.compile(r"(?m)^pip install pulsim>=\d+\.\d+\.\d+$"),
+            pattern=re.compile(r"(?m)^pip install pulsim>=\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+|\.post\d+|\.dev\d+)?$"),
             replacement="pip install pulsim>={backend_version}",
             description="Build guide pulsim dependency example",
         ),

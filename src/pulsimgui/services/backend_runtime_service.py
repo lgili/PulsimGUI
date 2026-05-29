@@ -7,13 +7,14 @@ GUI can keep the active backend aligned with a configured target version.
 from __future__ import annotations
 
 import importlib
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-DEFAULT_BACKEND_TARGET_VERSION = "v0.6.1"
+DEFAULT_BACKEND_TARGET_VERSION = "v0.7.9"
 
 
 def normalize_backend_version(version: str | None) -> str:
@@ -24,6 +25,29 @@ def normalize_backend_version(version: str | None) -> str:
     if value.lower().startswith("v"):
         value = value[1:]
     return value.strip()
+
+
+def _parse_semver_triplet(version: str | None) -> tuple[int, int, int] | None:
+    """Parse ``major.minor.patch`` prefix from a version string."""
+    normalized = normalize_backend_version(version)
+    if not normalized:
+        return None
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", normalized)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def is_backend_version_compatible(installed: str | None, target: str | None) -> bool:
+    """Return True when installed version satisfies target (equal or newer semver)."""
+    if not target:
+        return True
+
+    installed_key = _parse_semver_triplet(installed)
+    target_key = _parse_semver_triplet(target)
+    if installed_key is None or target_key is None:
+        return normalize_backend_version(installed) == normalize_backend_version(target)
+    return installed_key >= target_key
 
 
 @dataclass
@@ -37,10 +61,12 @@ class BackendRuntimeConfig:
 
     @property
     def normalized_target_version(self) -> str:
+        """Return target backend version normalized without a leading v prefix."""
         return normalize_backend_version(self.target_version)
 
     @property
     def normalized_source(self) -> str:
+        """Return normalized backend source identifier for runtime install logic."""
         source = (self.source or "").strip().lower()
         return source if source in {"pypi", "local"} else "pypi"
 
@@ -201,10 +227,13 @@ class BackendRuntimeService:
                     installed_version=installed_version or None,
                     changed=False,
                 )
-            if target and installed_version == target and not force:
+            if target and is_backend_version_compatible(installed_version, target) and not force:
                 return BackendInstallResult(
                     success=True,
-                    message=f"Backend already matches target version ({target}).",
+                    message=(
+                        "Backend already satisfies target version "
+                        f"(installed {installed_version or 'unknown'}, target {target})."
+                    ),
                     installed_version=installed_version,
                     changed=False,
                 )
@@ -212,12 +241,12 @@ class BackendRuntimeService:
             if not result.success:
                 return result
             actual = normalize_backend_version(result.installed_version)
-            if target and actual != target:
+            if target and not is_backend_version_compatible(actual, target):
                 return BackendInstallResult(
                     success=False,
                     message=(
                         f"Installed backend version {result.installed_version or 'unknown'} "
-                        f"does not match configured target {target}."
+                        f"does not satisfy configured target {target}."
                     ),
                     command=result.command,
                     stdout=result.stdout,
@@ -229,10 +258,13 @@ class BackendRuntimeService:
 
         # Local source: avoid reinstall loops unless forced or explicit target mismatch.
         if not force:
-            if target and installed_version == target:
+            if target and is_backend_version_compatible(installed_version, target):
                 return BackendInstallResult(
                     success=True,
-                    message=f"Backend already matches target version ({target}).",
+                    message=(
+                        "Backend already satisfies target version "
+                        f"(installed {installed_version or 'unknown'}, target {target})."
+                    ),
                     installed_version=installed_version,
                     changed=False,
                 )

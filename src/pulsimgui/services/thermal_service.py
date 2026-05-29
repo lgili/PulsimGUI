@@ -1,17 +1,12 @@
-"""Thermal analysis service with backend integration.
-
-This module provides thermal analysis with real backend support and synthetic
-fallback. When a backend with thermal capability is available, it uses the
-real thermal simulator. Otherwise, it generates synthetic data for UI
-development and testing.
-"""
+"""Thermal analysis service with strict backend-only execution."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 import math
-from typing import TYPE_CHECKING, Any, Sequence
+import re
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -23,7 +18,8 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for typing
     from pulsimgui.services.backend_adapter import SimulationBackend
     from pulsimgui.services.backend_types import (
         ThermalResult as BackendThermalResult,
-        ThermalSettings,
+    )
+    from pulsimgui.services.backend_types import (
         TransientResult,
     )
 
@@ -92,7 +88,7 @@ class ThermalResult:
     time: list[float] = field(default_factory=list)
     devices: list[ThermalDeviceResult] = field(default_factory=list)
     ambient_temperature: float = 25.0
-    is_synthetic: bool = True
+    is_synthetic: bool = False
     error_message: str = ""
 
     def device_names(self) -> list[str]:
@@ -105,7 +101,7 @@ class ThermalResult:
 
 
 class ThermalAnalysisService(QObject):
-    """Thermal analysis with backend integration and synthetic fallback."""
+    """Thermal analysis based on backend-native data paths only."""
 
     result_generated = Signal(ThermalResult)
 
@@ -115,7 +111,8 @@ class ThermalAnalysisService(QObject):
         include_switching_losses: bool = True,
         include_conduction_losses: bool = True,
         thermal_network: str = "foster",
-        backend: "SimulationBackend | None" = None,
+        allow_synthetic_fallback: bool = True,
+        backend: SimulationBackend | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -123,6 +120,8 @@ class ThermalAnalysisService(QObject):
         self._include_switching_losses = bool(include_switching_losses)
         self._include_conduction_losses = bool(include_conduction_losses)
         self._thermal_network = str(thermal_network or "foster").strip().lower()
+        # Legacy arg kept only for API compatibility; synthetic fallback is disabled.
+        self._allow_synthetic_fallback = bool(allow_synthetic_fallback)
         if self._thermal_network not in {"foster", "cauer"}:
             self._thermal_network = "foster"
         self._backend = backend
@@ -134,15 +133,16 @@ class ThermalAnalysisService(QObject):
 
     @ambient_temperature.setter
     def ambient_temperature(self, value: float) -> None:
+        """Return the configured ambient_temperature setting."""
         self._ambient_temperature = value
 
     @property
-    def backend(self) -> "SimulationBackend | None":
+    def backend(self) -> SimulationBackend | None:
         """Return the current backend."""
         return self._backend
 
     @backend.setter
-    def backend(self, value: "SimulationBackend | None") -> None:
+    def backend(self, value: SimulationBackend | None) -> None:
         """Set the backend for thermal analysis."""
         self._backend = value
 
@@ -153,6 +153,7 @@ class ThermalAnalysisService(QObject):
 
     @include_switching_losses.setter
     def include_switching_losses(self, value: bool) -> None:
+        """Return the configured include_switching_losses setting."""
         self._include_switching_losses = bool(value)
 
     @property
@@ -162,6 +163,7 @@ class ThermalAnalysisService(QObject):
 
     @include_conduction_losses.setter
     def include_conduction_losses(self, value: bool) -> None:
+        """Return the configured include_conduction_losses setting."""
         self._include_conduction_losses = bool(value)
 
     @property
@@ -171,61 +173,419 @@ class ThermalAnalysisService(QObject):
 
     @thermal_network.setter
     def thermal_network(self, value: str) -> None:
+        """Return the configured thermal_network setting."""
         network = str(value or "foster").strip().lower()
         self._thermal_network = network if network in {"foster", "cauer"} else "foster"
 
     def build_result(
         self,
-        circuit: "Circuit | None",
+        circuit: Circuit | None,
         electrical_result: SimulationResult | None = None,
         max_devices: int = 6,
         circuit_data: dict | None = None,
     ) -> ThermalResult:
-        """Build thermal result, trying real backend first then synthetic fallback.
-
-        Args:
-            circuit: GUI Circuit model for synthetic generation.
-            electrical_result: Electrical simulation result for time base.
-            max_devices: Maximum devices for synthetic generation.
-            circuit_data: Serialized circuit data for backend (if available).
-
-        Returns:
-            ThermalResult with is_synthetic=False if from real backend,
-            or is_synthetic=True if synthetic fallback was used.
-        """
+        """Build thermal result from backend telemetry/API without frontend synthesis."""
+        _ = max_devices  # Kept for backward API compatibility.
         if circuit is None or not circuit.components:
-            return self._empty_result(electrical_result)
+            result = self._error_result(
+                electrical_result,
+                "Circuit has no components for thermal analysis.",
+            )
+            self.result_generated.emit(result)
+            return result
 
-        # Try real backend first if available
-        if self._backend is not None and self._backend.has_capability("thermal"):
-            result = self._try_backend_thermal(circuit, electrical_result, circuit_data)
-            if result is not None:
-                self.result_generated.emit(result)
-                return result
-            logger.debug("Backend thermal analysis failed, using synthetic fallback")
+        telemetry_result = self._build_from_transient_backend_telemetry(
+            circuit,
+            electrical_result,
+            circuit_data,
+        )
+        if telemetry_result is not None:
+            self.result_generated.emit(telemetry_result)
+            return telemetry_result
 
-        # Fall back to synthetic generation
-        result = self._build_synthetic_result(circuit, electrical_result, max_devices)
+        if self._backend is None:
+            result = self._error_result(
+                electrical_result,
+                "Thermal backend is not configured.",
+            )
+            self.result_generated.emit(result)
+            return result
+
+        if not self._is_backend_ready():
+            result = self._error_result(
+                electrical_result,
+                "Thermal backend is unavailable. Install/select a real backend runtime.",
+            )
+            self.result_generated.emit(result)
+            return result
+
+        if not self._backend.has_capability("thermal"):
+            result = self._error_result(
+                electrical_result,
+                "Thermal simulation is not supported by the active backend.",
+            )
+            self.result_generated.emit(result)
+            return result
+
+        result = self._try_backend_thermal(circuit, electrical_result, circuit_data)
         self.result_generated.emit(result)
         return result
 
-    def _try_backend_thermal(
+    def _build_from_transient_backend_telemetry(
         self,
-        circuit: "Circuit",
+        circuit: Circuit,
         electrical_result: SimulationResult | None,
         circuit_data: dict | None,
     ) -> ThermalResult | None:
+        """Build thermal result from transient backend telemetry when available."""
+        if electrical_result is None or not electrical_result.time:
+            return None
+        if not isinstance(electrical_result.statistics, dict):
+            return None
+
+        component_rows = electrical_result.statistics.get("component_electrothermal")
+        if not isinstance(component_rows, list) or not component_rows:
+            return None
+
+        trace_by_signal, trace_by_component = self._collect_transient_thermal_traces(electrical_result)
+        if not trace_by_signal:
+            return None
+
+        limits = self._thermal_limit_lookup(circuit)
+        stage_lookup = self._thermal_stage_lookup(circuit)
+        identity = self._build_component_identity_lookup(circuit_data)
+        devices: list[ThermalDeviceResult] = []
+
+        for row in component_rows:
+            if not isinstance(row, dict):
+                continue
+
+            raw_name = str(row.get("component_name") or "").strip()
+            if not raw_name:
+                continue
+
+            component_id, component_name = self._resolve_component_identity(raw_name, identity)
+            trace = self._resolve_telemetry_trace(
+                raw_name=raw_name,
+                component_name=component_name,
+                component_id=component_id,
+                trace_by_signal=trace_by_signal,
+                trace_by_component=trace_by_component,
+            )
+            if not trace:
+                continue
+
+            final_temp = self._to_float(row.get("final_temperature"))
+            if final_temp is None:
+                final_temp = float(trace[-1])
+
+            limit = None
+            for token in (
+                str(component_id or "").strip().lower(),
+                str(component_name or "").strip().lower(),
+                self._canonical_identity_token(component_id),
+                self._canonical_identity_token(component_name),
+                self._canonical_identity_token(raw_name),
+            ):
+                if token and token in limits:
+                    limit = limits[token]
+                    break
+
+            stage_defs = self._resolve_stage_definitions(
+                raw_name=raw_name,
+                component_name=component_name,
+                component_id=component_id,
+                stage_lookup=stage_lookup,
+            )
+            stage_temp = max(trace) if trace else final_temp
+            stages = [
+                ThermalStage(
+                    name=f"{component_name} {label}",
+                    resistance=resistance,
+                    capacitance=capacitance,
+                    temperature=stage_temp,
+                )
+                for label, resistance, capacitance in stage_defs
+            ]
+
+            devices.append(
+                ThermalDeviceResult(
+                    component_id=component_id,
+                    component_name=component_name,
+                    stages=stages,
+                    temperature_trace=list(trace),
+                    conduction_loss=max(0.0, self._to_float(row.get("conduction")) or 0.0),
+                    switching_loss_on=max(0.0, self._to_float(row.get("turn_on")) or 0.0),
+                    switching_loss_off=max(0.0, self._to_float(row.get("turn_off")) or 0.0),
+                    reverse_recovery_loss=max(0.0, self._to_float(row.get("reverse_recovery")) or 0.0),
+                    steady_state_temperature=final_temp,
+                    thermal_limit=limit,
+                )
+            )
+
+        if not devices:
+            return None
+
+        ambient = self._ambient_temperature
+        thermal_summary = electrical_result.statistics.get("thermal_summary")
+        if isinstance(thermal_summary, dict):
+            ambient_value = self._to_float(thermal_summary.get("ambient"))
+            if ambient_value is not None:
+                ambient = ambient_value
+
+        result = ThermalResult(
+            time=list(electrical_result.time),
+            devices=devices,
+            ambient_temperature=ambient,
+            is_synthetic=False,
+            error_message="",
+        )
+        self._normalize_thermal_timelines(result, electrical_result)
+        return result
+
+    def _collect_transient_thermal_traces(
+        self,
+        electrical_result: SimulationResult,
+    ) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+        """Collect thermal trace channels keyed by signal name and component token."""
+        signals = electrical_result.signals if isinstance(electrical_result.signals, dict) else {}
+        stats = electrical_result.statistics if isinstance(electrical_result.statistics, dict) else {}
+        metadata = stats.get("virtual_channel_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        by_signal: dict[str, list[float]] = {}
+        by_component: dict[str, list[float]] = {}
+        for raw_name, series in signals.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if not isinstance(series, list) or not series:
+                continue
+            meta = metadata.get(name)
+            if not self._is_thermal_signal_name(name, meta):
+                continue
+            by_signal[name] = list(series)
+
+            component_hint = self._virtual_metadata_field(meta, "component_name")
+            if not component_hint:
+                component_hint = self._component_from_thermal_signal_name(name)
+            canonical = self._canonical_identity_token(component_hint)
+            if canonical and canonical not in by_component:
+                by_component[canonical] = list(series)
+
+        return by_signal, by_component
+
+    def _resolve_telemetry_trace(
+        self,
+        *,
+        raw_name: str,
+        component_name: str,
+        component_id: str,
+        trace_by_signal: dict[str, list[float]],
+        trace_by_component: dict[str, list[float]],
+    ) -> list[float]:
+        """Resolve component thermal trace from backend channel maps."""
+        for token in (raw_name, component_name, component_id):
+            clean = str(token or "").strip()
+            if not clean:
+                continue
+            for key in (clean, f"T({clean})", f"TJ({clean})", f"TEMP({clean})"):
+                trace = trace_by_signal.get(key)
+                if trace:
+                    return list(trace)
+            canonical = self._canonical_identity_token(clean)
+            if canonical and canonical in trace_by_component:
+                return list(trace_by_component[canonical])
+        return []
+
+    @staticmethod
+    def _virtual_metadata_field(metadata_entry: object | None, field: str) -> str:
+        """Read metadata fields from either dict-like or object-like channels."""
+        if isinstance(metadata_entry, dict):
+            value = metadata_entry.get(field)
+        else:
+            value = getattr(metadata_entry, field, None) if metadata_entry is not None else None
+        return str(value or "").strip()
+
+    @classmethod
+    def _is_thermal_signal_name(cls, signal_name: str, metadata_entry: object | None) -> bool:
+        """Return True when a transient channel belongs to backend thermal telemetry."""
+        domain = cls._virtual_metadata_field(metadata_entry, "domain").lower()
+        component_type = cls._virtual_metadata_field(metadata_entry, "component_type").lower()
+        if domain == "thermal" or component_type == "thermal_trace":
+            return True
+
+        upper = str(signal_name or "").strip().upper()
+        if not upper:
+            return False
+        if upper.startswith(("T(", "TJ(", "TEMP(", "THERMAL(")):
+            return True
+        if upper.startswith(("T_", "TJ_", "TEMP_")):
+            return True
+        return "TEMP" in upper
+
+    @staticmethod
+    def _component_from_thermal_signal_name(signal_name: str) -> str:
+        """Extract best-effort component token from thermal channel labels."""
+        signal = str(signal_name or "").strip()
+        if not signal:
+            return ""
+
+        match = re.match(r"^[A-Za-z_]+\((.+)\)$", signal)
+        if match:
+            return str(match.group(1) or "").strip()
+
+        for prefix in ("T_", "TJ_", "TEMP_"):
+            if signal.upper().startswith(prefix):
+                return signal[len(prefix):].strip()
+        return ""
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        """Convert value to float when possible, otherwise return None."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _thermal_limit_lookup(self, circuit: Circuit) -> dict[str, float]:
+        """Build thermal-limit lookup by id/name/canonical tokens."""
+        lookup: dict[str, float] = {}
+        for component in circuit.components.values():
+            limit = self._resolve_thermal_limit(component)
+            if limit is None:
+                continue
+
+            comp_id = str(component.id or "").strip()
+            comp_name = str(component.name or "").strip()
+            for token in (
+                comp_id.lower(),
+                comp_name.lower(),
+                self._canonical_identity_token(comp_id),
+                self._canonical_identity_token(comp_name),
+            ):
+                if token:
+                    lookup[token] = float(limit)
+        return lookup
+
+    def _thermal_stage_lookup(self, circuit: Circuit) -> dict[str, list[tuple[str, float, float]]]:
+        """Build thermal-stage lookup using component thermal parameters."""
+        lookup: dict[str, list[tuple[str, float, float]]] = {}
+        for component in circuit.components.values():
+            params = dict(getattr(component, "parameters", {}) or {})
+            stage_defs = self._thermal_stage_defs_from_params(params)
+            if not stage_defs:
+                continue
+
+            comp_id = str(component.id or "").strip()
+            comp_name = str(component.name or "").strip()
+            for token in (
+                comp_id.lower(),
+                comp_name.lower(),
+                self._canonical_identity_token(comp_id),
+                self._canonical_identity_token(comp_name),
+            ):
+                if token:
+                    lookup[token] = list(stage_defs)
+        return lookup
+
+    @staticmethod
+    def _parse_float_sequence(value: Any) -> list[float]:
+        """Parse finite float sequences from CSV strings or list-like values."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = [chunk.strip() for chunk in value.split(",") if chunk.strip()]
+        elif isinstance(value, (list, tuple)):
+            items = list(value)
+        else:
+            return []
+
+        values: list[float] = []
+        for item in items:
+            try:
+                parsed = float(item)
+            except (TypeError, ValueError):
+                return []
+            if not math.isfinite(parsed):
+                return []
+            values.append(parsed)
+        return values
+
+    @classmethod
+    def _thermal_stage_defs_from_params(cls, params: dict[str, Any]) -> list[tuple[str, float, float]]:
+        """Extract normalized thermal stage definitions from component parameters."""
+        if not isinstance(params, dict):
+            return []
+
+        enabled = bool(params.get("thermal_enabled", False) or params.get("enable_thermal_port", False))
+        if not enabled:
+            return []
+
+        rth_stages = cls._parse_float_sequence(
+            params.get("thermal_rth_stages", params.get("rth_stages", params.get("stage_rth")))
+        )
+        cth_stages = cls._parse_float_sequence(
+            params.get("thermal_cth_stages", params.get("cth_stages", params.get("stage_cth")))
+        )
+        stage_defs: list[tuple[str, float, float]] = []
+        if rth_stages and cth_stages and len(rth_stages) == len(cth_stages):
+            for idx, (rth, cth) in enumerate(zip(rth_stages, cth_stages, strict=False), start=1):
+                if rth > 0.0 and cth >= 0.0:
+                    stage_defs.append((f"RC{idx}", float(rth), float(cth)))
+            if stage_defs:
+                return stage_defs
+
+        rth = cls._to_float(params.get("thermal_rth", params.get("rth")))
+        cth = cls._to_float(params.get("thermal_cth", params.get("cth")))
+        if rth is None or cth is None:
+            return []
+        if not math.isfinite(rth) or not math.isfinite(cth):
+            return []
+        if rth <= 0.0 or cth < 0.0:
+            return []
+        return [("RC1", float(rth), float(cth))]
+
+    def _resolve_stage_definitions(
+        self,
+        *,
+        raw_name: str,
+        component_name: str,
+        component_id: str,
+        stage_lookup: dict[str, list[tuple[str, float, float]]],
+    ) -> list[tuple[str, float, float]]:
+        """Resolve thermal-stage definitions for a telemetry row."""
+        for token in (component_id, component_name, raw_name):
+            clean = str(token or "").strip()
+            if not clean:
+                continue
+            lowered = clean.lower()
+            if lowered in stage_lookup:
+                return list(stage_lookup[lowered])
+            canonical = self._canonical_identity_token(clean)
+            if canonical and canonical in stage_lookup:
+                return list(stage_lookup[canonical])
+        return []
+
+    def _try_backend_thermal(
+        self,
+        circuit: Circuit,
+        electrical_result: SimulationResult | None,
+        circuit_data: dict | None,
+    ) -> ThermalResult:
         """Attempt to run thermal analysis via the backend."""
         if circuit_data is None:
-            # Try to build circuit_data from GUI circuit
             circuit_data = self._circuit_to_data(circuit)
             if circuit_data is None:
-                return None
+                return self._error_result(
+                    electrical_result,
+                    "Failed to serialize circuit for backend thermal analysis.",
+                )
 
         try:
-            from pulsimgui.services.backend_types import ThermalSettings, TransientResult
+            from pulsimgui.services.backend_types import ThermalSettings
 
-            # Build settings
             settings = ThermalSettings(
                 ambient_temperature=self._ambient_temperature,
                 include_switching_losses=self._include_switching_losses,
@@ -233,25 +593,31 @@ class ThermalAnalysisService(QObject):
                 thermal_network=self._thermal_network,
             )
 
-            # Build transient result for backend
             transient_result = self._simulation_to_transient(electrical_result)
 
-            # Run backend thermal analysis
             backend_result = self._backend.run_thermal(circuit_data, transient_result, settings)
 
-            # Check for errors
             if backend_result.error_message:
                 logger.warning(f"Backend thermal error: {backend_result.error_message}")
-                return None
+                return self._error_result(electrical_result, backend_result.error_message)
 
-            # Convert to service format
-            return self._convert_backend_result(backend_result)
+            converted = self._convert_backend_result(backend_result, circuit_data)
+            self._normalize_thermal_timelines(converted, electrical_result)
+            if not converted.devices:
+                return self._error_result(
+                    electrical_result,
+                    "Thermal backend returned no device traces.",
+                )
+            return converted
 
         except Exception as exc:
             logger.warning(f"Backend thermal analysis failed: {exc}")
-            return None
+            return self._error_result(
+                electrical_result,
+                f"Backend thermal analysis failed: {exc}",
+            )
 
-    def _circuit_to_data(self, circuit: "Circuit") -> dict | None:
+    def _circuit_to_data(self, circuit: Circuit) -> dict | None:
         """Convert GUI Circuit to serialized data for backend."""
         try:
             # Use the circuit's serialization method if available
@@ -277,7 +643,7 @@ class ThermalAnalysisService(QObject):
 
     def _simulation_to_transient(
         self, electrical_result: SimulationResult | None
-    ) -> "TransientResult":
+    ) -> TransientResult:
         """Convert SimulationResult to TransientResult for backend."""
         from pulsimgui.services.backend_types import TransientResult
 
@@ -290,17 +656,23 @@ class ThermalAnalysisService(QObject):
         )
 
     def _convert_backend_result(
-        self, backend_result: "BackendThermalResult"
+        self,
+        backend_result: BackendThermalResult,
+        circuit_data: dict | None = None,
     ) -> ThermalResult:
         """Convert backend ThermalResult to service ThermalResult."""
+        identity = self._build_component_identity_lookup(circuit_data)
         devices = []
         for dev in backend_result.devices:
+            raw_name = str(getattr(dev, "name", "unknown") or "unknown")
+            component_id, component_name = self._resolve_component_identity(raw_name, identity)
+
             # Convert FosterStage to ThermalStage
             stages = []
             for i, stage in enumerate(dev.foster_stages):
                 stages.append(
                     ThermalStage(
-                        name=f"{dev.name} RC{i + 1}",
+                        name=f"{component_name} RC{i + 1}",
                         resistance=stage.resistance,
                         capacitance=stage.capacitance,
                         temperature=dev.peak_temperature,  # Use peak temp for stage
@@ -326,8 +698,8 @@ class ThermalAnalysisService(QObject):
             )
             devices.append(
                 ThermalDeviceResult(
-                    component_id=str(getattr(dev, "name", "unknown")),
-                    component_name=str(getattr(dev, "name", "unknown")),
+                    component_id=component_id,
+                    component_name=component_name,
                     stages=stages,
                     temperature_trace=trace,
                     conduction_loss=conduction,
@@ -348,34 +720,55 @@ class ThermalAnalysisService(QObject):
             error_message=backend_result.error_message,
         )
 
-    def _build_synthetic_result(
+    def _normalize_thermal_timelines(
         self,
-        circuit: "Circuit",
+        result: ThermalResult,
         electrical_result: SimulationResult | None,
-        max_devices: int,
-    ) -> ThermalResult:
-        """Generate synthetic thermal data from the circuit."""
-        ordered_components = self._select_components(circuit, max_devices)
-        timeline = self._resolve_time_axis(electrical_result)
-        normalized_time = self._normalize_time(timeline)
-        devices = [
-            self._build_device_result(comp, index, normalized_time, timeline)
-            for index, comp in enumerate(ordered_components)
-        ]
+    ) -> None:
+        """Ensure thermal traces have same length as the thermal time axis."""
+        if not result.devices:
+            return
 
-        return ThermalResult(
-            time=timeline,
-            devices=devices,
-            ambient_temperature=self._ambient_temperature,
-            is_synthetic=True,
-        )
+        if not result.time and electrical_result and electrical_result.time:
+            result.time = list(electrical_result.time)
 
-    def _select_components(self, circuit: Circuit, max_devices: int) -> Sequence[Component]:
-        components = list(circuit.components.values())
-        if not components:
+        target_len = len(result.time)
+        if target_len <= 0:
+            return
+
+        for device in result.devices:
+            trace = list(device.temperature_trace)
+            if not trace:
+                continue
+            needs_resample = len(trace) != target_len
+            device.temperature_trace = self._resample_trace(trace, target_len)
+            if needs_resample and device.temperature_trace:
+                device.steady_state_temperature = float(device.temperature_trace[-1])
+
+    @staticmethod
+    def _resample_trace(values: list[float], target_len: int) -> list[float]:
+        if target_len <= 0:
             return []
-        components.sort(key=lambda comp: comp.name or comp.type.name)
-        return components[:max_devices]
+        if not values:
+            return []
+        source_len = len(values)
+        if source_len == target_len:
+            return list(values)
+        if source_len == 1:
+            return [float(values[0])] * target_len
+        if target_len == 1:
+            return [float(values[-1])]
+
+        resampled: list[float] = []
+        scale = (source_len - 1) / (target_len - 1)
+        for index in range(target_len):
+            position = index * scale
+            left = int(position)
+            right = min(left + 1, source_len - 1)
+            fraction = position - left
+            sample = float(values[left]) * (1.0 - fraction) + float(values[right]) * fraction
+            resampled.append(sample)
+        return resampled
 
     def _resolve_time_axis(self, electrical_result: SimulationResult | None) -> list[float]:
         if electrical_result and electrical_result.time:
@@ -385,93 +778,135 @@ class ThermalAnalysisService(QObject):
         duration = 10e-3
         return [i * (duration / samples) for i in range(samples + 1)]
 
-    def _normalize_time(self, time_axis: Sequence[float]) -> list[float]:
-        if not time_axis:
-            return []
-        start = time_axis[0]
-        end = time_axis[-1]
-        span = end - start
-        if span <= 0:
-            return [0.0 for _ in time_axis]
-        return [(t - start) / span for t in time_axis]
-
-    def _build_device_result(
-        self,
-        component: Component,
-        position_index: int,
-        normalized_time: Sequence[float],
-        timeline: Sequence[float],
-    ) -> ThermalDeviceResult:
-        base_rise = 20.0 + position_index * 8.0
-        time_constant = 2.5 + position_index * 0.3
-        temps = [
-            self._ambient_temperature
-            + base_rise * (1 - math.exp(-t * time_constant))
-            for t in normalized_time
-        ] or [self._ambient_temperature]
-
-        conduction_loss = 3.0 + position_index * 0.8
-        switching_loss = 1.5 + position_index * 0.6
-        if not self._include_conduction_losses:
-            conduction_loss = 0.0
-        if not self._include_switching_losses:
-            switching_loss = 0.0
-        switching_on = switching_loss * 0.65
-        switching_off = switching_loss * 0.35
-        thermal_limit = self._resolve_thermal_limit(component)
-
-        stages = self._build_stages(component, temps)
-
-        return ThermalDeviceResult(
-            component_id=str(component.id),
-            component_name=component.name or component.type.name,
-            stages=stages,
-            temperature_trace=list(temps),
-            conduction_loss=conduction_loss,
-            switching_loss=switching_loss,
-            switching_loss_on=switching_on,
-            switching_loss_off=switching_off,
-            reverse_recovery_loss=0.0,
-            steady_state_temperature=temps[-1] if temps else self._ambient_temperature,
-            thermal_limit=thermal_limit,
-        )
-
-    def _build_stages(
-        self,
-        component: Component,
-        temps: Sequence[float],
-    ) -> list[ThermalStage]:
-        if not temps:
-            sample_temp = self._ambient_temperature
-        else:
-            sample_temp = temps[-1]
-
-        stages: list[ThermalStage] = []
-        for index in range(3):
-            resistance = 0.3 + index * 0.15
-            capacitance = 0.02 + index * 0.01
-            temp_index = int(len(temps) * ((index + 1) / 3.0)) - 1
-            temp_index = max(0, min(temp_index, len(temps) - 1))
-            stage_temp = temps[temp_index] if temps else sample_temp
-            stages.append(
-                ThermalStage(
-                    name=f"{component.name or component.type.name} RC{index + 1}",
-                    resistance=round(resistance, 3),
-                    capacitance=round(capacitance, 3),
-                    temperature=stage_temp,
-                )
-            )
-        return stages
-
-    def _empty_result(self, electrical_result: SimulationResult | None) -> ThermalResult:
+    def _error_result(self, electrical_result: SimulationResult | None, message: str) -> ThermalResult:
         return ThermalResult(
             time=self._resolve_time_axis(electrical_result),
             devices=[],
-            is_synthetic=True,
+            ambient_temperature=self._ambient_temperature,
+            is_synthetic=False,
+            error_message=str(message),
         )
 
+    def _is_backend_ready(self) -> bool:
+        """Best-effort readiness check; rejects known placeholder backends."""
+        info = getattr(self._backend, "info", None)
+        if info is None:
+            return True
+
+        identifier = getattr(info, "identifier", "")
+        status = getattr(info, "status", "")
+
+        identifier_text = identifier.strip().lower() if isinstance(identifier, str) else ""
+        status_text = status.strip().lower() if isinstance(status, str) else ""
+
+        if identifier_text == "placeholder":
+            return False
+        if status_text in {"placeholder", "error", "unavailable"}:
+            return False
+        return True
+
     @staticmethod
-    def _resolve_thermal_limit(component: "Component") -> float | None:
+    def _build_component_identity_lookup(
+        circuit_data: dict | None,
+    ) -> dict[str, dict[str, tuple[str, str]]]:
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        by_id: dict[str, tuple[str, str]] = {}
+        by_name: dict[str, tuple[str, str]] = {}
+        by_backend_default_name: dict[str, tuple[str, str]] = {}
+        by_canonical: dict[str, tuple[str, str]] = {}
+        for component in components:
+            raw_id = str(component.get("id") or "").strip()
+            display_name = ThermalAnalysisService._component_display_name(component)
+            comp_type = str(component.get("type") or "").strip()
+            pair = (
+                raw_id or display_name or "unknown",
+                display_name or raw_id or "unknown",
+            )
+            if raw_id:
+                by_id[raw_id.lower()] = pair
+                canonical_id = ThermalAnalysisService._canonical_identity_token(raw_id)
+                if canonical_id and canonical_id not in by_canonical:
+                    by_canonical[canonical_id] = pair
+
+            if display_name:
+                by_name[display_name.lower()] = pair
+                canonical_name = ThermalAnalysisService._canonical_identity_token(display_name)
+                if canonical_name and canonical_name not in by_canonical:
+                    by_canonical[canonical_name] = pair
+
+            if raw_id and comp_type:
+                backend_default = f"{comp_type}_{raw_id[:6]}".lower()
+                by_backend_default_name[backend_default] = pair
+                canonical_backend = ThermalAnalysisService._canonical_identity_token(backend_default)
+                if canonical_backend and canonical_backend not in by_canonical:
+                    by_canonical[canonical_backend] = pair
+
+        return {
+            "by_id": by_id,
+            "by_name": by_name,
+            "by_backend_default_name": by_backend_default_name,
+            "by_canonical": by_canonical,
+        }
+
+    @staticmethod
+    def _resolve_component_identity(
+        raw_name: str,
+        identity: dict[str, dict[str, tuple[str, str]]],
+    ) -> tuple[str, str]:
+        token = str(raw_name or "").strip()
+        if not token:
+            return "unknown", "unknown"
+
+        by_id = identity.get("by_id", {})
+        by_name = identity.get("by_name", {})
+        by_backend_default_name = identity.get("by_backend_default_name", {})
+        by_canonical = identity.get("by_canonical", {})
+
+        candidates = [token]
+        for separator in ("::", ":", "/", "."):
+            if separator in token:
+                candidates.extend(part for part in token.split(separator) if part)
+
+        for candidate in candidates:
+            lowered = candidate.strip().lower()
+            if not lowered:
+                continue
+            if lowered in by_id:
+                mapped_id, mapped_name = by_id[lowered]
+                return mapped_id, mapped_name
+            if lowered in by_name:
+                mapped_id, mapped_name = by_name[lowered]
+                return mapped_id, mapped_name
+            if lowered in by_backend_default_name:
+                mapped_id, mapped_name = by_backend_default_name[lowered]
+                return mapped_id, mapped_name
+            canonical = ThermalAnalysisService._canonical_identity_token(lowered)
+            if canonical and canonical in by_canonical:
+                mapped_id, mapped_name = by_canonical[canonical]
+                return mapped_id, mapped_name
+
+        return token, token
+
+    @staticmethod
+    def _component_display_name(component: dict[str, Any]) -> str:
+        raw_name = str(component.get("name") or "").strip()
+        if raw_name:
+            return raw_name
+        comp_type = str(component.get("type") or "").strip()
+        if comp_type:
+            return comp_type.replace("_", " ").title()
+        raw_id = str(component.get("id") or "").strip()
+        return raw_id or "unknown"
+
+    @staticmethod
+    def _canonical_identity_token(value: str | None) -> str:
+        token = str(value or "").strip().lower()
+        if not token:
+            return ""
+        return "".join(ch for ch in token if ch.isalnum())
+
+    @staticmethod
+    def _resolve_thermal_limit(component: Component) -> float | None:
         """Best-effort extraction of component thermal limit from parameter aliases."""
         params = dict(getattr(component, "parameters", {}) or {})
         for key in ("thermal_limit", "tj_max", "temperature_limit", "temp_max"):

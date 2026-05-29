@@ -2,15 +2,17 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QPen, QColor, QPainter, QBrush, QPainterPath
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
+    ComponentType,
     pin_connection_domain,
 )
 from pulsimgui.models.wire import WireConnection
@@ -32,6 +34,7 @@ class SchematicScene(QGraphicsScene):
     wire_added = Signal(object)
     component_moved = Signal(object, float, float, float, float)
     selection_changed_custom = Signal(int)
+    net_label_navigation_requested = Signal(str, str, str)
 
     # Grid settings - 20px is good for schematics
     GRID_SIZE = 20.0  # pixels
@@ -404,7 +407,7 @@ class SchematicScene(QGraphicsScene):
             return
 
         # Add component items
-        from pulsimgui.views.schematic.items import create_component_item, WireItem
+        from pulsimgui.views.schematic.items import WireItem, create_component_item
 
         for component in self._circuit.components.values():
             item = create_component_item(component)
@@ -548,9 +551,11 @@ class SchematicScene(QGraphicsScene):
                             domains.add(pin_connection_domain(component, pin_index))
                             break
 
-        if CONNECTION_DOMAIN_THERMAL in domains:
+        effective_domains = {domain for domain in domains if domain != CONNECTION_DOMAIN_ANY}
+
+        if CONNECTION_DOMAIN_THERMAL in effective_domains:
             return CONNECTION_DOMAIN_THERMAL
-        if CONNECTION_DOMAIN_SIGNAL in domains:
+        if CONNECTION_DOMAIN_SIGNAL in effective_domains:
             return CONNECTION_DOMAIN_SIGNAL
         return CONNECTION_DOMAIN_CIRCUIT
 
@@ -737,6 +742,61 @@ class SchematicScene(QGraphicsScene):
         """Handle selection changes."""
         count = len(self.selectedItems())
         self.selection_changed_custom.emit(count)
+
+    def request_net_label_navigation(self, component) -> None:
+        """Emit navigation request to the paired Goto/From tag with same label."""
+        source_id = str(getattr(component, "id", "") or "")
+        source_label = self._net_label_text(component)
+        target = self._find_linked_net_label(component)
+        target_id = str(getattr(target, "id", "") or "") if target is not None else ""
+        self.net_label_navigation_requested.emit(source_id, target_id, source_label)
+
+    def _find_linked_net_label(self, source_component):
+        if self._circuit is None or source_component is None:
+            return None
+
+        source_type = getattr(source_component, "type", None)
+        if source_type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+            return None
+
+        source_label = self._net_label_text(source_component)
+        if not source_label:
+            return None
+
+        preferred_type = (
+            ComponentType.FROM_LABEL
+            if source_type == ComponentType.GOTO_LABEL
+            else ComponentType.GOTO_LABEL
+        )
+
+        candidates = []
+        for candidate in self._circuit.components.values():
+            if candidate.id == source_component.id:
+                continue
+            if candidate.type not in {ComponentType.GOTO_LABEL, ComponentType.FROM_LABEL}:
+                continue
+            if self._net_label_text(candidate) != source_label:
+                continue
+            # Prioritize opposite-type labels first, then nearest by distance.
+            type_penalty = 0 if candidate.type == preferred_type else 1
+            dx = float(candidate.x) - float(source_component.x)
+            dy = float(candidate.y) - float(source_component.y)
+            candidates.append((type_penalty, dx * dx + dy * dy, candidate))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][2]
+
+    @staticmethod
+    def _net_label_text(component) -> str:
+        params = getattr(component, "parameters", None)
+        if isinstance(params, dict):
+            label = str(params.get("net_label", "") or "").strip()
+            if label:
+                return label
+        return str(getattr(component, "name", "") or "").strip()
 
     def get_items_at(self, pos: QPointF, item_type=None):
         """Get items at a position, optionally filtered by type."""

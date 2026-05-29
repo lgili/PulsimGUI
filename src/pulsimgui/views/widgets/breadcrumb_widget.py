@@ -2,11 +2,11 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget,
     QHBoxLayout,
-    QPushButton,
     QLabel,
+    QPushButton,
     QSizePolicy,
+    QWidget,
 )
 
 from pulsimgui.services.hierarchy_service import HierarchyLevel
@@ -193,5 +193,8 @@ class HierarchyBar(QWidget):
             else:
                 self._level_label.setText(f"In: {current.circuit_name}")
 
-        # Show/hide the whole bar based on depth
-        self.setVisible(len(levels) > 1)
+        # Always visible so the user sees the navigation affordance
+        # even from the root level. The up button stays disabled
+        # there (handled by ``_up_btn.setEnabled(len(levels) > 1)``
+        # above).
+        self.setVisible(True)

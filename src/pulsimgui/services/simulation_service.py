@@ -6,12 +6,14 @@ import copy
 import math
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QMutex, QObject, QThread, QWaitCondition, Signal
+from PySide6.QtCore import QMutex, QObject, QThread, QTimer, QWaitCondition, Signal
 
 from pulsimgui.services.backend_adapter import (
     BackendCallbacks,
@@ -34,6 +36,44 @@ from pulsimgui.services.backend_types import (
 from pulsimgui.services.backend_types import (
     DCResult as BackendDCResult,
 )
+from pulsimgui.services.backend_types import (
+    C99CodegenResult as BackendC99CodegenResult,
+)
+from pulsimgui.services.backend_types import (
+    C99CodegenSettings,
+)
+from pulsimgui.services.backend_types import (
+    FmuExportResult as BackendFmuExportResult,
+)
+from pulsimgui.services.backend_types import (
+    FmuExportSettings,
+)
+from pulsimgui.services.backend_types import (
+    FraResult as BackendFraResult,
+)
+from pulsimgui.services.backend_types import (
+    FraSettings,
+)
+from pulsimgui.services.backend_types import (
+    HarmonicBalanceResult as BackendHarmonicBalanceResult,
+)
+from pulsimgui.services.backend_types import (
+    HarmonicBalanceSettings,
+)
+from pulsimgui.services.backend_types import (
+    PeriodicSteadyStateResult as BackendPeriodicSteadyStateResult,
+)
+from pulsimgui.services.backend_types import (
+    PeriodicSteadyStateSettings,
+)
+from pulsimgui.services.backend_types import (
+    FrequencyAnalysisResult as BackendFrequencyAnalysisResult,
+)
+from pulsimgui.services.backend_types import (
+    TransientResult as BackendTransientResult,
+)
+from pulsimgui.services.circuit_data_builder import CircuitDataBuilder
+from pulsimgui.services.post_processing_service import PostProcessingService
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -71,6 +111,61 @@ _SUPPORTED_INTEGRATION_METHODS = {
     "sdirk2",
 }
 
+_SWITCHABLE_TARGET_TYPES = frozenset({
+    "MOSFET_N",
+    "MOSFET_P",
+    "MOSFET",
+    "IGBT",
+    "SWITCH",
+    "VOLTAGE_CONTROLLED_SWITCH",
+    "VCSWITCH",
+})
+
+_THERMAL_SUPPORTED_COMPONENT_TYPES = frozenset({
+    "RESISTOR",
+    "DIODE",
+    "MOSFET_N",
+    "MOSFET_P",
+    "MOSFET",
+    "IGBT",
+    "BJT_NPN",
+    "BJT_PNP",
+})
+
+_NON_ELECTRICAL_COMPONENT_TYPES = frozenset({
+    "PI_CONTROLLER",
+    "PID_CONTROLLER",
+    "MATH_BLOCK",
+    "PWM_GENERATOR",
+    "GAIN",
+    "SUM",
+    "SUBTRACTOR",
+    "CONSTANT",
+    "INTEGRATOR",
+    "DIFFERENTIATOR",
+    "LIMITER",
+    "RATE_LIMITER",
+    "HYSTERESIS",
+    "LOOKUP_TABLE",
+    "TRANSFER_FUNCTION",
+    "DELAY_BLOCK",
+    "SAMPLE_HOLD",
+    "STATE_MACHINE",
+    "C_BLOCK",
+    "VOLTAGE_PROBE",
+    "VOLTAGE_PROBE_GND",
+    "CURRENT_PROBE",
+    "POWER_PROBE",
+    "ELECTRICAL_SCOPE",
+    "THERMAL_SCOPE",
+    "SIGNAL_MUX",
+    "SIGNAL_DEMUX",
+    "GOTO_LABEL",
+    "FROM_LABEL",
+    "SUBCIRCUIT",
+    "GROUND",
+})
+
 
 def normalize_integration_method(value: str | None) -> str:
     """Normalize persisted method names to supported backend identifiers."""
@@ -95,6 +190,21 @@ def normalize_thermal_network(value: str | None) -> str:
     return raw if raw in {"foster", "cauer"} else "foster"
 
 
+def normalize_thermal_policy(value: str | None) -> str:
+    """Normalize electrothermal coupling policy setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "losswithtemperaturescaling": "loss_with_temperature_scaling",
+        "temperature_scaling": "loss_with_temperature_scaling",
+        "loss_only": "loss_only",
+        "lossonly": "loss_only",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in {"loss_only", "loss_with_temperature_scaling"}:
+        return "loss_with_temperature_scaling"
+    return normalized
+
+
 def normalize_formulation_mode(value: str | None) -> str:
     """Normalize transient formulation mode setting."""
     raw = (value or "").strip().lower()
@@ -107,6 +217,97 @@ def normalize_formulation_mode(value: str | None) -> str:
     }
     normalized = aliases.get(raw, raw)
     return normalized if normalized in {"projected_wrapper", "direct"} else "projected_wrapper"
+
+
+def normalize_control_mode(value: str | None) -> str:
+    """Normalize control update scheduling mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "sampled": "discrete",
+        "sample": "discrete",
+        "continuous_time": "continuous",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "continuous", "discrete"} else "auto"
+
+
+def normalize_frequency_anchor_mode(value: str | None) -> str:
+    """Normalize frequency-analysis anchor mode setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "avg": "averaged",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"auto", "dc", "periodic", "averaged"} else "auto"
+
+
+def normalize_frequency_sweep_scale(value: str | None) -> str:
+    """Normalize frequency-analysis sweep scale setting."""
+    raw = (value or "").strip().lower()
+    aliases = {
+        "dec": "decade",
+        "logarithmic": "log",
+        "log10": "log",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in {"decade", "log", "linear"} else "decade"
+
+
+# Supported values for ``SimulationSettings.engine``. Anything else
+# normalises back to "pwl" so old/typo'd .pulsim files still load.
+_SUPPORTED_ENGINES = {"pwl", "dsed"}
+
+
+def normalize_engine(value: str | None) -> str:
+    """Normalize the simulation engine selector to a pulsim 1.6.1
+    canonical value.
+
+    Aliases handle abbreviations + the few names that appeared in
+    early DSED drafts (``ped`` was the original Path-Based Event-
+    Driven name before the v1.6.0 release notes settled on
+    ``dsed``).
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "pwl"
+    aliases = {
+        "fixed": "pwl",
+        "fixed_step": "pwl",
+        "trapezoidal": "pwl",
+        "variable": "dsed",
+        "variable_step": "dsed",
+        "ped": "dsed",
+        "path_based": "dsed",
+        "event_driven": "dsed",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _SUPPORTED_ENGINES else "pwl"
+
+
+# pulsim 1.6.1's DSED ``integrator`` kwarg — see
+# ``pulsim.dsed.scheduler_auto``. Anything else falls back to "auto"
+# so the kernel does its own per-mode dispatch.
+_SUPPORTED_DSED_INTEGRATORS = {"auto", "rk45", "bdf2"}
+
+
+def normalize_dsed_integrator(value: str | None) -> str:
+    """Normalize the DSED integrator override.
+
+    Returns ``"auto"`` on anything unknown so a typo doesn't kill the
+    sim — the auto-dispatcher is well-tuned for general SMPS work.
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "auto"
+    aliases = {
+        "dopri5": "rk45",         # DOPRI5 (Dormand-Prince) IS rk45 internally
+        "dormand_prince": "rk45",
+        "dormand-prince": "rk45",
+        "bdf": "bdf2",
+        "auto_dispatch": "auto",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _SUPPORTED_DSED_INTEGRATORS else "auto"
 
 
 @dataclass
@@ -127,8 +328,47 @@ class SimulationSettings:
     enable_events: bool = True
     max_step_retries: int = 8
 
-    # Newton solver settings
+    # ── Engine selector (pulsim >=1.6) ─────────────────────────────
+    # "pwl"  → fixed-step trapezoidal + PWL cache (default, bit-exact
+    #          with v1.4.x). Uses ``t_step`` as the integration step.
+    # "dsed" → Path-Based Event-Driven scheduler with adaptive
+    #          RK45/BDF2 dispatch. Variable-step, predicts events,
+    #          ~24× faster than PWL on buck CCM (geo-mean 14.5×
+    #          across 6 SMPS topologies). Opt-in.
+    engine: str = "pwl"
+    # DSED-only knobs. Forwarded to ``pulsim.simulate(engine='dsed')``
+    # when ``engine == "dsed"`` — completely ignored on the PWL path.
+    # Defaults match pulsim 1.6.1's own defaults so a None-value bug
+    # never surprises the kernel.
+    dsed_rtol: float = 1e-6                  # PI controller rel-tol
+    dsed_atol: float = 1e-9                  # PI controller abs-tol
+    dsed_dt_init: float = 1e-9               # initial step
+    dsed_integrator: str = "auto"            # "auto" | "rk45" | "bdf2"
+    dsed_stiffness_threshold: float = 10.0   # |λ_max|·h cutoff (auto → BDF2)
+    dsed_h_bdf2: float = 1e-6                # fixed step for BDF2 segments
+
+    # Newton solver settings (pulsim 1.5 simulate() kwargs)
     max_newton_iterations: int = 100
+    # ``tol_newton_dx`` — convergence tolerance on the Newton step
+    # magnitude; default None lets pulsim's SimulationOptions decide.
+    tol_newton_dx: float | None = None
+    # ``tol_newton_res`` — convergence tolerance on the residual norm.
+    tol_newton_res: float | None = None
+    enable_newton_line_search: bool = True
+    enable_newton_lm: bool = False
+    enable_substep_state_correction: bool = True
+    # Auto-detect nonlinear blocks in the circuit (diode, MOSFET, etc.)
+    # so the kernel only runs Newton refresh when needed. None ⇒ auto.
+    enable_nonlinear_refresh: bool | None = None
+    # Start the run from the steady-state DC operating point instead
+    # of the all-zero initial vector. Useful for fast transients.
+    start_from_dc_op: bool = False
+    # Event-iteration cap (separate from step-retries — used when a
+    # switching event takes multiple solver passes to settle).
+    max_event_iterations: int = 0
+    # ── LEGACY: kept for backwards-compat with old projects, NOT
+    # forwarded to pulsim 1.5+; the simulator no longer accepts them
+    # but reading old .pulsim files shouldn't crash.
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
 
@@ -145,16 +385,39 @@ class SimulationSettings:
     # Output settings
     output_points: int = 10000
     enable_losses: bool = True
+    averaged_options: dict | None = None
 
     # Thermal/loss post-processing settings
     thermal_ambient: float = 25.0
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+    thermal_policy: str = "loss_with_temperature_scaling"
+    thermal_default_rth: float = 1.0
+    thermal_default_cth: float = 0.1
 
     # Transient formulation mode (supported by pulsim>=0.6.1)
     formulation_mode: str = "projected_wrapper"
     direct_formulation_fallback: bool = True
+    control_mode: str = "auto"
+    control_sample_time: float = 0.0
+
+    # Wave-4 sub-A 1.6 — Advanced solver stack knobs.
+    # Forwarded to the backend if the runtime accepts them; ignored
+    # silently otherwise so older Pulsim versions keep working.
+    linear_solver_stack: str = "auto"  # auto / klu / enhanced_sparse_lu / gmres / bicgstab
+    iterative_solver_max_iterations: int = 200
+    iterative_solver_restart: int = 30
+    bdf_max_order: int = 5
+
+    # Frequency-domain analysis defaults
+    ac_f_start: float = 1.0
+    ac_f_stop: float = 1e6
+    ac_points_per_decade: int = 10
+    ac_anchor_mode: str = "auto"
+    ac_sweep_scale: str = "decade"
+    ac_injection_node: str = ""
+    ac_measurement_node: str = ""
 
 
 @dataclass
@@ -306,18 +569,31 @@ class SimulationWorker(QThread):
     data_point = Signal(float, dict)  # time, signal_values
     finished_signal = Signal(SimulationResult)
     error = Signal(str)
+    # NEW: published right before the kernel call so the GUI's live
+    # scope can attach a QTimer poll to the same C++ ring buffer.
+    # The payload is the ``pulsim.NativeLiveStream`` (or ``None`` if
+    # the host pulsim doesn't expose it — older builds gracefully
+    # degrade to the per-step ``data_point`` callback above).
+    live_stream_ready = Signal(object)
 
     def __init__(
         self,
         backend: SimulationBackend,
-        circuit_data: dict,
+        circuit_data: dict | None,
         settings: SimulationSettings,
+        *,
+        circuit_source: Any | None = None,
+        circuit_builder: Callable[[Any], dict] | None = None,
+        contract_validator: Callable[[dict], str | None] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._backend = backend
         self._circuit_data = circuit_data
         self._settings = settings
+        self._circuit_source = circuit_source
+        self._circuit_builder = circuit_builder
+        self._contract_validator = contract_validator
         self._cancelled = False
         self._paused = False
         self._mutex = QMutex()
@@ -331,14 +607,70 @@ class SimulationWorker(QThread):
         try:
             self._thread_ident = threading.get_ident()
 
+            if self._circuit_data is None:
+                if self._circuit_builder is None:
+                    raise ValueError("Circuit builder is required when circuit_data is not provided.")
+                self.progress.emit(-1, "Preparing circuit model...")
+                self._circuit_data = self._circuit_builder(self._circuit_source)
+                if not isinstance(self._circuit_data, dict):
+                    raise ValueError("Circuit builder returned invalid data format.")
+
+            if self._cancelled:
+                result.error_message = "Simulation cancelled"
+                self.finished_signal.emit(result)
+                return
+
+            if self._contract_validator is not None:
+                contract_issue = self._contract_validator(self._circuit_data)
+                if contract_issue:
+                    result.error_message = contract_issue
+                    self.error.emit(contract_issue)
+                    self.finished_signal.emit(result)
+                    return
+
             # Emit initial progress immediately so user sees feedback
             self.progress.emit(0, "Starting simulation...")
+
+            # Live-streaming hook: try to create a ``NativeLiveStream``
+            # so the kernel pushes (t, x) samples into a C++ ring
+            # buffer that the GUI's LiveScopeWidget polls on a QTimer.
+            # Fails silently — older pulsim builds (pre v1.5) don't
+            # expose ``NativeLiveStream`` and we fall back to the
+            # per-step ``data_point`` callback.
+            live_stream = None
+            try:
+                import pulsim as _ps  # type: ignore[import-not-found]
+                NativeLiveStream = getattr(_ps, "NativeLiveStream", None)
+                if NativeLiveStream is not None:
+                    # Capacity 200k × decimate 100 covers ~20 s at a
+                    # 1 µs kernel dt — far more visible history than
+                    # any user reasonably needs while sim runs.
+                    #
+                    # Why decimate=100 (not 50): profile_live_stream.py
+                    # showed the GUI poll is 12 µs (0.09% of a 60 Hz
+                    # tick); cutting the sample rate in half halves
+                    # the pyqtgraph ``setData`` work — the only real
+                    # cost — without losing visual fidelity at
+                    # human-perceivable timescales. For zoomed-in
+                    # inspection the post-sim ``finalize`` path swaps
+                    # in the full-resolution arrays.
+                    live_stream = NativeLiveStream(
+                        capacity=200_000, decimate=100,
+                    )
+            except Exception:  # noqa: BLE001 — fallback to legacy path
+                live_stream = None
+            if live_stream is not None:
+                # Hand the stream to the host BEFORE we block in
+                # run_transient so the LiveScope can attach and start
+                # polling while the sim is in flight.
+                self.live_stream_ready.emit(live_stream)
 
             callbacks = BackendCallbacks(
                 progress=lambda value, message: self.progress.emit(value, message),
                 data_point=lambda t, data: self.data_point.emit(t, data),
                 check_cancelled=lambda: self._cancelled,
                 wait_if_paused=self._wait_if_paused,
+                live_stream=live_stream,
             )
 
             backend_result = self._backend.run_transient(
@@ -347,10 +679,19 @@ class SimulationWorker(QThread):
                 callbacks,
             )
 
-            result.time = list(backend_result.time)
-            result.signals = {name: list(values) for name, values in backend_result.signals.items()}
-            result.statistics = dict(backend_result.statistics)
+            result.time = self._as_list_fast(backend_result.time)
+            result.signals = {
+                name: self._as_list_fast(values)
+                for name, values in backend_result.signals.items()
+            }
+            result.statistics = (
+                backend_result.statistics
+                if isinstance(backend_result.statistics, dict)
+                else dict(backend_result.statistics)
+            )
             result.error_message = backend_result.error_message
+
+            self._append_runtime_contract_checks(result)
 
             if self._cancelled and not result.error_message:
                 result.error_message = "Simulation cancelled"
@@ -365,6 +706,17 @@ class SimulationWorker(QThread):
             self.finished_signal.emit(result)
         finally:
             self._thread_ident = None
+
+    @staticmethod
+    def _as_list_fast(values: Any) -> list[Any]:
+        """Return list-like data with minimal overhead.
+
+        Backend adapters already emit Python lists in the common path.
+        Reusing list instances avoids expensive large copies at simulation end.
+        """
+        if isinstance(values, list):
+            return values
+        return list(values)
 
     def _wait_if_paused(self) -> None:
         self._mutex.lock()
@@ -414,6 +766,181 @@ class SimulationWorker(QThread):
             handler()
         except Exception:
             pass
+
+    def _append_runtime_contract_checks(self, result: SimulationResult) -> None:
+        """Attach physical-consistency checks and KPI-style diagnostics."""
+        stats = result.statistics
+        warnings: list[str] = []
+        diagnostic_code = str(stats.get("diagnostic", "") or "").strip().lower()
+        if diagnostic_code == "invalid_thermal_configuration":
+            warnings.append(
+                "Backend diagnostic invalid_thermal_configuration: check global and per-device thermal parameters."
+            )
+            if not result.error_message:
+                result.error_message = (
+                    "invalid_thermal_configuration: check simulation thermal defaults "
+                    "and per-component thermal parameters."
+                )
+        execution_path = str(stats.get("execution_path", "") or "").strip().lower()
+        simulator_options_failure = str(
+            stats.get("simulator_options_error") or stats.get("simulator_options_exception") or ""
+        ).strip()
+        if simulator_options_failure and execution_path != "simulator_options":
+            stats["runtime_used_compatibility_fallback"] = True
+            warnings.append(
+                "SimulationOptions path failed and compatibility transient fallback was used; "
+                "advanced control/thermal telemetry may be degraded."
+            )
+        else:
+            stats["runtime_used_compatibility_fallback"] = False
+
+        if not result.time:
+            stats["runtime_contract_ok"] = False
+            if not warnings:
+                warnings.append("No transient samples returned.")
+            stats["runtime_contract_warnings"] = warnings
+            return
+
+        final_time = float(result.time[-1])
+        target_time = float(getattr(self._settings, "t_stop", final_time))
+        time_tol = max(1e-12, abs(target_time) * 1e-3, float(getattr(self._settings, "t_step", 0.0)) * 2.0)
+        time_ok = abs(final_time - target_time) <= time_tol
+        stats["runtime_time_target"] = target_time
+        stats["runtime_time_final"] = final_time
+        stats["runtime_time_within_tolerance"] = time_ok
+        if not time_ok:
+            warnings.append("Final time does not match configured tstop within tolerance.")
+
+        components = (
+            self._circuit_data.get("components", [])
+            if isinstance(self._circuit_data, dict)
+            else []
+        )
+        pwm_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() == "PWM_GENERATOR"
+        ]
+        pi_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() in {"PI_CONTROLLER", "PID_CONTROLLER"}
+        ]
+
+        missing_channels: list[str] = []
+        for component in pi_components:
+            name = str(component.get("name") or "").strip()
+            if name and name not in result.signals:
+                missing_channels.append(name)
+        for component in pwm_components:
+            name = str(component.get("name") or "").strip()
+            duty_key = f"{name}.duty" if name else ""
+            if duty_key and duty_key not in result.signals:
+                missing_channels.append(duty_key)
+        if missing_channels:
+            warnings.append(f"Missing expected control channels: {', '.join(sorted(set(missing_channels)))}.")
+        stats["runtime_missing_control_channels"] = sorted(set(missing_channels))
+
+        duty_limit_ok = True
+        for component in pwm_components:
+            name = str(component.get("name") or "").strip()
+            if not name:
+                continue
+            duty_key = f"{name}.duty"
+            duty_series = result.signals.get(duty_key)
+            if not duty_series:
+                continue
+            params = component.get("parameters", {}) if isinstance(component.get("parameters"), dict) else {}
+            duty_min = float(params.get("duty_min", 0.0))
+            duty_max = float(params.get("duty_max", 1.0))
+            if any((value < duty_min - 1e-9) or (value > duty_max + 1e-9) for value in duty_series):
+                duty_limit_ok = False
+                warnings.append(f"Channel {duty_key} exceeded configured limits [{duty_min}, {duty_max}].")
+        stats["runtime_pwm_duty_within_limits"] = duty_limit_ok
+
+        duration = max(0.0, float(result.time[-1] - result.time[0]))
+        stats["runtime_duration"] = duration
+
+        loss_summary = stats.get("loss_summary") if isinstance(stats.get("loss_summary"), dict) else {}
+        thermal_summary = (
+            stats.get("thermal_summary") if isinstance(stats.get("thermal_summary"), dict) else {}
+        )
+        component_rows = (
+            stats.get("component_electrothermal")
+            if isinstance(stats.get("component_electrothermal"), list)
+            else []
+        )
+
+        total_loss = float(loss_summary.get("total_loss", 0.0) or 0.0)
+        stats["runtime_total_loss_positive"] = total_loss > 0.0 if self._settings.enable_losses else True
+        if self._settings.enable_losses and total_loss <= 0.0:
+            warnings.append("Loss summary reported non-positive total loss in a losses-enabled run.")
+
+        thermal_enabled = bool(thermal_summary.get("enabled", False))
+        ambient = float(thermal_summary.get("ambient", self._settings.thermal_ambient) or self._settings.thermal_ambient)
+        max_temperature = float(thermal_summary.get("max_temperature", ambient) or ambient)
+        thermal_ok = (not self._settings.enable_losses) or (thermal_enabled and max_temperature >= ambient)
+        stats["runtime_thermal_summary_ok"] = thermal_ok
+        if self._settings.enable_losses and not thermal_ok:
+            warnings.append("Thermal summary is inconsistent (disabled or max_temperature < ambient).")
+
+        non_virtual_components = [
+            comp for comp in components
+            if str(comp.get("type", "")).strip().upper() not in _NON_ELECTRICAL_COMPONENT_TYPES
+        ]
+        expected_component_count = len(non_virtual_components)
+        observed_component_count = len(component_rows)
+        coverage_rate = (
+            float(observed_component_count) / float(expected_component_count)
+            if expected_component_count > 0
+            else 1.0
+        )
+        coverage_gap = max(0, expected_component_count - observed_component_count)
+        stats["component_coverage_rate"] = coverage_rate
+        stats["component_coverage_gap"] = coverage_gap
+        if coverage_gap > 0:
+            warnings.append(
+                f"Component electrothermal coverage gap: expected {expected_component_count}, got {observed_component_count}."
+            )
+
+        total_energy = 0.0
+        for row in component_rows:
+            if not isinstance(row, dict):
+                continue
+            total_energy += float(row.get("total_energy", 0.0) or 0.0)
+        expected_energy = total_loss * duration
+        loss_consistency_error = (
+            abs(total_energy - expected_energy) / max(abs(expected_energy), 1e-12)
+            if expected_energy > 0.0
+            else 0.0
+        )
+        stats["component_loss_summary_consistency_error"] = loss_consistency_error
+        if loss_consistency_error > 5e-2:
+            warnings.append("High loss consistency error between component energies and loss_summary.")
+
+        thermal_by_name: dict[str, float] = {}
+        for entry in thermal_summary.get("device_temperatures", []) if isinstance(thermal_summary.get("device_temperatures"), list) else []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("device_name") or "").strip()
+            if not name:
+                continue
+            thermal_by_name[name] = float(entry.get("peak_temperature", entry.get("final_temperature", ambient)) or ambient)
+
+        max_peak_delta = 0.0
+        for row in component_rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("component_name") or "").strip()
+            if not name or name not in thermal_by_name:
+                continue
+            row_peak = float(row.get("peak_temperature", row.get("final_temperature", ambient)) or ambient)
+            max_peak_delta = max(max_peak_delta, abs(row_peak - thermal_by_name[name]))
+        stats["component_thermal_summary_consistency_error"] = max_peak_delta
+        if max_peak_delta > 2.0:
+            warnings.append("High thermal consistency error between component_electrothermal and thermal_summary.")
+
+        runtime_ok = not warnings and not result.error_message
+        stats["runtime_contract_ok"] = runtime_ok
+        stats["runtime_contract_warnings"] = warnings
 
 
 class ParameterSweepWorker(QThread):
@@ -537,10 +1064,18 @@ class SimulationService(QObject):
     state_changed = Signal(SimulationState)
     progress = Signal(float, str)
     data_point = Signal(float, dict)
+    # Forwarded from SimulationWorker.live_stream_ready: emitted right
+    # before the kernel call so views (LiveScopeWidget) can attach a
+    # QTimer poll loop to the same ring buffer the kernel is filling.
+    live_stream_ready = Signal(object)
     simulation_finished = Signal(SimulationResult)
     dc_finished = Signal(DCResult)
     ac_finished = Signal(ACResult)
+    frequency_analysis_finished = Signal(object)  # BackendFrequencyAnalysisResult
     parameter_sweep_finished = Signal(ParameterSweepResult)
+    post_processing_started = Signal()
+    post_processing_completed = Signal(object)  # BackendPostProcessingResult
+    post_processing_failed = Signal(str)
     error = Signal(str)
     backend_changed = Signal(BackendInfo)
 
@@ -555,6 +1090,7 @@ class SimulationService(QObject):
         self._last_convergence_info = None  # Store last DC convergence info for diagnostics
         self._settings_service = settings_service
         self._runtime_service = BackendRuntimeService()
+        self._circuit_data_builder = CircuitDataBuilder()
         self._runtime_config = BackendRuntimeConfig()
         self._runtime_issue: str | None = None
         preferred_backend = None
@@ -583,6 +1119,45 @@ class SimulationService(QObject):
             )
             self._settings.enable_losses = bool(
                 sim_settings.get("enable_losses", self._settings.enable_losses)
+            )
+            raw_averaged_options = sim_settings.get("averaged_options", self._settings.averaged_options)
+            self._settings.averaged_options = (
+                dict(raw_averaged_options)
+                if isinstance(raw_averaged_options, dict)
+                else None
+            )
+            self._settings.ac_f_start = max(
+                1e-12,
+                float(sim_settings.get("ac_f_start", self._settings.ac_f_start)),
+            )
+            self._settings.ac_f_stop = max(
+                self._settings.ac_f_start * (1.0 + 1e-12),
+                float(sim_settings.get("ac_f_stop", self._settings.ac_f_stop)),
+            )
+            self._settings.ac_points_per_decade = max(
+                1,
+                int(
+                    sim_settings.get(
+                        "ac_points_per_decade",
+                        self._settings.ac_points_per_decade,
+                    )
+                ),
+            )
+            self._settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+                sim_settings.get("ac_anchor_mode", self._settings.ac_anchor_mode)
+            )
+            self._settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+                sim_settings.get("ac_sweep_scale", self._settings.ac_sweep_scale)
+            )
+            self._settings.ac_injection_node = str(
+                sim_settings.get("ac_injection_node", self._settings.ac_injection_node) or ""
+            )
+            self._settings.ac_measurement_node = str(
+                sim_settings.get(
+                    "ac_measurement_node",
+                    self._settings.ac_measurement_node,
+                )
+                or ""
             )
 
             # Load persisted solver settings
@@ -625,6 +1200,29 @@ class SimulationService(QObject):
                     solver_settings.get("thermal_network", self._settings.thermal_network)
                 )
             )
+            self._settings.thermal_policy = str(
+                normalize_thermal_policy(
+                    solver_settings.get("thermal_policy", self._settings.thermal_policy)
+                )
+            )
+            self._settings.thermal_default_rth = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "thermal_default_rth",
+                        self._settings.thermal_default_rth,
+                    )
+                ),
+            )
+            self._settings.thermal_default_cth = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "thermal_default_cth",
+                        self._settings.thermal_default_cth,
+                    )
+                ),
+            )
             self._settings.formulation_mode = str(
                 normalize_formulation_mode(
                     solver_settings.get("formulation_mode", self._settings.formulation_mode)
@@ -635,6 +1233,20 @@ class SimulationService(QObject):
                     "direct_formulation_fallback",
                     self._settings.direct_formulation_fallback,
                 )
+            )
+            self._settings.control_mode = str(
+                normalize_control_mode(
+                    solver_settings.get("control_mode", self._settings.control_mode)
+                )
+            )
+            self._settings.control_sample_time = max(
+                0.0,
+                float(
+                    solver_settings.get(
+                        "control_sample_time",
+                        self._settings.control_sample_time,
+                    )
+                ),
             )
 
             # Load backend runtime settings
@@ -652,6 +1264,10 @@ class SimulationService(QObject):
 
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
+        self._post_processing_service = PostProcessingService(self._backend, self)
+        self._post_processing_service.analysis_started.connect(self.post_processing_started.emit)
+        self._post_processing_service.analysis_completed.connect(self.post_processing_completed.emit)
+        self._post_processing_service.analysis_failed.connect(self.post_processing_failed.emit)
 
     @property
     def state(self) -> SimulationState:
@@ -670,9 +1286,34 @@ class SimulationService(QObject):
         self._settings.solver = normalize_integration_method(self._settings.solver)
         self._settings.step_mode = normalize_step_mode(self._settings.step_mode)
         self._settings.thermal_network = normalize_thermal_network(self._settings.thermal_network)
+        self._settings.thermal_policy = normalize_thermal_policy(self._settings.thermal_policy)
+        self._settings.thermal_default_rth = max(0.0, float(self._settings.thermal_default_rth))
+        self._settings.thermal_default_cth = max(0.0, float(self._settings.thermal_default_cth))
         self._settings.formulation_mode = normalize_formulation_mode(
             self._settings.formulation_mode
         )
+        self._settings.control_mode = normalize_control_mode(self._settings.control_mode)
+        self._settings.control_sample_time = max(0.0, float(self._settings.control_sample_time))
+        self._settings.ac_f_start = max(1e-12, float(self._settings.ac_f_start))
+        self._settings.ac_f_stop = max(
+            self._settings.ac_f_start * (1.0 + 1e-12),
+            float(self._settings.ac_f_stop),
+        )
+        self._settings.ac_points_per_decade = max(1, int(self._settings.ac_points_per_decade))
+        self._settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            self._settings.ac_anchor_mode
+        )
+        self._settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            self._settings.ac_sweep_scale
+        )
+        self._settings.ac_injection_node = str(self._settings.ac_injection_node or "")
+        self._settings.ac_measurement_node = str(self._settings.ac_measurement_node or "")
+        self._settings.averaged_options = (
+            dict(self._settings.averaged_options)
+            if isinstance(self._settings.averaged_options, dict)
+            else None
+        )
+        self._circuit_data_builder.clear()
         self._persist_simulation_settings()
 
     @property
@@ -716,6 +1357,229 @@ class SimulationService(QObject):
         """
         return self._backend.has_capability(name)
 
+    def apply_project_simulation_settings(self, project: Any, *, persist: bool = False) -> None:
+        """Mirror ``project.simulation_settings`` into runtime settings."""
+        project_settings = getattr(project, "simulation_settings", None)
+        if project_settings is None:
+            return
+
+        runtime_settings = self._settings
+        runtime_settings.t_start = float(getattr(project_settings, "tstart", runtime_settings.t_start))
+        runtime_settings.t_stop = float(getattr(project_settings, "tstop", runtime_settings.t_stop))
+        runtime_settings.t_step = float(getattr(project_settings, "dt", runtime_settings.t_step))
+        runtime_settings.max_step = float(
+            getattr(project_settings, "max_step", runtime_settings.max_step)
+        )
+        runtime_settings.abs_tol = max(
+            float(getattr(project_settings, "abstol", runtime_settings.abs_tol)),
+            1e-10,
+        )
+        runtime_settings.rel_tol = float(getattr(project_settings, "reltol", runtime_settings.rel_tol))
+        runtime_settings.solver = normalize_integration_method(
+            getattr(project_settings, "solver", runtime_settings.solver)
+        )
+        runtime_settings.step_mode = normalize_step_mode(
+            getattr(project_settings, "step_mode", runtime_settings.step_mode)
+        )
+        runtime_settings.output_points = int(
+            getattr(project_settings, "output_points", runtime_settings.output_points)
+        )
+        runtime_settings.enable_events = bool(
+            getattr(project_settings, "enable_events", runtime_settings.enable_events)
+        )
+        runtime_settings.max_step_retries = int(
+            getattr(project_settings, "max_step_retries", runtime_settings.max_step_retries)
+        )
+        runtime_settings.max_newton_iterations = int(
+            getattr(project_settings, "max_iterations", runtime_settings.max_newton_iterations)
+        )
+        runtime_settings.enable_voltage_limiting = bool(
+            getattr(project_settings, "enable_voltage_limiting", runtime_settings.enable_voltage_limiting)
+        )
+        runtime_settings.max_voltage_step = float(
+            getattr(project_settings, "max_voltage_step", runtime_settings.max_voltage_step)
+        )
+        runtime_settings.dc_strategy = str(
+            getattr(project_settings, "dc_strategy", runtime_settings.dc_strategy)
+        )
+        runtime_settings.gmin_initial = float(
+            getattr(project_settings, "gmin_initial", runtime_settings.gmin_initial)
+        )
+        runtime_settings.gmin_final = float(
+            getattr(project_settings, "gmin_final", runtime_settings.gmin_final)
+        )
+        runtime_settings.dc_source_steps = int(
+            getattr(project_settings, "dc_source_steps", runtime_settings.dc_source_steps)
+        )
+        runtime_settings.transient_robust_mode = bool(
+            getattr(project_settings, "transient_robust_mode", runtime_settings.transient_robust_mode)
+        )
+        runtime_settings.transient_auto_regularize = bool(
+            getattr(project_settings, "transient_auto_regularize", runtime_settings.transient_auto_regularize)
+        )
+        runtime_settings.enable_losses = bool(
+            getattr(project_settings, "enable_losses", runtime_settings.enable_losses)
+        )
+        runtime_settings.thermal_ambient = float(
+            getattr(project_settings, "thermal_ambient", runtime_settings.thermal_ambient)
+        )
+        runtime_settings.thermal_include_switching_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_switching_losses",
+                runtime_settings.thermal_include_switching_losses,
+            )
+        )
+        runtime_settings.thermal_include_conduction_losses = bool(
+            getattr(
+                project_settings,
+                "thermal_include_conduction_losses",
+                runtime_settings.thermal_include_conduction_losses,
+            )
+        )
+        runtime_settings.thermal_network = normalize_thermal_network(
+            str(
+                getattr(project_settings, "thermal_network", runtime_settings.thermal_network)
+                or runtime_settings.thermal_network
+            )
+        )
+        runtime_settings.thermal_policy = normalize_thermal_policy(
+            str(
+                getattr(project_settings, "thermal_policy", runtime_settings.thermal_policy)
+                or runtime_settings.thermal_policy
+            )
+        )
+        runtime_settings.thermal_default_rth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_rth",
+                    runtime_settings.thermal_default_rth,
+                )
+            ),
+        )
+        runtime_settings.thermal_default_cth = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "thermal_default_cth",
+                    runtime_settings.thermal_default_cth,
+                )
+            ),
+        )
+        runtime_settings.formulation_mode = normalize_formulation_mode(
+            getattr(project_settings, "formulation_mode", runtime_settings.formulation_mode)
+        )
+        runtime_settings.direct_formulation_fallback = bool(
+            getattr(
+                project_settings,
+                "direct_formulation_fallback",
+                runtime_settings.direct_formulation_fallback,
+            )
+        )
+        runtime_settings.control_mode = normalize_control_mode(
+            getattr(project_settings, "control_mode", runtime_settings.control_mode)
+        )
+        runtime_settings.control_sample_time = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "control_sample_time",
+                    runtime_settings.control_sample_time,
+                )
+            ),
+        )
+        runtime_settings.ac_f_start = max(
+            1e-12,
+            float(getattr(project_settings, "ac_f_start", runtime_settings.ac_f_start)),
+        )
+        runtime_settings.ac_f_stop = max(
+            runtime_settings.ac_f_start * (1.0 + 1e-12),
+            float(getattr(project_settings, "ac_f_stop", runtime_settings.ac_f_stop)),
+        )
+        runtime_settings.ac_points_per_decade = max(
+            1,
+            int(
+                getattr(
+                    project_settings,
+                    "ac_points_per_decade",
+                    runtime_settings.ac_points_per_decade,
+                )
+            ),
+        )
+        runtime_settings.ac_anchor_mode = normalize_frequency_anchor_mode(
+            getattr(project_settings, "ac_anchor_mode", runtime_settings.ac_anchor_mode)
+        )
+        runtime_settings.ac_sweep_scale = normalize_frequency_sweep_scale(
+            getattr(project_settings, "ac_sweep_scale", runtime_settings.ac_sweep_scale)
+        )
+        runtime_settings.ac_injection_node = str(
+            getattr(
+                project_settings,
+                "ac_injection_node",
+                runtime_settings.ac_injection_node,
+            )
+            or ""
+        )
+        runtime_settings.ac_measurement_node = str(
+            getattr(
+                project_settings,
+                "ac_measurement_node",
+                runtime_settings.ac_measurement_node,
+            )
+            or ""
+        )
+        raw_averaged_options = getattr(
+            project_settings,
+            "averaged_options",
+            runtime_settings.averaged_options,
+        )
+        runtime_settings.averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
+
+        # pulsim 1.6 engine + DSED knobs. ``getattr`` defaults keep
+        # pre-v1.6 .pulsim files loadable without these attributes.
+        runtime_settings.engine = normalize_engine(
+            getattr(project_settings, "engine", runtime_settings.engine)
+        )
+        runtime_settings.dsed_rtol = max(
+            1e-15,
+            float(getattr(project_settings, "dsed_rtol", runtime_settings.dsed_rtol)),
+        )
+        runtime_settings.dsed_atol = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_atol", runtime_settings.dsed_atol)),
+        )
+        runtime_settings.dsed_dt_init = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_dt_init", runtime_settings.dsed_dt_init)),
+        )
+        runtime_settings.dsed_integrator = normalize_dsed_integrator(
+            getattr(project_settings, "dsed_integrator", runtime_settings.dsed_integrator)
+        )
+        runtime_settings.dsed_stiffness_threshold = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "dsed_stiffness_threshold",
+                    runtime_settings.dsed_stiffness_threshold,
+                )
+            ),
+        )
+        runtime_settings.dsed_h_bdf2 = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_h_bdf2", runtime_settings.dsed_h_bdf2)),
+        )
+
+        self._circuit_data_builder.clear()
+        if persist:
+            self._persist_simulation_settings()
+
     @property
     def available_backends(self) -> list[BackendInfo]:
         """Available backend options discovered at runtime."""
@@ -752,6 +1616,7 @@ class SimulationService(QObject):
             raise RuntimeError("Cannot change backend while a simulation is running")
         info = self._backend_loader.activate(identifier)
         self._backend = self._backend_loader.backend
+        self._post_processing_service.set_backend(self._backend)
         if self._settings_service is not None:
             self._settings_service.set_backend_preference(identifier)
         self.backend_changed.emit(info)
@@ -801,6 +1666,7 @@ class SimulationService(QObject):
 
         self._backend_loader = BackendLoader(preferred_backend_id=preferred_backend)
         self._backend = self._backend_loader.backend
+        self._post_processing_service.set_backend(self._backend)
         if emit_signal:
             self.backend_changed.emit(self._backend.info)
 
@@ -821,6 +1687,29 @@ class SimulationService(QObject):
                 "enable_events": self._settings.enable_events,
                 "max_step_retries": self._settings.max_step_retries,
                 "enable_losses": self._settings.enable_losses,
+                "averaged_options": copy.deepcopy(self._settings.averaged_options),
+                "ac_f_start": max(1e-12, float(self._settings.ac_f_start)),
+                "ac_f_stop": max(
+                    max(1e-12, float(self._settings.ac_f_start)) * (1.0 + 1e-12),
+                    float(self._settings.ac_f_stop),
+                ),
+                "ac_points_per_decade": max(1, int(self._settings.ac_points_per_decade)),
+                "ac_anchor_mode": normalize_frequency_anchor_mode(self._settings.ac_anchor_mode),
+                "ac_sweep_scale": normalize_frequency_sweep_scale(self._settings.ac_sweep_scale),
+                "ac_injection_node": str(self._settings.ac_injection_node or ""),
+                "ac_measurement_node": str(self._settings.ac_measurement_node or ""),
+                # pulsim 1.6 engine + DSED tunables.
+                "engine": normalize_engine(self._settings.engine),
+                "dsed_rtol": max(1e-15, float(self._settings.dsed_rtol)),
+                "dsed_atol": max(1e-18, float(self._settings.dsed_atol)),
+                "dsed_dt_init": max(1e-18, float(self._settings.dsed_dt_init)),
+                "dsed_integrator": normalize_dsed_integrator(
+                    self._settings.dsed_integrator
+                ),
+                "dsed_stiffness_threshold": max(
+                    0.0, float(self._settings.dsed_stiffness_threshold)
+                ),
+                "dsed_h_bdf2": max(1e-18, float(self._settings.dsed_h_bdf2)),
             }
         )
         self._settings_service.set_solver_settings(
@@ -838,10 +1727,15 @@ class SimulationService(QObject):
                 "thermal_include_switching_losses": self._settings.thermal_include_switching_losses,
                 "thermal_include_conduction_losses": self._settings.thermal_include_conduction_losses,
                 "thermal_network": normalize_thermal_network(self._settings.thermal_network),
+                "thermal_policy": normalize_thermal_policy(self._settings.thermal_policy),
+                "thermal_default_rth": max(0.0, float(self._settings.thermal_default_rth)),
+                "thermal_default_cth": max(0.0, float(self._settings.thermal_default_cth)),
                 "formulation_mode": normalize_formulation_mode(self._settings.formulation_mode),
                 "direct_formulation_fallback": bool(
                     self._settings.direct_formulation_fallback
                 ),
+                "control_mode": normalize_control_mode(self._settings.control_mode),
+                "control_sample_time": max(0.0, float(self._settings.control_sample_time)),
             }
         )
 
@@ -853,9 +1747,616 @@ class SimulationService(QObject):
         self.error.emit(f"Simulation backend unavailable: {issue}")
         return False
 
+    @staticmethod
+    def _normalize_component_type(raw_value: Any) -> str:
+        raw = str(raw_value or "").strip().upper().replace("-", "_")
+        aliases = {
+            "M": "MOSFET",
+            "NMOS": "MOSFET_N",
+            "PMOS": "MOSFET_P",
+            "Q": "IGBT",
+            "BJTNPN": "BJT_NPN",
+            "BJTPNP": "BJT_PNP",
+            "VCSWITCH": "VOLTAGE_CONTROLLED_SWITCH",
+            "S": "SWITCH",
+        }
+        return aliases.get(raw, raw)
+
+    @staticmethod
+    def _to_finite_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed):
+            return None
+        return parsed
+
+    @staticmethod
+    def _to_finite_float_sequence(value: Any) -> list[float]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            tokens = [part.strip() for part in text.replace(";", ",").split(",")]
+            out: list[float] = []
+            for token in tokens:
+                if not token:
+                    continue
+                parsed = SimulationService._to_finite_float(token)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        if isinstance(value, (list, tuple)):
+            out: list[float] = []
+            for item in value:
+                parsed = SimulationService._to_finite_float(item)
+                if parsed is None:
+                    return []
+                out.append(parsed)
+            return out
+        return []
+
+    @staticmethod
+    def _to_string_sequence(value: Any) -> list[str] | None:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            out: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    return None
+                token = item.strip()
+                if token:
+                    out.append(token)
+            return out
+        return None
+
+    @staticmethod
+    def _normalize_component_thermal_network(
+        raw_value: Any,
+        *,
+        stage_mode_requested: bool = False,
+    ) -> str | None:
+        raw = str(raw_value or "").strip().lower()
+        aliases = {
+            "single": "single_rc",
+            "single-rc": "single_rc",
+            "singlerc": "single_rc",
+            "rc": "single_rc",
+        }
+        normalized = aliases.get(raw, raw)
+        if not normalized:
+            return "foster" if stage_mode_requested else "single_rc"
+        if normalized in {"single_rc", "foster", "cauer"}:
+            return normalized
+        return None
+
+    @staticmethod
+    def _strictly_increasing(values: list[float]) -> bool:
+        return all(values[index] > values[index - 1] for index in range(1, len(values)))
+
+    @staticmethod
+    def _first_value_from_maps(
+        primary: dict[str, Any],
+        secondary: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> tuple[bool, Any]:
+        for key in keys:
+            if key in primary:
+                return True, primary.get(key)
+            if key in secondary:
+                return True, secondary.get(key)
+        return False, None
+
+    @staticmethod
+    def _component_thermal_payload(component: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        component_thermal = component.get("thermal")
+        if isinstance(component_thermal, dict):
+            if "enabled" in component_thermal:
+                payload["thermal_enabled"] = component_thermal.get("enabled")
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
+                if key in component_thermal:
+                    payload[f"thermal_{key}"] = component_thermal.get(key)
+
+        nested_thermal = parameters.get("thermal")
+        if isinstance(nested_thermal, dict):
+            if "enabled" in nested_thermal and "thermal_enabled" not in payload:
+                payload["thermal_enabled"] = nested_thermal.get("enabled")
+            for key in (
+                "network",
+                "rth",
+                "cth",
+                "rth_stages",
+                "cth_stages",
+                "temp_init",
+                "temp_ref",
+                "alpha",
+                "shared_sink_id",
+                "shared_sink_rth",
+                "shared_sink_cth",
+            ):
+                thermal_key = f"thermal_{key}"
+                if key in nested_thermal and thermal_key not in payload:
+                    payload[thermal_key] = nested_thermal.get(key)
+
+        for key in (
+            "thermal_enabled",
+            "enable_thermal_port",
+            "thermal_network",
+            "thermal_rth",
+            "thermal_cth",
+            "thermal_rth_stages",
+            "thermal_cth_stages",
+            "thermal_temp_init",
+            "thermal_temp_ref",
+            "thermal_alpha",
+            "thermal_shared_sink_id",
+            "thermal_shared_sink_rth",
+            "thermal_shared_sink_cth",
+            "network",
+            "rth",
+            "cth",
+            "rth_stages",
+            "cth_stages",
+            "temp_init",
+            "temp_ref",
+            "alpha",
+            "shared_sink_id",
+            "shared_sink_rth",
+            "shared_sink_cth",
+        ):
+            if key in parameters:
+                payload[key] = parameters.get(key)
+        return payload
+
+    @staticmethod
+    def _component_thermal_enabled(thermal_payload: dict[str, Any]) -> bool:
+        return bool(
+            thermal_payload.get("thermal_enabled", False)
+            or thermal_payload.get("enable_thermal_port", False)
+        )
+
+    def _prevalidate_runtime_contract(self, circuit_data: dict[str, Any]) -> str | None:
+        """Validate control and electrothermal constraints before backend execution."""
+        simulation_cfg = circuit_data.get("simulation", {}) if isinstance(circuit_data, dict) else {}
+        control_cfg = simulation_cfg.get("control", {}) if isinstance(simulation_cfg, dict) else {}
+        if not isinstance(control_cfg, dict):
+            control_cfg = {}
+        control_mode = normalize_control_mode(str(control_cfg.get("mode", "auto") or "auto"))
+        try:
+            sample_time = max(0.0, float(control_cfg.get("sample_time", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            sample_time = 0.0
+        if control_mode == "discrete" and sample_time <= 0.0:
+            return (
+                "PULSIM_YAML_E_CONTROL_SAMPLE_TIME_REQUIRED: "
+                "control.mode=discrete requires control.sample_time > 0."
+            )
+
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        by_name: dict[str, str] = {}
+        thermal_enabled_components = 0
+        shared_sink_defs: dict[str, tuple[float, float]] = {}
+        thermal_cfg = simulation_cfg.get("thermal", {}) if isinstance(simulation_cfg, dict) else {}
+
+        for component_index, component in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
+            comp_type = self._normalize_component_type(component.get("type", ""))
+            comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+            if comp_name:
+                by_name[comp_name] = comp_type
+
+            if comp_type == "C_BLOCK":
+                try:
+                    n_inputs = int(params.get("n_inputs", 0))
+                    n_outputs = int(params.get("n_outputs", 0))
+                except (TypeError, ValueError):
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires integer n_inputs and n_outputs >= 1."
+                    )
+                if n_inputs < 1 or n_outputs < 1:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' requires n_inputs and n_outputs >= 1."
+                    )
+
+                mode = str(params.get("implementation", "") or "").strip().lower()
+                source = str(params.get("source") or "").strip()
+                lib_path = str(params.get("lib_path") or "").strip()
+                if mode not in {"source", "library"}:
+                    mode = "library" if lib_path and not source else "source"
+
+                selected_source = source if mode == "source" else ""
+                selected_lib = lib_path if mode == "library" else ""
+                if not selected_source and not selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' requires source or lib_path."
+                    )
+                if selected_source and selected_lib:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED: "
+                        f"component '{comp_name}' must use only one implementation (source or lib_path)."
+                    )
+
+                selected_path = selected_source or selected_lib
+                if selected_path and not Path(selected_path).expanduser().exists():
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_FILE_NOT_FOUND: "
+                        f"component '{comp_name}' path not found: {selected_path}"
+                    )
+
+                flags = self._to_string_sequence(params.get("extra_cflags", []))
+                if flags is None:
+                    return (
+                        "PULSIM_YAML_E_CBLOCK_RANGE_INVALID: "
+                        f"component '{comp_name}' extra_cflags must be a list[str]."
+                    )
+
+            if comp_type != "PWM_GENERATOR":
+                continue
+            target = str(params.get("target_component") or "").strip()
+            if not target:
+                continue
+            target_type = by_name.get(target)
+            if target_type is None:
+                return (
+                    "PULSIM_YAML_E_CONTROL_TARGET_INVALID: "
+                    f"PWM target_component '{target}' was not found."
+                )
+            if target_type not in _SWITCHABLE_TARGET_TYPES:
+                return (
+                    "PULSIM_YAML_E_CONTROL_TARGET_INVALID: "
+                    f"target_component '{target}' must be switchable (mosfet/igbt/switch/vcswitch)."
+                )
+
+        for component_index, component in enumerate(components):
+            if component_index and component_index % 128 == 0:
+                time.sleep(0)
+            comp_type = self._normalize_component_type(component.get("type", ""))
+            comp_name = str(component.get("name") or component.get("id") or comp_type).strip()
+            params = component.get("parameters") if isinstance(component.get("parameters"), dict) else {}
+
+            component_loss = component.get("loss")
+            if not isinstance(component_loss, dict):
+                component_loss = {}
+            nested_loss = params.get("loss")
+            if not isinstance(nested_loss, dict):
+                nested_loss = {}
+            loss_payload: dict[str, Any] = {}
+            loss_payload.update(component_loss)
+            loss_payload.update(nested_loss)
+            loss_model_raw_found, loss_model_raw = self._first_value_from_maps(
+                loss_payload,
+                params,
+                ("model", "switching_loss_model"),
+            )
+            loss_model = str(loss_model_raw or "").strip().lower()
+            if not loss_model:
+                loss_model = "scalar"
+            if loss_model not in {"scalar", "datasheet"}:
+                return (
+                    "PULSIM_YAML_E_LOSS_MODEL_INVALID: "
+                    f"component '{comp_name}' has unsupported loss.model '{loss_model}'."
+                )
+
+            if loss_model == "datasheet":
+                axes = loss_payload.get("axes")
+                axes = axes if isinstance(axes, dict) else {}
+                current_raw = axes.get("current")
+                voltage_raw = axes.get("voltage")
+                temperature_raw = axes.get("temperature")
+                if current_raw is None:
+                    current_raw = params.get("switching_loss_axes_current", params.get("switching_loss_axis_current"))
+                if voltage_raw is None:
+                    voltage_raw = params.get("switching_loss_axes_voltage", params.get("switching_loss_axis_voltage"))
+                if temperature_raw is None:
+                    temperature_raw = params.get(
+                        "switching_loss_axes_temperature",
+                        params.get("switching_loss_axis_temperature"),
+                    )
+
+                current_axis = self._to_finite_float_sequence(current_raw)
+                voltage_axis = self._to_finite_float_sequence(voltage_raw)
+                temperature_axis = self._to_finite_float_sequence(temperature_raw)
+                if (
+                    not current_axis
+                    or not voltage_axis
+                    or not temperature_axis
+                    or not self._strictly_increasing(current_axis)
+                    or not self._strictly_increasing(voltage_axis)
+                    or not self._strictly_increasing(temperature_axis)
+                ):
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires finite strictly increasing axes."
+                    )
+
+                expected_size = len(current_axis) * len(voltage_axis) * len(temperature_axis)
+                eon_raw_found, eon_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eon", "switching_loss_eon_table"),
+                )
+                eoff_raw_found, eoff_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("eoff", "switching_loss_eoff_table"),
+                )
+                _, err_raw = self._first_value_from_maps(
+                    loss_payload,
+                    params,
+                    ("err", "switching_loss_err_table"),
+                )
+                eon_table = self._to_finite_float_sequence(eon_raw)
+                eoff_table = self._to_finite_float_sequence(eoff_raw)
+                err_table = self._to_finite_float_sequence(err_raw)
+                if not eon_raw_found or not eoff_raw_found:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss requires eon and eoff tables."
+                    )
+                if len(eon_table) != expected_size or len(eoff_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet loss tables must match axes size."
+                    )
+                if err_table and len(err_table) != expected_size:
+                    return (
+                        "PULSIM_YAML_E_LOSS_DIMENSION_INVALID: "
+                        f"component '{comp_name}' datasheet err table must match axes size."
+                    )
+                if any(value < 0.0 for value in eon_table + eoff_table + err_table):
+                    return (
+                        "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                        f"component '{comp_name}' datasheet loss entries must be >= 0."
+                    )
+            elif loss_model_raw_found or any(
+                key in params
+                for key in (
+                    "switching_eon_j",
+                    "switching_eoff_j",
+                    "switching_err_j",
+                    "switching_eon",
+                    "switching_eoff",
+                    "switching_err",
+                )
+            ):
+                for key_aliases, field_name in (
+                    (("switching_eon_j", "switching_eon", "e_on", "eon"), "eon"),
+                    (("switching_eoff_j", "switching_eoff", "e_off", "eoff"), "eoff"),
+                    (("switching_err_j", "switching_err", "e_rr", "err"), "err"),
+                ):
+                    found, raw_value = self._first_value_from_maps(
+                        loss_payload,
+                        params,
+                        key_aliases,
+                    )
+                    if not found:
+                        continue
+                    parsed = self._to_finite_float(raw_value)
+                    if parsed is None or parsed < 0.0:
+                        return (
+                            "PULSIM_YAML_E_LOSS_RANGE_INVALID: "
+                            f"component '{comp_name}' loss.{field_name} must be finite and >= 0."
+                        )
+
+            thermal_payload = self._component_thermal_payload(component, params)
+            if not self._component_thermal_enabled(thermal_payload):
+                continue
+
+            thermal_enabled_components += 1
+            if comp_type not in _THERMAL_SUPPORTED_COMPONENT_TYPES:
+                return (
+                    "PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT: "
+                    f"component '{comp_name}' ({comp_type}) does not support thermal enablement."
+                )
+            rth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_rth_stages", thermal_payload.get("rth_stages"))
+            )
+            cth_stages = self._to_finite_float_sequence(
+                thermal_payload.get("thermal_cth_stages", thermal_payload.get("cth_stages"))
+            )
+            stage_mode_requested = bool(rth_stages or cth_stages)
+            network = self._normalize_component_thermal_network(
+                thermal_payload.get("thermal_network", thermal_payload.get("network")),
+                stage_mode_requested=stage_mode_requested,
+            )
+            if network is None:
+                return (
+                    "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                    f"component '{comp_name}' has unsupported thermal.network."
+                )
+
+            rth = self._to_finite_float(thermal_payload.get("thermal_rth", thermal_payload.get("rth")))
+            cth = self._to_finite_float(thermal_payload.get("thermal_cth", thermal_payload.get("cth")))
+            temp_init = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_temp_init",
+                    thermal_payload.get("temp_init", self._settings.thermal_ambient),
+                )
+            )
+            temp_ref = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_temp_ref",
+                    thermal_payload.get("temp_ref", self._settings.thermal_ambient),
+                )
+            )
+            alpha = self._to_finite_float(
+                thermal_payload.get("thermal_alpha", thermal_payload.get("alpha", 0.004))
+            )
+
+            if temp_init is None or temp_ref is None or alpha is None:
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    f"component '{comp_name}' requires finite temp_init/temp_ref/alpha."
+                )
+
+            if network == "single_rc":
+                has_rth = "thermal_rth" in thermal_payload or "rth" in thermal_payload
+                has_cth = "thermal_cth" in thermal_payload or "cth" in thermal_payload
+                if not has_rth or not has_cth:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' thermal requires rth and cth."
+                    )
+                if rth is None or cth is None or rth <= 0.0 or cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires rth>0 and cth>=0 for single_rc."
+                    )
+                if rth_stages or cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_NETWORK_INVALID: "
+                        f"component '{comp_name}' single_rc cannot use rth_stages/cth_stages."
+                    )
+            else:
+                if not rth_stages or not cth_stages:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                        f"component '{comp_name}' staged thermal requires rth_stages and cth_stages."
+                    )
+                if len(rth_stages) != len(cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_DIMENSION_INVALID: "
+                        f"component '{comp_name}' staged thermal requires matching rth_stages/cth_stages."
+                    )
+                if any(value <= 0.0 for value in rth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every rth_stages[i] > 0."
+                    )
+                if any(value < 0.0 for value in cth_stages):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' requires every cth_stages[i] >= 0."
+                    )
+                if rth is not None and rth <= 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional rth must be > 0."
+                    )
+                if cth is not None and cth < 0.0:
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' optional cth must be >= 0."
+                    )
+
+            shared_sink_id = str(
+                thermal_payload.get(
+                    "thermal_shared_sink_id",
+                    thermal_payload.get("shared_sink_id", ""),
+                )
+                or ""
+            ).strip()
+            shared_sink_rth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_rth",
+                    thermal_payload.get("shared_sink_rth"),
+                )
+            )
+            shared_sink_cth = self._to_finite_float(
+                thermal_payload.get(
+                    "thermal_shared_sink_cth",
+                    thermal_payload.get("shared_sink_cth"),
+                )
+            )
+            # Thermal-capable components carry shared-sink defaults (0.0) in GUI
+            # parameters. Treat only non-zero values as explicit shared-sink usage
+            # when no shared_sink_id is provided.
+            has_shared_sink_rth = (
+                shared_sink_rth is not None and abs(shared_sink_rth) > 1e-15
+            )
+            has_shared_sink_cth = (
+                shared_sink_cth is not None and abs(shared_sink_cth) > 1e-15
+            )
+
+            if shared_sink_id:
+                if (
+                    shared_sink_rth is None
+                    or shared_sink_rth <= 0.0
+                    or shared_sink_cth is None
+                    or shared_sink_cth < 0.0
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink requires shared_sink_rth>0 and shared_sink_cth>=0."
+                    )
+                previous = shared_sink_defs.get(shared_sink_id)
+                if previous is None:
+                    shared_sink_defs[shared_sink_id] = (shared_sink_rth, shared_sink_cth)
+                elif (
+                    abs(previous[0] - shared_sink_rth) > 1e-12
+                    or abs(previous[1] - shared_sink_cth) > 1e-12
+                ):
+                    return (
+                        "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                        f"component '{comp_name}' shared sink '{shared_sink_id}' must reuse identical shared_sink_rth/shared_sink_cth."
+                    )
+            elif has_shared_sink_rth or has_shared_sink_cth:
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    f"component '{comp_name}' shared_sink_rth/shared_sink_cth require shared_sink_id."
+                )
+
+        if thermal_enabled_components > 0:
+            thermal_enabled = bool(
+                thermal_cfg.get("enabled", bool(self._settings.enable_losses))
+            ) if isinstance(thermal_cfg, dict) else bool(self._settings.enable_losses)
+            if not thermal_enabled:
+                return (
+                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                    "component thermal requires simulation.thermal.enabled=true."
+                )
+            if not bool(self._settings.enable_losses):
+                return (
+                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
+                    "thermal-enabled components require simulation.enable_losses=true."
+                )
+            ambient = self._to_finite_float(self._settings.thermal_ambient)
+            default_rth = self._to_finite_float(self._settings.thermal_default_rth)
+            default_cth = self._to_finite_float(self._settings.thermal_default_cth)
+            if (
+                ambient is None
+                or default_rth is None
+                or default_cth is None
+                or default_rth <= 0.0
+                or default_cth < 0.0
+            ):
+                return (
+                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
+                    "global thermal config requires finite ambient, default_rth>0, default_cth>=0."
+                )
+
+        return None
+
     def run_transient(self, circuit_data: dict) -> None:
         """Run a transient simulation."""
         if not self._ensure_backend_ready():
+            return
+        contract_issue = self._prevalidate_runtime_contract(circuit_data)
+        if contract_issue:
+            self.error.emit(contract_issue)
             return
         if self.is_running:
             self.error.emit("Simulation already running")
@@ -866,14 +2367,55 @@ class SimulationService(QObject):
         # Emit immediate feedback so UI shows activity right away
         self.progress.emit(-1, "Starting simulation...")
 
-        # Create and start worker thread
-        self._worker = SimulationWorker(self._backend, circuit_data, self._settings)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.data_point.connect(self._on_data_point)
-        self._worker.finished_signal.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.start()
+        # Create worker thread (deferred start to let UI paint first)
+        worker = SimulationWorker(self._backend, circuit_data, self._settings)
+        self._attach_and_schedule_worker(worker)
+
+    def run_transient_project(self, project: Any) -> None:
+        """Run transient simulation converting the GUI project off the UI thread."""
+        if not self._ensure_backend_ready():
+            return
+        if self.is_running:
+            self.error.emit("Simulation already running")
+            return
+        self.apply_project_simulation_settings(project)
+
+        self._set_state(SimulationState.RUNNING)
+        self.progress.emit(-1, "Preparing simulation...")
+
+        worker = SimulationWorker(
+            self._backend,
+            None,
+            self._settings,
+            circuit_source=project,
+            circuit_builder=self.convert_gui_circuit_cached,
+            contract_validator=self._prevalidate_runtime_contract,
+        )
+        self._attach_and_schedule_worker(worker)
+
+    def _attach_and_schedule_worker(self, worker: SimulationWorker) -> None:
+        """Attach worker signals and start on next event-loop turn."""
+        self._worker = worker
+        worker.progress.connect(self._on_progress)
+        worker.data_point.connect(self._on_data_point)
+        worker.finished_signal.connect(self._on_finished)
+        worker.error.connect(self._on_error)
+        # Forward the live_stream_ready event up to subscribers
+        # (typically main_window) so they can attach the LiveScope.
+        worker.live_stream_ready.connect(self.live_stream_ready)
+        worker.finished.connect(worker.deleteLater)
+        QTimer.singleShot(0, self._start_pending_worker)
+
+    def _start_pending_worker(self) -> None:
+        """Start the queued simulation worker if state is still running."""
+        worker = self._worker
+        if worker is None:
+            return
+        if self._state not in (SimulationState.RUNNING, SimulationState.PAUSED):
+            return
+        if worker.isRunning():
+            return
+        worker.start(QThread.Priority.LowPriority)
 
     def run_dc_operating_point(
         self,
@@ -912,8 +2454,9 @@ class SimulationService(QObject):
         try:
             # Check if backend supports DC analysis
             if self._backend.has_capability("dc"):
-                # Use real backend for DC analysis
-                backend_result: BackendDCResult = self._backend.run_dc(circuit_data, dc_settings)
+                # Use backend with strategy fallback to improve robustness for
+                # switching circuits where a single DC method may fail.
+                backend_result = self._run_dc_with_fallback(circuit_data, dc_settings)
 
                 # Convert backend result to local DCResult
                 result.node_voltages = backend_result.node_voltages.copy()
@@ -931,21 +2474,11 @@ class SimulationService(QObject):
                     self.progress.emit(100, "DC analysis complete")
                     self._set_state(SimulationState.COMPLETED)
             else:
-                # Fallback to placeholder
-                result.node_voltages = {
-                    "V(out)": 5.0,
-                    "V(in)": 10.0,
-                    "V(gnd)": 0.0,
-                }
-                result.branch_currents = {
-                    "I(R1)": 0.005,
-                    "I(V1)": -0.005,
-                }
-                result.power_dissipation = {
-                    "P(R1)": 0.025,
-                }
-                self.progress.emit(100, "DC analysis complete (placeholder)")
-                self._set_state(SimulationState.COMPLETED)
+                result.error_message = (
+                    f"DC analysis is not available in backend {self._backend.info.label()}."
+                )
+                self._set_state(SimulationState.ERROR)
+                self.error.emit(result.error_message)
 
             self.dc_finished.emit(result)
 
@@ -954,6 +2487,116 @@ class SimulationService(QObject):
             self._set_state(SimulationState.ERROR)
             self.error.emit(str(e))
             self.dc_finished.emit(result)
+
+    def _run_dc_with_fallback(self, circuit_data: dict, dc_settings: DCSettings) -> BackendDCResult:
+        """Run DC analysis using configured strategy and deterministic fallbacks."""
+        attempts = self._build_dc_fallback_attempts(dc_settings)
+        errors: list[str] = []
+        first_result: BackendDCResult | None = None
+        last_result: BackendDCResult | None = None
+
+        for index, attempt in enumerate(attempts):
+            if index > 0:
+                self.progress.emit(
+                    0,
+                    f"Retrying DC with '{attempt.strategy}' strategy...",
+                )
+            backend_result = self._backend.run_dc(circuit_data, attempt)
+            if first_result is None:
+                first_result = backend_result
+            last_result = backend_result
+            if not backend_result.error_message:
+                return backend_result
+            errors.append(f"{attempt.strategy}: {backend_result.error_message}")
+
+        if last_result is None:
+            return BackendDCResult(
+                error_message="DC analysis backend returned no result.",
+            )
+
+        if errors:
+            summarized = " | ".join(errors)
+            last_result.error_message = f"DC analysis failed after fallback attempts: {summarized}"
+        return last_result
+
+    @staticmethod
+    def _build_dc_fallback_attempts(base: DCSettings) -> list[DCSettings]:
+        """Build ordered DC strategy attempts for robust operating-point solves."""
+        normalized = replace(
+            base,
+            strategy=str(base.strategy or "auto").strip().lower() or "auto",
+            source_steps=max(1, int(base.source_steps)),
+            max_iterations=max(1, int(base.max_iterations)),
+            max_voltage_step=max(0.05, float(base.max_voltage_step)),
+            gmin_initial=max(1e-12, float(base.gmin_initial)),
+            gmin_final=max(1e-15, float(base.gmin_final)),
+        )
+        if normalized.gmin_final >= normalized.gmin_initial:
+            normalized = replace(normalized, gmin_final=max(1e-15, normalized.gmin_initial * 1e-3))
+
+        tuned_gmin_initial = min(normalized.gmin_initial, 1e-3)
+        tuned_gmin_final = min(normalized.gmin_final, tuned_gmin_initial * 1e-3)
+        tuned_gmin_final = max(1e-15, tuned_gmin_final)
+        if tuned_gmin_final >= tuned_gmin_initial:
+            tuned_gmin_final = max(1e-15, tuned_gmin_initial * 1e-3)
+
+        preferred_order = {
+            "gmin": ("gmin", "direct", "auto", "source", "pseudo"),
+            "direct": ("direct", "auto", "gmin", "source", "pseudo"),
+            "source": ("source", "auto", "gmin", "direct", "pseudo"),
+            "pseudo": ("pseudo", "auto", "gmin", "direct", "source"),
+            "auto": ("auto", "direct", "gmin", "source", "pseudo"),
+        }.get(normalized.strategy, ("auto", "direct", "gmin", "source", "pseudo"))
+
+        attempts: list[DCSettings] = []
+        seen: set[tuple[str, float, float, int, int, bool, float]] = set()
+
+        def add_attempt(candidate: DCSettings) -> None:
+            key = (
+                str(candidate.strategy),
+                float(candidate.gmin_initial),
+                float(candidate.gmin_final),
+                int(candidate.source_steps),
+                int(candidate.max_iterations),
+                bool(candidate.enable_limiting),
+                float(candidate.max_voltage_step),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            attempts.append(candidate)
+
+        add_attempt(normalized)
+        for strategy in preferred_order:
+            if strategy == "gmin":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="gmin",
+                        gmin_initial=tuned_gmin_initial,
+                        gmin_final=tuned_gmin_final,
+                        enable_limiting=True,
+                        max_voltage_step=min(normalized.max_voltage_step, 2.0),
+                    )
+                )
+            elif strategy == "source":
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy="source",
+                        source_steps=max(normalized.source_steps, 20),
+                        enable_limiting=True,
+                    )
+                )
+            else:
+                add_attempt(
+                    replace(
+                        normalized,
+                        strategy=strategy,
+                        enable_limiting=True,
+                    )
+                )
+        return attempts
 
     def run_ac_analysis(
         self,
@@ -1024,11 +2667,107 @@ class SimulationService(QObject):
             self.error.emit(str(e))
             self.ac_finished.emit(result)
 
+    def run_post_processing(
+        self,
+        jobs: list[dict],
+        source_result: SimulationResult | None = None,
+    ) -> None:
+        """Run backend post-processing jobs using the latest transient result."""
+        result = source_result or self._last_result
+        if result is None or not result.is_valid:
+            self.post_processing_failed.emit(
+                "No valid transient result available for post-processing."
+            )
+            return
+        if not jobs:
+            self.post_processing_failed.emit("No post-processing jobs were provided.")
+            return
+
+        transient = BackendTransientResult(
+            time=list(result.time),
+            signals={name: list(values) for name, values in result.signals.items()},
+            statistics=dict(result.statistics),
+            error_message=result.error_message,
+        )
+        self._post_processing_service.run_jobs(transient, list(jobs))
+
+    def run_frequency_analysis(
+        self,
+        circuit_data: dict,
+        ac_settings: ACSettings | None = None,
+    ) -> None:
+        """Run backend-owned frequency-domain analysis (pulsim >= 0.7.0)."""
+        if not self._ensure_backend_ready():
+            return
+        if self.is_running:
+            self.error.emit("Simulation already running")
+            return
+
+        self._set_state(SimulationState.RUNNING)
+        self.progress.emit(0, "Running frequency analysis...")
+
+        if ac_settings is None:
+            ac_settings = ACSettings(
+                f_start=max(1e-12, float(self._settings.ac_f_start)),
+                f_stop=max(
+                    max(1e-12, float(self._settings.ac_f_start)) * (1.0 + 1e-12),
+                    float(self._settings.ac_f_stop),
+                ),
+                points_per_decade=max(1, int(self._settings.ac_points_per_decade)),
+                anchor_mode=normalize_frequency_anchor_mode(self._settings.ac_anchor_mode),
+                sweep_scale=normalize_frequency_sweep_scale(self._settings.ac_sweep_scale),
+                injection_node=str(self._settings.ac_injection_node or ""),
+                measurement_node=str(self._settings.ac_measurement_node or ""),
+            )
+
+        try:
+            if not self._backend.has_capability("frequency_analysis"):
+                result = BackendFrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="unsupported",
+                    diagnostic_message=(
+                        "Frequency analysis is not available in backend "
+                        f"{self._backend.info.label()}."
+                    ),
+                )
+                self._set_state(SimulationState.ERROR)
+                self.error.emit(result.diagnostic_message)
+                self.frequency_analysis_finished.emit(result)
+                return
+
+            result: BackendFrequencyAnalysisResult = self._backend.run_frequency_analysis(
+                circuit_data,
+                ac_settings,
+            )
+
+            if result.success:
+                self.progress.emit(100, "Frequency analysis complete")
+                self._set_state(SimulationState.COMPLETED)
+            else:
+                self._set_state(SimulationState.ERROR)
+                diagnostic = result.diagnostic_message or result.diagnostic_code or "Unknown error"
+                self.error.emit(diagnostic)
+            self.frequency_analysis_finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self._set_state(SimulationState.ERROR)
+            self.error.emit(str(exc))
+            self.frequency_analysis_finished.emit(
+                BackendFrequencyAnalysisResult(
+                    success=False,
+                    diagnostic_code="internal_error",
+                    diagnostic_message=str(exc),
+                )
+            )
+
     def run_parameter_sweep(
         self, circuit_data: dict, sweep_settings: ParameterSweepSettings
     ) -> None:
         """Run a parameter sweep across multiple simulations."""
         if not self._ensure_backend_ready():
+            return
+        contract_issue = self._prevalidate_runtime_contract(circuit_data)
+        if contract_issue:
+            self.error.emit(contract_issue)
             return
         if self.is_running:
             self.error.emit("Simulation already running")
@@ -1050,10 +2789,12 @@ class SimulationService(QObject):
 
     def stop(self) -> None:
         """Stop the current simulation."""
-        if self._worker and self._worker.isRunning():
+        if self._worker:
             self._worker.cancel()
-            self._worker.wait(5000)  # Wait up to 5 seconds
-            self._set_state(SimulationState.CANCELLED)
+            if self._worker.isRunning():
+                self._worker.wait(5000)  # Wait up to 5 seconds
+            if self._state in (SimulationState.RUNNING, SimulationState.PAUSED):
+                self._set_state(SimulationState.CANCELLED)
 
         if self._sweep_worker and self._sweep_worker.isRunning():
             self._sweep_worker.cancel()
@@ -1082,8 +2823,35 @@ class SimulationService(QObject):
         self.progress.emit(value, message)
 
     def _on_data_point(self, time: float, signals: dict) -> None:
-        """Handle data point from worker."""
+        """Handle data point from worker.
+
+        Wave-2 progress-estimator: many backends never call the
+        ``progress`` callback so the Run Bar's progress segment stays
+        at 0 %. Every data point that flows through here carries the
+        current simulation time ``t``; comparing it to the configured
+        ``tstop`` produces a perfectly reasonable progress estimate
+        without any backend cooperation. Throttled to ~10 Hz so we
+        don't spam the GUI thread with one signal per timestep.
+        """
         self.data_point.emit(time, signals)
+        try:
+            import time as _time
+            now = _time.perf_counter()
+            last = getattr(self, "_last_progress_emit_t", 0.0)
+            if now - last >= 0.1:  # 10 Hz
+                self._last_progress_emit_t = now
+                t_stop = float(getattr(self._settings, "tstop", 0.0) or 0.0)
+                t_start = float(getattr(self._settings, "tstart", 0.0) or 0.0)
+                span = t_stop - t_start
+                if span > 0.0 and time >= t_start:
+                    raw = (time - t_start) / span
+                    # Clamp at 99 % so the final 100 % only arrives with
+                    # the official simulation_finished signal.
+                    percent = max(0.0, min(99.0, raw * 100.0))
+                    self.progress.emit(percent, f"t = {time:.4g} s")
+        except Exception:
+            # Estimator must never crash the data-point pipe.
+            pass
 
     def _on_finished(self, result: SimulationResult) -> None:
         """Handle simulation completion."""
@@ -1118,46 +2886,116 @@ class SimulationService(QObject):
 
     def convert_gui_circuit(self, project) -> dict:
         """Convert GUI project/circuit to simulation data format."""
-        circuit_data = {
-            "components": [],
-            "wires": [],
-            "nodes": {},
-            "node_map": {},
-            "node_aliases": {},
-            "metadata": {},
-        }
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=True,
+            cooperative_yield=True,
+        )
 
-        if not project:
-            return circuit_data
+    def export_fmu(
+        self,
+        project,
+        settings: FmuExportSettings,
+    ) -> BackendFmuExportResult:
+        """Export the active project's circuit as a FMI 2.0 co-simulation FMU.
 
-        circuit = project.get_active_circuit()
-        if circuit is None:
-            return circuit_data
+        Synchronous wrapper around :py:meth:`SimulationBackend.export_fmu`.
+        The caller (typically the File ▸ Export ▸ FMU... dialog) is
+        responsible for displaying progress and surfacing exceptions.
 
-        node_map_raw = build_node_map(circuit)
-        alias_map = build_node_alias_map(circuit, node_map_raw)
-        circuit_data["node_aliases"] = alias_map
-        circuit_data["metadata"] = {"name": circuit.name}
+        Raises:
+            NotImplementedError: backend does not support FMU export.
+            RuntimeError: backend reported a circuit conversion or
+                export failure.
+        """
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
 
-        component_node_map: dict[str, list[str]] = {}
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.export_fmu(circuit_data, settings)
 
-        for comp in circuit.components.values():
-            comp_dict = comp.to_dict()
-            comp_dict["parameters"] = copy.deepcopy(comp.parameters)
-            comp_id = str(comp.id)
-            pin_nodes: list[str] = []
-            for pin_index in range(len(comp.pins)):
-                node_name = node_map_raw.get((comp_id, pin_index))
-                if node_name is None:
-                    node_name = ""
-                pin_nodes.append(node_name)
-            comp_dict["pin_nodes"] = pin_nodes
-            circuit_data["components"].append(comp_dict)
-            component_node_map[comp_id] = pin_nodes
+    def export_c99(
+        self,
+        project,
+        settings: C99CodegenSettings,
+    ) -> BackendC99CodegenResult:
+        """Generate deployable C99 controller code for the active project.
 
-        circuit_data["node_map"] = component_node_map
+        Synchronous wrapper around :py:meth:`SimulationBackend.export_c99`.
 
-        for wire in circuit.wires.values():
-            circuit_data["wires"].append(wire.to_dict())
+        Raises:
+            NotImplementedError: backend does not support C99 codegen.
+            RuntimeError: backend reported a circuit conversion or
+                codegen failure.
+        """
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
 
-        return circuit_data
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.export_c99(circuit_data, settings)
+
+    # ------------------------------------------------------------------
+    # Wave-4 sub-B analysis modes
+    # ------------------------------------------------------------------
+    def run_fra(
+        self,
+        project,
+        settings: FraSettings,
+    ) -> BackendFraResult:
+        """Run closed-loop Frequency Response Analysis."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_fra(circuit_data, settings)
+
+    def run_periodic_steady_state(
+        self,
+        project,
+        settings: PeriodicSteadyStateSettings,
+    ) -> BackendPeriodicSteadyStateResult:
+        """Solve for the periodic orbit via shooting."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_periodic_steady_state(circuit_data, settings)
+
+    def run_harmonic_balance(
+        self,
+        project,
+        settings: HarmonicBalanceSettings,
+    ) -> BackendHarmonicBalanceResult:
+        """Solve the spectrum via harmonic balance."""
+        if self._backend is None:
+            raise RuntimeError("Simulation backend is not initialised.")
+        circuit_data = self.convert_gui_circuit(project)
+        return self._backend.run_harmonic_balance(circuit_data, settings)
+
+    def convert_gui_circuit_cached(self, project) -> dict:
+        """Convert GUI circuit using cache-optimized worker semantics.
+
+        Returns payload references directly from conversion cache. Callers must
+        treat the returned dict as read-only.
+        """
+        return self._circuit_data_builder.build(
+            project,
+            settings=self._settings,
+            normalize_step_mode=normalize_step_mode,
+            normalize_formulation_mode=normalize_formulation_mode,
+            normalize_thermal_policy=normalize_thermal_policy,
+            normalize_control_mode=normalize_control_mode,
+            build_node_map=build_node_map,
+            build_node_alias_map=build_node_alias_map,
+            copy_result=False,
+            cooperative_yield=False,
+        )
+
+    def _convert_gui_circuit_for_worker(self, project) -> dict:
+        """Backward-compatible alias for worker conversion path."""
+        return self.convert_gui_circuit_cached(project)

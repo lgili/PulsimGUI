@@ -589,7 +589,7 @@ def export_all_projects(output_dir: Path | str) -> None:
         print(f"  Created: {output_file.name}")
         print(f"    - {project_data['name']}")
 
-    print(f"\nDone! Open these files in PulsimGui to test.")
+    print("\nDone! Open these files in PulsimGui to test.")
     print("\nValidation instructions:")
     print("  1. voltage_divider: Run DC (F6), check V(out) = 5V")
     print("  2. rc_lowpass: Run AC (F7) 10Hz-100kHz, check -3dB at 1kHz")

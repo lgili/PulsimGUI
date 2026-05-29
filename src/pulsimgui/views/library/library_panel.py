@@ -1,30 +1,38 @@
 """Component library panel with grid card layout and drag-and-drop support."""
 
-from PySide6.QtCore import Qt, QMimeData, QByteArray, Signal, QPointF, QRectF, QSize, QEvent
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QDrag, QPixmap, QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QFont, QPainterPath, QCursor,
+    QColor,
+    QCursor,
+    QDrag,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGridLayout,
-    QLineEdit,
-    QLabel,
-    QScrollArea,
-    QFrame,
     QApplication,
-    QSizePolicy,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
     QStyleOptionGraphicsItem,
     QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.models.component import Component, ComponentType
-from pulsimgui.models.component_catalog import COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY
+from pulsimgui.models.component_catalog import (
+    COMPONENT_LIBRARY as SUPPORTED_COMPONENT_LIBRARY,
+    get_descriptive_name,
+)
 from pulsimgui.resources.icons import IconService
-from pulsimgui.services.theme_service import ThemeService, Theme
-
+from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.utils.shortcut_format import shortcut_format
 
 # Component metadata for library display.
 # Keep this list aligned with backend-supported + GUI-functional blocks only.
@@ -40,6 +48,7 @@ COMPONENT_META: dict[ComponentType, dict[str, str]] = {
 CATEGORY_COLORS = {
     "Circuit": "#0f766e",
     "Signal & Control": "#2563eb",
+    "Three-Phase / Vector Control": "#7c3aed",
     "Thermal": "#ea580c",
 }
 
@@ -712,13 +721,20 @@ class ComponentCard(QFrame):
 
     clicked = Signal(ComponentType)
     double_clicked = Signal(ComponentType)
+    CARD_WIDTH = 92
+    CARD_HEIGHT = 100
+    ICON_SIZE = 46
+    READABLE_COLUMN_WIDTH = 104
+    CONTENT_WIDTH = 76  # leaves 8px breathing room inside the 92px card frame
 
     def __init__(self, comp_type: ComponentType, name: str, shortcut: str, parent=None):
         super().__init__(parent)
         self.setObjectName("ComponentCard")
         self._comp_type = comp_type
         self._name = name
-        self._shortcut = shortcut
+        # Render shortcut with platform-aware modifier glyphs so macOS users
+        # see ``⌘K`` instead of ``Cmd+K`` and ``⇧M`` instead of ``Shift+M``.
+        self._shortcut = shortcut_format(shortcut)
         self._hovered = False
         self._icon_color = "#374151"
         self._icon_dark_mode = False
@@ -728,8 +744,9 @@ class ComponentCard(QFrame):
         self._name_color = "#374151"
         self._badge_bg = "rgba(107, 114, 128, 0.16)"
         self._badge_text = "#6b7280"
+        self._filtered_out = False
 
-        self.setFixedSize(76, 92)
+        self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setMouseTracking(True)
 
@@ -738,24 +755,77 @@ class ComponentCard(QFrame):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 6, 4, 5)
-        layout.setSpacing(3)
+        layout.setContentsMargins(6, 6, 6, 4)
+        layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Icon
         self._icon_label = QLabel()
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon_label.setFixedSize(48, 48)
+        self._icon_label.setFixedSize(self.CONTENT_WIDTH, self.ICON_SIZE)
         self._update_icon()
         layout.addWidget(self._icon_label)
 
-        # Name
-        self._name_label = QLabel(self._name)
+        # Name — try increasingly compact font sizes on a single line;
+        # if even 9 pt overflows, fall back to a two-line word-wrapped
+        # label at 9 pt so names like "PMSM (dynamic)" or "3-Phase RL
+        # Load" remain fully visible. Qt's elide is the last resort.
+        #
+        # Measuring with QFontMetrics is the only way to stay consistent
+        # across themes and DPIs — glyph widths are not linear with
+        # character count.
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QFontMetrics
+
+        descriptive = get_descriptive_name(self._comp_type)
+        self._name_label = QLabel("", self)
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        font = self._name_label.font()
-        font.setPointSize(9)
-        self._name_label.setFont(font)
-        self._name_label.setWordWrap(True)
+        self._name_label.setFixedWidth(self.CONTENT_WIDTH)
+        self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        # Tooltip surfaces the long-form name (e.g. "PMSM (dynamic)") so
+        # the short card label stays readable without losing context.
+        self._name_label.setToolTip(descriptive)
+        self.setToolTip(descriptive)
+        self._name_label.setAccessibleDescription(descriptive)
+
+        chosen_font = self._name_label.font()
+        chosen_font.setBold(True)
+        text_width = self.CONTENT_WIDTH - 4
+        fitted_one_line = False
+
+        # Single-word names (Transformer, Resistor) cannot be wrapped, so
+        # we try progressively smaller sizes before falling back to wrap.
+        for trial_size in (10, 9, 8):
+            chosen_font.setPointSize(trial_size)
+            if QFontMetrics(chosen_font).horizontalAdvance(self._name) <= text_width:
+                self._name_label.setWordWrap(False)
+                self._name_label.setFont(chosen_font)
+                self._name_label.setText(self._name)
+                fitted_one_line = True
+                break
+
+        if not fitted_one_line:
+            chosen_font.setPointSize(9)
+            self._name_label.setWordWrap(True)
+            self._name_label.setFont(chosen_font)
+            metrics = QFontMetrics(chosen_font)
+            # Reserve enough room for two lines plus line-leading.
+            two_line_height = metrics.lineSpacing() * 2 + 2
+            test_rect = metrics.boundingRect(
+                QRect(0, 0, text_width, two_line_height),
+                int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+                self._name,
+            )
+            if test_rect.height() <= two_line_height:
+                self._name_label.setText(self._name)
+            else:
+                # Doesn't fit even on two lines — elide the second line.
+                elided = metrics.elidedText(
+                    self._name, Qt.TextElideMode.ElideRight, text_width * 2 - 8,
+                )
+                self._name_label.setText(elided)
+            self._name_label.setFixedHeight(two_line_height)
+
         layout.addWidget(self._name_label)
 
         self._shortcut_label = QLabel(self._shortcut)
@@ -763,7 +833,7 @@ class ComponentCard(QFrame):
         self._shortcut_label.setVisible(bool(self._shortcut))
         self._shortcut_label.setObjectName("ComponentShortcutBadge")
         badge_font = self._shortcut_label.font()
-        badge_font.setPointSize(7)
+        badge_font.setPointSize(8)
         badge_font.setBold(True)
         self._shortcut_label.setFont(badge_font)
         self._shortcut_label.setStyleSheet(
@@ -775,7 +845,7 @@ class ComponentCard(QFrame):
     def _update_icon(self):
         pixmap = create_component_icon(
             self._comp_type,
-            48,
+            self.ICON_SIZE,
             self._icon_color,
             dark_mode=self._icon_dark_mode,
         )
@@ -800,6 +870,7 @@ class ComponentCard(QFrame):
             """)
 
     def set_icon_color(self, color: str):
+        """Update icon_color for this widget."""
         self._icon_color = color
         self._update_icon()
 
@@ -840,21 +911,25 @@ class ComponentCard(QFrame):
         self._update_style()
 
     def enterEvent(self, event):
+        """Handle the Qt enterEvent callback."""
         self._hovered = True
         self._update_style()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        """Handle the Qt leaveEvent callback."""
         self._hovered = False
         self._update_style()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
+        """Handle the Qt mousePressEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """Handle the Qt mouseMoveEvent callback."""
         if event.buttons() & Qt.MouseButton.LeftButton:
             if hasattr(self, '_drag_start_pos'):
                 distance = (event.pos() - self._drag_start_pos).manhattanLength()
@@ -863,6 +938,7 @@ class ComponentCard(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """Handle the Qt mouseReleaseEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             if hasattr(self, '_drag_start_pos'):
                 distance = (event.pos() - self._drag_start_pos).manhattanLength()
@@ -871,6 +947,7 @@ class ComponentCard(QFrame):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        """Handle the Qt mouseDoubleClickEvent callback."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.double_clicked.emit(self._comp_type)
         super().mouseDoubleClickEvent(event)
@@ -888,7 +965,7 @@ class ComponentCard(QFrame):
         # Create drag pixmap
         pixmap = create_component_icon(
             self._comp_type,
-            48,
+            self.ICON_SIZE,
             self._icon_color,
             dark_mode=self._icon_dark_mode,
         )
@@ -917,6 +994,7 @@ class CategorySection(QWidget):
         self._color_bar: QFrame | None = None
         self._toggle_btn: QToolButton | None = None
         self._count_label: QLabel | None = None
+        self._column_count = 3
 
         self._setup_ui()
 
@@ -930,8 +1008,8 @@ class CategorySection(QWidget):
         self._header.setObjectName("CategoryHeader")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         header_layout = QHBoxLayout(self._header)
-        header_layout.setContentsMargins(8, 5, 8, 5)
-        header_layout.setSpacing(7)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setSpacing(6)
 
         # Color indicator
         self._color_bar = QFrame()
@@ -943,7 +1021,7 @@ class CategorySection(QWidget):
         self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         font = self._title_label.font()
         font.setBold(True)
-        font.setPointSize(10)
+        font.setPointSize(11)
         self._title_label.setFont(font)
         header_layout.addWidget(self._title_label)
 
@@ -979,6 +1057,7 @@ class CategorySection(QWidget):
         self._refresh_header_style()
 
     def add_component(self, comp_type: ComponentType, name: str, shortcut: str):
+        """Append a component card to the category section layout."""
         card = ComponentCard(comp_type, name, shortcut)
         card.set_icon_color(self._icon_color)
         card.set_icon_theme_mode(self._icon_dark_mode)
@@ -988,11 +1067,7 @@ class CategorySection(QWidget):
         self._cards.append(card)
         if self._count_label is not None:
             self._count_label.setText(str(len(self._cards)))
-
-        # Add to grid (3 columns)
-        row = (len(self._cards) - 1) // 3
-        col = (len(self._cards) - 1) % 3
-        self._grid_layout.addWidget(card, row, col)
+        self._rebuild_grid()
 
     def _toggle_expanded(self) -> None:
         self._expanded = not self._expanded
@@ -1001,6 +1076,7 @@ class CategorySection(QWidget):
             self._toggle_btn.setText("▾" if self._expanded else "▸")
 
     def eventFilter(self, watched, event):
+        """Intercept and optionally handle events before default dispatch."""
         if event.type() == QEvent.Type.MouseButtonRelease and (
             watched is self._header
             or watched is self._title_label
@@ -1013,14 +1089,42 @@ class CategorySection(QWidget):
         return super().eventFilter(watched, event)
 
     def set_icon_color(self, color: str):
+        """Update icon_color for this widget."""
         self._icon_color = color
         for card in self._cards:
             card.set_icon_color(color)
 
     def set_icon_theme_mode(self, dark_mode: bool) -> None:
+        """Update icon_theme_mode for this widget."""
         self._icon_dark_mode = dark_mode
         for card in self._cards:
             card.set_icon_theme_mode(dark_mode)
+
+    def _card_columns_for_width(self, available_width: int) -> int:
+        spacing = max(self._grid_layout.horizontalSpacing(), 0)
+        margins = self._grid_layout.contentsMargins()
+        usable_width = max(available_width - margins.left() - margins.right(), 0)
+        card_width = ComponentCard.READABLE_COLUMN_WIDTH
+        if usable_width <= 0:
+            # Layout hasn't settled yet — pick a conservative default so
+            # rightmost cards aren't clipped by the dock edge while Qt
+            # still measures widgets.
+            return 2
+        columns = max(1, int((usable_width + spacing) / (card_width + spacing)))
+        return min(columns, 4)
+
+    def _rebuild_grid(self) -> None:
+        while self._grid_layout.count():
+            self._grid_layout.takeAt(0)
+        visible_cards = [card for card in self._cards if not card._filtered_out]
+        self._column_count = self._card_columns_for_width(
+            self._grid_container.width() or self.width() or (ComponentCard.CARD_WIDTH * 3)
+        )
+        for index, card in enumerate(visible_cards):
+            row = index // self._column_count
+            col = index % self._column_count
+            self._grid_layout.addWidget(card, row, col)
+        self._grid_container.updateGeometry()
 
     def _refresh_header_style(self, theme: Theme | None = None) -> None:
         """Apply styles to section header and color accent bar."""
@@ -1041,7 +1145,7 @@ class CategorySection(QWidget):
         if self._count_label is not None:
             self._count_label.setStyleSheet(
                 f"color: {c.foreground_muted}; background-color: {c.tree_item_hover}; "
-                "border-radius: 6px; padding: 0 6px; font-size: 10px;"
+                "border-radius: 6px; padding: 0 6px; font-size: 10px; font-weight: 600;"
             )
         if self._toggle_btn is not None:
             self._toggle_btn.setStyleSheet(
@@ -1059,6 +1163,7 @@ class CategorySection(QWidget):
             card.set_icon_theme_mode(theme.is_dark)
             card.set_icon_color(icon_color)
             card.apply_theme(theme)
+        self._rebuild_grid()
 
     def filter_components(self, search_text: str) -> bool:
         """Filter components by search text. Returns True if any visible."""
@@ -1068,6 +1173,7 @@ class CategorySection(QWidget):
 
         for card in self._cards:
             visible = not search_text or search_lower in card._name.lower()
+            card._filtered_out = not visible
             card.setVisible(visible)
             if visible:
                 any_visible = True
@@ -1084,7 +1190,15 @@ class CategorySection(QWidget):
             else:
                 self._count_label.setText(str(len(self._cards)))
         self.setVisible(any_visible or not search_text)
+        self._rebuild_grid()
         return any_visible
+
+    def resizeEvent(self, event):
+        """Reflow cards when the section width changes."""
+        super().resizeEvent(event)
+        new_columns = self._card_columns_for_width(self._grid_container.width() or self.width())
+        if new_columns != self._column_count:
+            self._rebuild_grid()
 
 
 class LibraryPanel(QWidget):
@@ -1118,35 +1232,31 @@ class LibraryPanel(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
 
-        title_row = QWidget()
-        title_row.setObjectName("LibraryTitleRow")
-        title_layout = QHBoxLayout(title_row)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(6)
+        search_row = QWidget()
+        search_row.setObjectName("LibrarySearchRow")
+        search_layout = QHBoxLayout(search_row)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(6)
 
-        title = QLabel("Component Library")
-        title.setObjectName("LibraryPanelTitle")
-        title_layout.addWidget(title)
-        title_layout.addStretch()
-
-        self._summary_label = QLabel("")
-        self._summary_label.setObjectName("LibrarySummaryLabel")
-        title_layout.addWidget(self._summary_label)
-        layout.addWidget(title_row)
-
-        # Search bar
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("Search component or function...")
+        self._search_edit.setPlaceholderText("Search components...")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         search_icon = IconService.get_icon("search", "#9ca3af", 16)
         self._search_action = self._search_edit.addAction(
             search_icon, QLineEdit.ActionPosition.LeadingPosition
         )
-        layout.addWidget(self._search_edit)
+        search_layout.addWidget(self._search_edit, 1)
+
+        self._summary_label = QLabel("")
+        self._summary_label.setObjectName("LibrarySummaryLabel")
+        self._summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._summary_label.setMinimumWidth(84)
+        search_layout.addWidget(self._summary_label)
+        layout.addWidget(search_row)
 
         # Scroll area for categories
         scroll = QScrollArea()
@@ -1206,6 +1316,7 @@ class LibraryPanel(QWidget):
         self.component_double_clicked.emit(comp_type)
 
     def add_to_recent(self, comp_type: ComponentType):
+        """Add the component type to the recent list and refresh the panel."""
         if comp_type in self._recent:
             self._recent.remove(comp_type)
         self._recent.insert(0, comp_type)
@@ -1239,24 +1350,13 @@ class LibraryPanel(QWidget):
             QWidget#LibraryPanelRoot {{
                 background-color: {c.panel_background};
             }}
-            QWidget#LibraryTitleRow {{
-                background-color: {c.panel_header};
-                border: 1px solid {c.panel_border};
-                border-radius: 10px;
-                padding: 5px 8px;
-            }}
-            QLabel#LibraryPanelTitle {{
-                color: {c.foreground};
-                font-weight: 600;
-                font-size: 13px;
-            }}
             QLabel#LibrarySummaryLabel {{
                 color: {c.foreground_muted};
                 background-color: {c.tree_item_hover};
                 border-radius: 7px;
                 padding: 2px 8px;
                 font-size: 10px;
-                font-weight: 500;
+                font-weight: 600;
             }}
             QWidget#LibraryContentRoot {{
                 background-color: {c.panel_background};
@@ -1265,7 +1365,7 @@ class LibraryPanel(QWidget):
                 background-color: {c.input_background};
                 border: 1px solid {c.input_border};
                 border-radius: 10px;
-                padding: 8px 10px;
+                padding: 7px 10px;
                 color: {c.foreground};
             }}
             QLineEdit:focus {{

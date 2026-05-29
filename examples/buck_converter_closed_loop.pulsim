@@ -20,7 +20,7 @@
     "enable_voltage_limiting": true,
     "max_voltage_step": 2.0,
     "dc_strategy": "gmin",
-    "gmin_initial": 0.01,
+    "gmin_initial": 0.001,
     "gmin_final": 1e-12,
     "dc_source_steps": 20,
     "transient_robust_mode": true,
@@ -349,6 +349,7 @@
           "parameters": {
             "frequency": 10000.0,
             "duty_cycle": 0.5,
+            "enable_duty_input": true,
             "carrier": "sawtooth",
             "amplitude": 20.0
           },
@@ -436,7 +437,7 @@
           "mirrored_v": false,
           "parameters": {
             "kp": 0.08,
-            "ki": 100.0,
+            "ki": 500.0,
             "output_min": 0.0,
             "output_max": 0.95
           },
@@ -1031,12 +1032,18 @@
             {
               "x1": 820.0,
               "y1": 320.0,
-              "x2": 760.0,
+              "x2": 780.0,
               "y2": 320.0
             },
             {
-              "x1": 760.0,
+              "x1": 780.0,
               "y1": 320.0,
+              "x2": 780.0,
+              "y2": 460.0
+            },
+            {
+              "x1": 780.0,
+              "y1": 460.0,
               "x2": 760.0,
               "y2": 460.0
             }
@@ -1051,12 +1058,12 @@
           },
           "junctions": [
             [
-              760.0,
+              780.0,
               320.0
             ],
             [
-              760.0,
-              360.0
+              780.0,
+              460.0
             ]
           ],
           "node_name": "",

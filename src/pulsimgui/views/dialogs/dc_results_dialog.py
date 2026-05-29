@@ -4,22 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
+    QFileDialog,
     QFormLayout,
-    QTabWidget,
-    QWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QDialogButtonBox,
-    QHeaderView,
     QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
-    QFileDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pulsimgui.services.simulation_service import DCResult
@@ -36,7 +34,7 @@ class DCResultsDialog(QDialog):
     def __init__(
         self,
         result: DCResult,
-        convergence_info: "ConvergenceInfo | None" = None,
+        convergence_info: ConvergenceInfo | None = None,
         parent=None,
     ):
         super().__init__(parent)

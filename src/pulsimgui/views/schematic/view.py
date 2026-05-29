@@ -1,14 +1,37 @@
 """Schematic view with pan and zoom."""
 
-from enum import Enum, auto
 from collections.abc import Callable
+from enum import Enum, auto
 
-from PySide6.QtCore import Qt, Signal, QPointF, QEvent, QRectF
-from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QKeyEvent, QDragEnterEvent, QDragMoveEvent, QDropEvent, QContextMenuEvent, QPen, QColor, QBrush, QPalette
-from PySide6.QtWidgets import QGraphicsView, QLineEdit, QMenu, QGraphicsItem, QApplication
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsItem,
+    QGraphicsView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QVBoxLayout,
+)
 from shiboken6 import isValid
 
 from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_ANY,
     CONNECTION_DOMAIN_CIRCUIT,
     Component,
     ComponentType,
@@ -17,8 +40,8 @@ from pulsimgui.models.component import (
 )
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.theme_service import Theme
+from pulsimgui.views.schematic.items.wire_item import WireInProgressItem, WireItem, WirePreviewItem
 from pulsimgui.views.schematic.scene import SchematicScene
-from pulsimgui.views.schematic.items.wire_item import WirePreviewItem, WireInProgressItem, WireItem
 
 
 class PinHighlightItem(QGraphicsItem):
@@ -33,10 +56,12 @@ class PinHighlightItem(QGraphicsItem):
         self._visible = False
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         r = self.PIN_GLOW_RADIUS + 2
         return QRectF(-r, -r, r * 2, r * 2)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._visible:
             return
 
@@ -63,6 +88,7 @@ class PinHighlightItem(QGraphicsItem):
             self.update()
 
     def is_highlight_visible(self) -> bool:
+        """Implement is_highlight_visible for pin highlight item."""
         return self._visible
 
 
@@ -80,9 +106,11 @@ class AlignmentGuidesItem(QGraphicsItem):
         self._scene_rect = QRectF(-5000, -5000, 10000, 10000)
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._scene_rect
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         if not self._h_lines and not self._v_lines:
             return
 
@@ -136,13 +164,16 @@ class ComponentDropPreviewItem(QGraphicsItem):
         self.setZValue(1000)  # Always on top
 
     def set_dark_mode(self, dark: bool) -> None:
+        """Update dark_mode for this widget."""
         self._preview_item.set_dark_mode(dark)
         self.update()
 
     def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
         return self._bounds.adjusted(-6, -6, 6, 6)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        """Paint the item using the active palette and scene state."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw a light glow around the component bounds for placement feedback.
@@ -204,6 +235,7 @@ class SchematicView(QGraphicsView):
     mouse_moved = Signal(float, float)
     tool_changed = Signal(Tool)
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
+    component_pasted = Signal(object)  # full Component built from clipboard (preserves edits)
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
     wire_alias_changed = Signal(object)  # Wire model reference
     grid_toggle_requested = Signal()  # emitted when G key is pressed
@@ -270,6 +302,14 @@ class SchematicView(QGraphicsView):
 
         # Enable drag-and-drop
         self.setAcceptDrops(True)
+        self._theme: Theme | None = None
+        self._empty_state_frame: QFrame | None = None
+        self._empty_state_title: QLabel | None = None
+        self._empty_state_body: QLabel | None = None
+        # Wave-2 — full welcome overlay; replaces the text-only empty state
+        # whenever the host wires it up via set_welcome_overlay().
+        self._welcome_overlay = None  # type: ignore[assignment]
+        self._create_empty_state_overlay()
 
     @property
     def schematic_scene(self) -> SchematicScene:
@@ -323,6 +363,7 @@ class SchematicView(QGraphicsView):
 
     def apply_theme(self, theme: Theme) -> None:
         """Apply theme colors for canvas overlays and dark-mode rendering."""
+        self._theme = theme
         self.set_dark_mode(theme.is_dark)
         PinHighlightItem.PIN_GLOW_COLOR = QColor(theme.colors.overlay_pin_highlight)
         AlignmentGuidesItem.GUIDE_COLOR = QColor(theme.colors.overlay_alignment_guides)
@@ -330,6 +371,7 @@ class SchematicView(QGraphicsView):
         ComponentDropPreviewItem.PREVIEW_BORDER = QColor(theme.colors.overlay_drop_preview_border)
         if self._drop_preview is not None:
             self._drop_preview.update()
+        self._apply_empty_state_theme(theme)
 
     def zoom_in(self) -> None:
         """Zoom in by one step."""
@@ -458,7 +500,7 @@ class SchematicView(QGraphicsView):
             if candidate_component is None:
                 return False
             candidate_domain = pin_connection_domain(candidate_component, pin_index)
-            if candidate_domain != start_domain:
+            if not self._domains_compatible(start_domain, candidate_domain):
                 return False
             return can_connect_measurement_pins(
                 start_component,
@@ -474,11 +516,148 @@ class SchematicView(QGraphicsView):
         if self._wire_start_pin is None:
             return CONNECTION_DOMAIN_CIRCUIT
         component, pin_index = self._wire_start_pin
-        return pin_connection_domain(component, pin_index)
+        domain = pin_connection_domain(component, pin_index)
+        return CONNECTION_DOMAIN_CIRCUIT if domain == CONNECTION_DOMAIN_ANY else domain
+
+    @staticmethod
+    def _domains_compatible(left: str, right: str) -> bool:
+        if left == right:
+            return True
+        return left == CONNECTION_DOMAIN_ANY or right == CONNECTION_DOMAIN_ANY
 
     def resizeEvent(self, event):  # noqa: D401 - Qt override
+        """Handle the Qt resizeEvent callback."""
         super().resizeEvent(event)
         self._position_alias_editor()
+        self._position_empty_state_overlay()
+
+    def _create_empty_state_overlay(self) -> None:
+        """Create a small centered overlay describing the first action."""
+        frame = QFrame(self.viewport())
+        frame.setObjectName("SchematicEmptyState")
+        frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        frame.hide()
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(6)
+
+        title = QLabel("Start your schematic", frame)
+        title.setObjectName("SchematicEmptyStateTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_font = title.font()
+        title_font.setPointSize(20)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        body = QLabel(
+            "Drag components here from the library.\n"
+            "Press Ctrl+K to quick-add a component.\n"
+            "Use the mouse wheel to zoom and middle-drag to pan.",
+            frame,
+        )
+        body.setObjectName("SchematicEmptyStateBody")
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setWordWrap(True)
+        body_font = body.font()
+        body_font.setPointSize(11)
+        body_font.setWeight(body_font.Weight.Medium)
+        body.setFont(body_font)
+
+        layout.addWidget(title)
+        layout.addWidget(body)
+
+        self._empty_state_frame = frame
+        self._empty_state_title = title
+        self._empty_state_body = body
+        self._apply_empty_state_theme(self._theme)
+        self._position_empty_state_overlay()
+
+    def _apply_empty_state_theme(self, theme: Theme | None) -> None:
+        """Theme the empty-state card without competing with the canvas."""
+        if self._empty_state_frame is None:
+            return
+        if theme is None:
+            self._empty_state_frame.setStyleSheet("")
+            return
+        c = theme.colors
+        card_bg = QColor(c.panel_background)
+        border = QColor(c.panel_border)
+        if theme.is_dark:
+            card_bg.setAlpha(232)
+        else:
+            card_bg.setAlpha(244)
+        self._empty_state_frame.setStyleSheet(
+            f"""
+            QFrame#SchematicEmptyState {{
+                background-color: rgba({card_bg.red()}, {card_bg.green()}, {card_bg.blue()}, {card_bg.alpha()});
+                border: 1px solid {border.name()};
+                border-radius: 14px;
+            }}
+            QLabel#SchematicEmptyStateTitle {{
+                color: {c.foreground};
+            }}
+            QLabel#SchematicEmptyStateBody {{
+                color: {c.foreground_muted};
+                line-height: 1.35;
+            }}
+            """
+        )
+
+    def _position_empty_state_overlay(self) -> None:
+        """Keep the empty-state card centered inside the viewport."""
+        viewport = self.viewport()
+        # Welcome overlay (wave-2) takes precedence over the legacy text card.
+        if self._welcome_overlay is not None:
+            pref_w, pref_h = self._welcome_overlay.preferred_size()
+            width = min(pref_w, max(420, viewport.width() - 120))
+            height = min(pref_h, max(280, viewport.height() - 120))
+            self._welcome_overlay.resize(width, height)
+            x = max((viewport.width() - width) // 2, 24)
+            y = max((viewport.height() - height) // 2 - 20, 24)
+            self._welcome_overlay.move(x, y)
+        if self._empty_state_frame is None:
+            return
+        width = min(360, max(260, viewport.width() - 120))
+        self._empty_state_frame.resize(width, self._empty_state_frame.sizeHint().height())
+        x = max((viewport.width() - self._empty_state_frame.width()) // 2, 24)
+        y = max((viewport.height() - self._empty_state_frame.height()) // 2 - 40, 24)
+        self._empty_state_frame.move(x, y)
+
+    def set_empty_state_visible(self, visible: bool) -> None:
+        """Show the centered onboarding hint when the current circuit is empty."""
+        # Welcome overlay (when present) replaces the legacy text card.
+        if self._welcome_overlay is not None:
+            self._position_empty_state_overlay()
+            self._welcome_overlay.setVisible(visible)
+            self._welcome_overlay.raise_()
+            # Hide the legacy frame so the two don't stack.
+            if self._empty_state_frame is not None:
+                self._empty_state_frame.setVisible(False)
+            return
+        if self._empty_state_frame is None:
+            return
+        self._position_empty_state_overlay()
+        self._empty_state_frame.setVisible(visible)
+
+    def set_welcome_overlay(self, overlay) -> None:
+        """Adopt a WelcomeOverlay widget as the canvas empty state.
+
+        The overlay is reparented to the viewport, and its visibility +
+        position from then on are managed by ``set_empty_state_visible``
+        + ``_position_empty_state_overlay``.
+        """
+        if self._welcome_overlay is overlay:
+            return
+        if self._welcome_overlay is not None:
+            self._welcome_overlay.setParent(None)
+            self._welcome_overlay.deleteLater()
+        self._welcome_overlay = overlay
+        if overlay is None:
+            return
+        overlay.setParent(self.viewport())
+        overlay.hide()
+        self._position_empty_state_overlay()
 
     def _update_cursor(self) -> None:
         """Update cursor based on current tool."""
@@ -681,29 +860,51 @@ class SchematicView(QGraphicsView):
                 event.accept()
                 return
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
-            item = self.itemAt(event.position().toPoint())
-            if item is not None:
-                from pulsimgui.views.schematic.items import ComponentItem
+            from pulsimgui.views.schematic.items import ComponentItem
 
-                if isinstance(item, ComponentItem):
-                    comp_type = item.component.type
-                    if comp_type == ComponentType.SUBCIRCUIT:
-                        self.subcircuit_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
-                        self.scope_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    self.component_properties_requested.emit(item.component)
+            # ``itemAt`` returns the visually topmost graphics item —
+            # which for a ComponentItem with child labels can be one
+            # of those children, NOT the ComponentItem itself. Walk
+            # up the parent chain so a double-click on the name
+            # label still opens the component.
+            hit = self.itemAt(event.position().toPoint())
+            comp_item = None
+            while hit is not None:
+                if isinstance(hit, ComponentItem):
+                    comp_item = hit
+                    break
+                hit = hit.parentItem()
+
+            if comp_item is not None:
+                comp_type = comp_item.component.type
+                if comp_type == ComponentType.SUBCIRCUIT:
+                    self.subcircuit_open_requested.emit(comp_item.component)
                     event.accept()
                     return
+                if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+                    self.scope_open_requested.emit(comp_item.component)
+                    event.accept()
+                    return
+                self.component_properties_requested.emit(comp_item.component)
+                event.accept()
+                return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Handle keyboard shortcuts."""
         key = event.key()
         modifiers = event.modifiers()
+
+        # Treat keypad/shift variants as delete too; ignore only command modifiers.
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            blocked_modifiers = (
+                Qt.KeyboardModifier.ControlModifier
+                | Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier
+            )
+            if not (modifiers & blocked_modifiers):
+                self._delete_selected_items()
+                return
 
         # Zoom and edit shortcuts with Ctrl modifier
         if modifiers & Qt.KeyboardModifier.ControlModifier:
@@ -771,6 +972,11 @@ class SchematicView(QGraphicsView):
                 preview = self._get_wire_preview()
                 if preview is not None:
                     preview.toggle_direction()
+                    return
+
+                # Rotate selected component(s) clockwise for faster editing.
+                if self._rotate_selected_components(90):
+                    return
                 return
             # Component shortcuts
             elif key == Qt.Key.Key_R:
@@ -791,12 +997,12 @@ class SchematicView(QGraphicsView):
             elif key == Qt.Key.Key_D:
                 self.quick_add_component.emit(ComponentType.DIODE)
                 return
-            elif key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
-                # Delete selected items
-                self._delete_selected_items()
-                return
 
         super().keyPressEvent(event)
+
+    def delete_selected_items(self) -> None:
+        """Public wrapper for deleting current selection."""
+        self._delete_selected_items()
 
     def _delete_selected_items(self) -> None:
         """Delete all selected items (wires and components)."""
@@ -827,6 +1033,7 @@ class SchematicView(QGraphicsView):
             self.component_delete_requested.emit(component_id)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Handle the Qt contextMenuEvent callback."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         item = self.itemAt(event.pos())
@@ -986,6 +1193,21 @@ class SchematicView(QGraphicsView):
             return
         self.component_rotate_requested.emit(str(comp_item.component.id), int(angle))
 
+    def _rotate_selected_components(self, angle: int) -> bool:
+        """Rotate currently selected component items by the provided angle."""
+        from pulsimgui.views.schematic.items import ComponentItem
+
+        scene = self.scene()
+        if scene is None:
+            return False
+
+        rotated = False
+        for item in scene.selectedItems():
+            if isinstance(item, ComponentItem):
+                self._rotate_component(item, angle)
+                rotated = True
+        return rotated
+
     def _flip_component(self, comp_item, horizontal: bool = True) -> None:
         """Request component flip from owning controller."""
         from pulsimgui.views.schematic.items import ComponentItem
@@ -1022,8 +1244,8 @@ class SchematicView(QGraphicsView):
         """Paste a component from clipboard at the given position."""
         from copy import deepcopy
         from uuid import uuid4
+
         from pulsimgui.models.component import Component
-        from pulsimgui.views.schematic.items import create_component_item
 
         if self._clipboard_component_data is None:
             return
@@ -1077,13 +1299,12 @@ class SchematicView(QGraphicsView):
         # Create the component from the data
         component = Component.from_dict(data)
 
-        # Create the graphics item
-        comp_item = create_component_item(component)
-        scene.addItem(comp_item)
-
-        # Select the new component
-        scene.clearSelection()
-        comp_item.setSelected(True)
+        # Hand the fully-built component (edited properties intact) to the
+        # model layer, which adds it through the undo stack and rebuilds the
+        # scene from the model. We must NOT scene.addItem() it here — doing
+        # so produced a scene-only orphan that was never in circuit.components
+        # and silently vanished on the next scene reload / save / simulate.
+        self.component_pasted.emit(component)
 
     def _cut_component(self, comp_item) -> None:
         """Cut a component (copy to clipboard and delete)."""
@@ -1131,7 +1352,17 @@ class SchematicView(QGraphicsView):
                 self._cut_component(item)
                 break  # Only cut first selected component for now
 
+    def select_all_items(self) -> None:
+        """Select all selectable items in the schematic scene."""
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in scene.items():
+            if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
+                item.setSelected(True)
+
     def eventFilter(self, watched, event):  # noqa: D401 - Qt override
+        """Intercept and optionally handle events before default dispatch."""
         if watched is self._alias_editor and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Escape:
                 self._finish_wire_alias_edit(save=False)
@@ -1148,6 +1379,10 @@ class SchematicView(QGraphicsView):
                 self._begin_wire_alias_edit(item)
                 return True
         return False
+
+    def rename_selected_wire(self) -> bool:
+        """Public entrypoint to rename the first selected wire."""
+        return self._maybe_start_alias_edit()
 
     def _begin_wire_alias_edit(self, wire_item: WireItem) -> None:
         if wire_item is None:

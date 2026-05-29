@@ -2,27 +2,26 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QWidget,
-    QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
+    QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
-    QFormLayout,
-    QTextBrowser,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
 )
 
-from pulsimgui.services.backend_types import ConvergenceInfo, IterationRecord
+from pulsimgui.services.backend_types import ConvergenceInfo
 from pulsimgui.views.widgets import StatusBanner
 
 
@@ -84,6 +83,10 @@ class ConvergenceDiagnosticsDialog(QDialog):
         # Suggestions tab
         suggestions_widget = self._create_suggestions_tab()
         self._tabs.addTab(suggestions_widget, "Suggestions")
+
+        # Linear-solver tab (wave-4 sub-A 1.5).
+        linear_widget = self._create_linear_solver_tab()
+        self._tabs.addTab(linear_widget, "Linear Solver")
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -275,6 +278,73 @@ class ConvergenceDiagnosticsDialog(QDialog):
         suggestions_browser.setHtml(html)
 
         layout.addWidget(suggestions_browser)
+        return widget
+
+    def _create_linear_solver_tab(self) -> QWidget:
+        """Linear-solver tab (wave-4 sub-A 1.5).
+
+        Surfaces the strategy chain the runtime actually used plus the
+        catalog of fallback strategies the solver can reach for. The
+        runtime telemetry (per-iteration ``FallbackTraceEntry`` and
+        ``LinearSolverTelemetry``) is queued for a future Pulsim release;
+        this tab is structured to host them when they arrive.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        active_group = QGroupBox("Active Strategy")
+        active_layout = QFormLayout(active_group)
+        strategy_name = self._info.strategy_used.replace("_", " ").title()
+        active_label = QLabel(
+            f"<span style='color: #1d4ed8; font-weight: 600;'>{strategy_name}</span>"
+        )
+        active_layout.addRow("Solver:", active_label)
+
+        if self._info.failure_reason:
+            reason_label = QLabel(self._info.failure_reason)
+            reason_label.setWordWrap(True)
+            reason_label.setStyleSheet("color: #991b1b;")
+            active_layout.addRow("Why fallback:", reason_label)
+
+        layout.addWidget(active_group)
+
+        catalog_group = QGroupBox("Available Fallback Catalog")
+        catalog_layout = QVBoxLayout(catalog_group)
+        catalog_intro = QLabel(
+            "Pulsim's solver can fall back through the following strategies "
+            "when the primary Newton iteration stalls. Strategies tried during "
+            "this run are highlighted; per-iteration fallback telemetry will "
+            "appear here once the runtime exposes it."
+        )
+        catalog_intro.setWordWrap(True)
+        catalog_layout.addWidget(catalog_intro)
+
+        fallback_entries = [
+            ("Newton", "Standard Newton iteration with full Jacobian"),
+            ("Damped Newton", "Newton with line-search damping for stiff systems"),
+            ("Gmin Stepping", "Gradually decrements parasitic conductance to ground"),
+            ("Source Stepping", "Ramps source magnitudes from zero to nominal"),
+            ("Pseudo-Transient", "Adds an artificial transient term to relax the operating point"),
+        ]
+        active = self._info.strategy_used.replace("_", " ").lower()
+
+        for name, desc in fallback_entries:
+            row = QHBoxLayout()
+            bullet = QLabel("●" if name.lower() == active else "○")
+            bullet.setStyleSheet(
+                "color: #16a34a; font-weight: 700;" if name.lower() == active else "color: #9ca3af;"
+            )
+            bullet.setFixedWidth(16)
+            row.addWidget(bullet)
+            label = QLabel(f"<b>{name}</b> — {desc}")
+            label.setWordWrap(True)
+            row.addWidget(label, stretch=1)
+            row_widget = QWidget()
+            row_widget.setLayout(row)
+            catalog_layout.addWidget(row_widget)
+
+        layout.addWidget(catalog_group)
+        layout.addStretch(1)
         return widget
 
     def _create_table(self, headers: list[str]) -> QTableWidget:

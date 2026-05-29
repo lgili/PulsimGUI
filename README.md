@@ -25,8 +25,39 @@
 - Schematic editor with drag-and-drop workflow.
 - Component library focused on power electronics.
 - Transient simulation with advanced solver controls.
+- Advanced backend telemetry for convergence, fallback, and loss/thermal diagnostics.
 - Integrated waveform viewer with signal measurements.
 - Ready-to-run examples (`RC`, `buck`, `boost`, and more).
+
+## PLECS-style Scope
+
+Click any `Scope` component on the schematic to open a modular scope
+window that streams data from `pulsim`'s `NativeLiveStream` during the
+run and finalises the same window with the full-resolution result on
+finish — no separate live / post-sim windows.
+
+<div align="center">
+  <img src="docs/imgs/scope_v2_cursors.png" alt="Scope with A/B cursors" width="100%" />
+</div>
+
+Single shell + composable capabilities:
+
+- **Live streaming** (60 Hz polling) — wired Run/Stop button on the toolbar.
+- **Post-sim finalisation** — same curves, full-resolution arrays.
+- **Cursors A/B** with ΔT, 1/ΔT (frequency), and per-signal ΔY readouts.
+- **Math signals** — derived traces via a whitelisted formula
+  (`A + B`, `abs(A)`, `derivative(A)`, `moving_avg(A, 16)`, …).
+- **FFT view** — toggle the canvas to log-X magnitude (dB) of the
+  cached signals.
+- **Trigger** — Free Run / Single with edge + level on any source signal.
+- **SMPS macros** — one-click Tsw / Fsw / Duty / Ripple on the visible
+  window.
+- **Export** — CSV (master time grid + linear interp per signal), PNG,
+  or clipboard.
+
+The shell adapts per scope variant: `ElectricalScopeVariant` (blue
+accent, `V` default unit) and `ThermalScopeVariant` (orange accent,
+`°C`). Adding a new variant is a one-file dataclass.
 
 ## Official Documentation
 
@@ -77,7 +108,13 @@ python3 -m pulsimgui
 
 ## Recommended Backend
 
-For reproducible behavior, use **`pulsim v0.6.1`**.
+For reproducible behavior, use **`pulsim v0.7.9`**.
+
+This is required for full advanced electrothermal support in GUI runtime:
+
+- staged thermal networks (`single_rc`, `foster`, `cauer`)
+- shared-sink coupling (`shared_sink_id`, `shared_sink_rth`, `shared_sink_cth`)
+- datasheet switching-loss surfaces (`loss.model=datasheet`)
 
 Quick check:
 
@@ -87,12 +124,29 @@ python3 -c "import pulsim; print(pulsim.__version__)"
 
 In the app: `Preferences → Simulation → Backend Runtime`.
 
+## Runtime Telemetry
+
+With modern Pulsim backends, transient runs expose structured diagnostics in `SimulationResult.statistics`, including solver/backend telemetry and electrothermal summaries:
+
+- `linear_solver_telemetry`
+- `backend_telemetry`
+- `fallback_trace`
+- `loss_summary`
+- `thermal_summary`
+- `component_electrothermal`
+
 ## Development
 
 ### Tests
 
 ```bash
 pytest
+```
+
+### Template Smoke Test (Pre-release)
+
+```bash
+PYTHONPATH=src python3 scripts/smoke_templates.py
 ```
 
 ### Lint

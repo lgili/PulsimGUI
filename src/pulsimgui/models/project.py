@@ -7,6 +7,11 @@ from pathlib import Path
 from uuid import UUID
 
 from pulsimgui.models.circuit import Circuit
+from pulsimgui.models.component import (
+    get_control_sample_time,
+    set_control_sample_time,
+    supports_control_sample_time,
+)
 from pulsimgui.models.subcircuit import SubcircuitDefinition
 
 
@@ -39,8 +44,34 @@ class SimulationSettings:
     thermal_include_switching_losses: bool = True
     thermal_include_conduction_losses: bool = True
     thermal_network: str = "foster"
+    thermal_policy: str = "loss_with_temperature_scaling"
+    thermal_default_rth: float = 1.0
+    thermal_default_cth: float = 0.1
     formulation_mode: str = "projected_wrapper"
     direct_formulation_fallback: bool = True
+    control_mode: str = "auto"
+    control_sample_time: float = 0.0
+    ac_f_start: float = 1.0
+    ac_f_stop: float = 1e6
+    ac_points_per_decade: int = 10
+    ac_anchor_mode: str = "auto"
+    ac_sweep_scale: str = "decade"
+    ac_injection_node: str = ""
+    ac_measurement_node: str = ""
+    averaged_options: dict | None = None
+
+    # pulsim 1.6 engine selector + DSED knobs (variable-step path).
+    # ``engine="pwl"`` (default) keeps bit-exact behavior with
+    # pre-v1.6 projects; ``engine="dsed"`` opts into the Path-Based
+    # Event-Driven scheduler. Round-trip preserves every field even
+    # when DSED is unselected, so toggling later doesn't lose state.
+    engine: str = "pwl"
+    dsed_rtol: float = 1e-6
+    dsed_atol: float = 1e-9
+    dsed_dt_init: float = 1e-9
+    dsed_integrator: str = "auto"
+    dsed_stiffness_threshold: float = 10.0
+    dsed_h_bdf2: float = 1e-6
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -70,8 +101,31 @@ class SimulationSettings:
             "thermal_include_switching_losses": self.thermal_include_switching_losses,
             "thermal_include_conduction_losses": self.thermal_include_conduction_losses,
             "thermal_network": self.thermal_network,
+            "thermal_policy": self.thermal_policy,
+            "thermal_default_rth": self.thermal_default_rth,
+            "thermal_default_cth": self.thermal_default_cth,
             "formulation_mode": self.formulation_mode,
             "direct_formulation_fallback": self.direct_formulation_fallback,
+            "control_mode": self.control_mode,
+            "control_sample_time": self.control_sample_time,
+            "ac_f_start": self.ac_f_start,
+            "ac_f_stop": self.ac_f_stop,
+            "ac_points_per_decade": self.ac_points_per_decade,
+            "ac_anchor_mode": self.ac_anchor_mode,
+            "ac_sweep_scale": self.ac_sweep_scale,
+            "ac_injection_node": self.ac_injection_node,
+            "ac_measurement_node": self.ac_measurement_node,
+            "averaged_options": dict(self.averaged_options)
+            if isinstance(self.averaged_options, dict)
+            else None,
+            # pulsim 1.6 engine + DSED tunables.
+            "engine": self.engine,
+            "dsed_rtol": self.dsed_rtol,
+            "dsed_atol": self.dsed_atol,
+            "dsed_dt_init": self.dsed_dt_init,
+            "dsed_integrator": self.dsed_integrator,
+            "dsed_stiffness_threshold": self.dsed_stiffness_threshold,
+            "dsed_h_bdf2": self.dsed_h_bdf2,
         }
 
     @classmethod
@@ -80,6 +134,18 @@ class SimulationSettings:
         thermal_network = str(data.get("thermal_network", "foster") or "foster").strip().lower()
         if thermal_network not in {"foster", "cauer"}:
             thermal_network = "foster"
+        thermal_policy = str(
+            data.get("thermal_policy", "loss_with_temperature_scaling")
+            or "loss_with_temperature_scaling"
+        ).strip().lower()
+        thermal_policy_aliases = {
+            "losswithtemperaturescaling": "loss_with_temperature_scaling",
+            "temperature_scaling": "loss_with_temperature_scaling",
+            "lossonly": "loss_only",
+        }
+        thermal_policy = thermal_policy_aliases.get(thermal_policy, thermal_policy)
+        if thermal_policy not in {"loss_only", "loss_with_temperature_scaling"}:
+            thermal_policy = "loss_with_temperature_scaling"
         formulation_mode = str(
             data.get("formulation_mode", "projected_wrapper") or "projected_wrapper"
         ).strip().lower()
@@ -89,6 +155,32 @@ class SimulationSettings:
             formulation_mode = "direct"
         if formulation_mode not in {"projected_wrapper", "direct"}:
             formulation_mode = "projected_wrapper"
+        control_mode = str(data.get("control_mode", "auto") or "auto").strip().lower()
+        control_mode_aliases = {
+            "sampled": "discrete",
+            "sample": "discrete",
+            "continuous_time": "continuous",
+        }
+        control_mode = control_mode_aliases.get(control_mode, control_mode)
+        if control_mode not in {"auto", "continuous", "discrete"}:
+            control_mode = "auto"
+        ac_anchor_mode = str(data.get("ac_anchor_mode", "auto") or "auto").strip().lower()
+        if ac_anchor_mode not in {"auto", "dc", "periodic", "averaged"}:
+            ac_anchor_mode = "auto"
+        ac_sweep_scale = str(data.get("ac_sweep_scale", "decade") or "decade").strip().lower()
+        if ac_sweep_scale in {"logarithmic"}:
+            ac_sweep_scale = "log"
+        if ac_sweep_scale not in {"decade", "log", "linear"}:
+            ac_sweep_scale = "decade"
+        ac_f_start = max(1e-12, float(data.get("ac_f_start", 1.0)))
+        ac_f_stop = max(
+            ac_f_start * (1.0 + 1e-12),
+            float(data.get("ac_f_stop", 1e6)),
+        )
+        raw_averaged_options = data.get("averaged_options")
+        averaged_options = (
+            dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
+        )
         return cls(
             tstop=data.get("tstop", 1e-3),
             dt=data.get("dt", 1e-6),
@@ -119,37 +211,100 @@ class SimulationSettings:
                 data.get("thermal_include_conduction_losses", True)
             ),
             thermal_network=thermal_network,
+            thermal_policy=thermal_policy,
+            thermal_default_rth=max(0.0, float(data.get("thermal_default_rth", 1.0))),
+            thermal_default_cth=max(0.0, float(data.get("thermal_default_cth", 0.1))),
             formulation_mode=formulation_mode,
             direct_formulation_fallback=bool(
                 data.get("direct_formulation_fallback", True)
             ),
+            control_mode=control_mode,
+            control_sample_time=max(0.0, float(data.get("control_sample_time", 0.0))),
+            ac_f_start=ac_f_start,
+            ac_f_stop=ac_f_stop,
+            ac_points_per_decade=max(1, int(data.get("ac_points_per_decade", 10))),
+            ac_anchor_mode=ac_anchor_mode,
+            ac_sweep_scale=ac_sweep_scale,
+            ac_injection_node=str(data.get("ac_injection_node", "") or ""),
+            ac_measurement_node=str(data.get("ac_measurement_node", "") or ""),
+            averaged_options=averaged_options,
+            # pulsim 1.6 engine + DSED tunables. ``from_dict`` accepts
+            # legacy projects (no engine field → defaults to "pwl") so
+            # opening pre-v1.6 .pulsim files keeps current behavior.
+            engine=str(data.get("engine", "pwl") or "pwl").strip().lower(),
+            dsed_rtol=float(data.get("dsed_rtol", 1e-6)),
+            dsed_atol=float(data.get("dsed_atol", 1e-9)),
+            dsed_dt_init=float(data.get("dsed_dt_init", 1e-9)),
+            dsed_integrator=str(
+                data.get("dsed_integrator", "auto") or "auto"
+            ).strip().lower(),
+            dsed_stiffness_threshold=float(
+                data.get("dsed_stiffness_threshold", 10.0)
+            ),
+            dsed_h_bdf2=float(data.get("dsed_h_bdf2", 1e-6)),
         )
 
 
-@dataclass
-class ScopeWindowState:
-    """Persisted UI state for a per-scope window."""
+def _legacy_project_control_sample_time(settings: SimulationSettings) -> float | None:
+    """Extract legacy global control sample time when available."""
+    mode = str(settings.control_mode or "auto").strip().lower()
+    sample_time = max(0.0, float(settings.control_sample_time))
+    if mode == "discrete":
+        return sample_time if sample_time > 0.0 else max(1e-12, float(settings.dt))
+    if sample_time > 0.0:
+        return sample_time
+    return None
 
-    component_id: str
-    is_open: bool = False
-    geometry: list[int] | None = None  # [x, y, width, height]
 
-    def to_dict(self) -> dict:
-        """Serialize the window state."""
-        return {
-            "component_id": self.component_id,
-            "is_open": self.is_open,
-            "geometry": self.geometry,
-        }
+def _extract_explicit_component_sample_time_ids(data: dict) -> set[str]:
+    """Collect component IDs that already define sample-time parameters in payload."""
+    explicit_ids: set[str] = set()
+    circuits_data = data.get("circuits", {}) if isinstance(data, dict) else {}
+    if not isinstance(circuits_data, dict):
+        return explicit_ids
 
-    @classmethod
-    def from_dict(cls, data: dict, fallback_id: str | None = None) -> "ScopeWindowState":
-        """Deserialize window state."""
-        return cls(
-            component_id=data.get("component_id") or fallback_id or "",
-            is_open=data.get("is_open", False),
-            geometry=data.get("geometry"),
-        )
+    for circuit_payload in circuits_data.values():
+        if not isinstance(circuit_payload, dict):
+            continue
+        components = circuit_payload.get("components", [])
+        if not isinstance(components, list):
+            continue
+        for component_payload in components:
+            if not isinstance(component_payload, dict):
+                continue
+            params = component_payload.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            if "sample_time" not in params and "sample_period" not in params:
+                continue
+            component_id = str(component_payload.get("id") or "").strip()
+            if component_id:
+                explicit_ids.add(component_id)
+
+    return explicit_ids
+
+
+def _migrate_legacy_global_control_schedule(
+    *,
+    circuits: dict[str, Circuit],
+    settings: SimulationSettings,
+    explicit_sample_time_ids: set[str],
+) -> None:
+    """Backfill per-block Ts from legacy global control settings when needed."""
+    legacy_sample_time = _legacy_project_control_sample_time(settings)
+    if legacy_sample_time is None:
+        return
+
+    for circuit in circuits.values():
+        for component in circuit.components.values():
+            if not supports_control_sample_time(component.type):
+                continue
+            component_id = str(component.id)
+            if component_id in explicit_sample_time_ids:
+                continue
+            if get_control_sample_time(component.parameters, default=0.0) > 0.0:
+                continue
+            set_control_sample_time(component.parameters, legacy_sample_time)
 
 
 @dataclass
@@ -164,7 +319,6 @@ class Project:
     simulation_settings: SimulationSettings = field(default_factory=SimulationSettings)
     created: datetime = field(default_factory=datetime.now)
     modified: datetime = field(default_factory=datetime.now)
-    scope_windows: dict[str, ScopeWindowState] = field(default_factory=dict)
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self):
@@ -223,42 +377,41 @@ class Project:
             "simulation_settings": self.simulation_settings.to_dict(),
             "circuits": {name: c.to_dict() for name, c in self.circuits.items()},
             "subcircuits": [definition.to_dict() for definition in self.subcircuits.values()],
-            "scope_windows": {
-                component_id: state.to_dict()
-                for component_id, state in self.scope_windows.items()
-            },
         }
 
     @classmethod
     def from_dict(cls, data: dict, path: Path | None = None) -> "Project":
         """Deserialize project from dictionary."""
+        explicit_sample_time_ids = _extract_explicit_component_sample_time_ids(data)
         circuits = {}
         for name, circuit_data in data.get("circuits", {}).items():
             circuits[name] = Circuit.from_dict(circuit_data)
+        simulation_settings_payload = data.get("simulation_settings", {})
+        simulation_settings = SimulationSettings.from_dict(simulation_settings_payload)
+        _migrate_legacy_global_control_schedule(
+            circuits=circuits,
+            settings=simulation_settings,
+            explicit_sample_time_ids=explicit_sample_time_ids,
+        )
 
         subcircuits: dict[UUID, SubcircuitDefinition] = {}
         for definition_data in data.get("subcircuits", []):
             definition = SubcircuitDefinition.from_dict(definition_data)
             subcircuits[definition.id] = definition
 
-        scope_windows: dict[str, ScopeWindowState] = {}
-        for component_id, state_data in data.get("scope_windows", {}).items():
-            state = ScopeWindowState.from_dict(state_data, component_id)
-            if state.component_id:
-                scope_windows[state.component_id] = state
+        # Legacy ``scope_windows`` + ``scope_workspace_state`` fields
+        # are silently dropped on load — scope_v2 derives window state
+        # from the live scope component on the canvas instead.
 
         return cls(
             name=data.get("name", "Untitled Project"),
             path=path,
             circuits=circuits,
             active_circuit=data.get("active_circuit", "main"),
-            simulation_settings=SimulationSettings.from_dict(
-                data.get("simulation_settings", {})
-            ),
+            simulation_settings=simulation_settings,
             created=datetime.fromisoformat(data["created"]) if "created" in data else datetime.now(),
             modified=datetime.fromisoformat(data["modified"]) if "modified" in data else datetime.now(),
             subcircuits=subcircuits,
-            scope_windows=scope_windows,
         )
 
     def save(self, path: Path | None = None) -> None:
@@ -268,13 +421,18 @@ class Project:
             raise ValueError("No path specified for saving")
 
         save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        self.save_copy(save_path)
 
         self.path = save_path
         self.mark_clean()
+
+    def save_copy(self, path: Path) -> None:
+        """Write a project copy to disk without changing active project state."""
+        copy_path = Path(path)
+        copy_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(copy_path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load(cls, path: Path) -> "Project":
@@ -303,10 +461,3 @@ class Project:
             del self.subcircuits[definition_id]
             self.mark_dirty()
 
-    def scope_state_for(self, component_id: str) -> ScopeWindowState:
-        """Return (and create if needed) the window state for a scope component."""
-        state = self.scope_windows.get(component_id)
-        if state is None:
-            state = ScopeWindowState(component_id=component_id)
-            self.scope_windows[component_id] = state
-        return state

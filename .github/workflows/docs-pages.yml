@@ -3,6 +3,7 @@ name: Docs (GitHub Pages)
 on:
   pull_request:
     branches:
+      - dev
       - main
     paths:
       - "docs/**"
@@ -10,7 +11,7 @@ on:
       - ".github/workflows/docs-pages.yml"
   push:
     branches:
-      - main
+      - dev
     paths:
       - "docs/**"
       - "mkdocs.yml"
