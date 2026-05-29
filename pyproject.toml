@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pulsimgui"
-version = "0.12.0a9"
+version = "1.0.0"
 description = "Cross-platform GUI for Pulsim power electronics simulator"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["power electronics", "circuit simulation", "GUI", "Qt"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
