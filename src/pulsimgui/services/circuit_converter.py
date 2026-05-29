@@ -990,6 +990,73 @@ class CircuitConverter:
                     set_tau(name, tau_load)
             return
 
+        if comp_type == ComponentType.INDUCTION_MOTOR:
+            # 4-pin (A, B, C, N). pulsim 1.5+ add_induction_motor —
+            # adds Rs + leakage-L + back-EMF source per phase and needs
+            # make_induction_motor_observer wired at simulate time. The
+            # shim records the handle in ``nonlinear_observer_specs``;
+            # the backend reads it to compose the observer.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_im = getattr(circuit, "add_induction_motor", None)
+            if add_im is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the induction "
+                    "motor component (need pulsim>=1.5). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+            im_params = {
+                "R_s": self._as_float(params.get("R_s"), default=0.5),
+                "L_s": self._as_float(params.get("L_s"), default=0.05),
+                "R_r": self._as_float(params.get("R_r"), default=0.4),
+                "L_r": self._as_float(params.get("L_r"), default=0.05),
+                "L_m": self._as_float(params.get("L_m"), default=0.045),
+                "pole_pairs": int(self._as_float(params.get("pole_pairs"), default=2)),
+                "J": self._as_float(params.get("J"), default=1e-3),
+                "B": self._as_float(params.get("B"), default=0.0),
+                "T_load": self._as_float(params.get("T_load"), default=0.0),
+            }
+            try:
+                add_im(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, im_params)
+            except (ValueError, AttributeError) as exc:
+                raise CircuitConversionError(
+                    f"Induction motor '{name}': {exc}"
+                ) from exc
+            return
+
+        if comp_type == ComponentType.HYSTERETIC_INDUCTOR:
+            # 2-pin Jiles-Atherton hysteretic inductor (pulsim 1.5+).
+            # add_hysteretic_inductor adds L0 + dummy V_M source;
+            # make_hysteretic_inductor_observer drives V_M each step.
+            n1, n2 = self._require_nodes(name, nodes, 2)
+            n1_idx = self._node_index(circuit, n1, node_cache)
+            n2_idx = self._node_index(circuit, n2, node_cache)
+
+            add_hl = getattr(circuit, "add_hysteretic_inductor", None)
+            if add_hl is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the hysteretic "
+                    "inductor component (need pulsim>=1.5). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+            hl_params = {
+                "material": str(params.get("material", "si_steel_m19")),
+                "N_turns": int(self._as_float(params.get("N_turns"), default=100)),
+                "l_m": self._as_float(params.get("l_m"), default=0.1),
+                "A_core": self._as_float(params.get("A_core"), default=1e-4),
+            }
+            try:
+                add_hl(name, n1_idx, n2_idx, hl_params)
+            except (ValueError, AttributeError) as exc:
+                raise CircuitConversionError(
+                    f"Hysteretic inductor '{name}': {exc}"
+                ) from exc
+            return
+
         if comp_type == ComponentType.THREE_PHASE_SOURCE:
             # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
             # which internally decomposes into 3 SineVoltageSource branches.

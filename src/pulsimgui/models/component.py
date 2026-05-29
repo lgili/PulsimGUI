@@ -101,6 +101,10 @@ class ComponentType(Enum):
     # Magnetic
     SATURABLE_INDUCTOR = auto()
     COUPLED_INDUCTOR = auto()
+    # Jiles-Atherton hysteretic inductor (pulsim 1.5+:
+    # pulsim.add_hysteretic_inductor + a step-observer that modulates
+    # an internal dummy source to encode N·A·µ₀·dM/dt).
+    HYSTERETIC_INDUCTOR = auto()
 
     # Three-phase / vector control (Pulsim Phase 28)
     CLARKE_TRANSFORM = auto()
@@ -129,6 +133,11 @@ class ComponentType(Enum):
     # PMSM dynamic device-variant (Pulsim 0.10.0a4+: 4 internal states —
     # i_d, i_q, ω_m, θ_m — with mechanical inertia and torque feedback).
     PMSM = auto()
+
+    # 3-phase squirrel-cage induction motor (pulsim 1.5+:
+    # pulsim.add_induction_motor — 5-state Krause αβ model + a
+    # step-observer driving per-phase back-EMF sources).
+    INDUCTION_MOTOR = auto()
 
     # Pre-configured networks
     SNUBBER_RC = auto()
@@ -889,6 +898,9 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "L2_1", 30, -15),
         Pin(3, "L2_2", 30, 15),
     ],
+    # Jiles-Atherton hysteretic inductor — 2-terminal like an
+    # ordinary inductor (the L0 + V_M internal split is invisible).
+    ComponentType.HYSTERETIC_INDUCTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
 
     # Pre-configured networks
     ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
@@ -1036,6 +1048,14 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # device-variant: rotor inertia + electromagnetic torque feedback,
     # 4 internal states tracked by the runtime.
     ComponentType.PMSM: [
+        Pin(0, "A", -30, -25),
+        Pin(1, "B", -30, 0),
+        Pin(2, "C", -30, 25),
+        Pin(3, "N", 30, 0),
+    ],
+    # Induction motor: 3 stator phase terminals + star-point neutral,
+    # same terminal layout convention as PMSM.
+    ComponentType.INDUCTION_MOTOR: [
         Pin(0, "A", -30, -25),
         Pin(1, "B", -30, 0),
         Pin(2, "C", -30, 25),
@@ -1620,6 +1640,37 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "theta_init":    0.0,        # rad
         "tau_load":      0.0,        # N·m — external shaft load
     },
+
+    # 3-phase squirrel-cage induction motor (pulsim.add_induction_motor).
+    # Rotor R/L are REFERRED to the stator side (IEEE equivalent-
+    # circuit convention). Hard constraint enforced by pulsim:
+    # L_m² < L_s·L_r so the leakage factor σ = 1 − Lm²/(Ls·Lr) ∈ (0, 1).
+    # These defaults give σ = 0.19 (typical small machine).
+    ComponentType.INDUCTION_MOTOR: {
+        "R_s":          0.5,    # Ω — stator phase resistance
+        "L_s":          0.05,   # H — stator self-inductance
+        "R_r":          0.4,    # Ω — rotor resistance (referred)
+        "L_r":          0.05,   # H — rotor self-inductance (referred)
+        "L_m":          0.045,  # H — mutual inductance (referred)
+        "pole_pairs":   2,      # poles / 2
+        "J":            1e-3,   # kg·m² — rotor + load inertia
+        "B":            0.0,    # N·m·s — viscous friction
+        "T_load":       0.0,    # N·m — constant shaft load torque
+    },
+
+    # Jiles-Atherton hysteretic inductor (pulsim.add_hysteretic_inductor).
+    # ``material`` selects a built-in J-A parameter set (see
+    # PARAM_OPTIONS); the converter resolves it via
+    # pulsim.reference_material(). Geometry (N_turns / l_m / A_core)
+    # sets the linear air-core inductance L0 = N²·A·µ₀/l_m and scales
+    # the hysteresis contribution. All three must be positive (pulsim
+    # raises otherwise).
+    ComponentType.HYSTERETIC_INDUCTOR: {
+        "material":     "si_steel_m19",  # J-A catalog key
+        "N_turns":      100,             # turns on the coil
+        "l_m":          0.1,             # m — mean magnetic path length
+        "A_core":       1e-4,            # m² — effective core area
+    },
 }
 
 # Parameters that are intentionally hidden from the default properties UI.
@@ -1666,6 +1717,17 @@ PARAM_OPTIONS: dict[str, list[str]] = {
     "modulation_scheme": ["PSC", "IPD"],
     # MMC L3 cap-voltage balancing strategy.
     "balancing": ["sort_and_select", "none"],
+    # Jiles-Atherton soft-magnetic material catalog for the
+    # HYSTERETIC_INDUCTOR. Each maps to a built-in 5-parameter J-A
+    # set via pulsim.reference_material(). Order = widest→narrowest
+    # loss loop is roughly annealed_iron > si_steel > permalloy >
+    # ferrite, but the user picks by material name, not loss.
+    "material": [
+        "si_steel_m19",
+        "annealed_iron",
+        "ferrite_n87",
+        "permalloy",
+    ],
     # SUBCIRCUIT_PORT direction: cosmetic (arrow head) + signals to
     # the converter how to treat the bridge for control signals.
     # ``bidir`` is the default for electrical nets.

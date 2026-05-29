@@ -2358,6 +2358,48 @@ class SaturableInductorItem(InductorItem):
             painter.drawRect(QRectF(-15, -3, 30, 6))
 
 
+class HystereticInductorItem(InductorItem):
+    """Graphics item for the Jiles-Atherton hysteretic inductor.
+
+    Coil (inherited) + two parallel solid core bars (laminated-core
+    convention) + a small ``JA`` badge so it reads distinctly from
+    the saturable inductor's dashed-bar hysteresis variant.
+    """
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        super()._draw_symbol(painter)
+
+        core_color = self._muted_color()
+        # Two solid bars below the coil — magnetic core.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, core_color))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(-16, -6), QPointF(16, -6))
+        painter.drawLine(QPointF(-16, 6), QPointF(16, 6))
+
+        # ``JA`` tag (Jiles-Atherton) — distinguishes from the
+        # saturable inductor and signals the hysteresis model.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._accent_orange()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(7)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-16, 8, 32, 10),
+            Qt.AlignmentFlag.AlignCenter, "JA",
+        )
+
+    def _get_value_text(self) -> str:
+        material = str(self._component.parameters.get("material", "") or "")
+        # Compact material label, e.g. "si_steel_m19" → "M19".
+        short = {
+            "si_steel_m19": "M19",
+            "annealed_iron": "Fe",
+            "ferrite_n87": "N87",
+            "permalloy": "Py",
+        }.get(material, material)
+        return short
+
+
 class CoupledInductorItem(TransformerItem):
     """Graphics item for coupled inductor (similar to transformer)."""
 
@@ -2529,6 +2571,66 @@ class PMSMDynamicItem(_RotatingMachineItem):
         painter.setFont(font)
         painter.drawText(
             QRectF(-self.BODY_RADIUS, self.BODY_RADIUS - 12, 2 * self.BODY_RADIUS, 10),
+            Qt.AlignmentFlag.AlignCenter, "3φ",
+        )
+
+    def _get_value_text(self) -> str:
+        poles = self._component.parameters.get("pole_pairs", 0)
+        try:
+            return f"{int(poles)} pp"
+        except (TypeError, ValueError):
+            return ""
+
+
+class InductionMotorItem(_RotatingMachineItem):
+    """3-phase squirrel-cage induction motor — ``IM`` glyph + rotor
+    cage bars. No ``~`` suffix: it's an asynchronous machine, the
+    distinguishing visual from the synchronous PMSM."""
+
+    BODY_RADIUS = 20.0
+    GLYPH_SUFFIX = ""
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        # Reuse the base leads + circle, but draw an "IM" glyph instead
+        # of the inherited "M"+suffix so the asynchronous machine reads
+        # clearly. Replicate the base body, then overlay.
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        for pin in self._component.pins:
+            px, py = float(pin.x), float(pin.y)
+            edge = self._closest_circle_edge(px, py, self.BODY_RADIUS)
+            painter.drawLine(edge, QPointF(px, py))
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(self._surface_color())
+        painter.drawEllipse(QPointF(0, 0), self.BODY_RADIUS, self.BODY_RADIUS)
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-self.BODY_RADIUS, -self.BODY_RADIUS - 2,
+                   2 * self.BODY_RADIUS, 2 * self.BODY_RADIUS),
+            Qt.AlignmentFlag.AlignCenter, "IM",
+        )
+        self._draw_machine_extra(painter)
+
+    def _draw_machine_extra(self, painter: QPainter) -> None:
+        # Squirrel-cage hint: three short vertical rotor bars under the
+        # glyph, plus a "3φ" tag at the bottom.
+        bar_color = self._muted_color()
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, bar_color))
+        for x in (-5.0, 0.0, 5.0):
+            painter.drawLine(QPointF(x, 3), QPointF(x, 9))
+
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(7)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-self.BODY_RADIUS, self.BODY_RADIUS - 11, 2 * self.BODY_RADIUS, 10),
             Qt.AlignmentFlag.AlignCenter, "3φ",
         )
 
@@ -3688,6 +3790,7 @@ def create_component_item(component: Component) -> ComponentItem:
 
         # Magnetic
         ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,
+        ComponentType.HYSTERETIC_INDUCTOR: HystereticInductorItem,
         ComponentType.COUPLED_INDUCTOR: CoupledInductorItem,
 
         # Three-phase / vector control (Pulsim Phase 28)
@@ -3705,6 +3808,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.DC_MOTOR: DCMotorItem,
         ComponentType.PMSM_STEADY_STATE: PMSMSteadyItem,
         ComponentType.PMSM: PMSMDynamicItem,
+        ComponentType.INDUCTION_MOTOR: InductionMotorItem,
         ComponentType.THREE_PHASE_SOURCE: ThreePhaseSourceItem,
         ComponentType.THREE_PHASE_VSI: ThreePhaseVSIItem,
         ComponentType.THREE_PHASE_RL_LOAD: ThreePhaseRLLoadItem,

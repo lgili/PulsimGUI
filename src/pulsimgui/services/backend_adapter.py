@@ -6023,6 +6023,24 @@ class PulsimBackend(SimulationBackend):
         # step_observers internally. Note: pulsim ≥ 1.4 rejects passing
         # both ``closed_loops`` and ``switch_fn``/``step_observer``, so
         # we either go all-closed-loop or all-static.
+        # Nonlinear-device observers (pulsim 1.5+ induction motor +
+        # Jiles-Atherton hysteretic inductor). The converter recorded
+        # each device's handle on ``circuit.nonlinear_observer_specs``;
+        # here we build the ``(step_observer, b_extra_fn)`` pair per
+        # device, fold the step-observers into the base observer, and
+        # sum the b_extra residual injections into one callable. Both
+        # are no-ops when no such device is present.
+        device_step_observers, device_b_extra_fn = (
+            self._build_nonlinear_device_observers(circuit, builder, dt)
+        )
+        if device_step_observers:
+            base_step_observer = step_observer
+
+            def step_observer(t: float, x: Any) -> None:  # noqa: F811
+                base_step_observer(t, x)
+                for obs in device_step_observers:
+                    obs(t, x)
+
         composed_loop = self._build_closed_loops(
             circuit, builder, step_observer, t_start,
         )
@@ -6032,6 +6050,12 @@ class PulsimBackend(SimulationBackend):
         else:
             simulate_kwargs["switch_fn"] = switch_fn
             simulate_kwargs["step_observer"] = step_observer
+        # Device residual injection (back-EMF / dM/dt) is independent
+        # of the switch_fn / closed-loop path — always forward it when
+        # a nonlinear device is present. The TypeError-retry below
+        # strips it if the host kernel rejects the combination.
+        if device_b_extra_fn is not None:
+            simulate_kwargs["b_extra_fn"] = device_b_extra_fn
         live_stream = getattr(callbacks, "live_stream", None)
         if live_stream is not None:
             simulate_kwargs["live_stream"] = live_stream
@@ -6118,6 +6142,12 @@ class PulsimBackend(SimulationBackend):
                 "engine",
                 "rtol", "atol", "dt_init", "integrator",
                 "stiffness_threshold", "h_bdf2",
+                # Nonlinear-device residual injection (induction motor
+                # back-EMF / hysteretic-inductor dM/dt). Stripped only
+                # if a kernel rejects it alongside another kwarg combo;
+                # losing it means the device's nonlinear term is absent,
+                # but the sim still runs (degraded, not crashed).
+                "b_extra_fn",
             }
             stripped = {
                 k for k in list(simulate_kwargs.keys())
@@ -6424,6 +6454,85 @@ class PulsimBackend(SimulationBackend):
                 "temperature_trace": temp_list,
             })
         return rows
+
+    def _build_nonlinear_device_observers(
+        self,
+        circuit: Any,
+        builder: Any,
+        dt: float,
+    ) -> tuple[list[Callable[[float, Any], None]], Callable[[float], Any] | None]:
+        """Build the simulate-time observers for every nonlinear device
+        (induction motor, Jiles-Atherton hysteretic inductor) the
+        converter recorded on ``circuit.nonlinear_observer_specs``.
+
+        Each pulsim ``make_<kind>_observer(builder, handle, dt=dt)``
+        returns a ``(step_observer, b_extra_fn)`` pair:
+
+        * ``step_observer(t, x)`` advances the device's internal state
+          (rotor flux + mechanical for the motor; J-A magnetisation for
+          the inductor) once per simulation step.
+        * ``b_extra_fn(t)`` returns the residual-vector contribution
+          (back-EMF source voltages / dM/dt) the kernel adds each step.
+
+        Returns ``([step_observers], combined_b_extra_fn)``. The
+        b_extra functions are summed element-wise into one callable
+        (``None`` when there are no devices). Any failure to build an
+        observer is logged and skipped so one bad device doesn't kill
+        the whole run.
+        """
+        specs = list(getattr(circuit, "nonlinear_observer_specs", []) or [])
+        if not specs:
+            return [], None
+
+        ps = self._module
+        step_observers: list[Callable[[float, Any], None]] = []
+        b_extra_fns: list[Callable[[float], Any]] = []
+
+        maker_by_kind = {
+            "induction_motor": getattr(ps, "make_induction_motor_observer", None),
+            "hysteretic_inductor": getattr(ps, "make_hysteretic_inductor_observer", None),
+        }
+
+        for spec in specs:
+            kind = str(spec.get("kind") or "")
+            handle = spec.get("handle")
+            maker = maker_by_kind.get(kind)
+            if maker is None or handle is None:
+                continue
+            try:
+                obs, b_extra = maker(builder, handle, dt=float(dt))
+            except Exception:  # noqa: BLE001 - one bad device shouldn't abort
+                continue
+            if callable(obs):
+                step_observers.append(obs)
+            if callable(b_extra):
+                b_extra_fns.append(b_extra)
+
+        if not b_extra_fns:
+            return step_observers, None
+
+        if len(b_extra_fns) == 1:
+            return step_observers, b_extra_fns[0]
+
+        # Sum the per-device residual vectors element-wise. Each
+        # b_extra_fn returns a full-length list[float]; the kernel adds
+        # the result to the constant residual. Devices write into
+        # disjoint source rows so summation is just element-wise add.
+        def combined_b_extra(t: float) -> list[float]:
+            total: list[float] | None = None
+            for fn in b_extra_fns:
+                vec = fn(t)
+                if vec is None:
+                    continue
+                if total is None:
+                    total = list(vec)
+                else:
+                    for i, v in enumerate(vec):
+                        if i < len(total):
+                            total[i] += v
+            return total if total is not None else []
+
+        return step_observers, combined_b_extra
 
     def _build_closed_loops(
         self,

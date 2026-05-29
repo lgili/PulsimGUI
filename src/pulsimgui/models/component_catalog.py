@@ -10,6 +10,7 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.CAPACITOR, "name": "Capacitor", "shortcut": "C"},
         {"type": ComponentType.INDUCTOR, "name": "Inductor", "shortcut": "L"},
         {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Inductor", "shortcut": ""},
+        {"type": ComponentType.HYSTERETIC_INDUCTOR, "name": "Hyst. Inductor", "shortcut": ""},
         {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled Inductor", "shortcut": ""},
         {"type": ComponentType.TRANSFORMER, "name": "Transformer", "shortcut": "T"},
         {"type": ComponentType.VOLTAGE_SOURCE, "name": "Voltage", "shortcut": "V"},
@@ -56,6 +57,7 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.DC_MOTOR, "name": "DC Motor", "shortcut": ""},
         {"type": ComponentType.PMSM_STEADY_STATE, "name": "PMSM ss", "shortcut": ""},
         {"type": ComponentType.PMSM, "name": "PMSM dyn", "shortcut": ""},
+        {"type": ComponentType.INDUCTION_MOTOR, "name": "Induction", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL", "shortcut": ""},
     ],
     "Power Conversion": [
