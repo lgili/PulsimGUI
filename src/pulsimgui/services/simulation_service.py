@@ -253,6 +253,63 @@ def normalize_frequency_sweep_scale(value: str | None) -> str:
     return normalized if normalized in {"decade", "log", "linear"} else "decade"
 
 
+# Supported values for ``SimulationSettings.engine``. Anything else
+# normalises back to "pwl" so old/typo'd .pulsim files still load.
+_SUPPORTED_ENGINES = {"pwl", "dsed"}
+
+
+def normalize_engine(value: str | None) -> str:
+    """Normalize the simulation engine selector to a pulsim 1.6.1
+    canonical value.
+
+    Aliases handle abbreviations + the few names that appeared in
+    early DSED drafts (``ped`` was the original Path-Based Event-
+    Driven name before the v1.6.0 release notes settled on
+    ``dsed``).
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "pwl"
+    aliases = {
+        "fixed": "pwl",
+        "fixed_step": "pwl",
+        "trapezoidal": "pwl",
+        "variable": "dsed",
+        "variable_step": "dsed",
+        "ped": "dsed",
+        "path_based": "dsed",
+        "event_driven": "dsed",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _SUPPORTED_ENGINES else "pwl"
+
+
+# pulsim 1.6.1's DSED ``integrator`` kwarg — see
+# ``pulsim.dsed.scheduler_auto``. Anything else falls back to "auto"
+# so the kernel does its own per-mode dispatch.
+_SUPPORTED_DSED_INTEGRATORS = {"auto", "rk45", "bdf2"}
+
+
+def normalize_dsed_integrator(value: str | None) -> str:
+    """Normalize the DSED integrator override.
+
+    Returns ``"auto"`` on anything unknown so a typo doesn't kill the
+    sim — the auto-dispatcher is well-tuned for general SMPS work.
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return "auto"
+    aliases = {
+        "dopri5": "rk45",         # DOPRI5 (Dormand-Prince) IS rk45 internally
+        "dormand_prince": "rk45",
+        "dormand-prince": "rk45",
+        "bdf": "bdf2",
+        "auto_dispatch": "auto",
+    }
+    normalized = aliases.get(raw, raw)
+    return normalized if normalized in _SUPPORTED_DSED_INTEGRATORS else "auto"
+
+
 @dataclass
 class SimulationSettings:
     """Settings for transient simulation."""
@@ -270,6 +327,25 @@ class SimulationSettings:
     abs_tol: float = 1e-6
     enable_events: bool = True
     max_step_retries: int = 8
+
+    # ── Engine selector (pulsim >=1.6) ─────────────────────────────
+    # "pwl"  → fixed-step trapezoidal + PWL cache (default, bit-exact
+    #          with v1.4.x). Uses ``t_step`` as the integration step.
+    # "dsed" → Path-Based Event-Driven scheduler with adaptive
+    #          RK45/BDF2 dispatch. Variable-step, predicts events,
+    #          ~24× faster than PWL on buck CCM (geo-mean 14.5×
+    #          across 6 SMPS topologies). Opt-in.
+    engine: str = "pwl"
+    # DSED-only knobs. Forwarded to ``pulsim.simulate(engine='dsed')``
+    # when ``engine == "dsed"`` — completely ignored on the PWL path.
+    # Defaults match pulsim 1.6.1's own defaults so a None-value bug
+    # never surprises the kernel.
+    dsed_rtol: float = 1e-6                  # PI controller rel-tol
+    dsed_atol: float = 1e-9                  # PI controller abs-tol
+    dsed_dt_init: float = 1e-9               # initial step
+    dsed_integrator: str = "auto"            # "auto" | "rk45" | "bdf2"
+    dsed_stiffness_threshold: float = 10.0   # |λ_max|·h cutoff (auto → BDF2)
+    dsed_h_bdf2: float = 1e-6                # fixed step for BDF2 segments
 
     # Newton solver settings (pulsim 1.5 simulate() kwargs)
     max_newton_iterations: int = 100
@@ -1464,6 +1540,42 @@ class SimulationService(QObject):
         runtime_settings.averaged_options = (
             dict(raw_averaged_options) if isinstance(raw_averaged_options, dict) else None
         )
+
+        # pulsim 1.6 engine + DSED knobs. ``getattr`` defaults keep
+        # pre-v1.6 .pulsim files loadable without these attributes.
+        runtime_settings.engine = normalize_engine(
+            getattr(project_settings, "engine", runtime_settings.engine)
+        )
+        runtime_settings.dsed_rtol = max(
+            1e-15,
+            float(getattr(project_settings, "dsed_rtol", runtime_settings.dsed_rtol)),
+        )
+        runtime_settings.dsed_atol = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_atol", runtime_settings.dsed_atol)),
+        )
+        runtime_settings.dsed_dt_init = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_dt_init", runtime_settings.dsed_dt_init)),
+        )
+        runtime_settings.dsed_integrator = normalize_dsed_integrator(
+            getattr(project_settings, "dsed_integrator", runtime_settings.dsed_integrator)
+        )
+        runtime_settings.dsed_stiffness_threshold = max(
+            0.0,
+            float(
+                getattr(
+                    project_settings,
+                    "dsed_stiffness_threshold",
+                    runtime_settings.dsed_stiffness_threshold,
+                )
+            ),
+        )
+        runtime_settings.dsed_h_bdf2 = max(
+            1e-18,
+            float(getattr(project_settings, "dsed_h_bdf2", runtime_settings.dsed_h_bdf2)),
+        )
+
         self._circuit_data_builder.clear()
         if persist:
             self._persist_simulation_settings()
@@ -1586,6 +1698,18 @@ class SimulationService(QObject):
                 "ac_sweep_scale": normalize_frequency_sweep_scale(self._settings.ac_sweep_scale),
                 "ac_injection_node": str(self._settings.ac_injection_node or ""),
                 "ac_measurement_node": str(self._settings.ac_measurement_node or ""),
+                # pulsim 1.6 engine + DSED tunables.
+                "engine": normalize_engine(self._settings.engine),
+                "dsed_rtol": max(1e-15, float(self._settings.dsed_rtol)),
+                "dsed_atol": max(1e-18, float(self._settings.dsed_atol)),
+                "dsed_dt_init": max(1e-18, float(self._settings.dsed_dt_init)),
+                "dsed_integrator": normalize_dsed_integrator(
+                    self._settings.dsed_integrator
+                ),
+                "dsed_stiffness_threshold": max(
+                    0.0, float(self._settings.dsed_stiffness_threshold)
+                ),
+                "dsed_h_bdf2": max(1e-18, float(self._settings.dsed_h_bdf2)),
             }
         )
         self._settings_service.set_solver_settings(

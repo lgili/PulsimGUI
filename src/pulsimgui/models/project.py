@@ -60,6 +60,19 @@ class SimulationSettings:
     ac_measurement_node: str = ""
     averaged_options: dict | None = None
 
+    # pulsim 1.6 engine selector + DSED knobs (variable-step path).
+    # ``engine="pwl"`` (default) keeps bit-exact behavior with
+    # pre-v1.6 projects; ``engine="dsed"`` opts into the Path-Based
+    # Event-Driven scheduler. Round-trip preserves every field even
+    # when DSED is unselected, so toggling later doesn't lose state.
+    engine: str = "pwl"
+    dsed_rtol: float = 1e-6
+    dsed_atol: float = 1e-9
+    dsed_dt_init: float = 1e-9
+    dsed_integrator: str = "auto"
+    dsed_stiffness_threshold: float = 10.0
+    dsed_h_bdf2: float = 1e-6
+
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
@@ -105,6 +118,14 @@ class SimulationSettings:
             "averaged_options": dict(self.averaged_options)
             if isinstance(self.averaged_options, dict)
             else None,
+            # pulsim 1.6 engine + DSED tunables.
+            "engine": self.engine,
+            "dsed_rtol": self.dsed_rtol,
+            "dsed_atol": self.dsed_atol,
+            "dsed_dt_init": self.dsed_dt_init,
+            "dsed_integrator": self.dsed_integrator,
+            "dsed_stiffness_threshold": self.dsed_stiffness_threshold,
+            "dsed_h_bdf2": self.dsed_h_bdf2,
         }
 
     @classmethod
@@ -207,6 +228,20 @@ class SimulationSettings:
             ac_injection_node=str(data.get("ac_injection_node", "") or ""),
             ac_measurement_node=str(data.get("ac_measurement_node", "") or ""),
             averaged_options=averaged_options,
+            # pulsim 1.6 engine + DSED tunables. ``from_dict`` accepts
+            # legacy projects (no engine field → defaults to "pwl") so
+            # opening pre-v1.6 .pulsim files keeps current behavior.
+            engine=str(data.get("engine", "pwl") or "pwl").strip().lower(),
+            dsed_rtol=float(data.get("dsed_rtol", 1e-6)),
+            dsed_atol=float(data.get("dsed_atol", 1e-9)),
+            dsed_dt_init=float(data.get("dsed_dt_init", 1e-9)),
+            dsed_integrator=str(
+                data.get("dsed_integrator", "auto") or "auto"
+            ).strip().lower(),
+            dsed_stiffness_threshold=float(
+                data.get("dsed_stiffness_threshold", 10.0)
+            ),
+            dsed_h_bdf2=float(data.get("dsed_h_bdf2", 1e-6)),
         )
 
 

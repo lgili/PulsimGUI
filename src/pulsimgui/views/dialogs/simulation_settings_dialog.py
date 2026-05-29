@@ -233,14 +233,27 @@ class SimulationSettingsDialog(QDialog):
 
         form = self._create_form_layout()
 
-        # Integration method — pulsim 1.5 only supports trapezoidal,
-        # so this combo really only has Auto/Trapezoidal. Kept as a
-        # combo for forward-compat if more schemes ship later.
+        # ── Engine selector (pulsim 1.6) ─────────────────────────────
+        # PWL is the v1.4-compatible fixed-step path (uses Step size
+        # below). DSED is the Path-Based Event-Driven variable-step
+        # engine added in pulsim 1.6.0 — ~24× faster than PWL on buck
+        # CCM, but ignores the fixed Step size and uses rtol/atol +
+        # adaptive RK45/BDF2 dispatch instead.
+        self._engine_combo = QComboBox()
+        self._engine_combo.addItem("PWL  —  fixed-step trapezoidal (v1.4-compat)", "pwl")
+        self._engine_combo.addItem("DSED — variable-step + event prediction (v1.6+)", "dsed")
+        self._engine_combo.currentIndexChanged.connect(self._update_solver_description)
+        self._engine_combo.currentIndexChanged.connect(self._apply_engine_visibility)
+        form.addRow("Engine:", self._engine_combo)
+
+        # Integration method — for the PWL engine. Hidden when DSED
+        # is selected (DSED has its own integrator selector below).
         self._solver_combo = QComboBox()
         for label_text, value in self._INTEGRATION_OPTIONS:
             self._solver_combo.addItem(label_text, value)
         self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
-        form.addRow("Integration method:", self._solver_combo)
+        self._solver_label = QLabel("Integration method:")
+        form.addRow(self._solver_label, self._solver_combo)
 
         # Step mode is hidden in the current GUI (pulsim 1.5 is
         # fixed-step PWL only), but BOTH options need to be in the
@@ -278,6 +291,102 @@ class SimulationSettingsDialog(QDialog):
         # raising AttributeError in ``_save_settings``.
         self._max_step_edit = SILineEdit("s")
         self._max_step_edit.hide()
+
+        # ── DSED engine knobs (pulsim 1.6) ───────────────────────────
+        # Shown only when ``engine='dsed'`` is selected above. Drives
+        # ``simulate(engine='dsed', rtol=, atol=, dt_init=,
+        # integrator=, stiffness_threshold=, h_bdf2=)``.
+        sep_dsed = QFrame()
+        sep_dsed.setFrameShape(QFrame.Shape.HLine)
+        sep_dsed.setObjectName("formSeparator")
+        form.addRow(sep_dsed)
+        self._dsed_separator = sep_dsed
+
+        self._dsed_section_label = QLabel("DSED variable-step controls")
+        self._dsed_section_label.setObjectName("simSectionLabel")
+        form.addRow(self._dsed_section_label)
+
+        self._dsed_rtol_spin = QDoubleSpinBox()
+        self._dsed_rtol_spin.setDecimals(12)
+        self._dsed_rtol_spin.setRange(1e-12, 1e-2)
+        self._dsed_rtol_spin.setSingleStep(1e-7)
+        self._dsed_rtol_spin.setValue(1e-6)
+        self._dsed_rtol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self._dsed_rtol_spin.setToolTip(
+            "Relative tolerance for the DSED PI step controller. "
+            "Smaller → finer steps, more accuracy, slower. "
+            "1e-6 is a sensible default for most SMPS work."
+        )
+        self._dsed_rtol_label = QLabel("Relative tolerance:")
+        form.addRow(self._dsed_rtol_label, self._dsed_rtol_spin)
+
+        self._dsed_atol_spin = QDoubleSpinBox()
+        self._dsed_atol_spin.setDecimals(14)
+        self._dsed_atol_spin.setRange(1e-15, 1e-4)
+        self._dsed_atol_spin.setSingleStep(1e-10)
+        self._dsed_atol_spin.setValue(1e-9)
+        self._dsed_atol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self._dsed_atol_spin.setToolTip(
+            "Absolute tolerance for the DSED PI step controller. "
+            "Floors the relative-tolerance check near zero state."
+        )
+        self._dsed_atol_label = QLabel("Absolute tolerance:")
+        form.addRow(self._dsed_atol_label, self._dsed_atol_spin)
+
+        self._dsed_integrator_combo = QComboBox()
+        self._dsed_integrator_combo.addItem(
+            "Auto (RK45/BDF2 per mode via stiffness detector)", "auto"
+        )
+        self._dsed_integrator_combo.addItem("RK45 (Dormand-Prince 5)", "rk45")
+        self._dsed_integrator_combo.addItem("BDF2 (2nd-order backward)", "bdf2")
+        self._dsed_integrator_combo.setToolTip(
+            "DSED integrator override. ``Auto`` lets the stiffness "
+            "detector pick RK45 for non-stiff modes (PWM-driven SMPS, "
+            "filter coast) and BDF2 for stiff ones (heavy snubbers). "
+            "Force one for debug / repeatability."
+        )
+        self._dsed_integrator_label = QLabel("DSED integrator:")
+        form.addRow(self._dsed_integrator_label, self._dsed_integrator_combo)
+
+        self._dsed_dt_init_edit = SILineEdit("s")
+        self._dsed_dt_init_edit.value = 1e-9
+        self._dsed_dt_init_label = QLabel("Initial step:")
+        form.addRow(self._dsed_dt_init_label, self._dsed_dt_init_edit)
+
+        self._dsed_h_bdf2_edit = SILineEdit("s")
+        self._dsed_h_bdf2_edit.value = 1e-6
+        self._dsed_h_bdf2_label = QLabel("BDF2 step:")
+        form.addRow(self._dsed_h_bdf2_label, self._dsed_h_bdf2_edit)
+
+        self._dsed_stiffness_spin = QDoubleSpinBox()
+        self._dsed_stiffness_spin.setDecimals(3)
+        self._dsed_stiffness_spin.setRange(0.0, 1000.0)
+        self._dsed_stiffness_spin.setValue(10.0)
+        self._dsed_stiffness_spin.setSingleStep(1.0)
+        self._dsed_stiffness_spin.setToolTip(
+            "|λ_max|·h ratio above which the auto-dispatcher switches "
+            "to BDF2 instead of RK45. Higher → more aggressive "
+            "stiffness threshold (favors RK45). Default 10.0."
+        )
+        self._dsed_stiffness_label = QLabel("Stiffness threshold:")
+        form.addRow(self._dsed_stiffness_label, self._dsed_stiffness_spin)
+
+        self._dsed_widgets = [
+            self._dsed_separator,
+            self._dsed_section_label,
+            self._dsed_rtol_label,
+            self._dsed_rtol_spin,
+            self._dsed_atol_label,
+            self._dsed_atol_spin,
+            self._dsed_integrator_label,
+            self._dsed_integrator_combo,
+            self._dsed_dt_init_label,
+            self._dsed_dt_init_edit,
+            self._dsed_h_bdf2_label,
+            self._dsed_h_bdf2_edit,
+            self._dsed_stiffness_label,
+            self._dsed_stiffness_spin,
+        ]
 
         # rel/abs tolerance: also legacy variable-step controls.
         # NOTE: ``setDecimals`` MUST come before ``setValue`` — QDoubleSpinBox
@@ -1325,6 +1434,38 @@ class SimulationSettingsDialog(QDialog):
         self._t_stop_edit.value = source.t_stop
         self._t_step_edit.value = source.t_step
 
+        # pulsim 1.6 engine selector. Set BEFORE the integration combo
+        # so ``_apply_engine_visibility`` runs against the right
+        # engine on the very first paint.
+        engine_value = str(getattr(source, "engine", "pwl") or "pwl").lower()
+        if engine_value not in {"pwl", "dsed"}:
+            engine_value = "pwl"
+        engine_idx = self._engine_combo.findData(engine_value)
+        self._engine_combo.setCurrentIndex(engine_idx if engine_idx >= 0 else 0)
+
+        # DSED knobs — populated whether or not DSED is the active
+        # engine, so flipping engine='pwl'→'dsed' later doesn't reset
+        # the user's saved tunings.
+        self._dsed_rtol_spin.setValue(float(getattr(source, "dsed_rtol", 1e-6)))
+        self._dsed_atol_spin.setValue(float(getattr(source, "dsed_atol", 1e-9)))
+        self._dsed_dt_init_edit.value = float(getattr(source, "dsed_dt_init", 1e-9))
+        self._dsed_h_bdf2_edit.value = float(getattr(source, "dsed_h_bdf2", 1e-6))
+        self._dsed_stiffness_spin.setValue(
+            float(getattr(source, "dsed_stiffness_threshold", 10.0))
+        )
+        dsed_int = str(getattr(source, "dsed_integrator", "auto") or "auto").lower()
+        if dsed_int not in {"auto", "rk45", "bdf2"}:
+            dsed_int = "auto"
+        dsed_int_idx = self._dsed_integrator_combo.findData(dsed_int)
+        self._dsed_integrator_combo.setCurrentIndex(
+            dsed_int_idx if dsed_int_idx >= 0 else 0
+        )
+
+        # Apply visibility after the engine combo settles + the DSED
+        # knobs are populated. ``setCurrentIndex`` already fires the
+        # changed signal, but call explicitly so first-paint matches.
+        self._apply_engine_visibility()
+
         solver_value = normalize_integration_method(source.solver)
         solver_idx = self._solver_combo.findData(solver_value)
         self._solver_combo.setCurrentIndex(solver_idx if solver_idx >= 0 else 0)
@@ -1524,6 +1665,21 @@ class SimulationSettingsDialog(QDialog):
             str(self._step_mode_combo.currentData() or "fixed")
         )
 
+        # pulsim 1.6 engine + DSED knobs.
+        self._settings.engine = str(
+            self._engine_combo.currentData() or "pwl"
+        )
+        self._settings.dsed_rtol = float(self._dsed_rtol_spin.value())
+        self._settings.dsed_atol = float(self._dsed_atol_spin.value())
+        self._settings.dsed_dt_init = float(self._dsed_dt_init_edit.value)
+        self._settings.dsed_h_bdf2 = float(self._dsed_h_bdf2_edit.value)
+        self._settings.dsed_stiffness_threshold = float(
+            self._dsed_stiffness_spin.value()
+        )
+        self._settings.dsed_integrator = str(
+            self._dsed_integrator_combo.currentData() or "auto"
+        )
+
         self._settings.max_step = self._max_step_edit.value
         self._settings.rel_tol = self._rel_tol_spin.value()
         self._settings.abs_tol = self._abs_tol_spin.value()
@@ -1657,7 +1813,20 @@ class SimulationSettingsDialog(QDialog):
         self._update_effective_step()
 
     def _update_solver_description(self) -> None:
-        """Update solver description based on selection."""
+        """Update solver description based on engine + method selection."""
+        engine = str(self._engine_combo.currentData() or "pwl")
+
+        if engine == "dsed":
+            self._solver_desc.setText(
+                "DSED — Path-Based Event-Driven scheduler (pulsim 1.6+). "
+                "Variable-step, adaptive RK45/BDF2 dispatch, event "
+                "prediction. ~24× faster than PWL on buck CCM, geo-"
+                "mean 14.5× across 6 SMPS topologies. Ignores the "
+                "fixed Step size below — uses rtol/atol + DSED knobs "
+                "instead."
+            )
+            return
+
         descriptions = {
             "auto": "Backend selects the most robust default integrator.",
             "trapezoidal": "General-purpose method with good speed/accuracy balance.",
@@ -1673,6 +1842,21 @@ class SimulationSettingsDialog(QDialog):
         }
         method = str(self._solver_combo.currentData() or "auto")
         self._solver_desc.setText(descriptions.get(method, descriptions["auto"]))
+
+    def _apply_engine_visibility(self) -> None:
+        """Show DSED knobs only when engine='dsed'; hide the
+        legacy ``Integration method`` combo since DSED has its own.
+        Initial call comes from ``_load_settings`` after the engine
+        combo is populated."""
+        engine = str(self._engine_combo.currentData() or "pwl")
+        is_dsed = engine == "dsed"
+        for widget in self._dsed_widgets:
+            widget.setVisible(is_dsed)
+        # The PWL integration-method combo is meaningless on DSED.
+        # Hide it (and its label) without removing — the value still
+        # round-trips through .pulsim files via SimulationSettings.
+        self._solver_label.setVisible(not is_dsed)
+        self._solver_combo.setVisible(not is_dsed)
 
     def _update_dc_strategy_description(self) -> None:
         """Update DC strategy description based on selection."""

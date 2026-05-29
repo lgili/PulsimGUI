@@ -6065,6 +6065,28 @@ class PulsimBackend(SimulationBackend):
             )
         if settings.start_from_dc_op:
             simulate_kwargs["start_from_dc_op"] = True
+
+        # pulsim 1.6 engine selector. Only forward the DSED kwargs
+        # when the user actually selected DSED — keeps the PWL path
+        # byte-identical to v1.4.x for users who haven't opted in.
+        # The TypeError-retry block below strips ``engine``/DSED
+        # kwargs if the installed pulsim is older than 1.6 (so a
+        # mismatched install doesn't crash, the user just loses the
+        # DSED path until they upgrade).
+        engine_value = str(getattr(settings, "engine", "pwl") or "pwl").lower()
+        if engine_value == "dsed":
+            simulate_kwargs["engine"] = "dsed"
+            simulate_kwargs["rtol"] = float(settings.dsed_rtol)
+            simulate_kwargs["atol"] = float(settings.dsed_atol)
+            simulate_kwargs["dt_init"] = float(settings.dsed_dt_init)
+            simulate_kwargs["integrator"] = str(
+                getattr(settings, "dsed_integrator", "auto") or "auto"
+            )
+            simulate_kwargs["stiffness_threshold"] = float(
+                settings.dsed_stiffness_threshold
+            )
+            simulate_kwargs["h_bdf2"] = float(settings.dsed_h_bdf2)
+
         try:
             res = self._module.simulate(
                 builder, t_stop, dt,
@@ -6088,6 +6110,14 @@ class PulsimBackend(SimulationBackend):
                 "enable_substep_state_correction",
                 "enable_nonlinear_refresh", "start_from_dc_op",
                 "live_stream",
+                # pulsim 1.6 engine selector + DSED knobs. Older
+                # kernels (pulsim < 1.6) reject these; the strip-and-
+                # retry path drops them so the sim still runs on the
+                # default PWL engine. Users on stale installs lose
+                # the DSED speedup but don't see a crash.
+                "engine",
+                "rtol", "atol", "dt_init", "integrator",
+                "stiffness_threshold", "h_bdf2",
             }
             stripped = {
                 k for k in list(simulate_kwargs.keys())
