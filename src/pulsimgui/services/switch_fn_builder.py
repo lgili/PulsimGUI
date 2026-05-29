@@ -116,6 +116,16 @@ def assemble_switch_fn(
     the per-device ``make_pwm_switch_fn`` + ``make_combined_switch_fn``
     composition path, which still works but pays a GIL hop per step.
 
+    DSED + plain Python switch_fn: a plain callable doesn't expose
+    ``next_edge_after``, so under ``engine='dsed'`` pulsim (>=1.6.4)
+    uses a defensive-polling path that re-samples the mask every
+    ``dt_max/10`` and emits a one-shot ``UserWarning`` suggesting
+    ``NativePwm2Switch``. Correct + still ~10× faster than PWL, just
+    not the analytical fast path. The native ``NativeMultiMaskPwm``
+    this builder returns DOES expose ``next_edge_after`` → no warning,
+    full speed. (Before 1.6.4 the plain-callable path silently froze
+    the switch at the t=0 mask — that's the regression 1.6.4 fixes.)
+
     Parameters
     ----------
     circuit
