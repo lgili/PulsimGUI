@@ -10,6 +10,7 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.CAPACITOR, "name": "Capacitor", "shortcut": "C"},
         {"type": ComponentType.INDUCTOR, "name": "Inductor", "shortcut": "L"},
         {"type": ComponentType.SATURABLE_INDUCTOR, "name": "Sat. Inductor", "shortcut": ""},
+        {"type": ComponentType.HYSTERETIC_INDUCTOR, "name": "Hyst. Inductor", "shortcut": ""},
         {"type": ComponentType.COUPLED_INDUCTOR, "name": "Coupled Inductor", "shortcut": ""},
         {"type": ComponentType.TRANSFORMER, "name": "Transformer", "shortcut": "T"},
         {"type": ComponentType.VOLTAGE_SOURCE, "name": "Voltage", "shortcut": "V"},
@@ -56,10 +57,24 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.DC_MOTOR, "name": "DC Motor", "shortcut": ""},
         {"type": ComponentType.PMSM_STEADY_STATE, "name": "PMSM ss", "shortcut": ""},
         {"type": ComponentType.PMSM, "name": "PMSM dyn", "shortcut": ""},
+        {"type": ComponentType.INDUCTION_MOTOR, "name": "Induction", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL", "shortcut": ""},
+    ],
+    "Power Conversion": [
+        {"type": ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "name": "1φ Bridge", "shortcut": ""},
+        {"type": ComponentType.THREE_PHASE_DIODE_BRIDGE, "name": "3φ Bridge", "shortcut": ""},
+        {"type": ComponentType.MMC_CELL, "name": "MMC Cell", "shortcut": ""},
+        {"type": ComponentType.MMC_ARM, "name": "MMC Arm", "shortcut": ""},
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
+    ],
+    "Hierarchy": [
+        # Port marker for subcircuit editing. Only meaningful when
+        # placed inside a SubcircuitDefinition's body — at root it
+        # silently no-ops. Kept always-visible so the user can drop
+        # one in after descending without re-opening the palette.
+        {"type": ComponentType.SUBCIRCUIT_PORT, "name": "Port", "shortcut": ""},
     ],
 }
 
@@ -112,6 +127,24 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.INVERSE_PARK_TRANSFORM, "Inverse Park", ["inverse park", "ipark", "dq abc"]),
     (ComponentType.PLL, "PLL", ["pll", "phase lock", "grid sync", "synchronization"]),
     (ComponentType.SVM, "SVM", ["svm", "space vector", "svpwm", "modulation", "inverter"]),
+    # Power conversion bridges & MMC sub-modules
+    (ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "Single-Phase Diode Bridge",
+        ["bridge", "rectifier", "diode bridge", "graetz", "single phase", "1 phase",
+         "monofasico", "monofásico", "ponte de diodo", "ponte retificadora",
+         "retificador", "full wave", "ac dc"]),
+    (ComponentType.THREE_PHASE_DIODE_BRIDGE, "Three-Phase Diode Bridge",
+        ["bridge", "rectifier", "diode bridge", "three phase", "3 phase",
+         "trifasico", "trifásico", "ponte trifasica", "ponte retificadora",
+         "6 pulse", "retificador trifasico", "ac dc"]),
+    (ComponentType.MMC_CELL, "MMC Sub-Module Cell",
+        ["mmc", "half bridge", "full bridge", "submodule", "sub-module", "cell",
+         "modular multilevel", "celula", "célula", "ponte h", "hvdc",
+         "media ponte", "ponte completa"]),
+    (ComponentType.MMC_ARM, "MMC Arm (L0..L3)",
+        ["mmc", "arm", "braço", "braco", "modular multilevel", "hvdc",
+         "averaged", "average value", "multilevel", "equivalent",
+         "detailed", "l0", "l1", "l2", "l3", "thevenin",
+         "n submodules", "cadeia"]),
 ]
 
 

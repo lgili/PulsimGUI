@@ -898,7 +898,18 @@ class TransformerItem(ComponentItem):
 
 
 class SubcircuitItem(ComponentItem):
-    """Graphics item for subcircuit instances."""
+    """Graphics item for subcircuit instances.
+
+    Renders a hierarchical block:
+      • Doubled rounded outline (visual cue that it's a hierarchical
+        block, not a primitive) — matches the IEEE schematic
+        convention for sub-sheets.
+      • Component name centred inside the body.
+      • Each port's name drawn next to its pin so users can tell
+        which terminal is which without opening the definition.
+      • "⊞" glyph in the top-right corner — a universal "descend
+        into" hint that telegraphs the double-click affordance.
+    """
 
     def __init__(self, component: Component, parent: QGraphicsItem | None = None):
         self._symbol_width = float(component.parameters.get("symbol_width", 120.0))
@@ -911,19 +922,92 @@ class SubcircuitItem(ComponentItem):
         """Return the local-space rectangle used for painting and hit-testing."""
         half_w = self._symbol_width / 2
         half_h = self._symbol_height / 2
-        return QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
+        # Pad slightly so port-name labels drawn just outside the
+        # rounded rect aren't clipped.
+        return QRectF(-half_w - 4, -half_h - 4,
+                      self._symbol_width + 8, self._symbol_height + 8)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        rect = self.boundingRect()
+        half_w = self._symbol_width / 2
+        half_h = self._symbol_height / 2
+        rect = QRectF(-half_w, -half_h, self._symbol_width, self._symbol_height)
+
+        # Outer rounded rect (the visible body)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
         painter.drawRoundedRect(rect, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+        # Inner rect — "hierarchical block" hint, IEEE-ish convention
+        inner = rect.adjusted(3, 3, -3, -3)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(inner,
+                                 max(style.BLOCK_RADIUS - 2, 1),
+                                 max(style.BLOCK_RADIUS - 2, 1))
 
-        # Draw title centered inside block
+        # Title placed at the TOP of the body (header-bar style) so it
+        # doesn't collide with port-name labels drawn next to side pins.
         painter.save()
-        painter.setFont(style.block_label_font(self._name_label.font()))
-        painter.drawText(rect.adjusted(4, 4, -4, -4), Qt.AlignmentFlag.AlignCenter, self._component.name)
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
+        title_font = style.block_label_font(self._name_label.font())
+        title_font.setPointSize(max(title_font.pointSize() - 1, 7))
+        painter.setFont(title_font)
+        title_rect = QRectF(rect.left() + 8, rect.top() + 4,
+                             rect.width() - 22, 14)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft
+                         | Qt.AlignmentFlag.AlignVCenter,
+                         self._component.name or "Subcircuit")
         painter.restore()
+
+        # "Descend into" hint in the top-right corner (uses ⊞ which
+        # most CAD/EDA tools associate with hierarchical sub-sheets).
+        painter.save()
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        hint_font = QFont()
+        hint_font.setBold(True)
+        hint_font.setPointSize(9)
+        painter.setFont(hint_font)
+        hint_rect = QRectF(rect.right() - 16, rect.top() + 2, 14, 12)
+        painter.drawText(hint_rect, Qt.AlignmentFlag.AlignCenter, "⊞")
+        painter.restore()
+
+        # Port-name labels next to each pin so users can identify
+        # which pin is which without descending into the definition.
+        if self._component.pins:
+            painter.save()
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL,
+                                              self._muted_color()))
+            label_font = QFont()
+            label_font.setPointSize(7)
+            painter.setFont(label_font)
+            for p in self._component.pins:
+                if not p.name:
+                    continue
+                # Place the label INSIDE the body, offset away from
+                # the pin position toward the center.
+                pin_x, pin_y = float(p.x), float(p.y)
+                # Snap each label to the nearest body edge:
+                #   left edge  → label is to the right of pin (inside)
+                #   right edge → label is to the left
+                #   top edge   → label below
+                #   bottom edge → label above
+                # Labels sit close to the pin (40 px wide) so they
+                # don't reach the centered title in the body.
+                if abs(pin_x + half_w) < 4:        # pin on LEFT edge
+                    label_rect = QRectF(pin_x + 4, pin_y - 6, 40, 12)
+                    align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                elif abs(pin_x - half_w) < 4:      # pin on RIGHT edge
+                    label_rect = QRectF(pin_x - 44, pin_y - 6, 40, 12)
+                    align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                elif abs(pin_y + half_h) < 4:      # pin on TOP edge
+                    label_rect = QRectF(pin_x - 20, pin_y + 2, 40, 10)
+                    align = Qt.AlignmentFlag.AlignCenter
+                elif abs(pin_y - half_h) < 4:      # pin on BOTTOM edge
+                    label_rect = QRectF(pin_x - 20, pin_y - 12, 40, 10)
+                    align = Qt.AlignmentFlag.AlignCenter
+                else:
+                    continue  # pin floating somewhere unusual — skip
+                painter.drawText(label_rect, align, p.name)
+            painter.restore()
 
 
 class BlockComponentItem(ComponentItem):
@@ -1976,6 +2060,216 @@ class FromLabelItem(_NetLabelItem):
     _ARROW_RIGHT = False
 
 
+class SubcircuitPortItem(ComponentItem):
+    """Marker placed inside a subcircuit definition that declares a
+    named input/output. Renders as a pentagonal flag pointing toward
+    the outer edge of the symbol (i.e., outward from the subcircuit).
+    The pin always faces inward, so wires from other inner components
+    attach naturally.
+
+    Parameters consumed:
+        port_name (str): label shown inside the flag and used as the
+            outer-symbol pin name when the definition is synced.
+        direction (input|output|bidir): tints the flag and chooses
+            the arrow-head direction (input → into body, output →
+            out of body, bidir → diamond/no chevron).
+        side (left|right|top|bottom): which edge of the marker the
+            flag points to. The matching pin location is computed by
+            ``_synchronize_subcircuit_port_pin`` in the model layer.
+    """
+
+    _BODY_LENGTH = 56.0
+    _BODY_THICKNESS = 22.0
+    _HEAD_LENGTH = 12.0
+
+    def _params(self) -> tuple[str, str, str]:
+        params = getattr(self._component, "parameters", {}) or {}
+        port_name = str(params.get("port_name", "port")).strip() or "port"
+        direction = str(params.get("direction", "bidir")).lower().strip()
+        if direction not in ("input", "output", "bidir"):
+            direction = "bidir"
+        side = str(params.get("side", "left")).lower().strip()
+        if side not in ("left", "right", "top", "bottom"):
+            side = "left"
+        return port_name, direction, side
+
+    def boundingRect(self) -> QRectF:
+        _, _, side = self._params()
+        body = self._BODY_LENGTH
+        thick = self._BODY_THICKNESS
+        # Flag extends from the pin outward. For left side the pin is
+        # on the right (+40), flag stretches to the left.
+        margin = 4.0
+        if side == "left":
+            rect = QRectF(-body - margin, -thick / 2 - margin,
+                          body + margin * 2, thick + margin * 2)
+        elif side == "right":
+            rect = QRectF(-margin, -thick / 2 - margin,
+                          body + margin * 2, thick + margin * 2)
+        elif side == "top":
+            rect = QRectF(-thick / 2 - margin, -body - margin,
+                          thick + margin * 2, body + margin * 2)
+        else:  # bottom
+            rect = QRectF(-thick / 2 - margin, -margin,
+                          thick + margin * 2, body + margin * 2)
+        return self._with_pin_bounds(rect)
+
+    def _flag_color(self, direction: str) -> QColor:
+        if direction == "input":
+            return self._domain_base_color(CONNECTION_DOMAIN_SIGNAL)
+        if direction == "output":
+            return self._accent_green()
+        return self._line_color()
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        port_name, direction, side = self._params()
+        edge_color = self._flag_color(direction)
+        fill_color = self._surface_color().lighter(105)
+        fill_color = self._blend_color(fill_color, edge_color,
+                                       0.25 if self._dark_mode else 0.18)
+
+        self.setToolTip(f"Subcircuit port: {port_name} ({direction}, {side})")
+
+        # The pin lives on the inward-facing side. Build the flag
+        # pointing from the pin outward.
+        pin_pt = self._pin_position_by_index(0, QPointF(0.0, 0.0))
+        body = self._BODY_LENGTH
+        thick = self._BODY_THICKNESS
+        head = self._HEAD_LENGTH
+
+        path = QPainterPath()
+        if side == "left":
+            # pin on the right, flag stretches left, point at x=-body
+            top_y, bot_y = -thick / 2, thick / 2
+            body_x = -body + head
+            path.moveTo(QPointF(pin_pt.x(), top_y))
+            path.lineTo(QPointF(body_x, top_y))
+            path.lineTo(QPointF(-body, 0.0))
+            path.lineTo(QPointF(body_x, bot_y))
+            path.lineTo(QPointF(pin_pt.x(), bot_y))
+            path.closeSubpath()
+            text_rect = QRectF(-body + head + 2, top_y, body - head - 4, thick)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        elif side == "right":
+            top_y, bot_y = -thick / 2, thick / 2
+            body_x = body - head
+            path.moveTo(QPointF(pin_pt.x(), top_y))
+            path.lineTo(QPointF(body_x, top_y))
+            path.lineTo(QPointF(body, 0.0))
+            path.lineTo(QPointF(body_x, bot_y))
+            path.lineTo(QPointF(pin_pt.x(), bot_y))
+            path.closeSubpath()
+            text_rect = QRectF(2, top_y, body - head - 4, thick)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        elif side == "top":
+            left_x, right_x = -thick / 2, thick / 2
+            body_y = -body + head
+            path.moveTo(QPointF(left_x, pin_pt.y()))
+            path.lineTo(QPointF(left_x, body_y))
+            path.lineTo(QPointF(0.0, -body))
+            path.lineTo(QPointF(right_x, body_y))
+            path.lineTo(QPointF(right_x, pin_pt.y()))
+            path.closeSubpath()
+            text_rect = QRectF(left_x, -body + head + 2, thick, body - head - 4)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+        else:  # bottom
+            left_x, right_x = -thick / 2, thick / 2
+            body_y = body - head
+            path.moveTo(QPointF(left_x, pin_pt.y()))
+            path.lineTo(QPointF(left_x, body_y))
+            path.lineTo(QPointF(0.0, body))
+            path.lineTo(QPointF(right_x, body_y))
+            path.lineTo(QPointF(right_x, pin_pt.y()))
+            path.closeSubpath()
+            text_rect = QRectF(left_x, 2, thick, body - head - 4)
+            arrow_pts = self._direction_chevron(direction, side, body, thick, head)
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, edge_color))
+        painter.setBrush(fill_color)
+        painter.drawPath(path)
+
+        # Direction chevron — input/output only; bidir omits it.
+        if direction in ("input", "output") and arrow_pts:
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, edge_color))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolyline(QPolygonF(list(arrow_pts)))
+
+        # Port name label
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._line_color()))
+        font = QFont(painter.font())
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        if side in ("top", "bottom"):
+            # Rotate text to fit vertical orientation
+            painter.save()
+            painter.translate(text_rect.center())
+            painter.rotate(-90)
+            rotated = QRectF(-text_rect.height() / 2, -text_rect.width() / 2,
+                             text_rect.height(), text_rect.width())
+            painter.drawText(rotated,
+                             Qt.AlignmentFlag.AlignCenter, port_name)
+            painter.restore()
+        else:
+            painter.drawText(text_rect,
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter,
+                             port_name)
+
+    def _direction_chevron(
+        self,
+        direction: str,
+        side: str,
+        body: float,
+        thick: float,
+        head: float,
+    ) -> tuple[QPointF, ...]:
+        """Build a 3-point chevron pointing along the signal flow.
+
+        - input: signal flows from outside → into the body (toward
+          the pin), so chevron points inward
+        - output: signal flows from body → outward, chevron points
+          outward
+        - bidir: empty (no chevron)
+        """
+        if direction not in ("input", "output"):
+            return ()
+        inward = direction == "input"  # input: arrow head toward pin
+        # Pick a center along the flag where the chevron sits, and a
+        # direction unit vector pointing the way the arrow should go.
+        if side == "left":
+            cx = -body + head + 8.0
+            dx = +1.0 if inward else -1.0
+            return (
+                QPointF(cx - dx * 4, -4),
+                QPointF(cx + dx * 4, 0),
+                QPointF(cx - dx * 4, +4),
+            )
+        if side == "right":
+            cx = body - head - 8.0
+            dx = -1.0 if inward else +1.0
+            return (
+                QPointF(cx - dx * 4, -4),
+                QPointF(cx + dx * 4, 0),
+                QPointF(cx - dx * 4, +4),
+            )
+        if side == "top":
+            cy = -body + head + 8.0
+            dy = +1.0 if inward else -1.0
+            return (
+                QPointF(-4, cy - dy * 4),
+                QPointF(0, cy + dy * 4),
+                QPointF(+4, cy - dy * 4),
+            )
+        # bottom
+        cy = body - head - 8.0
+        dy = -1.0 if inward else +1.0
+        return (
+            QPointF(-4, cy - dy * 4),
+            QPointF(0, cy + dy * 4),
+            QPointF(+4, cy - dy * 4),
+        )
+
+
 class CurrentProbeItem(ComponentItem):
     """Graphics item for current probe (clamp meter style)."""
 
@@ -2062,6 +2356,48 @@ class SaturableInductorItem(InductorItem):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(core_color)
             painter.drawRect(QRectF(-15, -3, 30, 6))
+
+
+class HystereticInductorItem(InductorItem):
+    """Graphics item for the Jiles-Atherton hysteretic inductor.
+
+    Coil (inherited) + two parallel solid core bars (laminated-core
+    convention) + a small ``JA`` badge so it reads distinctly from
+    the saturable inductor's dashed-bar hysteresis variant.
+    """
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        super()._draw_symbol(painter)
+
+        core_color = self._muted_color()
+        # Two solid bars below the coil — magnetic core.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, core_color))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(-16, -6), QPointF(16, -6))
+        painter.drawLine(QPointF(-16, 6), QPointF(16, 6))
+
+        # ``JA`` tag (Jiles-Atherton) — distinguishes from the
+        # saturable inductor and signals the hysteresis model.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._accent_orange()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(7)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-16, 8, 32, 10),
+            Qt.AlignmentFlag.AlignCenter, "JA",
+        )
+
+    def _get_value_text(self) -> str:
+        material = str(self._component.parameters.get("material", "") or "")
+        # Compact material label, e.g. "si_steel_m19" → "M19".
+        short = {
+            "si_steel_m19": "M19",
+            "annealed_iron": "Fe",
+            "ferrite_n87": "N87",
+            "permalloy": "Py",
+        }.get(material, material)
+        return short
 
 
 class CoupledInductorItem(TransformerItem):
@@ -2235,6 +2571,66 @@ class PMSMDynamicItem(_RotatingMachineItem):
         painter.setFont(font)
         painter.drawText(
             QRectF(-self.BODY_RADIUS, self.BODY_RADIUS - 12, 2 * self.BODY_RADIUS, 10),
+            Qt.AlignmentFlag.AlignCenter, "3φ",
+        )
+
+    def _get_value_text(self) -> str:
+        poles = self._component.parameters.get("pole_pairs", 0)
+        try:
+            return f"{int(poles)} pp"
+        except (TypeError, ValueError):
+            return ""
+
+
+class InductionMotorItem(_RotatingMachineItem):
+    """3-phase squirrel-cage induction motor — ``IM`` glyph + rotor
+    cage bars. No ``~`` suffix: it's an asynchronous machine, the
+    distinguishing visual from the synchronous PMSM."""
+
+    BODY_RADIUS = 20.0
+    GLYPH_SUFFIX = ""
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        # Reuse the base leads + circle, but draw an "IM" glyph instead
+        # of the inherited "M"+suffix so the asynchronous machine reads
+        # clearly. Replicate the base body, then overlay.
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        for pin in self._component.pins:
+            px, py = float(pin.x), float(pin.y)
+            edge = self._closest_circle_edge(px, py, self.BODY_RADIUS)
+            painter.drawLine(edge, QPointF(px, py))
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(self._surface_color())
+        painter.drawEllipse(QPointF(0, 0), self.BODY_RADIUS, self.BODY_RADIUS)
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-self.BODY_RADIUS, -self.BODY_RADIUS - 2,
+                   2 * self.BODY_RADIUS, 2 * self.BODY_RADIUS),
+            Qt.AlignmentFlag.AlignCenter, "IM",
+        )
+        self._draw_machine_extra(painter)
+
+    def _draw_machine_extra(self, painter: QPainter) -> None:
+        # Squirrel-cage hint: three short vertical rotor bars under the
+        # glyph, plus a "3φ" tag at the bottom.
+        bar_color = self._muted_color()
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, bar_color))
+        for x in (-5.0, 0.0, 5.0):
+            painter.drawLine(QPointF(x, 3), QPointF(x, 9))
+
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(7)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(-self.BODY_RADIUS, self.BODY_RADIUS - 11, 2 * self.BODY_RADIUS, 10),
             Qt.AlignmentFlag.AlignCenter, "3φ",
         )
 
@@ -2492,6 +2888,819 @@ class ThreePhaseRLLoadItem(ComponentItem):
         return f"{format_si_value(r, 'Ω')} {format_si_value(l, 'H')}"
 
 
+# ---------------------------------------------------------------------------
+# Shared helper — textbook diode glyph (filled triangle + cathode bar)
+# ---------------------------------------------------------------------------
+def _draw_diode_glyph(
+    painter: QPainter,
+    anode: QPointF,
+    cathode: QPointF,
+    *,
+    body_color: QColor,
+    surface_color: QColor,
+    size: float = 5.0,
+) -> None:
+    """Draw a diode symbol pointing from ``anode`` to ``cathode``.
+
+    The symbol is the classic filled triangle + cathode bar:
+        anode ─▶|─ cathode
+    Geometry is centred on the midpoint of (anode, cathode) and scales
+    with ``size`` (the triangle half-base, in scene units).
+    """
+    import math
+    dx, dy = cathode.x() - anode.x(), cathode.y() - anode.y()
+    length = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length          # unit vector anode→cathode
+    px, py = -uy, ux                            # perpendicular unit
+    cx, cy = (anode.x() + cathode.x()) / 2, (anode.y() + cathode.y()) / 2
+
+    # Triangle: base at midpoint-back, apex at midpoint-forward.
+    apex_x = cx + ux * size
+    apex_y = cy + uy * size
+    base_lx = cx - ux * size + px * size
+    base_ly = cy - uy * size + py * size
+    base_rx = cx - ux * size - px * size
+    base_ry = cy - uy * size - py * size
+
+    triangle = QPainterPath()
+    triangle.moveTo(base_lx, base_ly)
+    triangle.lineTo(base_rx, base_ry)
+    triangle.lineTo(apex_x, apex_y)
+    triangle.closeSubpath()
+
+    painter.setPen(QPen(body_color, 1.0))
+    painter.setBrush(body_color)
+    painter.drawPath(triangle)
+
+    # Cathode bar: perpendicular to anode→cathode, at the apex.
+    bar_lx = apex_x + px * size * 0.9
+    bar_ly = apex_y + py * size * 0.9
+    bar_rx = apex_x - px * size * 0.9
+    bar_ry = apex_y - py * size * 0.9
+    painter.setPen(QPen(body_color, 1.4))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(bar_lx, bar_ly), QPointF(bar_rx, bar_ry))
+
+    # Restore brush state for the caller
+    painter.setBrush(surface_color)
+
+
+def _draw_mosfet_glyph(
+    painter: QPainter,
+    drain: QPointF,
+    source: QPointF,
+    *,
+    body_color: QColor,
+    surface_color: QColor,
+    width: float = 9.0,
+) -> None:
+    """Compact MOSFET-with-body-diode glyph (drain on ``drain`` side).
+
+    Draws a rounded body rectangle straddling the drain↔source segment,
+    with a tiny diagonal slash to hint "switch + body diode" without
+    cluttering the cell-level schematic.
+    """
+    import math
+    dx, dy = source.x() - drain.x(), source.y() - drain.y()
+    length = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length          # along drain→source
+    px, py = -uy, ux                            # perpendicular
+
+    # Centre of body
+    cx, cy = (drain.x() + source.x()) / 2, (drain.y() + source.y()) / 2
+    half_along = min(length / 2 - 2, 6.0)
+    half_perp = width / 2
+
+    # 4 corners of the body rectangle (oriented along drain-source axis)
+    a = QPointF(cx + ux * half_along + px * half_perp,
+                cy + uy * half_along + py * half_perp)
+    b = QPointF(cx + ux * half_along - px * half_perp,
+                cy + uy * half_along - py * half_perp)
+    c = QPointF(cx - ux * half_along - px * half_perp,
+                cy - uy * half_along - py * half_perp)
+    d = QPointF(cx - ux * half_along + px * half_perp,
+                cy - uy * half_along + py * half_perp)
+
+    body_path = QPainterPath()
+    body_path.moveTo(a)
+    body_path.lineTo(b)
+    body_path.lineTo(c)
+    body_path.lineTo(d)
+    body_path.closeSubpath()
+
+    painter.setPen(QPen(body_color, 1.2))
+    painter.setBrush(surface_color)
+    painter.drawPath(body_path)
+
+    # Drain-source short lines (leads inside the body)
+    painter.setPen(QPen(body_color, 1.4))
+    painter.drawLine(drain, QPointF(cx + ux * half_along, cy + uy * half_along))
+    painter.drawLine(source, QPointF(cx - ux * half_along, cy - uy * half_along))
+
+    # Diagonal "switch" hint inside the body
+    painter.setPen(QPen(body_color, 1.0))
+    painter.drawLine(
+        QPointF(cx - ux * (half_along - 2) + px * (half_perp - 2),
+                cy - uy * (half_along - 2) + py * (half_perp - 2)),
+        QPointF(cx + ux * (half_along - 2) - px * (half_perp - 2),
+                cy + uy * (half_along - 2) - py * (half_perp - 2)),
+    )
+
+
+def _draw_cap_glyph(
+    painter: QPainter,
+    top: QPointF,
+    bottom: QPointF,
+    *,
+    body_color: QColor,
+    plate_half: float = 5.0,
+) -> None:
+    """Two parallel plates between two endpoints (capacitor symbol)."""
+    import math
+    dx, dy = bottom.x() - top.x(), bottom.y() - top.y()
+    length = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length
+    px, py = -uy, ux
+
+    # Plates 25% / 75% of the way from top to bottom
+    p1 = QPointF(top.x() + ux * length * 0.42, top.y() + uy * length * 0.42)
+    p2 = QPointF(top.x() + ux * length * 0.58, top.y() + uy * length * 0.58)
+
+    painter.setPen(QPen(body_color, 1.6))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(p1.x() + px * plate_half, p1.y() + py * plate_half),
+                     QPointF(p1.x() - px * plate_half, p1.y() - py * plate_half))
+    painter.drawLine(QPointF(p2.x() + px * plate_half, p2.y() + py * plate_half),
+                     QPointF(p2.x() - px * plate_half, p2.y() - py * plate_half))
+    # Leads
+    painter.setPen(QPen(body_color, 1.2))
+    painter.drawLine(top, p1)
+    painter.drawLine(p2, bottom)
+
+
+# ---------------------------------------------------------------------------
+# Single-phase Graetz diode bridge (4 diodes)
+# ---------------------------------------------------------------------------
+class SinglePhaseDiodeBridgeItem(ComponentItem):
+    """Single-phase 4-diode Graetz rectifier bridge.
+
+    Pin layout: AC+/AC- on the left, DC+/DC- on the right. Uses the
+    "rails-and-pillars" representation (consistent with the 3-phase
+    bridge): top rail = DC+, bottom rail = DC-, two vertical phase
+    columns (one per AC terminal) each with a proper diode glyph to
+    each rail.
+    """
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._with_pin_bounds(QRectF(-32, -28, 64, 56))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        acp = self._pin_position_by_name("AC+", QPointF(-35, -20))
+        acn = self._pin_position_by_name("AC-", QPointF(-35, 20))
+        dcp = self._pin_position_by_name("DC+", QPointF(35, -20))
+        dcn = self._pin_position_by_name("DC-", QPointF(35, 20))
+
+        body = QRectF(-28, -24, 56, 48)
+        line_color = self._line_color()
+        surface_color = self._surface_color()
+        red = self._accent_red()
+        muted = self._muted_color()
+        ac_color = QColor(60, 130, 220)        # blue tint for AC
+
+        # Body
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(surface_color)
+        painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+
+        # External leads
+        painter.setPen(self._symbol_pen(style.STROKE_LEAD, red))
+        painter.drawLine(QPointF(body.right(), dcp.y()), dcp)
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(QPointF(body.right(), dcn.y()), dcn)
+        painter.setPen(self._symbol_pen(style.STROKE_LEAD, ac_color))
+        painter.drawLine(acp, QPointF(body.left(), acp.y()))
+        painter.drawLine(acn, QPointF(body.left(), acn.y()))
+
+        # Internal DC rails — horizontal bus bars near the top and bottom.
+        rail_top_y = body.top() + 8
+        rail_bot_y = body.bottom() - 8
+        rail_left_x = body.left() + 9
+        rail_right_x = body.right() - 9
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        painter.drawLine(QPointF(rail_left_x, rail_top_y),
+                         QPointF(rail_right_x, rail_top_y))
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        painter.drawLine(QPointF(rail_left_x, rail_bot_y),
+                         QPointF(rail_right_x, rail_bot_y))
+
+        # Connect external DC leads INTO the internal rails (right side).
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        painter.drawLine(QPointF(body.right(), dcp.y()),
+                         QPointF(rail_right_x, dcp.y()))
+        painter.drawLine(QPointF(rail_right_x, dcp.y()),
+                         QPointF(rail_right_x, rail_top_y))
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        painter.drawLine(QPointF(body.right(), dcn.y()),
+                         QPointF(rail_right_x, dcn.y()))
+        painter.drawLine(QPointF(rail_right_x, dcn.y()),
+                         QPointF(rail_right_x, rail_bot_y))
+
+        # 2 phase columns (one for AC+, one for AC-). Each column has
+        # an upper diode (anode=phase, cathode=DC+ rail) and a lower
+        # diode (anode=DC- rail, cathode=phase).
+        col_x = [-7, +7]
+        ac_pin_ys = (acp.y(), acn.y())
+        for i, x in enumerate(col_x):
+            pin_y = ac_pin_ys[i]
+            # Vertical phase tap (between the two diodes)
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, ac_color))
+            painter.drawLine(QPointF(x, rail_top_y + 8),
+                             QPointF(x, rail_bot_y - 8))
+            # Stub from AC lead row into the column
+            painter.drawLine(QPointF(body.left(), pin_y), QPointF(x, pin_y))
+            # Junction dot at the connection point
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(ac_color)
+            painter.drawEllipse(QPointF(x, pin_y), 1.6, 1.6)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            # Upper diode (phase → DC+ rail)
+            _draw_diode_glyph(painter,
+                              anode=QPointF(x, rail_top_y + 8),
+                              cathode=QPointF(x, rail_top_y),
+                              body_color=line_color,
+                              surface_color=surface_color,
+                              size=3.0)
+            # Lower diode (DC- rail → phase)
+            _draw_diode_glyph(painter,
+                              anode=QPointF(x, rail_bot_y),
+                              cathode=QPointF(x, rail_bot_y - 8),
+                              body_color=line_color,
+                              surface_color=surface_color,
+                              size=3.0)
+
+        # Polarity hints flush against the right edge.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(7)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.right() - 14, rail_top_y - 4, 10, 8),
+            Qt.AlignmentFlag.AlignRight, "+",
+        )
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        painter.drawText(
+            QRectF(body.right() - 14, rail_bot_y - 4, 10, 8),
+            Qt.AlignmentFlag.AlignRight, "−",
+        )
+
+        # "1φ" badge in the top-left corner so it doesn't overlap with
+        # the diodes or rails.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.left() + 3, body.top() + 2, 16, 8),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "1φ",
+        )
+
+    def _get_value_text(self) -> str:
+        return "Graetz"
+
+
+# ---------------------------------------------------------------------------
+# Three-phase 6-pulse diode bridge (6 diodes)
+# ---------------------------------------------------------------------------
+class ThreePhaseDiodeBridgeItem(ComponentItem):
+    """Three-phase 6-diode rectifier bridge (6-pulse).
+
+    Pin layout: A/B/C on the left, DC+/DC- on the right. Uses textbook
+    rails-and-pillars: two horizontal DC rails (red top = DC+, neutral
+    bottom = DC-) and 3 vertical phase columns each with a proper
+    diode glyph to the top rail and from the bottom rail.
+    """
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._with_pin_bounds(QRectF(-32, -34, 64, 68))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        a = self._pin_position_by_name("A", QPointF(-35, -25))
+        b = self._pin_position_by_name("B", QPointF(-35, 0))
+        c = self._pin_position_by_name("C", QPointF(-35, 25))
+        dcp = self._pin_position_by_name("DC+", QPointF(35, -20))
+        dcn = self._pin_position_by_name("DC-", QPointF(35, 20))
+
+        body = QRectF(-28, -30, 56, 60)
+        line_color = self._line_color()
+        surface_color = self._surface_color()
+        red = self._accent_red()
+        phase_colors = (
+            QColor(220, 60, 60),  # A — red
+            QColor(60, 170, 80),  # B — green
+            QColor(60, 130, 220), # C — blue
+        )
+
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(surface_color)
+        painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+
+        # Phase-coloured AC leads (left).
+        for pin, color in zip((a, b, c), phase_colors):
+            painter.setPen(self._symbol_pen(style.STROKE_LEAD, color))
+            painter.drawLine(pin, QPointF(body.left(), pin.y()))
+
+        # DC leads (right): red for +, neutral for −.
+        painter.setPen(self._symbol_pen(style.STROKE_LEAD, red))
+        painter.drawLine(QPointF(body.right(), dcp.y()), dcp)
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(QPointF(body.right(), dcn.y()), dcn)
+
+        # Internal DC rails (horizontal bus bars).
+        rail_top_y = body.top() + 8
+        rail_bot_y = body.bottom() - 8
+        rail_left_x = body.left() + 8
+        rail_right_x = body.right() - 8
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        painter.drawLine(QPointF(rail_left_x, rail_top_y),
+                         QPointF(rail_right_x, rail_top_y))
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        painter.drawLine(QPointF(rail_left_x, rail_bot_y),
+                         QPointF(rail_right_x, rail_bot_y))
+
+        # Three phase columns (one per phase). Each column has a vertical
+        # phase tap with a diode glyph to the top rail (upward) and a
+        # second diode glyph from the bottom rail (also pointing up toward
+        # the phase tap — anode is on the bottom rail).
+        col_y_top = rail_top_y + 4
+        col_y_bot = rail_bot_y - 4
+        col_mid_y = (rail_top_y + rail_bot_y) / 2
+        for i, color in enumerate(phase_colors):
+            x = body.left() + 12 + i * 11
+            # Vertical phase bus across the central region
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, color))
+            painter.drawLine(QPointF(x, col_y_top + 10),
+                             QPointF(x, col_y_bot - 10))
+            # Stub from the AC lead row into the phase column (so each
+            # column visually connects back to its A/B/C lead).
+            pin_y = (a, b, c)[i].y()
+            painter.drawLine(QPointF(body.left(), pin_y), QPointF(x, pin_y))
+            # Junction dot
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(x, pin_y), 1.4, 1.4)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            # Upper diode: anode=phase tap, cathode=DC+ rail
+            _draw_diode_glyph(painter,
+                              anode=QPointF(x, col_y_top + 10),
+                              cathode=QPointF(x, rail_top_y),
+                              body_color=line_color, surface_color=surface_color,
+                              size=3.0)
+            # Lower diode: anode=DC- rail, cathode=phase tap
+            _draw_diode_glyph(painter,
+                              anode=QPointF(x, rail_bot_y),
+                              cathode=QPointF(x, col_y_bot - 10),
+                              body_color=line_color, surface_color=surface_color,
+                              size=3.0)
+
+        # Polarity hints next to the DC rails
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(rail_right_x - 12, rail_top_y - 5, 10, 8),
+            Qt.AlignmentFlag.AlignRight, "+",
+        )
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        painter.drawText(
+            QRectF(rail_right_x - 12, rail_bot_y - 3, 10, 8),
+            Qt.AlignmentFlag.AlignRight, "−",
+        )
+
+        # "3φ" badge in the top-left corner (clear of all diodes & rails)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.left() + 3, body.top() + 2, 16, 8),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "3φ",
+        )
+
+    def _get_value_text(self) -> str:
+        return "6-pulse"
+
+
+# ---------------------------------------------------------------------------
+# MMC sub-module cell — unified item with topology branch
+# ---------------------------------------------------------------------------
+class MMCCellItem(ComponentItem):
+    """MMC sub-module cell — both half-bridge and full-bridge in one item.
+
+    The ``cell_topology`` parameter ("Half-Bridge" or "Full-Bridge")
+    selects the inner symbol; pin count is updated by
+    ``_synchronize_mmc_cell`` in the model layer.
+
+    Pin layout:
+        Half-Bridge: TOP, BOT (power) + S1_G, S2_G (gates)
+        Full-Bridge: TOP, BOT (power) + S1_G..S4_G (gates)
+    """
+
+    def _topology(self) -> str:
+        return str(self._component.parameters.get("cell_topology")
+                   or "Half-Bridge")
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        if self._topology() == "Full-Bridge":
+            return self._with_pin_bounds(QRectF(-32, -38, 64, 76))
+        return self._with_pin_bounds(QRectF(-32, -34, 64, 68))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        if self._topology() == "Full-Bridge":
+            self._draw_full_bridge(painter)
+        else:
+            self._draw_half_bridge(painter)
+
+    # ----- shared chrome -------------------------------------------------
+    def _draw_cell_chrome(self, painter: QPainter, body: QRectF,
+                           label: str) -> None:
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(self._surface_color())
+        painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+
+        # Corner topology badge (top-right)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.right() - 26, body.top() + 2, 24, 9),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, label,
+        )
+
+    def _draw_power_and_gate_leads(self, painter: QPainter,
+                                     body: QRectF,
+                                     top: QPointF, bot: QPointF,
+                                     gates: list[QPointF]) -> None:
+        # Power leads (left) — solid heavier stroke.
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(top, QPointF(body.left(), top.y()))
+        painter.drawLine(bot, QPointF(body.left(), bot.y()))
+        # Gate leads (right) — thinner muted lines so they read as control.
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL,
+                                         self._muted_color()))
+        for g in gates:
+            painter.drawLine(QPointF(body.right(), g.y()), g)
+
+    # ----- half-bridge variant -------------------------------------------
+    def _draw_half_bridge(self, painter: QPainter) -> None:
+        top = self._pin_position_by_name("TOP", QPointF(-30, -25))
+        bot = self._pin_position_by_name("BOT", QPointF(-30, 25))
+        g1 = self._pin_position_by_name("S1_G", QPointF(30, -15))
+        g2 = self._pin_position_by_name("S2_G", QPointF(30, 15))
+
+        body = QRectF(-28, -30, 56, 60)
+        self._draw_cell_chrome(painter, body, "½H")
+        self._draw_power_and_gate_leads(painter, body, top, bot, [g1, g2])
+
+        line = self._line_color()
+        surface = self._surface_color()
+        red = self._accent_red()
+        muted = self._muted_color()
+
+        # Geometry
+        sw_x = -2                              # switch column (slightly left of centre)
+        cap_x = body.right() - 12              # cap column (right side)
+        rail_top_y = body.top() + 8            # cap-positive rail
+        rail_bot_y = body.bottom() - 8         # cap-negative rail
+        routing_x = body.left() + 8            # TOP/BOT pin routing column
+
+        # Cap (vertical)
+        _draw_cap_glyph(painter, QPointF(cap_x, rail_top_y),
+                        QPointF(cap_x, rail_bot_y),
+                        body_color=line, plate_half=5.0)
+
+        # Top rail (red, cap+ to upper switch drain)
+        painter.setPen(QPen(red, 1.4))
+        painter.drawLine(QPointF(sw_x, rail_top_y),
+                         QPointF(cap_x, rail_top_y))
+
+        # Bot rail (neutral, cap- to lower switch source and BOT pin)
+        painter.setPen(QPen(line, 1.4))
+        painter.drawLine(QPointF(routing_x, rail_bot_y),
+                         QPointF(cap_x, rail_bot_y))
+        # BOT pin trace: from body.left at bot.y → routing_x → rail
+        painter.drawLine(QPointF(body.left(), bot.y()),
+                         QPointF(routing_x, bot.y()))
+        painter.drawLine(QPointF(routing_x, bot.y()),
+                         QPointF(routing_x, rail_bot_y))
+
+        # Two MOSFETs stacked on the switch column
+        sw_hi_top = QPointF(sw_x, rail_top_y)
+        sw_hi_bot = QPointF(sw_x, -5)
+        sw_lo_top = QPointF(sw_x, 5)
+        sw_lo_bot = QPointF(sw_x, rail_bot_y)
+        _draw_mosfet_glyph(painter, sw_hi_top, sw_hi_bot,
+                           body_color=line, surface_color=surface, width=9.0)
+        _draw_mosfet_glyph(painter, sw_lo_top, sw_lo_bot,
+                           body_color=line, surface_color=surface, width=9.0)
+
+        # Bot rail continues to lower switch source
+        painter.setPen(QPen(line, 1.4))
+        painter.drawLine(sw_lo_bot, QPointF(sw_x, rail_bot_y))
+
+        # AC midpoint: between the two switches, at y=0
+        ac_mid = QPointF(sw_x, 0)
+        painter.drawLine(sw_hi_bot, ac_mid)
+        painter.drawLine(ac_mid, sw_lo_top)
+
+        # TOP pin trace: body.left at top.y → routing_x → down to ac_mid.y → right to ac_mid
+        painter.drawLine(QPointF(body.left(), top.y()),
+                         QPointF(routing_x, top.y()))
+        painter.drawLine(QPointF(routing_x, top.y()),
+                         QPointF(routing_x, ac_mid.y()))
+        painter.drawLine(QPointF(routing_x, ac_mid.y()), ac_mid)
+
+        # Junction dots: AC midpoint + routing tee
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(line)
+        painter.drawEllipse(ac_mid, 1.5, 1.5)
+        painter.drawEllipse(QPointF(routing_x, ac_mid.y()), 1.2, 1.2)
+        painter.drawEllipse(QPointF(routing_x, bot.y()), 1.2, 1.2)
+        painter.setBrush(red)
+        painter.drawEllipse(QPointF(cap_x, rail_top_y), 1.6, 1.6)
+        painter.setBrush(line)
+        painter.drawEllipse(QPointF(cap_x, rail_bot_y), 1.6, 1.6)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Gate stubs (dashed, muted) from switch bodies to gate pins
+        painter.setPen(QPen(muted, 1.0, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(sw_x + 5, (sw_hi_top.y() + sw_hi_bot.y()) / 2),
+                         QPointF(g1.x() - 2, g1.y()))
+        painter.drawLine(QPointF(sw_x + 5, (sw_lo_top.y() + sw_lo_bot.y()) / 2),
+                         QPointF(g2.x() - 2, g2.y()))
+
+    # ----- full-bridge variant -------------------------------------------
+    def _draw_full_bridge(self, painter: QPainter) -> None:
+        # Pin map: TOP/BOT on the left (power), S1..S4_G on the right.
+        # We draw the full-bridge as TWO STACKED HALF-BRIDGE LEGS — the
+        # upper leg (S1/S2) feeds the TOP terminal; the lower leg
+        # (S3/S4) feeds the BOT terminal. Both legs share the same
+        # cap, which sits between them at the right side. This stays
+        # true to the kernel topology (4 switches, common cap, 2 AC
+        # taps) while routing cleanly to the LEFT-side pin layout.
+        top = self._pin_position_by_name("TOP", QPointF(-30, -30))
+        bot = self._pin_position_by_name("BOT", QPointF(-30, 30))
+        g1 = self._pin_position_by_name("S1_G", QPointF(30, -25))
+        g2 = self._pin_position_by_name("S2_G", QPointF(30, -10))
+        g3 = self._pin_position_by_name("S3_G", QPointF(30, 10))
+        g4 = self._pin_position_by_name("S4_G", QPointF(30, 25))
+
+        body = QRectF(-28, -34, 56, 68)
+        self._draw_cell_chrome(painter, body, "H")
+        self._draw_power_and_gate_leads(painter, body, top, bot,
+                                         [g1, g2, g3, g4])
+
+        line = self._line_color()
+        surface = self._surface_color()
+        red = self._accent_red()
+        muted = self._muted_color()
+
+        # Geometry
+        sw_x = -2
+        cap_x = body.right() - 12
+        rail_top_y = body.top() + 7    # cap+ rail
+        rail_bot_y = body.bottom() - 7  # cap- rail
+        routing_x = body.left() + 8     # TOP/BOT pin routing column
+        upper_mid_y = -17               # AC mid of upper leg → TOP pin
+        lower_mid_y = 17                # AC mid of lower leg → BOT pin
+
+        # Cap (vertical, spans both legs)
+        _draw_cap_glyph(painter, QPointF(cap_x, rail_top_y),
+                        QPointF(cap_x, rail_bot_y),
+                        body_color=line, plate_half=6.0)
+
+        # Top rail (red): connects upper-leg upper switch drain + lower-leg
+        # upper switch drain + cap+
+        painter.setPen(QPen(red, 1.4))
+        painter.drawLine(QPointF(sw_x, rail_top_y),
+                         QPointF(cap_x, rail_top_y))
+        # Bot rail (neutral): cap- + lower-leg lower switch source + upper-leg
+        # lower switch source
+        painter.setPen(QPen(line, 1.4))
+        painter.drawLine(QPointF(sw_x, rail_bot_y),
+                         QPointF(cap_x, rail_bot_y))
+
+        # Upper leg switches (S1 = upper-upper, S2 = upper-lower)
+        s1_top = QPointF(sw_x, rail_top_y)
+        s1_bot = QPointF(sw_x, upper_mid_y - 4)
+        s2_top = QPointF(sw_x, upper_mid_y + 4)
+        s2_bot = QPointF(sw_x, -3)           # ends just above center
+
+        # Lower leg switches (S3 = lower-upper, S4 = lower-lower)
+        s3_top = QPointF(sw_x, 3)             # starts just below center
+        s3_bot = QPointF(sw_x, lower_mid_y - 4)
+        s4_top = QPointF(sw_x, lower_mid_y + 4)
+        s4_bot = QPointF(sw_x, rail_bot_y)
+
+        for (a, b) in ((s1_top, s1_bot), (s2_top, s2_bot),
+                       (s3_top, s3_bot), (s4_top, s4_bot)):
+            _draw_mosfet_glyph(painter, a, b,
+                               body_color=line, surface_color=surface, width=9.0)
+
+        # Inter-leg rail tie (centre): connects upper-leg source rail to
+        # lower-leg drain rail. Both upper-S2's source and lower-S3's
+        # drain land at y≈0. In the H-bridge topology this is where the
+        # cap's MIDDLE would conceptually be — but our cap is on the
+        # right, so this central node is just a structural shorthand.
+        # Skip drawing it (each leg is independent of the other through
+        # the shared cap on the right).
+
+        # AC mid-taps with junction dots
+        ac_upper = QPointF(sw_x, upper_mid_y)
+        ac_lower = QPointF(sw_x, lower_mid_y)
+        painter.setPen(QPen(line, 1.4))
+        painter.drawLine(s1_bot, ac_upper)
+        painter.drawLine(ac_upper, s2_top)
+        painter.drawLine(s3_bot, ac_lower)
+        painter.drawLine(ac_lower, s4_top)
+
+        # TOP pin trace: body.left at top.y → routing_x → down to upper AC mid → right to AC tap
+        painter.drawLine(QPointF(body.left(), top.y()),
+                         QPointF(routing_x, top.y()))
+        painter.drawLine(QPointF(routing_x, top.y()),
+                         QPointF(routing_x, ac_upper.y()))
+        painter.drawLine(QPointF(routing_x, ac_upper.y()), ac_upper)
+
+        # BOT pin trace: body.left at bot.y → routing_x → up to lower AC mid → right to AC tap
+        painter.drawLine(QPointF(body.left(), bot.y()),
+                         QPointF(routing_x, bot.y()))
+        painter.drawLine(QPointF(routing_x, bot.y()),
+                         QPointF(routing_x, ac_lower.y()))
+        painter.drawLine(QPointF(routing_x, ac_lower.y()), ac_lower)
+
+        # Junction dots
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(line)
+        painter.drawEllipse(ac_upper, 1.5, 1.5)
+        painter.drawEllipse(ac_lower, 1.5, 1.5)
+        painter.drawEllipse(QPointF(routing_x, ac_upper.y()), 1.2, 1.2)
+        painter.drawEllipse(QPointF(routing_x, ac_lower.y()), 1.2, 1.2)
+        painter.setBrush(red)
+        painter.drawEllipse(QPointF(cap_x, rail_top_y), 1.6, 1.6)
+        painter.setBrush(line)
+        painter.drawEllipse(QPointF(cap_x, rail_bot_y), 1.6, 1.6)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Gate stubs (dashed, muted) from switch bodies to gate pins
+        painter.setPen(QPen(muted, 1.0, Qt.PenStyle.DashLine))
+        for sw_top_pt, sw_bot_pt, gate_pt in (
+            (s1_top, s1_bot, g1),
+            (s2_top, s2_bot, g2),
+            (s3_top, s3_bot, g3),
+            (s4_top, s4_bot, g4),
+        ):
+            sw_mid = QPointF(sw_x + 5,
+                              (sw_top_pt.y() + sw_bot_pt.y()) / 2)
+            painter.drawLine(sw_mid, QPointF(gate_pt.x() - 2, gate_pt.y()))
+
+    # ----- value text shown next to the body ----------------------------
+    def _get_value_text(self) -> str:
+        from pulsimgui.utils.si_prefix import format_si_value
+        c = self._component.parameters.get("c_cell", 0)
+        topology = "FB" if self._topology() == "Full-Bridge" else "HB"
+        return f"{topology} · {format_si_value(c, 'F')}" if c else topology
+
+
+# ---------------------------------------------------------------------------
+# MMC arm — chain of N sub-modules with selectable fidelity (L0..L3)
+# ---------------------------------------------------------------------------
+class MMCArmItem(ComponentItem):
+    """MMC arm block. Visually a tall rectangle representing a chain
+    of N sub-modules; the model-fidelity badge (L0/L1/L2/L3) sits in
+    the top-right corner, the N submodule count + SM type in the
+    bottom-left, and the M_REF input pin sticks out on the right.
+
+    Pin layout: TOP / BOT (chain endpoints, on the LEFT) + M_REF
+    (modulation input, on the RIGHT).
+    """
+
+    def _fidelity_short(self) -> str:
+        """Return the 2-char fidelity tag (L0..L3)."""
+        full = str(self._component.parameters.get("model_fidelity")
+                   or "L3 Detailed")
+        return full.split(" ", 1)[0] if " " in full else full[:2]
+
+    def _submodule_short(self) -> str:
+        smt = str(self._component.parameters.get("submodule_type")
+                   or "Half-Bridge")
+        return "FB" if smt.startswith("Full") else "HB"
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._with_pin_bounds(QRectF(-38, -52, 76, 104))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        top = self._pin_position_by_name("TOP", QPointF(-35, -40))
+        bot = self._pin_position_by_name("BOT", QPointF(-35, 40))
+        mref = self._pin_position_by_name("M_REF", QPointF(35, 0))
+
+        body = QRectF(-34, -48, 68, 96)
+        line = self._line_color()
+        surface = self._surface_color()
+        muted = self._muted_color()
+        red = self._accent_red()
+
+        # Body
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+
+        # Power leads on the LEFT (heavy)
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(top, QPointF(body.left(), top.y()))
+        painter.drawLine(bot, QPointF(body.left(), bot.y()))
+        # M_REF input on the RIGHT (muted, signal-style)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        painter.drawLine(QPointF(body.right(), mref.y()), mref)
+
+        # Render the chain as N stacked sub-module mini-boxes inside
+        # the body. We cap the visual count at 6 so very long chains
+        # don't degenerate into a flat strip.
+        try:
+            n_sm = max(1, min(6, int(self._component.parameters.get(
+                "n_submodules", 4))))
+        except (TypeError, ValueError):
+            n_sm = 4
+
+        margin_top = body.top() + 8
+        margin_bot = body.bottom() - 14   # leave room for label band
+        slot_h = (margin_bot - margin_top) / max(n_sm, 1)
+        sm_x_left = body.left() + 10
+        sm_x_right = body.right() - 22
+
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, line))
+        painter.setBrush(surface)
+        for i in range(n_sm):
+            y_top = margin_top + i * slot_h + 1
+            y_bot = margin_top + (i + 1) * slot_h - 1
+            rect = QRectF(sm_x_left, y_top, sm_x_right - sm_x_left,
+                          max(y_bot - y_top, 4))
+            painter.drawRect(rect)
+            # Tiny "C" marker inside each cell to suggest a capacitor
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+            font_sm = QFont()
+            font_sm.setBold(True)
+            font_sm.setPointSize(6)
+            painter.setFont(font_sm)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "C")
+            painter.setPen(self._symbol_pen(style.STROKE_DETAIL, line))
+
+        # Connecting trace down the chain (left edge of mini-boxes)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, red))
+        painter.drawLine(QPointF(body.left() + 6, margin_top - 2),
+                         QPointF(body.left() + 6, margin_bot + 2))
+
+        # Fidelity badge (top-right)
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.right() - 24, body.top() + 2, 22, 11),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+            self._fidelity_short(),
+        )
+
+        # Submodule type + count (bottom-left band)
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(body.left() + 3, body.bottom() - 12, body.width() - 6, 10),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{self._submodule_short()} × {n_sm}",
+        )
+
+        # "MMC ARM" header text
+        painter.drawText(
+            QRectF(body.left() + 3, body.top() + 2, body.width() - 28, 10),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            "MMC ARM",
+        )
+
+    def _get_value_text(self) -> str:
+        from pulsimgui.utils.si_prefix import format_si_value
+        c = self._component.parameters.get("c_sm", 0)
+        n = self._component.parameters.get("n_submodules", 0)
+        fid = self._fidelity_short()
+        if c and n:
+            return f"{fid} · {n} SM · {format_si_value(c, 'F')}"
+        return fid
+
+
 # Factory function to create appropriate item type
 def create_component_item(component: Component) -> ComponentItem:
     """Create the appropriate graphics item for a component."""
@@ -2576,8 +3785,12 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.GOTO_LABEL: GotoLabelItem,
         ComponentType.FROM_LABEL: FromLabelItem,
 
+        # Hierarchical
+        ComponentType.SUBCIRCUIT_PORT: SubcircuitPortItem,
+
         # Magnetic
         ComponentType.SATURABLE_INDUCTOR: SaturableInductorItem,
+        ComponentType.HYSTERETIC_INDUCTOR: HystereticInductorItem,
         ComponentType.COUPLED_INDUCTOR: CoupledInductorItem,
 
         # Three-phase / vector control (Pulsim Phase 28)
@@ -2595,9 +3808,16 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.DC_MOTOR: DCMotorItem,
         ComponentType.PMSM_STEADY_STATE: PMSMSteadyItem,
         ComponentType.PMSM: PMSMDynamicItem,
+        ComponentType.INDUCTION_MOTOR: InductionMotorItem,
         ComponentType.THREE_PHASE_SOURCE: ThreePhaseSourceItem,
         ComponentType.THREE_PHASE_VSI: ThreePhaseVSIItem,
         ComponentType.THREE_PHASE_RL_LOAD: ThreePhaseRLLoadItem,
+
+        # Power conversion — rectifier bridges & MMC sub-modules
+        ComponentType.SINGLE_PHASE_DIODE_BRIDGE: SinglePhaseDiodeBridgeItem,
+        ComponentType.THREE_PHASE_DIODE_BRIDGE: ThreePhaseDiodeBridgeItem,
+        ComponentType.MMC_CELL: MMCCellItem,
+        ComponentType.MMC_ARM: MMCArmItem,
 
         # Hierarchical
         ComponentType.SUBCIRCUIT: SubcircuitItem,

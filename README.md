@@ -29,6 +29,36 @@
 - Integrated waveform viewer with signal measurements.
 - Ready-to-run examples (`RC`, `buck`, `boost`, and more).
 
+## PLECS-style Scope
+
+Click any `Scope` component on the schematic to open a modular scope
+window that streams data from `pulsim`'s `NativeLiveStream` during the
+run and finalises the same window with the full-resolution result on
+finish — no separate live / post-sim windows.
+
+<div align="center">
+  <img src="docs/imgs/scope_v2_cursors.png" alt="Scope with A/B cursors" width="100%" />
+</div>
+
+Single shell + composable capabilities:
+
+- **Live streaming** (60 Hz polling) — wired Run/Stop button on the toolbar.
+- **Post-sim finalisation** — same curves, full-resolution arrays.
+- **Cursors A/B** with ΔT, 1/ΔT (frequency), and per-signal ΔY readouts.
+- **Math signals** — derived traces via a whitelisted formula
+  (`A + B`, `abs(A)`, `derivative(A)`, `moving_avg(A, 16)`, …).
+- **FFT view** — toggle the canvas to log-X magnitude (dB) of the
+  cached signals.
+- **Trigger** — Free Run / Single with edge + level on any source signal.
+- **SMPS macros** — one-click Tsw / Fsw / Duty / Ripple on the visible
+  window.
+- **Export** — CSV (master time grid + linear interp per signal), PNG,
+  or clipboard.
+
+The shell adapts per scope variant: `ElectricalScopeVariant` (blue
+accent, `V` default unit) and `ThermalScopeVariant` (orange accent,
+`°C`). Adding a new variant is a one-file dataclass.
+
 ## Official Documentation
 
 Full documentation is available at:

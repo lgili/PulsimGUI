@@ -204,6 +204,16 @@ class CircuitDataBuilder:
         if circuit is None:
             return payload
 
+        # Expose subcircuit definitions to downstream converter so that
+        # ``SUBCIRCUIT`` instances on the active circuit can be flattened
+        # into their internal primitives at conversion time. We snapshot
+        # the definitions as serialized dicts so any later GUI edits to
+        # the definition models don't mutate the cached build payload.
+        subcircuit_defs = getattr(project, "subcircuits", None) or {}
+        payload["subcircuits"] = {
+            str(defn_id): defn.to_dict() for defn_id, defn in subcircuit_defs.items()
+        }
+
         node_map_raw = build_node_map(circuit)
         alias_map = build_node_alias_map(circuit, node_map_raw)
         payload["node_aliases"] = alias_map
@@ -576,4 +586,5 @@ class CircuitDataBuilder:
             "node_map": {},
             "node_aliases": {},
             "metadata": {},
+            "subcircuits": {},
         }

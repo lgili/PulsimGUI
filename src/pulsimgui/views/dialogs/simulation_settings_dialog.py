@@ -48,18 +48,23 @@ class SimulationSettingsDialog(QDialog):
 
     settings_applied = Signal()
 
+    # Pulsim 1.5+ uses a discrete-time PWL state-space simulator; the
+    # only integration scheme implemented is trapezoidal. The retired
+    # BDF1-5 / Gear / TRBDF2 / RosenbrockW / SDIRK2 options are not in
+    # the kernel anymore, so we don't expose them. ``Auto`` is kept as
+    # an alias for trapezoidal so legacy projects with ``solver="auto"``
+    # keep loading without warnings.
+    # Surfaces the integration schemes that round-trip through
+    # SimulationSettings.solver. ``normalize_integration_method`` (in
+    # simulation_service) maps legacy aliases (rk4/rk45 → trapezoidal,
+    # bdf → bdf2) onto these canonical values, so the combo's
+    # ``findData`` always lands on a row when loading old projects.
     _INTEGRATION_OPTIONS: tuple[tuple[str, str], ...] = (
-        ("Auto (Backend default)", "auto"),
+        ("Auto (let backend choose)", "auto"),
         ("Trapezoidal", "trapezoidal"),
-        ("BDF1", "bdf1"),
-        ("BDF2", "bdf2"),
-        ("BDF3", "bdf3"),
-        ("BDF4", "bdf4"),
-        ("BDF5", "bdf5"),
-        ("Gear", "gear"),
-        ("TRBDF2", "trbdf2"),
-        ("RosenbrockW", "rosenbrockw"),
-        ("SDIRK2", "sdirk2"),
+        ("BDF1 (Backward Euler)", "bdf1"),
+        ("BDF2 (2nd-order BDF)", "bdf2"),
+        ("TR-BDF2 (hybrid)", "trbdf2"),
     )
 
     _PRESET_CARDS: tuple[tuple[str, str, str], ...] = (
@@ -228,16 +233,38 @@ class SimulationSettingsDialog(QDialog):
 
         form = self._create_form_layout()
 
+        # ── Engine selector (pulsim 1.6) ─────────────────────────────
+        # PWL is the v1.4-compatible fixed-step path (uses Step size
+        # below). DSED is the Path-Based Event-Driven variable-step
+        # engine added in pulsim 1.6.0 — ~24× faster than PWL on buck
+        # CCM, but ignores the fixed Step size and uses rtol/atol +
+        # adaptive RK45/BDF2 dispatch instead.
+        self._engine_combo = QComboBox()
+        self._engine_combo.addItem("PWL  —  fixed-step trapezoidal (v1.4-compat)", "pwl")
+        self._engine_combo.addItem("DSED — variable-step + event prediction (v1.6+)", "dsed")
+        self._engine_combo.currentIndexChanged.connect(self._update_solver_description)
+        self._engine_combo.currentIndexChanged.connect(self._apply_engine_visibility)
+        form.addRow("Engine:", self._engine_combo)
+
+        # Integration method — for the PWL engine. Hidden when DSED
+        # is selected (DSED has its own integrator selector below).
         self._solver_combo = QComboBox()
         for label_text, value in self._INTEGRATION_OPTIONS:
             self._solver_combo.addItem(label_text, value)
         self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
-        form.addRow("Integration method:", self._solver_combo)
+        self._solver_label = QLabel("Integration method:")
+        form.addRow(self._solver_label, self._solver_combo)
 
+        # Step mode is hidden in the current GUI (pulsim 1.5 is
+        # fixed-step PWL only), but BOTH options need to be in the
+        # combo so legacy projects with step_mode="variable" round-trip
+        # through the dialog without dropping the value silently —
+        # findData("variable") otherwise returns -1 and load falls
+        # back to "fixed", which corrupts the user's saved setting.
         self._step_mode_combo = QComboBox()
         self._step_mode_combo.addItem("Fixed step", "fixed")
         self._step_mode_combo.addItem("Variable step", "variable")
-        form.addRow("Step mode:", self._step_mode_combo)
+        self._step_mode_combo.hide()
 
         self._solver_desc = QLabel("")
         self._solver_desc.setObjectName("fieldHint")
@@ -249,38 +276,149 @@ class SimulationSettingsDialog(QDialog):
         sep1.setObjectName("formSeparator")
         form.addRow(sep1)
 
+        # ── Time window ─────────────────────────────────────────────
         self._t_start_edit = SILineEdit("s")
         form.addRow("Start time:", self._t_start_edit)
 
         self._t_step_edit = SILineEdit("s")
-        form.addRow("Step size:", self._t_step_edit)
+        form.addRow("Step size (dt):", self._t_step_edit)
 
         self._t_stop_edit = SILineEdit("s")
         form.addRow("Stop time:", self._t_stop_edit)
 
+        # ``max_step`` only existed for the legacy variable-step path.
+        # Keep the LineEdit hidden so legacy projects load without
+        # raising AttributeError in ``_save_settings``.
         self._max_step_edit = SILineEdit("s")
-        form.addRow("Max step:", self._max_step_edit)
+        self._max_step_edit.hide()
+
+        # ── DSED engine knobs (pulsim 1.6) ───────────────────────────
+        # Shown only when ``engine='dsed'`` is selected above. Drives
+        # ``simulate(engine='dsed', rtol=, atol=, dt_init=,
+        # integrator=, stiffness_threshold=, h_bdf2=)``.
+        sep_dsed = QFrame()
+        sep_dsed.setFrameShape(QFrame.Shape.HLine)
+        sep_dsed.setObjectName("formSeparator")
+        form.addRow(sep_dsed)
+        self._dsed_separator = sep_dsed
+
+        self._dsed_section_label = QLabel("DSED variable-step controls")
+        self._dsed_section_label.setObjectName("simSectionLabel")
+        form.addRow(self._dsed_section_label)
+
+        self._dsed_rtol_spin = QDoubleSpinBox()
+        self._dsed_rtol_spin.setDecimals(12)
+        self._dsed_rtol_spin.setRange(1e-12, 1e-2)
+        self._dsed_rtol_spin.setSingleStep(1e-7)
+        self._dsed_rtol_spin.setValue(1e-6)
+        self._dsed_rtol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self._dsed_rtol_spin.setToolTip(
+            "Relative tolerance for the DSED PI step controller. "
+            "Smaller → finer steps, more accuracy, slower. "
+            "1e-6 is a sensible default for most SMPS work."
+        )
+        self._dsed_rtol_label = QLabel("Relative tolerance:")
+        form.addRow(self._dsed_rtol_label, self._dsed_rtol_spin)
+
+        self._dsed_atol_spin = QDoubleSpinBox()
+        self._dsed_atol_spin.setDecimals(14)
+        self._dsed_atol_spin.setRange(1e-15, 1e-4)
+        self._dsed_atol_spin.setSingleStep(1e-10)
+        self._dsed_atol_spin.setValue(1e-9)
+        self._dsed_atol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self._dsed_atol_spin.setToolTip(
+            "Absolute tolerance for the DSED PI step controller. "
+            "Floors the relative-tolerance check near zero state."
+        )
+        self._dsed_atol_label = QLabel("Absolute tolerance:")
+        form.addRow(self._dsed_atol_label, self._dsed_atol_spin)
+
+        self._dsed_integrator_combo = QComboBox()
+        self._dsed_integrator_combo.addItem(
+            "Auto (RK45/BDF2 per mode via stiffness detector)", "auto"
+        )
+        self._dsed_integrator_combo.addItem("RK45 (Dormand-Prince 5)", "rk45")
+        self._dsed_integrator_combo.addItem("BDF2 (2nd-order backward)", "bdf2")
+        self._dsed_integrator_combo.setToolTip(
+            "DSED integrator override. ``Auto`` lets the stiffness "
+            "detector pick RK45 for non-stiff modes (PWM-driven SMPS, "
+            "filter coast) and BDF2 for stiff ones (heavy snubbers). "
+            "Force one for debug / repeatability."
+        )
+        self._dsed_integrator_label = QLabel("DSED integrator:")
+        form.addRow(self._dsed_integrator_label, self._dsed_integrator_combo)
+
+        self._dsed_dt_init_edit = SILineEdit("s")
+        self._dsed_dt_init_edit.value = 1e-9
+        self._dsed_dt_init_label = QLabel("Initial step:")
+        form.addRow(self._dsed_dt_init_label, self._dsed_dt_init_edit)
+
+        self._dsed_h_bdf2_edit = SILineEdit("s")
+        self._dsed_h_bdf2_edit.value = 1e-6
+        self._dsed_h_bdf2_label = QLabel("BDF2 step:")
+        form.addRow(self._dsed_h_bdf2_label, self._dsed_h_bdf2_edit)
+
+        self._dsed_stiffness_spin = QDoubleSpinBox()
+        self._dsed_stiffness_spin.setDecimals(3)
+        self._dsed_stiffness_spin.setRange(0.0, 1000.0)
+        self._dsed_stiffness_spin.setValue(10.0)
+        self._dsed_stiffness_spin.setSingleStep(1.0)
+        self._dsed_stiffness_spin.setToolTip(
+            "|λ_max|·h ratio above which the auto-dispatcher switches "
+            "to BDF2 instead of RK45. Higher → more aggressive "
+            "stiffness threshold (favors RK45). Default 10.0."
+        )
+        self._dsed_stiffness_label = QLabel("Stiffness threshold:")
+        form.addRow(self._dsed_stiffness_label, self._dsed_stiffness_spin)
+
+        self._dsed_widgets = [
+            self._dsed_separator,
+            self._dsed_section_label,
+            self._dsed_rtol_label,
+            self._dsed_rtol_spin,
+            self._dsed_atol_label,
+            self._dsed_atol_spin,
+            self._dsed_integrator_label,
+            self._dsed_integrator_combo,
+            self._dsed_dt_init_label,
+            self._dsed_dt_init_edit,
+            self._dsed_h_bdf2_label,
+            self._dsed_h_bdf2_edit,
+            self._dsed_stiffness_label,
+            self._dsed_stiffness_spin,
+        ]
+
+        # rel/abs tolerance: also legacy variable-step controls.
+        # NOTE: ``setDecimals`` MUST come before ``setValue`` — QDoubleSpinBox
+        # defaults to 2 decimal places, which silently rounds 1e-4 → 0.00
+        # and 1e-6 → 0.00. Hidden ≠ value-less; ``_save_settings`` reads
+        # these and writes them back to ``SimulationSettings``.
+        self._rel_tol_spin = QDoubleSpinBox()
+        self._rel_tol_spin.setDecimals(10)
+        self._rel_tol_spin.setRange(1e-10, 1e-1)
+        self._rel_tol_spin.setValue(1e-4)
+        self._rel_tol_spin.hide()
+        self._abs_tol_spin = QDoubleSpinBox()
+        self._abs_tol_spin.setDecimals(12)
+        self._abs_tol_spin.setRange(1e-12, 1e-3)
+        self._abs_tol_spin.setValue(1e-6)
+        self._abs_tol_spin.hide()
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setObjectName("formSeparator")
         form.addRow(sep2)
 
-        self._rel_tol_spin = QDoubleSpinBox()
-        self._rel_tol_spin.setDecimals(8)
-        self._rel_tol_spin.setRange(1e-10, 1e-1)
-        self._rel_tol_spin.setValue(1e-4)
-        self._rel_tol_spin.setSingleStep(1e-5)
-        self._rel_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Relative tolerance:", self._rel_tol_spin)
-
-        self._abs_tol_spin = QDoubleSpinBox()
-        self._abs_tol_spin.setDecimals(10)
-        self._abs_tol_spin.setRange(1e-12, 1e-3)
-        self._abs_tol_spin.setValue(1e-6)
-        self._abs_tol_spin.setSingleStep(1e-7)
-        self._abs_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Absolute tolerance:", self._abs_tol_spin)
+        # ── Initial state ───────────────────────────────────────────
+        self._start_from_dc_op_check = QCheckBox(
+            "Start from DC operating point"
+        )
+        self._start_from_dc_op_check.setToolTip(
+            "When checked, the simulation starts from the steady-state "
+            "DC solution instead of an all-zero initial vector. Useful "
+            "for fast transients where you only care about disturbances."
+        )
+        form.addRow("Initial state:", self._start_from_dc_op_check)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -369,19 +507,41 @@ class SimulationSettingsDialog(QDialog):
         self._advanced_tabs.setDocumentMode(True)
         self._advanced_tabs.setUsesScrollButtons(True)
         self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
-        for content, label in (
-            (self._create_newton_card(), "Transient"),
-            (self._create_dc_card(), "DC Setup"),
-            (self._create_thermal_card(), "Thermal & Losses"),
-            (self._create_frequency_card(), "Frequency Analysis"),
-            # Wave-4 sub-A 1.6 — advanced solver-stack knobs.
-            (self._create_solver_stack_card(), "Solver Stack"),
-        ):
-            tab_scroll = QScrollArea()
-            tab_scroll.setWidgetResizable(True)
-            tab_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            tab_scroll.setWidget(content)
-            self._advanced_tabs.addTab(tab_scroll, label)
+
+        # Five sub-tabs of the Advanced page. The underlying widgets
+        # (rel/abs tol, DC strategy, thermal, AC sweep, linear solver
+        # stack) ALL still live in SimulationSettings and round-trip
+        # through .pulsim files — pulsim 1.5 simply ignores the ones
+        # it doesn't honor, so surfacing them is forward-compatible
+        # and keeps the dialog truthful about what the user can
+        # configure.
+        #
+        # Labels match what test_solver_options /
+        # test_simulation_settings_advanced expect — don't rename
+        # without updating those tests.
+        def _scroll(card: QWidget) -> QScrollArea:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setWidget(card)
+            return scroll
+
+        self._advanced_tabs.addTab(
+            _scroll(self._create_newton_card()), "Transient"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_dc_card()), "DC Setup"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_thermal_card()), "Thermal & Losses"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_frequency_card()), "Frequency Analysis"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_solver_stack_card()), "Solver Stack"
+        )
+
         layout.addWidget(self._advanced_tabs, 1)
         return page
 
@@ -642,83 +802,156 @@ class SimulationSettingsDialog(QDialog):
 
     def _create_newton_card(self) -> QWidget:
         card, layout = self._create_card(
-            "Transient Robustness",
-            "Newton controls for convergence.",
+            "Newton + Events",
+            "Convergence controls forwarded to pulsim.simulate().",
             compact=True,
             show_header=False,
         )
         form = self._create_form_layout()
-        form.setVerticalSpacing(4)
+        form.setVerticalSpacing(6)
 
         self._max_iterations_spin = QSpinBox()
-        self._max_iterations_spin.setRange(10, 500)
+        self._max_iterations_spin.setRange(0, 500)
         self._max_iterations_spin.setValue(50)
-        self._max_iterations_spin.setToolTip("Maximum Newton iterations per timestep")
-        form.addRow("Max iterations:", self._max_iterations_spin)
+        self._max_iterations_spin.setToolTip(
+            "Maximum Newton iterations per timestep. 0 = kernel default."
+        )
+        form.addRow("Max Newton iterations:", self._max_iterations_spin)
 
-        self._voltage_limiting_check = QCheckBox("Enable voltage limiting")
-        self._voltage_limiting_check.setToolTip("Limit voltage deltas during Newton iterations")
-        form.addRow(self._voltage_limiting_check)
+        # New: explicit Newton tolerances (pulsim 1.5+ kwargs).
+        self._tol_newton_dx_spin = QDoubleSpinBox()
+        self._tol_newton_dx_spin.setDecimals(12)
+        self._tol_newton_dx_spin.setRange(0.0, 1.0)
+        self._tol_newton_dx_spin.setValue(0.0)  # 0 = use kernel default
+        self._tol_newton_dx_spin.setSingleStep(1e-7)
+        self._tol_newton_dx_spin.setStepType(
+            QAbstractSpinBox.StepType.AdaptiveDecimalStepType,
+        )
+        self._tol_newton_dx_spin.setToolTip(
+            "Convergence tolerance on |Δx| between iterations. "
+            "0 = use pulsim's SimulationOptions default (~1e-9)."
+        )
+        form.addRow("Tol. Newton |Δx|:", self._tol_newton_dx_spin)
 
-        self._max_voltage_step_spin = QDoubleSpinBox()
+        self._tol_newton_res_spin = QDoubleSpinBox()
+        self._tol_newton_res_spin.setDecimals(12)
+        self._tol_newton_res_spin.setRange(0.0, 1.0)
+        self._tol_newton_res_spin.setValue(0.0)
+        self._tol_newton_res_spin.setSingleStep(1e-7)
+        self._tol_newton_res_spin.setStepType(
+            QAbstractSpinBox.StepType.AdaptiveDecimalStepType,
+        )
+        self._tol_newton_res_spin.setToolTip(
+            "Convergence tolerance on the residual norm. "
+            "0 = use pulsim's SimulationOptions default."
+        )
+        form.addRow("Tol. Newton residual:", self._tol_newton_res_spin)
+
+        # New: line-search + Levenberg-Marquardt + sub-step correction.
+        self._line_search_check = QCheckBox("Enable Newton line search")
+        self._line_search_check.setToolTip(
+            "Backtrack the Newton step when the residual increases. "
+            "Improves robustness on stiff transitions."
+        )
+        self._line_search_check.setChecked(True)
+        form.addRow(self._line_search_check)
+
+        self._newton_lm_check = QCheckBox("Enable Levenberg-Marquardt")
+        self._newton_lm_check.setToolTip(
+            "Damp the Newton iteration with LM regularization. Off by "
+            "default — turn on when seeing oscillating non-convergence."
+        )
+        form.addRow(self._newton_lm_check)
+
+        self._substep_correction_check = QCheckBox(
+            "Enable sub-step state correction"
+        )
+        self._substep_correction_check.setToolTip(
+            "Refine intra-step states after switching events for "
+            "tighter event capture. Default on."
+        )
+        self._substep_correction_check.setChecked(True)
+        form.addRow(self._substep_correction_check)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setObjectName("formSeparator")
+        form.addRow(sep)
+
+        # New: enable_nonlinear_refresh combo (auto / on / off).
+        self._nonlinear_refresh_combo = QComboBox()
+        self._nonlinear_refresh_combo.addItem(
+            "Auto (detect from circuit)", "auto",
+        )
+        self._nonlinear_refresh_combo.addItem("Always on", "on")
+        self._nonlinear_refresh_combo.addItem("Always off", "off")
+        self._nonlinear_refresh_combo.setToolTip(
+            "Nonlinear-refresh runs Newton per timestep. Auto turns "
+            "it on only when the circuit has smooth-blend diodes, SH1 "
+            "MOSFETs, IGBT level-1, or saturable inductors."
+        )
+        form.addRow("Nonlinear refresh:", self._nonlinear_refresh_combo)
+
+        # New: max_event_iterations.
+        self._max_event_iterations_spin = QSpinBox()
+        self._max_event_iterations_spin.setRange(0, 200)
+        self._max_event_iterations_spin.setValue(0)
+        self._max_event_iterations_spin.setToolTip(
+            "Maximum solver passes for a single switching event. "
+            "0 = use pulsim's default."
+        )
+        form.addRow("Max event iterations:", self._max_event_iterations_spin)
+
+        # ── LEGACY hidden widgets — kept so old projects load and
+        # ``_save_settings`` doesn't AttributeError. None of these are
+        # forwarded to pulsim 1.5+ anymore. They're parented to ``self``
+        # (the dialog) so the C++ side stays alive even though they're
+        # never added to any visible layout. ───────────────────────
+        self._voltage_limiting_check = QCheckBox(self)
+        self._voltage_limiting_check.hide()
+        self._max_voltage_step_spin = QDoubleSpinBox(self)
         self._max_voltage_step_spin.setRange(0.1, 100.0)
         self._max_voltage_step_spin.setValue(5.0)
-        self._max_voltage_step_spin.setSuffix(" V")
-        self._max_voltage_step_spin.setSingleStep(0.1)
-        form.addRow("Max voltage step:", self._max_voltage_step_spin)
-
-        self._transient_robust_mode_check = QCheckBox("Enable robust transient retries")
+        self._max_voltage_step_spin.hide()
+        # Spinbox enable state mirrors the limiting check — both for
+        # the GUI (when these widgets are eventually surfaced) and for
+        # tests that drive the checkbox programmatically.
+        self._voltage_limiting_check.toggled.connect(
+            self._max_voltage_step_spin.setEnabled
+        )
+        self._max_voltage_step_spin.setEnabled(
+            self._voltage_limiting_check.isChecked()
+        )
+        self._transient_robust_mode_check = QCheckBox(self)
         self._transient_robust_mode_check.setChecked(True)
-        form.addRow(self._transient_robust_mode_check)
-
-        self._transient_auto_regularize_check = QCheckBox("Enable automatic regularization")
+        self._transient_robust_mode_check.hide()
+        self._transient_auto_regularize_check = QCheckBox(self)
         self._transient_auto_regularize_check.setChecked(True)
-        form.addRow(self._transient_auto_regularize_check)
-
-        self._formulation_mode_combo = QComboBox()
-        self._formulation_mode_combo.addItem(
-            "Projected wrapper (recommended)",
-            "projected_wrapper",
-        )
-        self._formulation_mode_combo.addItem("Direct DAE formulation", "direct")
-        self._formulation_mode_combo.currentIndexChanged.connect(self._on_formulation_mode_changed)
-        form.addRow("Formulation mode:", self._formulation_mode_combo)
-
-        self._direct_formulation_fallback_check = QCheckBox(
-            "Fallback to projected wrapper if direct mode fails"
-        )
+        self._transient_auto_regularize_check.hide()
+        self._formulation_mode_combo = QComboBox(self)
+        # Both formulation modes must be in the combo so legacy
+        # projects with formulation_mode="direct" round-trip without
+        # findData("direct") missing and falling back to index 0.
+        self._formulation_mode_combo.addItem("projected_wrapper", "projected_wrapper")
+        self._formulation_mode_combo.addItem("direct", "direct")
+        self._formulation_mode_combo.hide()
+        self._direct_formulation_fallback_check = QCheckBox(self)
         self._direct_formulation_fallback_check.setChecked(True)
-        form.addRow(self._direct_formulation_fallback_check)
-
-        self._averaged_enabled_check = QCheckBox("Enable averaged converter model")
-        self._averaged_enabled_check.setChecked(False)
-        self._averaged_enabled_check.toggled.connect(self._sync_averaged_controls)
-        form.addRow(self._averaged_enabled_check)
-
-        self._averaged_topology_combo = QComboBox()
-        self._averaged_topology_combo.addItem("Buck", "buck")
-        self._averaged_topology_combo.addItem("Boost", "boost")
-        self._averaged_topology_combo.addItem("Buck-Boost", "buckboost")
-        self._averaged_topology_combo.addItem("Flyback", "flyback")
-        self._averaged_topology_combo.addItem("Forward", "forward")
-        form.addRow("Averaged topology:", self._averaged_topology_combo)
-
-        self._averaged_mode_combo = QComboBox()
-        self._averaged_mode_combo.addItem("CCM", "ccm")
-        self._averaged_mode_combo.addItem("Auto", "auto")
-        form.addRow("Averaged mode:", self._averaged_mode_combo)
-
-        self._averaged_envelope_combo = QComboBox()
-        self._averaged_envelope_combo.addItem("Strict", "strict")
-        self._averaged_envelope_combo.addItem("Lenient", "lenient")
-        self._averaged_envelope_combo.addItem("Ignore", "ignore")
-        form.addRow("Envelope policy:", self._averaged_envelope_combo)
-
-        self._transient_robust_mode_check.toggled.connect(
-            self._transient_auto_regularize_check.setEnabled
-        )
-        self._voltage_limiting_check.toggled.connect(self._max_voltage_step_spin.setEnabled)
-        self._sync_averaged_controls(self._averaged_enabled_check.isChecked())
+        self._direct_formulation_fallback_check.hide()
+        self._averaged_enabled_check = QCheckBox(self)
+        self._averaged_enabled_check.hide()
+        self._averaged_topology_combo = QComboBox(self)
+        for v in ("buck", "boost", "buckboost", "flyback", "forward"):
+            self._averaged_topology_combo.addItem(v, v)
+        self._averaged_topology_combo.hide()
+        self._averaged_mode_combo = QComboBox(self)
+        for v in ("ccm", "auto"):
+            self._averaged_mode_combo.addItem(v, v)
+        self._averaged_mode_combo.hide()
+        self._averaged_envelope_combo = QComboBox(self)
+        for v in ("strict", "lenient", "ignore"):
+            self._averaged_envelope_combo.addItem(v, v)
+        self._averaged_envelope_combo.hide()
 
         layout.addLayout(form)
         return card
@@ -1201,6 +1434,38 @@ class SimulationSettingsDialog(QDialog):
         self._t_stop_edit.value = source.t_stop
         self._t_step_edit.value = source.t_step
 
+        # pulsim 1.6 engine selector. Set BEFORE the integration combo
+        # so ``_apply_engine_visibility`` runs against the right
+        # engine on the very first paint.
+        engine_value = str(getattr(source, "engine", "pwl") or "pwl").lower()
+        if engine_value not in {"pwl", "dsed"}:
+            engine_value = "pwl"
+        engine_idx = self._engine_combo.findData(engine_value)
+        self._engine_combo.setCurrentIndex(engine_idx if engine_idx >= 0 else 0)
+
+        # DSED knobs — populated whether or not DSED is the active
+        # engine, so flipping engine='pwl'→'dsed' later doesn't reset
+        # the user's saved tunings.
+        self._dsed_rtol_spin.setValue(float(getattr(source, "dsed_rtol", 1e-6)))
+        self._dsed_atol_spin.setValue(float(getattr(source, "dsed_atol", 1e-9)))
+        self._dsed_dt_init_edit.value = float(getattr(source, "dsed_dt_init", 1e-9))
+        self._dsed_h_bdf2_edit.value = float(getattr(source, "dsed_h_bdf2", 1e-6))
+        self._dsed_stiffness_spin.setValue(
+            float(getattr(source, "dsed_stiffness_threshold", 10.0))
+        )
+        dsed_int = str(getattr(source, "dsed_integrator", "auto") or "auto").lower()
+        if dsed_int not in {"auto", "rk45", "bdf2"}:
+            dsed_int = "auto"
+        dsed_int_idx = self._dsed_integrator_combo.findData(dsed_int)
+        self._dsed_integrator_combo.setCurrentIndex(
+            dsed_int_idx if dsed_int_idx >= 0 else 0
+        )
+
+        # Apply visibility after the engine combo settles + the DSED
+        # knobs are populated. ``setCurrentIndex`` already fires the
+        # changed signal, but call explicitly so first-paint matches.
+        self._apply_engine_visibility()
+
         solver_value = normalize_integration_method(source.solver)
         solver_idx = self._solver_combo.findData(solver_value)
         self._solver_combo.setCurrentIndex(solver_idx if solver_idx >= 0 else 0)
@@ -1214,12 +1479,40 @@ class SimulationSettingsDialog(QDialog):
         self._abs_tol_spin.setValue(source.abs_tol)
 
         self._max_iterations_spin.setValue(source.max_newton_iterations)
+        # New pulsim 1.5 Newton controls.
+        self._tol_newton_dx_spin.setValue(
+            float(getattr(source, "tol_newton_dx", None) or 0.0)
+        )
+        self._tol_newton_res_spin.setValue(
+            float(getattr(source, "tol_newton_res", None) or 0.0)
+        )
+        self._line_search_check.setChecked(
+            bool(getattr(source, "enable_newton_line_search", True))
+        )
+        self._newton_lm_check.setChecked(
+            bool(getattr(source, "enable_newton_lm", False))
+        )
+        self._substep_correction_check.setChecked(
+            bool(getattr(source, "enable_substep_state_correction", True))
+        )
+        self._max_event_iterations_spin.setValue(
+            max(0, int(getattr(source, "max_event_iterations", 0)))
+        )
+        # Nonlinear refresh combo: None ⇒ auto.
+        nlr = getattr(source, "enable_nonlinear_refresh", None)
+        nlr_key = "auto" if nlr is None else ("on" if nlr else "off")
+        nlr_idx = self._nonlinear_refresh_combo.findData(nlr_key)
+        self._nonlinear_refresh_combo.setCurrentIndex(nlr_idx if nlr_idx >= 0 else 0)
+        # Start-from-DC-op (lives on the Solver page).
+        self._start_from_dc_op_check.setChecked(
+            bool(getattr(source, "start_from_dc_op", False))
+        )
+        # Legacy fields — still loaded for backwards compat but the
+        # widgets are hidden in the UI now.
         self._voltage_limiting_check.setChecked(source.enable_voltage_limiting)
         self._max_voltage_step_spin.setValue(source.max_voltage_step)
-        self._max_voltage_step_spin.setEnabled(source.enable_voltage_limiting)
         self._transient_robust_mode_check.setChecked(source.transient_robust_mode)
         self._transient_auto_regularize_check.setChecked(source.transient_auto_regularize)
-        self._transient_auto_regularize_check.setEnabled(source.transient_robust_mode)
         formulation_mode = normalize_formulation_mode(
             getattr(source, "formulation_mode", "projected_wrapper")
         )
@@ -1372,11 +1665,51 @@ class SimulationSettingsDialog(QDialog):
             str(self._step_mode_combo.currentData() or "fixed")
         )
 
+        # pulsim 1.6 engine + DSED knobs.
+        self._settings.engine = str(
+            self._engine_combo.currentData() or "pwl"
+        )
+        self._settings.dsed_rtol = float(self._dsed_rtol_spin.value())
+        self._settings.dsed_atol = float(self._dsed_atol_spin.value())
+        self._settings.dsed_dt_init = float(self._dsed_dt_init_edit.value)
+        self._settings.dsed_h_bdf2 = float(self._dsed_h_bdf2_edit.value)
+        self._settings.dsed_stiffness_threshold = float(
+            self._dsed_stiffness_spin.value()
+        )
+        self._settings.dsed_integrator = str(
+            self._dsed_integrator_combo.currentData() or "auto"
+        )
+
         self._settings.max_step = self._max_step_edit.value
         self._settings.rel_tol = self._rel_tol_spin.value()
         self._settings.abs_tol = self._abs_tol_spin.value()
 
         self._settings.max_newton_iterations = self._max_iterations_spin.value()
+        # New pulsim 1.5 Newton/Event controls.
+        dx = float(self._tol_newton_dx_spin.value())
+        self._settings.tol_newton_dx = dx if dx > 0.0 else None
+        res = float(self._tol_newton_res_spin.value())
+        self._settings.tol_newton_res = res if res > 0.0 else None
+        self._settings.enable_newton_line_search = (
+            self._line_search_check.isChecked()
+        )
+        self._settings.enable_newton_lm = self._newton_lm_check.isChecked()
+        self._settings.enable_substep_state_correction = (
+            self._substep_correction_check.isChecked()
+        )
+        self._settings.max_event_iterations = (
+            self._max_event_iterations_spin.value()
+        )
+        nlr_key = str(self._nonlinear_refresh_combo.currentData() or "auto")
+        if nlr_key == "auto":
+            self._settings.enable_nonlinear_refresh = None
+        else:
+            self._settings.enable_nonlinear_refresh = (nlr_key == "on")
+        self._settings.start_from_dc_op = (
+            self._start_from_dc_op_check.isChecked()
+        )
+        # Legacy fields — still written so old projects keep round-trip
+        # parity, but no longer forwarded to the kernel.
         self._settings.enable_voltage_limiting = self._voltage_limiting_check.isChecked()
         self._settings.max_voltage_step = self._max_voltage_step_spin.value()
         self._settings.transient_robust_mode = self._transient_robust_mode_check.isChecked()
@@ -1480,7 +1813,20 @@ class SimulationSettingsDialog(QDialog):
         self._update_effective_step()
 
     def _update_solver_description(self) -> None:
-        """Update solver description based on selection."""
+        """Update solver description based on engine + method selection."""
+        engine = str(self._engine_combo.currentData() or "pwl")
+
+        if engine == "dsed":
+            self._solver_desc.setText(
+                "DSED — Path-Based Event-Driven scheduler (pulsim 1.6+). "
+                "Variable-step, adaptive RK45/BDF2 dispatch, event "
+                "prediction. ~24× faster than PWL on buck CCM, geo-"
+                "mean 14.5× across 6 SMPS topologies. Ignores the "
+                "fixed Step size below — uses rtol/atol + DSED knobs "
+                "instead."
+            )
+            return
+
         descriptions = {
             "auto": "Backend selects the most robust default integrator.",
             "trapezoidal": "General-purpose method with good speed/accuracy balance.",
@@ -1496,6 +1842,21 @@ class SimulationSettingsDialog(QDialog):
         }
         method = str(self._solver_combo.currentData() or "auto")
         self._solver_desc.setText(descriptions.get(method, descriptions["auto"]))
+
+    def _apply_engine_visibility(self) -> None:
+        """Show DSED knobs only when engine='dsed'; hide the
+        legacy ``Integration method`` combo since DSED has its own.
+        Initial call comes from ``_load_settings`` after the engine
+        combo is populated."""
+        engine = str(self._engine_combo.currentData() or "pwl")
+        is_dsed = engine == "dsed"
+        for widget in self._dsed_widgets:
+            widget.setVisible(is_dsed)
+        # The PWL integration-method combo is meaningless on DSED.
+        # Hide it (and its label) without removing — the value still
+        # round-trips through .pulsim files via SimulationSettings.
+        self._solver_label.setVisible(not is_dsed)
+        self._solver_combo.setVisible(not is_dsed)
 
     def _update_dc_strategy_description(self) -> None:
         """Update DC strategy description based on selection."""

@@ -62,6 +62,19 @@ from pulsimgui.utils.si_prefix import parse_si_value
 from pulsimgui.views.library.library_panel import create_component_icon
 
 
+# Seed shown the first time a user switches a C_BLOCK to the
+# python_numba (pulsim fast_block) mode. A textbook discrete PI:
+# scalar inputs first, the persistent ``state`` vector last (the
+# fast_block authoring contract).
+_DEFAULT_FAST_BLOCK_TEMPLATE = (
+    "def control(error, dt, Kp, Ki, state):\n"
+    "    # state[0] holds the integrator. Mutate in place,\n"
+    "    # return the scalar output.\n"
+    "    state[0] += Ki * dt * error\n"
+    "    return Kp * error + state[0]\n"
+)
+
+
 class SectionHeader(QWidget):
     """A styled section header with icon and title."""
 
@@ -1258,16 +1271,29 @@ class PropertiesPanel(QWidget):
 
         params = self._component.parameters
         implementation = str(params.get("implementation", "source") or "source").strip().lower()
-        if implementation not in {"source", "library"}:
+        # ``library`` is the canonical token; the legacy DEFAULT used
+        # ``lib`` in the model layer — normalise both to ``library``
+        # for the combo and accept the pulsim 1.5 ``python_numba`` mode.
+        if implementation in {"lib", "library"}:
+            implementation = "library"
+        elif implementation in {"python_numba", "python", "fast_block"}:
+            implementation = "python_numba"
+        else:
             implementation = "source"
         params["implementation"] = implementation
         params.setdefault("lib_path", "")
         params.setdefault("source_code", "")
+        params.setdefault("python_source", "")
+        params.setdefault("n_states", 1)
 
         mode_combo = QComboBox()
         mode_combo.addItem("Source (.c)", "source")
         mode_combo.addItem("Library (.so/.dylib/.dll)", "library")
-        mode_combo.setCurrentIndex(1 if implementation == "library" else 0)
+        mode_combo.addItem("Python (Numba JIT)", "python_numba")
+        mode_index = {"source": 0, "library": 1, "python_numba": 2}.get(
+            implementation, 0
+        )
+        mode_combo.setCurrentIndex(mode_index)
         mode_combo.currentIndexChanged.connect(self._on_cblock_mode_changed)
         self._cblock_mode_combo = mode_combo
         self._params_layout.addRow("Mode:", mode_combo)
@@ -1447,14 +1473,21 @@ class PropertiesPanel(QWidget):
         if not self._component or self._cblock_source_editor is None:
             return
         text = self._cblock_source_editor.toPlainText()
-        self._component.parameters["source_code"] = text
-        self.property_changed.emit("source_code", text)
+        # In python_numba mode the editor holds the Python control law;
+        # otherwise it's the C source snippet.
+        param = (
+            "python_source"
+            if self._active_cblock_mode() == "python_numba"
+            else "source_code"
+        )
+        self._component.parameters[param] = text
+        self.property_changed.emit(param, text)
 
     def _active_cblock_mode(self) -> str:
         if self._cblock_mode_combo is None:
             return "source"
         mode = self._cblock_mode_combo.currentData()
-        if mode in {"source", "library"}:
+        if mode in {"source", "library", "python_numba"}:
             return str(mode)
         return "source"
 
@@ -1669,12 +1702,60 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
             box.setDetailedText(details)
         box.exec()
 
+    def _validate_python_numba_block(self, params: dict) -> None:
+        """Validate the C_BLOCK's Python control law via
+        FastBlockService and report the result (JIT vs pure-Python, or
+        the compile error) in a message box."""
+        from pulsimgui.services.fast_block_service import (
+            FastBlockCompileError,
+            FastBlockService,
+        )
+
+        source = str(params.get("python_source", "") or "")
+        try:
+            n_states = max(0, int(params.get("n_states", 1) or 1))
+        except (TypeError, ValueError):
+            n_states = 1
+
+        svc = FastBlockService()
+        try:
+            law = svc.compile_control_law(source, n_states=n_states)
+        except FastBlockCompileError as exc:
+            self._show_cblock_build_message(
+                title="Control Law Error",
+                message=str(exc),
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        if law.is_jit:
+            backend = "Numba JIT (native speed)"
+        elif svc.is_numba_available():
+            backend = "pure-Python (JIT unavailable for this body)"
+        else:
+            backend = (
+                "pure-Python (install `pulsim[fast]` for the Numba "
+                "JIT speed-up)"
+            )
+        self._show_cblock_build_message(
+            title="Control Law OK",
+            message=(
+                f"Compiled '{law.func_name}' — {law.arg_count} scalar "
+                f"input(s), {law.n_states} state(s).\nBackend: {backend}."
+            ),
+            icon=QMessageBox.Icon.Information,
+        )
+
     def _on_test_cblock_compilation(self) -> None:
         if self._component is None:
             return
 
         params = self._component.parameters
         mode = self._active_cblock_mode()
+
+        if mode == "python_numba":
+            self._validate_python_numba_block(params)
+            return
 
         if mode == "library":
             lib_raw = str(params.get("lib_path", "") or "").strip()
@@ -1826,28 +1907,59 @@ PULSIM_CBLOCK_EXPORT int pulsim_cblock_step(
         if self._component is not None:
             self._component.parameters["implementation"] = mode
 
+        is_python = mode == "python_numba"
+
+        # Path row / cflags / file buttons are C-only. Python control
+        # laws are authored inline in the source editor — no file.
         if self._cblock_path_edit is not None and self._component is not None:
-            self._cblock_path_edit.blockSignals(True)
-            param_name = "source" if mode == "source" else "lib_path"
-            placeholder = "Select a source file" if mode == "source" else "Select a compiled library"
-            self._cblock_path_edit.setText(str(self._component.parameters.get(param_name, "") or ""))
-            self._cblock_path_edit.setPlaceholderText(placeholder)
-            self._cblock_path_edit.blockSignals(False)
+            # Hide the whole path row for python mode by clearing +
+            # disabling it (the row label stays, but it's inert).
+            self._cblock_path_edit.setVisible(not is_python)
+            if not is_python:
+                self._cblock_path_edit.blockSignals(True)
+                param_name = "source" if mode == "source" else "lib_path"
+                placeholder = (
+                    "Select a source file" if mode == "source"
+                    else "Select a compiled library"
+                )
+                self._cblock_path_edit.setText(
+                    str(self._component.parameters.get(param_name, "") or "")
+                )
+                self._cblock_path_edit.setPlaceholderText(placeholder)
+                self._cblock_path_edit.blockSignals(False)
+        if self._cblock_extra_cflags_edit is not None:
+            self._cblock_extra_cflags_edit.setVisible(not is_python)
         if self._cblock_source_editor is not None and self._component is not None:
-            self._cblock_source_editor.setVisible(mode == "source")
+            # The inline editor is shown for C "source" mode AND for
+            # python_numba (where it holds the Python control law).
+            self._cblock_source_editor.setVisible(mode in {"source", "python_numba"})
             self._cblock_source_editor.blockSignals(True)
-            self._cblock_source_editor.setPlainText(
-                str(self._component.parameters.get("source_code", "") or "")
-            )
+            if is_python:
+                text = str(self._component.parameters.get("python_source", "") or "")
+                if not text:
+                    text = _DEFAULT_FAST_BLOCK_TEMPLATE
+                    self._component.parameters["python_source"] = text
+                self._cblock_source_editor.setPlaceholderText(
+                    "def control(error, dt, state): ..."
+                )
+            else:
+                text = str(self._component.parameters.get("source_code", "") or "")
+                self._cblock_source_editor.setPlaceholderText(
+                    "Optional source snippet for quick editing/notes"
+                )
+            self._cblock_source_editor.setPlainText(text)
             self._cblock_source_editor.blockSignals(False)
         if self._cblock_create_btn is not None:
             self._cblock_create_btn.setVisible(mode == "source")
         if self._cblock_open_btn is not None:
             self._cblock_open_btn.setVisible(mode == "source")
         if self._cblock_compile_btn is not None:
-            self._cblock_compile_btn.setText(
-                "Test Compilation" if mode == "source" else "Validate Library"
-            )
+            label = {
+                "source": "Test Compilation",
+                "library": "Validate Library",
+                "python_numba": "Validate (Numba)",
+            }.get(mode, "Test Compilation")
+            self._cblock_compile_btn.setText(label)
 
     # --- Utilities ----------------------------------------------------------------
 

@@ -3350,9 +3350,20 @@ class PulsimBackend(SimulationBackend):
         if not result.time or not isinstance(virtual_channels, dict):
             return
 
+        # Special key: per-device electrothermal summary built by
+        # ``_compute_per_device_electrothermal``. Goes into
+        # ``result.statistics["component_electrothermal"]`` where the
+        # GUI thermal_service finds it (it ALSO needs the T(<device>)
+        # signals merged below — pulsim's loss summary stamps both).
+        rows = virtual_channels.get("__electrothermal_rows__")
+        if isinstance(rows, list) and rows:
+            result.statistics["component_electrothermal"] = rows
+
         sample_count = len(result.time)
         merged_names: set[str] = set()
         for raw_name, raw_series in virtual_channels.items():
+            if raw_name == "__electrothermal_rows__":
+                continue  # handled above as statistics, not a signal
             channel_name = str(raw_name or "").strip()
             if not channel_name or raw_series is None:
                 continue
@@ -6003,14 +6014,103 @@ class PulsimBackend(SimulationBackend):
         # the ring on the main thread — zero Python in the per-step
         # hot path. Falls back to the legacy ``step_observer`` data
         # callback when ``live_stream is None``.
-        simulate_kwargs: dict[str, Any] = {
-            "t_start": t_start,
-            "switch_fn": switch_fn,
-            "step_observer": step_observer,
-        }
+        #
+        # Closed-loop: when the converter detected a PI+PWM+MOSFET
+        # chain (e.g. buck closed-loop schematic), it stashed structured
+        # descriptors on ``circuit.closed_loop_descriptors``. We pre-build
+        # the loops here via ``ps.bind_pi_to_switch`` and pass them in
+        # via ``closed_loops=`` — pulsim composes their switch_fns +
+        # step_observers internally. Note: pulsim ≥ 1.4 rejects passing
+        # both ``closed_loops`` and ``switch_fn``/``step_observer``, so
+        # we either go all-closed-loop or all-static.
+        # Nonlinear-device observers (pulsim 1.5+ induction motor +
+        # Jiles-Atherton hysteretic inductor). The converter recorded
+        # each device's handle on ``circuit.nonlinear_observer_specs``;
+        # here we build the ``(step_observer, b_extra_fn)`` pair per
+        # device, fold the step-observers into the base observer, and
+        # sum the b_extra residual injections into one callable. Both
+        # are no-ops when no such device is present.
+        device_step_observers, device_b_extra_fn = (
+            self._build_nonlinear_device_observers(circuit, builder, dt)
+        )
+        if device_step_observers:
+            base_step_observer = step_observer
+
+            def step_observer(t: float, x: Any) -> None:  # noqa: F811
+                base_step_observer(t, x)
+                for obs in device_step_observers:
+                    obs(t, x)
+
+        composed_loop = self._build_closed_loops(
+            circuit, builder, step_observer, t_start,
+        )
+        simulate_kwargs: dict[str, Any] = {"t_start": t_start}
+        if composed_loop is not None:
+            simulate_kwargs["closed_loops"] = [composed_loop]
+        else:
+            simulate_kwargs["switch_fn"] = switch_fn
+            simulate_kwargs["step_observer"] = step_observer
+        # Device residual injection (back-EMF / dM/dt) is independent
+        # of the switch_fn / closed-loop path — always forward it when
+        # a nonlinear device is present. The TypeError-retry below
+        # strips it if the host kernel rejects the combination.
+        if device_b_extra_fn is not None:
+            simulate_kwargs["b_extra_fn"] = device_b_extra_fn
         live_stream = getattr(callbacks, "live_stream", None)
         if live_stream is not None:
             simulate_kwargs["live_stream"] = live_stream
+
+        # Forward the pulsim 1.5 simulate() controls the GUI now
+        # exposes in Simulation Settings. None ⇒ let pulsim defaults
+        # decide. Unknown kwargs on older builds are silently dropped
+        # in the TypeError-retry path below.
+        if settings.max_newton_iterations > 0:
+            simulate_kwargs["max_newton_iterations"] = int(
+                settings.max_newton_iterations,
+            )
+        if settings.max_event_iterations > 0:
+            simulate_kwargs["max_event_iterations"] = int(
+                settings.max_event_iterations,
+            )
+        if settings.tol_newton_dx is not None:
+            simulate_kwargs["tol_newton_dx"] = float(settings.tol_newton_dx)
+        if settings.tol_newton_res is not None:
+            simulate_kwargs["tol_newton_res"] = float(settings.tol_newton_res)
+        simulate_kwargs["enable_newton_line_search"] = bool(
+            settings.enable_newton_line_search,
+        )
+        simulate_kwargs["enable_newton_lm"] = bool(settings.enable_newton_lm)
+        simulate_kwargs["enable_substep_state_correction"] = bool(
+            settings.enable_substep_state_correction,
+        )
+        if settings.enable_nonlinear_refresh is not None:
+            simulate_kwargs["enable_nonlinear_refresh"] = bool(
+                settings.enable_nonlinear_refresh,
+            )
+        if settings.start_from_dc_op:
+            simulate_kwargs["start_from_dc_op"] = True
+
+        # pulsim 1.6 engine selector. Only forward the DSED kwargs
+        # when the user actually selected DSED — keeps the PWL path
+        # byte-identical to v1.4.x for users who haven't opted in.
+        # The TypeError-retry block below strips ``engine``/DSED
+        # kwargs if the installed pulsim is older than 1.6 (so a
+        # mismatched install doesn't crash, the user just loses the
+        # DSED path until they upgrade).
+        engine_value = str(getattr(settings, "engine", "pwl") or "pwl").lower()
+        if engine_value == "dsed":
+            simulate_kwargs["engine"] = "dsed"
+            simulate_kwargs["rtol"] = float(settings.dsed_rtol)
+            simulate_kwargs["atol"] = float(settings.dsed_atol)
+            simulate_kwargs["dt_init"] = float(settings.dsed_dt_init)
+            simulate_kwargs["integrator"] = str(
+                getattr(settings, "dsed_integrator", "auto") or "auto"
+            )
+            simulate_kwargs["stiffness_threshold"] = float(
+                settings.dsed_stiffness_threshold
+            )
+            simulate_kwargs["h_bdf2"] = float(settings.dsed_h_bdf2)
+
         try:
             res = self._module.simulate(
                 builder, t_stop, dt,
@@ -6019,12 +6119,43 @@ class PulsimBackend(SimulationBackend):
         except _SimulateCancelled:
             return ([], [], False, "Cancelled by user", None)
         except TypeError as exc:
-            # Backwards-compat: older pulsim builds (pre v1.5) don't
-            # accept ``live_stream``. Retry without it so the GUI still
-            # works against a stale kernel, just without zero-copy
-            # streaming.
-            if "live_stream" in str(exc) and "live_stream" in simulate_kwargs:
-                simulate_kwargs.pop("live_stream")
+            # Backwards-compat: older pulsim builds reject any of the
+            # new ``max_newton_iterations`` / ``tol_newton_*`` /
+            # ``enable_newton_*`` / ``start_from_dc_op`` /
+            # ``live_stream`` kwargs the GUI now passes through from
+            # Simulation Settings. Strip every unrecognised kwarg
+            # mentioned in the error and retry once — keeps stale
+            # kernels working while users upgrade.
+            err_text = str(exc)
+            new_kwargs = {
+                "max_newton_iterations", "max_event_iterations",
+                "tol_newton_dx", "tol_newton_res",
+                "enable_newton_line_search", "enable_newton_lm",
+                "enable_substep_state_correction",
+                "enable_nonlinear_refresh", "start_from_dc_op",
+                "live_stream",
+                # pulsim 1.6 engine selector + DSED knobs. Older
+                # kernels (pulsim < 1.6) reject these; the strip-and-
+                # retry path drops them so the sim still runs on the
+                # default PWL engine. Users on stale installs lose
+                # the DSED speedup but don't see a crash.
+                "engine",
+                "rtol", "atol", "dt_init", "integrator",
+                "stiffness_threshold", "h_bdf2",
+                # Nonlinear-device residual injection (induction motor
+                # back-EMF / hysteretic-inductor dM/dt). Stripped only
+                # if a kernel rejects it alongside another kwarg combo;
+                # losing it means the device's nonlinear term is absent,
+                # but the sim still runs (degraded, not crashed).
+                "b_extra_fn",
+            }
+            stripped = {
+                k for k in list(simulate_kwargs.keys())
+                if k in new_kwargs and k in err_text
+            }
+            if stripped:
+                for key in stripped:
+                    simulate_kwargs.pop(key, None)
                 try:
                     res = self._module.simulate(
                         builder, t_stop, dt,
@@ -6039,17 +6170,728 @@ class PulsimBackend(SimulationBackend):
         except RuntimeError as exc:
             return ([], [], False, str(exc), None)
 
+        # Per-device electrothermal post-processing: walk every
+        # device via pulsim.losses.device_loss_summary, build a quick
+        # Foster network per loss-carrying device, and call
+        # compute_temperature to get a junction-temperature trace.
+        # The result is stashed in ``virtual_channels`` so the
+        # backend adapter merges it into ``result.statistics`` and
+        # ``result.signals`` — thermal_service can then build per-
+        # device ThermalDeviceResult entries instead of the legacy
+        # single "system" lump.
+        composed_switch_fn = (
+            composed_loop.switch_fn
+            if composed_loop is not None
+            else switch_fn
+        )
+        electrothermal_rows = self._compute_per_device_electrothermal(
+            builder=builder,
+            sim_result=res,
+            switch_fn=composed_switch_fn,
+            t_amb_celsius=25.0,
+        )
+
         # Pull arrays in the same layout the legacy streaming API
         # produced. ``SimulationResult.states`` is a list of NumPy
         # vectors (one per timestep); ``times`` is a 1-D array.
+        # ``virtual_channels`` carries the new T(device) temperature
+        # traces + the electrothermal summary dict — those get merged
+        # into ``result.signals`` / ``result.statistics`` by the
+        # caller.
+        virtual_payload = None
+        if electrothermal_rows:
+            virtual_payload = {
+                "__electrothermal_rows__": electrothermal_rows,
+                # Temperature traces keyed as ``T(<device>)`` so the
+                # thermal_service's ``_collect_transient_thermal_traces``
+                # finds them via its existing T(…)/T_<…> heuristics.
+                **{
+                    f"T({row['component_name']})": row["temperature_trace"]
+                    for row in electrothermal_rows
+                    if row.get("temperature_trace")
+                },
+            }
         return (
             list(res.times),
             [list(s) for s in res.states],
             True,
             "",
-            None,  # virtual_channels — populated by the v0 streaming
-                   # API; the modern path doesn't surface them as a
-                   # separate stream.
+            virtual_payload,  # may carry T(<device>) traces +
+                              # ``__electrothermal_rows__`` for the
+                              # caller to merge into result.signals /
+                              # statistics.
+        )
+
+    # Default Foster network: single-stage TO-220 ballpark
+    # (R_th_jc ≈ 1.5 K/W, τ ≈ 75 ms). Used for every loss-carrying
+    # device until the GUI threads per-device Foster params through.
+    _DEFAULT_FOSTER_RTH = 1.5
+    _DEFAULT_FOSTER_TAU = 0.075
+
+    # Device kinds that ``device_thermal_summary`` /
+    # ``device_loss_summary`` can model. Capacitors / sources are
+    # skipped (no conduction-loss model).
+    _LOSS_CARRYING_KINDS = frozenset(
+        {"resistor", "inductor", "switch", "diode"}
+    )
+
+    def _compute_per_device_electrothermal(
+        self,
+        builder: Any,
+        sim_result: Any,
+        switch_fn: Any,
+        t_amb_celsius: float,
+    ) -> list[dict[str, Any]]:
+        """Post-process device losses + per-device junction temperature.
+
+        Primary path (pulsim ≥ 1.5): one
+        ``pulsim.device_thermal_summary`` call that, per device,
+        reconstructs the real per-step conduction power ``P_cond(t)``
+        (NOT a constant ``P_avg`` approximation), layers the
+        averaged switching / core loss, and convolves the result
+        with the device's Foster network into a junction-temperature
+        trace. Strictly more accurate than the legacy constant-power
+        approximation for circuits whose conduction current isn't
+        flat (everything switching).
+
+        Fallback path (pulsim < 1.5 or any failure): the legacy
+        ``device_loss_summary`` + manual ``compute_temperature``
+        loop with a constant ``P_avg``.
+
+        Both produce the same row shape that
+        ``thermal_service._build_from_transient_backend_telemetry``
+        consumes: ``component_name``, ``kind``, ``final_temperature``,
+        ``peak_temperature``, ``conduction``, ``turn_on``,
+        ``turn_off``, ``temperature_trace``.
+
+        Returns ``[]`` if no thermal post-processing is possible —
+        keeps the transient run from blowing up on a thermal-only
+        failure.
+        """
+        rows = self._electrothermal_via_thermal_summary(
+            builder, sim_result, switch_fn, t_amb_celsius,
+        )
+        if rows is not None:
+            return rows
+        # Either pulsim < 1.5 (no device_thermal_summary) or the
+        # call raised — fall back to the legacy constant-power loop.
+        return self._electrothermal_legacy_constant_power(
+            builder, sim_result, switch_fn, t_amb_celsius,
+        )
+
+    def _electrothermal_via_thermal_summary(
+        self,
+        builder: Any,
+        sim_result: Any,
+        switch_fn: Any,
+        t_amb_celsius: float,
+    ) -> list[dict[str, Any]] | None:
+        """Primary electrothermal path via pulsim 1.5's
+        ``device_thermal_summary``.
+
+        Returns ``None`` (signal the caller to fall back) when the
+        function isn't importable or raises; returns a (possibly
+        empty) row list otherwise.
+        """
+        try:
+            from pulsim import device_thermal_summary
+        except Exception:  # noqa: BLE001 - pulsim < 1.5
+            return None
+
+        FosterStage = getattr(self._module, "FosterStage", None)
+        if FosterStage is None:
+            return None
+
+        # Enumerate the builder's branches and build a thermal_specs
+        # entry for every loss-carrying device, each with the default
+        # single-stage Foster network. Names come straight from
+        # ``builder.components()`` so the strict-mode KeyError that
+        # device_loss_summary now raises on unknown names can't fire.
+        try:
+            components = list(builder.components())
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            default_stage = FosterStage(
+                R_th_K_per_W=self._DEFAULT_FOSTER_RTH,
+                tau_s=self._DEFAULT_FOSTER_TAU,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        thermal_specs: dict[str, dict[str, Any]] = {}
+        kind_by_name: dict[str, str] = {}
+        for comp in components:
+            name = str(comp.get("name") or "").strip()
+            kind = str(comp.get("kind") or "").lower()
+            if not name or kind not in self._LOSS_CARRYING_KINDS:
+                continue
+            thermal_specs[name] = {"stages": [default_stage]}
+            kind_by_name[name] = kind
+
+        if not thermal_specs:
+            return []
+
+        try:
+            summary = device_thermal_summary(
+                builder, sim_result,
+                thermal_specs=thermal_specs,
+                T_ambient_C=float(t_amb_celsius),
+                switch_fn=switch_fn,
+            )
+        except Exception:  # noqa: BLE001 - kernel/version mismatch
+            return None
+
+        rows: list[dict[str, Any]] = []
+        for entry in summary or []:
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            trace = entry.get("T_j_trace")
+            temp_list = (
+                [float(v) for v in trace] if trace is not None else []
+            )
+            if not temp_list:
+                continue
+            p_cond = max(0.0, float(entry.get("P_cond_avg") or 0.0))
+            p_sw = max(0.0, float(entry.get("P_sw_avg") or 0.0))
+            p_core = max(0.0, float(entry.get("P_core_avg") or 0.0))
+            # Skip devices that dissipate nothing (ideal inductors,
+            # open switches) — they'd sit at ambient and only clutter
+            # the thermal panel. Matches the legacy path's
+            # ``P_avg <= 0: continue`` filter.
+            if (p_cond + p_sw + p_core) <= 0.0:
+                continue
+            # thermal_service has conduction / switching_on /
+            # switching_off / reverse_recovery buckets but no core
+            # bucket. Core loss is continuous (like conduction), so
+            # fold it into ``conduction``. Switching avg has no
+            # on/off split from the summary, so report it under
+            # ``turn_on`` (keeps total = cond + core + sw correct).
+            rows.append({
+                "component_name": name,
+                "kind": kind_by_name.get(name, str(entry.get("kind") or "").lower()),
+                "final_temperature": temp_list[-1],
+                "peak_temperature": max(temp_list),
+                "conduction": p_cond + p_core,
+                "turn_on": p_sw,
+                "turn_off": 0.0,
+                "temperature_trace": temp_list,
+            })
+        return rows
+
+    def _electrothermal_legacy_constant_power(
+        self,
+        builder: Any,
+        sim_result: Any,
+        switch_fn: Any,
+        t_amb_celsius: float,
+    ) -> list[dict[str, Any]]:
+        """Legacy electrothermal path: ``device_loss_summary`` +
+        constant-``P_avg`` Foster convolution. Used only when
+        ``device_thermal_summary`` is unavailable (pulsim < 1.5) or
+        raised. Behaviourally identical to the pre-1.5 GUI."""
+        try:
+            import numpy as np
+            from pulsim.losses import device_loss_summary
+        except Exception:  # noqa: BLE001
+            return []
+
+        try:
+            summary = device_loss_summary(
+                builder, sim_result,
+                switch_fn=switch_fn,
+            )
+        except Exception:  # noqa: BLE001 - pulsim version mismatch / device kind unsupported
+            return []
+
+        if not summary:
+            return []
+
+        times = np.asarray(sim_result.times, dtype=float)
+        if times.size < 2:
+            return []
+
+        try:
+            stages = [
+                self._module.FosterStage(
+                    R_th_K_per_W=self._DEFAULT_FOSTER_RTH,
+                    tau_s=self._DEFAULT_FOSTER_TAU,
+                )
+            ]
+        except Exception:  # noqa: BLE001
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for entry in summary:
+            name = str(entry.get("name") or "").strip()
+            p_avg = float(entry.get("P_avg") or 0.0)
+            if not name or p_avg <= 0.0:
+                continue
+            # Constant-power approximation: trace.shape == times.shape,
+            # uniformly P_avg watts. compute_temperature convolves with
+            # the Foster Z_th(t) → ΔT(t) → adds T_amb.
+            p_arr = np.full_like(times, p_avg, dtype=float)
+            try:
+                temperature = self._module.compute_temperature(
+                    times, p_arr, stages, t_amb_celsius,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            temp_list = [float(v) for v in temperature]
+            if not temp_list:
+                continue
+            kind = str(entry.get("kind") or "").lower()
+            rows.append({
+                "component_name": name,
+                "kind": kind,
+                "final_temperature": temp_list[-1],
+                "peak_temperature": max(temp_list),
+                "conduction": p_avg,
+                "turn_on": 0.0,
+                "turn_off": 0.0,
+                "temperature_trace": temp_list,
+            })
+        return rows
+
+    def _build_nonlinear_device_observers(
+        self,
+        circuit: Any,
+        builder: Any,
+        dt: float,
+    ) -> tuple[list[Callable[[float, Any], None]], Callable[[float], Any] | None]:
+        """Build the simulate-time observers for every nonlinear device
+        (induction motor, Jiles-Atherton hysteretic inductor) the
+        converter recorded on ``circuit.nonlinear_observer_specs``.
+
+        Each pulsim ``make_<kind>_observer(builder, handle, dt=dt)``
+        returns a ``(step_observer, b_extra_fn)`` pair:
+
+        * ``step_observer(t, x)`` advances the device's internal state
+          (rotor flux + mechanical for the motor; J-A magnetisation for
+          the inductor) once per simulation step.
+        * ``b_extra_fn(t)`` returns the residual-vector contribution
+          (back-EMF source voltages / dM/dt) the kernel adds each step.
+
+        Returns ``([step_observers], combined_b_extra_fn)``. The
+        b_extra functions are summed element-wise into one callable
+        (``None`` when there are no devices). Any failure to build an
+        observer is logged and skipped so one bad device doesn't kill
+        the whole run.
+        """
+        specs = list(getattr(circuit, "nonlinear_observer_specs", []) or [])
+        if not specs:
+            return [], None
+
+        ps = self._module
+        step_observers: list[Callable[[float, Any], None]] = []
+        b_extra_fns: list[Callable[[float], Any]] = []
+
+        maker_by_kind = {
+            "induction_motor": getattr(ps, "make_induction_motor_observer", None),
+            "hysteretic_inductor": getattr(ps, "make_hysteretic_inductor_observer", None),
+        }
+
+        for spec in specs:
+            kind = str(spec.get("kind") or "")
+            handle = spec.get("handle")
+            maker = maker_by_kind.get(kind)
+            if maker is None or handle is None:
+                continue
+            try:
+                obs, b_extra = maker(builder, handle, dt=float(dt))
+            except Exception:  # noqa: BLE001 - one bad device shouldn't abort
+                continue
+            if callable(obs):
+                step_observers.append(obs)
+            if callable(b_extra):
+                b_extra_fns.append(b_extra)
+
+        if not b_extra_fns:
+            return step_observers, None
+
+        if len(b_extra_fns) == 1:
+            return step_observers, b_extra_fns[0]
+
+        # Sum the per-device residual vectors element-wise. Each
+        # b_extra_fn returns a full-length list[float]; the kernel adds
+        # the result to the constant residual. Devices write into
+        # disjoint source rows so summation is just element-wise add.
+        def combined_b_extra(t: float) -> list[float]:
+            total: list[float] | None = None
+            for fn in b_extra_fns:
+                vec = fn(t)
+                if vec is None:
+                    continue
+                if total is None:
+                    total = list(vec)
+                else:
+                    for i, v in enumerate(vec):
+                        if i < len(total):
+                            total[i] += v
+            return total if total is not None else []
+
+        return step_observers, combined_b_extra
+
+    def _build_cblock_closed_loops(
+        self,
+        descriptors: list[dict[str, Any]],
+        builder: Any,
+        t_start: float,
+    ) -> list[Any]:
+        """Build a ClosedLoop per C_BLOCK control-loop descriptor.
+
+        Each descriptor (emitted by the converter for a python_numba
+        C_BLOCK regulating a PWM-driven switch) carries the control-law
+        source, the feedback node, the switch device, the PWM
+        frequency, and the sample time. We compile the source via
+        :class:`FastBlockService` and return a duck-typed ClosedLoop
+        whose:
+
+        * ``step_observer(t, x)`` — throttled to the sample time —
+          reads the feedback ``measured = x[fb_idx]``, calls the
+          control law ``law(measured, setpoint, dt, state) → duty``,
+          and stores the clamped duty;
+        * ``switch_fn(t)`` — produces the PWM mask by comparing the
+          carrier phase against the stored duty.
+
+        Mirrors the duty/PWM mechanics ``bind_pi_to_switch`` runs
+        internally, but with the user's compiled law in place of the
+        PI. A descriptor that fails to compile or resolve is skipped
+        (logged-silent) so one bad block doesn't abort the run.
+        """
+        if not descriptors:
+            return []
+
+        from pulsimgui.services.fast_block_service import (
+            FastBlockCompileError,
+            FastBlockService,
+        )
+
+        ps = self._module
+        mask_cls = getattr(ps, "SwitchStateMask", None)
+        if mask_cls is None:
+            return []
+
+        try:
+            num_sw = int(builder.graph.num_switches)
+        except Exception:  # noqa: BLE001
+            num_sw = 1
+
+        svc = FastBlockService()
+        loops: list[Any] = []
+
+        for desc in descriptors:
+            try:
+                source = str(desc.get("source") or "")
+                n_states = max(0, int(desc.get("n_states", 1) or 1))
+                law = svc.compile_control_law(source, n_states=n_states)
+            except FastBlockCompileError:
+                # Bad user code — skip this loop. (The properties-panel
+                # "Validate" button is where the user gets the detailed
+                # error; here we just keep the sim alive.)
+                continue
+
+            try:
+                fb_idx = int(builder.node_id_of(str(desc["feedback_node"])))
+                switch_idx = int(builder.switch_index_of(str(desc["switch_device"]))) \
+                    if hasattr(builder, "switch_index_of") else int(desc.get("switch_index", 0))
+            except Exception:  # noqa: BLE001
+                continue
+
+            freq = max(1.0, float(desc.get("pwm_frequency", 100_000.0)))
+            t_pwm = 1.0 / freq
+            sample_time = float(desc.get("sample_time", 0.0) or 0.0)
+            # Default the control period to one PWM period when the
+            # user left sample_time at 0 (continuous-ish).
+            ctrl_dt = sample_time if sample_time > 0.0 else t_pwm
+            setpoint = float(desc.get("setpoint_value", 0.0) or 0.0)
+            duty_min = float(desc.get("output_min", 0.0))
+            duty_max = float(desc.get("output_max", 1.0))
+            arg_count = law.arg_count
+
+            state = law.make_state()
+            duty_cell = [max(duty_min, min(duty_max, 0.5))]
+            last_update = [float(t_start) - ctrl_dt]
+
+            def _make_observer(
+                _law=law, _fb=fb_idx, _state=state, _duty=duty_cell,
+                _last=last_update, _dt=ctrl_dt, _sp=setpoint,
+                _argc=arg_count, _dmin=duty_min, _dmax=duty_max,
+            ) -> Callable[[float, Any], None]:
+                def observer(t: float, x: Any) -> None:
+                    if (t - _last[0]) < _dt:
+                        return
+                    _last[0] = t
+                    measured = float(x[_fb])
+                    # Supply exactly ``_argc`` scalar arguments (the
+                    # count BEFORE the trailing ``state`` param), in the
+                    # canonical order [measured, setpoint, dt], padded
+                    # with zeros, then the persistent state vector:
+                    #   1 → control(measured, state)
+                    #   2 → control(measured, setpoint, state)
+                    #   3 → control(measured, setpoint, dt, state)
+                    #   n → control(measured, setpoint, dt, 0…, state)
+                    canonical = [measured, _sp, _dt]
+                    if _argc <= len(canonical):
+                        scalars = canonical[:_argc]
+                    else:
+                        scalars = canonical + [0.0] * (_argc - len(canonical))
+                    try:
+                        out = float(_law(*scalars, _state))
+                    except Exception:  # noqa: BLE001
+                        return
+                    _duty[0] = max(_dmin, min(_dmax, out))
+                return observer
+
+            def _make_switch_fn(
+                _idx=switch_idx, _freq=freq, _duty=duty_cell,
+                _n=num_sw, _mask=mask_cls,
+            ) -> Callable[[float], Any]:
+                def switch_fn(t: float) -> Any:
+                    phase = (t * _freq) % 1.0
+                    mask = _mask(int(_n))
+                    if phase < _duty[0]:
+                        mask.set(int(_idx), True)
+                    return mask
+                return switch_fn
+
+            from types import SimpleNamespace
+            loops.append(SimpleNamespace(
+                switch_fn=_make_switch_fn(),
+                step_observer=_make_observer(),
+            ))
+
+        return loops
+
+    def _build_closed_loops(
+        self,
+        circuit: Any,
+        builder: Any,
+        progress_observer: Callable[[float, Any], None],
+        t_start: float,
+    ) -> Any:
+        """Wire ``pulsim.bind_pi_to_switch`` for every closed-loop the
+        converter detected on ``circuit``.
+
+        Returns a single duck-typed ``ClosedLoop`` (with ``.switch_fn``
+        and ``.step_observer``) that:
+
+        - Calls every detected loop's switch_fn (composed via
+          ``make_combined_switch_fn``) so multi-loop schematics work.
+        - Chains every loop's step_observer with the GUI's
+          ``progress_observer`` so progress / cancel keep firing
+          alongside the PI updates.
+
+        Returns ``None`` when the circuit has no descriptors (open-loop
+        or pre-1.4 path) so the caller falls back to the legacy static
+        ``switch_fn`` + ``step_observer`` pair.
+        """
+        descriptors = list(getattr(circuit, "closed_loop_descriptors", []) or [])
+        cblock_descriptors = list(
+            getattr(circuit, "cblock_loop_descriptors", []) or []
+        )
+        if not descriptors and not cblock_descriptors:
+            return None
+
+        ps = self._module
+        if not hasattr(ps, "bind_pi_to_switch") or not hasattr(ps, "PIController"):
+            # Older kernel — silently skip the closed-loop path so the
+            # legacy static switch_fn at least drives the MOSFET.
+            return None
+
+        real_loops: list[Any] = []
+        for desc in descriptors:
+            try:
+                pi = ps.PIController(
+                    Kp=float(desc.get("kp", 0.1)),
+                    Ki=float(desc.get("ki", 100.0)),
+                    output_min=float(desc.get("output_min", 0.0)),
+                    output_max=float(desc.get("output_max", 1.0)),
+                )
+                # Inner-loop feedback can be voltage (single node) or
+                # current (computed from two nodes + a bypass R).
+                feedback_kind = str(desc.get("feedback_kind") or "voltage")
+                if feedback_kind == "current":
+                    n_in = int(builder.node_id_of(
+                        str(desc["feedback_node_in"])
+                    ))
+                    n_out_raw = str(desc.get("feedback_node_out") or "0")
+                    # "0" / "gnd" sentinel for the ground rail
+                    if n_out_raw in {"0", "gnd", ""}:
+                        n_out = -1
+                    else:
+                        n_out = int(builder.node_id_of(n_out_raw))
+                    bypass_r = max(float(desc.get("feedback_bypass_r", 1e-4)),
+                                    1e-12)
+
+                    def _measured_current(x, _in=n_in, _out=n_out,
+                                           _r=bypass_r) -> float:
+                        v_in = float(x[_in])
+                        v_out = 0.0 if _out < 0 else float(x[_out])
+                        return (v_in - v_out) / _r
+
+                    measured_fn = _measured_current
+                else:
+                    feedback_node = str(desc["feedback_node"])
+                    node_idx = int(builder.node_id_of(feedback_node))
+                    measured_fn = (lambda x, _i=node_idx: float(x[_i]))
+            except Exception:  # noqa: BLE001 — bad descriptor → skip
+                continue
+
+            # Cascaded? Build a time-varying setpoint that's the
+            # output of an outer PI controller. The outer PI runs at
+            # its OWN sample rate (typically slower than the PWM)
+            # via a throttle counter in the inner ``measured``
+            # closure — see the cascaded block below.
+            outer_spec = desc.get("outer_pi") if isinstance(desc.get("outer_pi"), dict) else None
+            if outer_spec is not None:
+                try:
+                    outer_pi = ps.PIController(
+                        Kp=float(outer_spec.get("kp", 0.1)),
+                        Ki=float(outer_spec.get("ki", 100.0)),
+                        output_min=float(outer_spec.get("output_min", 0.0)),
+                        output_max=float(outer_spec.get("output_max", 1.0)),
+                    )
+                    outer_fb_node = str(outer_spec["feedback_node"])
+                    outer_fb_neg_node = str(outer_spec.get("feedback_node_neg") or "0")
+                    outer_fb_idx = int(builder.node_id_of(outer_fb_node))
+                    outer_fb_neg_idx = (
+                        -1 if outer_fb_neg_node in {"0", "gnd", ""}
+                        else int(builder.node_id_of(outer_fb_neg_node))
+                    )
+                    outer_setpoint_val = float(outer_spec.get("setpoint_value", 0.0))
+                    pwm_freq = float(desc.get("pwm_frequency", 100_000.0))
+                    T_pwm = 1.0 / max(pwm_freq, 1.0)
+                    # Outer PI sample period. If the descriptor carries
+                    # an explicit ``sample_time``, use that; otherwise
+                    # default to 1 ms so the voltage loop runs at
+                    # 1 kHz — slow enough that the integrator doesn't
+                    # wind up over a single PWM cycle, fast enough to
+                    # track DC-bus transients in normal use.
+                    outer_dt = float(outer_spec.get("sample_time") or 1.0e-3)
+                    if outer_dt < T_pwm:
+                        # Outer can't be faster than the inner PWM tick
+                        outer_dt = T_pwm
+                    # How many PWM ticks per outer update
+                    outer_period_ticks = max(1, int(round(outer_dt / T_pwm)))
+                except Exception:  # noqa: BLE001
+                    outer_spec = None  # fall through to single-loop binding
+
+            if outer_spec is not None:
+                # Cascaded path: shared cell stores the outer PI's last
+                # output and a throttle counter. The INNER
+                # ``measured_fn`` wraps the raw one — every call ticks
+                # the throttle, and the outer PI updates only when
+                # ``outer_period_ticks`` PWM cycles have elapsed.
+                outer_state: dict[str, Any] = {
+                    "output": outer_setpoint_val * 0.0,
+                    "tick": 0,
+                }
+                inner_measured_raw = measured_fn
+
+                def _measured_and_tick_outer(
+                    x,
+                    _outer_pi=outer_pi,
+                    _outer_sp=outer_setpoint_val,
+                    _fb_idx=outer_fb_idx,
+                    _fb_neg_idx=outer_fb_neg_idx,
+                    _outer_dt=outer_dt,
+                    _period=outer_period_ticks,
+                    _state=outer_state,
+                    _inner=inner_measured_raw,
+                ) -> float:
+                    _state["tick"] += 1
+                    if _state["tick"] >= _period:
+                        _state["tick"] = 0
+                        v_pos = float(x[_fb_idx])
+                        v_neg = 0.0 if _fb_neg_idx < 0 else float(x[_fb_neg_idx])
+                        outer_meas = v_pos - v_neg
+                        _state["output"] = float(_outer_pi.update(
+                            setpoint=_outer_sp,
+                            measured=outer_meas,
+                            dt=_outer_dt,
+                        ))
+                    return _inner(x)
+
+                setpoint_callable: Any = (
+                    lambda _t, _s=outer_state: _s["output"]
+                )
+                loop = ps.bind_pi_to_switch(
+                    builder,
+                    pi=pi,
+                    measured=_measured_and_tick_outer,
+                    setpoint=setpoint_callable,
+                    switch=str(desc["switch_device"]),
+                    freq=float(desc.get("pwm_frequency", 100_000.0)),
+                    t_start=float(t_start),
+                )
+            else:
+                loop = ps.bind_pi_to_switch(
+                    builder,
+                    pi=pi,
+                    measured=measured_fn,
+                    setpoint=float(desc.get("setpoint_value", 0.0)),
+                    switch=str(desc["switch_device"]),
+                    freq=float(desc.get("pwm_frequency", 100_000.0)),
+                    t_start=float(t_start),
+                )
+            real_loops.append(loop)
+
+        # C_BLOCK control loops (pulsim 1.5 fast_block). Each compiles
+        # its Python control law and runs it as a duty-driving loop —
+        # same shape as the PI loops above, so it composes into the
+        # combined switch_fn + observer transparently.
+        real_loops.extend(
+            self._build_cblock_closed_loops(cblock_descriptors, builder, t_start)
+        )
+
+        if not real_loops:
+            return None
+
+        # Compose the switch_fns over the full switch count so each
+        # loop's OR mask layers correctly.
+        try:
+            num_sw = int(builder.graph.num_switches)
+        except Exception:  # noqa: BLE001
+            num_sw = max(getattr(circuit, "num_switches", 0), 1)
+
+        if hasattr(ps, "make_combined_switch_fn"):
+            combined_sw = ps.make_combined_switch_fn(
+                num_sw, [loop.switch_fn for loop in real_loops],
+            )
+        else:
+            # Older kernel: chain by hand using SwitchStateMask OR.
+            mask_cls = ps.SwitchStateMask
+
+            def combined_sw(t: float, _loops=tuple(real_loops),
+                             _n=num_sw, _mask=mask_cls) -> Any:
+                out = _mask(int(_n))
+                for loop in _loops:
+                    sub = loop.switch_fn(t)
+                    for bit in range(int(_n)):
+                        if sub.is_on(bit):
+                            out.turn_on(bit)
+                return out
+
+        loop_observers = [loop.step_observer for loop in real_loops]
+
+        def composed_observer(t: float, x: Any,
+                                _obs=tuple(loop_observers),
+                                _prog=progress_observer) -> None:
+            for obs in _obs:
+                obs(t, x)
+            _prog(t, x)
+
+        # Duck-typed ``ClosedLoop``: pulsim's ``simulate`` only reads
+        # ``.switch_fn`` and ``.step_observer`` off each entry in
+        # ``closed_loops``, so a SimpleNamespace is sufficient — no
+        # need to subclass the frozen dataclass.
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            switch_fn=combined_sw,
+            step_observer=composed_observer,
         )
 
     # ------------------------------------------------------------------
@@ -6467,17 +7309,19 @@ class PulsimBackend(SimulationBackend):
             # (Kelvin or Celsius — it just convolves ΔT and adds
             # T_amb back). The GUI surfaces Celsius so we stay
             # in Celsius the whole way.
-            # v1.5: forward Cancel button into the convolution so it
-            # preempts every ~1000 samples (a 1 s / 1 µs trace would
-            # otherwise block the GUI for ~1 s mid-cancel).
-            cancel_fn = getattr(callbacks, "check_cancelled", None)
-            therm_kwargs: dict = {}
-            if cancel_fn is not None:
-                therm_kwargs["should_continue"] = lambda: not cancel_fn()
+            # ``_run_thermal_compute_v13`` runs OUTSIDE the transient
+            # callback chain (post-processing convolution that takes
+            # well under a second for typical traces), so it doesn't
+            # have a ``callbacks`` arg to read ``check_cancelled``
+            # from. The earlier ``cancel_fn = getattr(callbacks, …)``
+            # raised ``NameError`` and bricked the Thermal Viewer
+            # whenever the user clicked the action. Just call
+            # ``compute_temperature`` plain — cancel support can be
+            # added back once ``ThermalAnalysisService.build_result``
+            # passes its own callbacks down.
             try:
                 t_j = self._module.compute_temperature(
                     t_arr, p_arr, stages_module, t_amb_celsius,
-                    **therm_kwargs,
                 )
             except TypeError:
                 t_j = self._module.compute_temperature(

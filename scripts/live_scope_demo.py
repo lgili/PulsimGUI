@@ -82,37 +82,49 @@ def main() -> int:
     # rate. Plenty for buck-scale dynamics; cheap on the GUI thread.
     stream = p.NativeLiveStream(capacity=200_000, decimate=20)
 
-    # Resolve state-vector slot for each node we want to see. The
-    # ``add_*`` calls on the builder commit node assignments lazily,
-    # so we resolve *after* the topology is fully built.
+    # Resolve state-vector slots after the topology is fully built.
+    # The ``add_*`` calls on the builder commit node assignments
+    # lazily, so this lookup belongs *after* the plant is finalised.
+    #
+    # Showcase the new ``panel=...`` routing: V_in and V_out share a
+    # ``Voltage`` panel (DC + control output), while the switch node
+    # V(sw) goes to its own ``Switching`` panel — its PWM transitions
+    # would crush the V_in/V_out detail if they shared an axis.
     signals = [
         LiveSignalSpec(
-            name="V(vin)",
-            state_idx=builder.node_id_of("vin"),
-            color="#4e79a7",
-            unit="V",
+            name="V(vin)",  state_idx=builder.node_id_of("vin"),
+            color="#4e79a7", unit="V", panel="Voltage",
         ),
         LiveSignalSpec(
-            name="V(vout)",
-            state_idx=builder.node_id_of("vout"),
-            color="#f28e2b",
-            unit="V",
+            name="V(vout)", state_idx=builder.node_id_of("vout"),
+            color="#f28e2b", unit="V", panel="Voltage",
         ),
         LiveSignalSpec(
-            name="V(sw)",
-            state_idx=builder.node_id_of("sw"),
-            color="#59a14f",
-            unit="V",
+            name="V(sw)",   state_idx=builder.node_id_of("sw"),
+            color="#59a14f", unit="V", panel="Switching",
         ),
     ]
 
     widget = LiveScopeWidget(
-        stream, signals, window_seconds=3e-3, update_hz=60.0,
+        stream, signals,
+        panels=("Voltage", "Switching"),
+        window_seconds=3e-3, update_hz=60.0,
     )
-    widget.setWindowTitle("PulsimGUI — LiveScopeWidget demo (buck CL)")
-    widget.resize(1100, 600)
+    widget.setWindowTitle(
+        "PulsimGUI — LiveScopeWidget demo "
+        "(buck CL + multi-panel + cursors + SMPS macros)"
+    )
+    widget.resize(1280, 720)
     widget.show()
     widget.start()
+
+    print("\nTry these once samples start flowing:")
+    print("  • Toggle 'Show A/B Cursors' — drag to measure ΔT, f=1/ΔT")
+    print("  • Set Trigger Mode = Single, Source = V(sw), Level = 6.0,")
+    print("    Edge = rising — first PWM edge freezes the view")
+    print("  • Click 'Measure Tsw + Fsw' with V(sw) selected → ~100 µs / 10 kHz")
+    print("  • Click 'Measure Duty' with V(sw) selected → ~50 %")
+    print("  • Click 'Measure Ripple' with V(vout) selected — V_pp on output\n")
 
     # Run the sim on a daemon thread; the kernel will release the GIL
     # while it's crunching, and the widget's QTimer will pull samples

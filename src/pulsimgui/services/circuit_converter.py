@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
+import uuid
 from typing import Any
 
 from pulsimgui.models.component import ComponentType, DUTY_INPUT_PARAMETER
@@ -90,6 +92,17 @@ class CircuitConverter:
 
         Converts the GUI circuit data to Pulsim's runtime Circuit API.
         """
+        # Subcircuit instances are GUI-only containers — the backend has no
+        # native concept of a hierarchical sub-block. We expand each
+        # SUBCIRCUIT in ``circuit_data["components"]`` into its internal
+        # primitives BEFORE any other processing so the downstream code
+        # only ever sees a flat netlist. The pre-pass mutates the
+        # ``circuit_data`` dict in place: it appends translated copies of
+        # the internal components (with synthesized per-instance net
+        # names to avoid sibling-instance collisions) and removes each
+        # SUBCIRCUIT entry from both ``components`` and ``node_map``.
+        self._flatten_subcircuits(circuit_data)
+
         alias_map: dict[str, str] = circuit_data.get("node_aliases", {}) or {}
         components: list[dict] = circuit_data.get("components", []) or []
         node_map: dict[str, list[str]] = circuit_data.get("node_map", {}) or {}
@@ -104,6 +117,7 @@ class CircuitConverter:
             controlled_target_node_overrides,
             synthetic_setpoint_sources,
             suppressed_control_component_ids,
+            closed_loop_descriptors,
         ) = self._infer_native_buck_control_overrides(components, node_map, alias_map)
         cblock_param_overrides = self._infer_cblock_input_channel_overrides(
             components,
@@ -205,7 +219,355 @@ class CircuitConverter:
                 positions_to_apply.append((name, component))
 
         self._apply_positions_from_list(circuit, positions_to_apply)
+
+        # Attach detected closed-loop descriptors to the shim circuit so
+        # the backend's transient runner can wire ``bind_pi_to_switch``.
+        # Empty list ⇒ open-loop circuit, backend falls back to the
+        # legacy static PWM ``switch_fn`` path.
+        try:
+            setattr(circuit, "closed_loop_descriptors", list(closed_loop_descriptors))
+        except Exception:  # noqa: BLE001 - some shims may be slot-restricted
+            pass
+
+        # Detect python_numba C_BLOCKs regulating a PWM-driven switch
+        # and attach their loop descriptors. This is a standalone pass
+        # (it does NOT touch the PI-detection logic above) — the
+        # backend compiles each via FastBlockService and runs it as a
+        # ClosedLoop. Empty list ⇒ no fast_block controllers.
+        try:
+            cblock_loops = self._infer_cblock_control_loops(
+                components, node_map, alias_map,
+            )
+            setattr(circuit, "cblock_loop_descriptors", cblock_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
         return circuit
+
+    # ------------------------------------------------------------------
+    # Subcircuit flattening
+    # ------------------------------------------------------------------
+    def _flatten_subcircuits(self, circuit_data: dict) -> None:
+        """Expand SUBCIRCUIT instances into their internal primitives.
+
+        Mutates ``circuit_data`` in place. After this call:
+          - ``circuit_data["components"]`` no longer contains any entry
+            with ``type == "SUBCIRCUIT"``. Each instance has been replaced
+            with a fresh translated copy of every component from its
+            definition's internal ``Circuit``.
+          - ``circuit_data["node_map"]`` carries pin assignments for the
+            new flattened components. The original SUBCIRCUIT entry's
+            ``node_map`` row is dropped.
+
+        Translation rules for an instance ``I`` of definition ``D``:
+          - Each port of ``D`` maps an internal net to the external net
+            that ``I``'s corresponding instance pin is wired to.
+          - All non-port internal nets are rewritten to a unique synthetic
+            name ``__sub_{instance_id_short}__{internal_net}`` so two
+            instances of the same definition cannot accidentally short
+            their internals through a shared net name.
+
+        Recursion: a definition may itself contain SUBCIRCUIT instances.
+        We track an in-progress set of definition IDs as we descend and
+        raise ``CircuitConversionError`` on a cycle (A→A, A→B→A, etc.).
+        Nested instances are expanded depth-first — by the time we
+        translate ``I``'s pins, ``D``'s internal circuit is guaranteed to
+        be fully flat.
+
+        Missing definitions are treated as conversion errors so the GUI
+        surfaces a clear "subcircuit not found" message rather than
+        silently dropping the instance.
+        """
+        components_list = circuit_data.get("components")
+        if not isinstance(components_list, list) or not components_list:
+            return
+
+        defs_raw = circuit_data.get("subcircuits") or {}
+        # ``defs_raw`` is keyed by str(definition_id). Coerce to a
+        # consistent shape so look-ups by either string or UUID succeed.
+        defs_by_id: dict[str, dict] = {
+            str(key): value for key, value in defs_raw.items() if isinstance(value, dict)
+        }
+
+        node_map: dict[str, list[str]] = circuit_data.get("node_map") or {}
+        if not isinstance(node_map, dict):
+            node_map = {}
+            circuit_data["node_map"] = node_map
+
+        # Iterate until no SUBCIRCUIT entries remain. Each pass expands
+        # one outermost layer; nested SUBCIRCUITs surfaced by the
+        # expansion get caught on the next pass. Cycle detection lives
+        # inside ``_expand_single_instance`` via the ``in_progress`` set.
+        guard = 0
+        max_iterations = 1024
+        while True:
+            guard += 1
+            if guard > max_iterations:
+                raise CircuitConversionError(
+                    "Subcircuit flattening exceeded recursion guard "
+                    f"({max_iterations} iterations); aborting."
+                )
+
+            # Snapshot indices of SUBCIRCUIT entries so we can drop them
+            # after expansion without mutating the list mid-iteration.
+            instance_indices: list[int] = []
+            for index, component in enumerate(components_list):
+                if not isinstance(component, dict):
+                    continue
+                raw_type = component.get("type")
+                if isinstance(raw_type, str) and raw_type.strip().upper() == "SUBCIRCUIT":
+                    instance_indices.append(index)
+
+            if not instance_indices:
+                return
+
+            # Expand in reverse order so list.pop(index) doesn't shift
+            # later indices we still need.
+            for index in reversed(instance_indices):
+                instance = components_list[index]
+                expanded = self._expand_single_instance(
+                    instance,
+                    defs_by_id,
+                    node_map,
+                    in_progress=set(),
+                )
+                # Drop the SUBCIRCUIT entry from the netlist + node_map
+                # before appending the expanded primitives.
+                instance_id = str(instance.get("id") or "")
+                components_list.pop(index)
+                if instance_id:
+                    node_map.pop(instance_id, None)
+                for new_component in expanded:
+                    components_list.append(new_component)
+                    new_comp_id = str(new_component.get("id") or "")
+                    if new_comp_id and "pin_nodes" in new_component:
+                        node_map[new_comp_id] = list(
+                            new_component["pin_nodes"]
+                        )
+
+    def _expand_single_instance(
+        self,
+        instance: dict,
+        defs_by_id: dict[str, dict],
+        node_map: dict[str, list[str]],
+        *,
+        in_progress: set[str],
+    ) -> list[dict]:
+        """Translate one SUBCIRCUIT instance into a list of flat component dicts.
+
+        Recurses into nested SUBCIRCUITs by pre-expanding them on a fresh
+        copy of the internal circuit data BEFORE translating ``instance``'s
+        own pins. ``in_progress`` carries the call stack of definition IDs
+        currently being expanded — if the definition we're about to enter
+        is already in the set, that's a cycle and we abort.
+        """
+        from pulsimgui.models.circuit import Circuit
+        from pulsimgui.models.subcircuit import SubcircuitDefinition
+        from pulsimgui.utils.net_utils import build_node_map
+
+        instance_id = str(instance.get("id") or "")
+        instance_name = str(instance.get("name") or "") or instance_id or "subckt"
+
+        # Find the definition ID. ``SubcircuitInstance.to_dict`` writes
+        # it at top level; older payloads may carry it inside
+        # ``parameters`` — check both for backward compatibility.
+        def_id_raw = instance.get("subcircuit_id")
+        if not def_id_raw:
+            params = instance.get("parameters") if isinstance(instance.get("parameters"), dict) else {}
+            def_id_raw = params.get("subcircuit_id") if isinstance(params, dict) else None
+        def_id = str(def_id_raw) if def_id_raw else ""
+
+        if not def_id or def_id not in defs_by_id:
+            raise CircuitConversionError(
+                f"Subcircuit instance '{instance_name}' references unknown "
+                f"definition '{def_id or '<missing>'}'"
+            )
+
+        if def_id in in_progress:
+            defn_name = str(defs_by_id[def_id].get("name") or def_id)
+            raise CircuitConversionError(
+                f"Recursive subcircuit reference detected: {defn_name}"
+            )
+
+        definition_dict = defs_by_id[def_id]
+
+        # Rehydrate the definition's internal Circuit. We work on a
+        # deepcopy of the dict so the cached project-level definition
+        # stays untouched.
+        definition = SubcircuitDefinition.from_dict(copy.deepcopy(definition_dict))
+        internal_circuit: Circuit = definition.circuit
+
+        # If the user placed SUBCIRCUIT_PORT markers inside the body,
+        # rebuild ``definition.ports`` from them as a safety net.
+        # (The GUI already auto-syncs on every edit, but the converter
+        # owns the contract here — if any path skipped the live sync,
+        # we fix it before reading port.internal_node below.)
+        from pulsimgui.models.subcircuit import sync_definition_ports_from_markers
+        sync_definition_ports_from_markers(definition)
+
+        # Build the canonical pin→net map for the internal circuit.
+        # Keys are ``(component_id_str, pin_index) → net_name``.
+        internal_node_map = build_node_map(internal_circuit)
+
+        # Build the external translation table for the instance ports:
+        # internal_net → external_net.
+        port_translation: dict[str, str] = {}
+        external_pin_nodes = list(instance.get("pin_nodes") or node_map.get(instance_id) or [])
+        for port in definition.ports:
+            internal_net = str(port.internal_node or "").strip()
+            if not internal_net:
+                continue
+            pin_idx = int(port.pin_index)
+            if pin_idx < 0 or pin_idx >= len(external_pin_nodes):
+                # Port not connected externally — synthesize an isolated
+                # external net so the internal components keep a valid
+                # netlist (matches "floating port" semantics).
+                external_net = (
+                    f"__sub_{instance_id[:8]}__port_{pin_idx}_open"
+                )
+            else:
+                external_net = str(external_pin_nodes[pin_idx] or "").strip()
+                if not external_net:
+                    external_net = (
+                        f"__sub_{instance_id[:8]}__port_{pin_idx}_open"
+                    )
+            port_translation[internal_net] = external_net
+
+        # Synthesized prefix for non-port internal nets. Includes a slice
+        # of the instance UUID so two instances of the same definition
+        # do not collide on internal nets.
+        synth_prefix = f"__sub_{instance_id[:8]}__"
+
+        def translate_net(internal_net: str) -> str:
+            net = str(internal_net or "").strip()
+            if not net:
+                return ""
+            # Ground stays ground regardless of nesting depth.
+            if net == "0":
+                return "0"
+            if net in port_translation:
+                return port_translation[net]
+            return f"{synth_prefix}{net}"
+
+        # Recurse first: expand any SUBCIRCUIT instances inside the
+        # definition. We do this by routing the internal circuit through
+        # the same flattening pass on a temporary ``circuit_data`` dict.
+        nested_data: dict[str, Any] = {
+            "components": [],
+            "node_map": {},
+            "subcircuits": defs_by_id,
+        }
+        from pulsimgui.models.component import ComponentType as _CT
+        for internal_component in internal_circuit.components.values():
+            # SUBCIRCUIT_PORT markers are not devices — they're a
+            # bridging hint for the outer instance. Their effect on
+            # the netlist is already captured by port.internal_node
+            # (which sync_definition_ports_from_markers refreshed
+            # above), so we drop them from the flattened output.
+            if internal_component.type == _CT.SUBCIRCUIT_PORT:
+                continue
+            comp_dict = internal_component.to_dict()
+            comp_id = str(internal_component.id)
+            pin_count = len(internal_component.pins)
+            pin_nodes = [
+                internal_node_map.get((comp_id, pin_idx), "") or ""
+                for pin_idx in range(pin_count)
+            ]
+            comp_dict["pin_nodes"] = pin_nodes
+            nested_data["components"].append(comp_dict)
+            nested_data["node_map"][comp_id] = list(pin_nodes)
+
+        # Recursive expansion — push this definition onto the
+        # in-progress set so any descendant referencing it bombs out.
+        in_progress_next = set(in_progress)
+        in_progress_next.add(def_id)
+        self._expand_nested_instances(
+            nested_data,
+            defs_by_id,
+            in_progress=in_progress_next,
+        )
+
+        flattened_internals = nested_data["components"]
+
+        # Now translate each flattened internal component's nets to the
+        # parent scope (external port net OR synthesized prefixed net).
+        emitted: list[dict] = []
+        for internal_component in flattened_internals:
+            new_component = copy.deepcopy(internal_component)
+            # Fresh UUID — required because the same definition may be
+            # instantiated multiple times in the parent circuit and the
+            # backend identifies components by ID.
+            new_component["id"] = str(uuid.uuid4())
+
+            # Prefix the user-facing name with the parent instance name
+            # so the flattened netlist is debuggable.
+            internal_name = str(internal_component.get("name") or "").strip() or "C"
+            new_component["name"] = f"{instance_name}__{internal_name}"
+
+            # Translate every pin net. Skip components with no pin info.
+            internal_pins = internal_component.get("pin_nodes") or []
+            translated_pins = [translate_net(net) for net in internal_pins]
+            new_component["pin_nodes"] = translated_pins
+
+            emitted.append(new_component)
+
+        return emitted
+
+    def _expand_nested_instances(
+        self,
+        nested_data: dict,
+        defs_by_id: dict[str, dict],
+        *,
+        in_progress: set[str],
+    ) -> None:
+        """Inner driver for recursive SUBCIRCUIT expansion.
+
+        Mirrors the top-level ``_flatten_subcircuits`` loop but threads
+        the ``in_progress`` set so cycles are detected.
+        """
+        components_list = nested_data["components"]
+        node_map = nested_data["node_map"]
+
+        guard = 0
+        max_iterations = 1024
+        while True:
+            guard += 1
+            if guard > max_iterations:
+                raise CircuitConversionError(
+                    "Nested subcircuit flattening exceeded recursion guard "
+                    f"({max_iterations} iterations); aborting."
+                )
+
+            instance_indices: list[int] = []
+            for index, component in enumerate(components_list):
+                if not isinstance(component, dict):
+                    continue
+                raw_type = component.get("type")
+                if isinstance(raw_type, str) and raw_type.strip().upper() == "SUBCIRCUIT":
+                    instance_indices.append(index)
+
+            if not instance_indices:
+                return
+
+            for index in reversed(instance_indices):
+                instance = components_list[index]
+                expanded = self._expand_single_instance(
+                    instance,
+                    defs_by_id,
+                    node_map,
+                    in_progress=in_progress,
+                )
+                instance_id = str(instance.get("id") or "")
+                components_list.pop(index)
+                if instance_id:
+                    node_map.pop(instance_id, None)
+                for new_component in expanded:
+                    components_list.append(new_component)
+                    new_comp_id = str(new_component.get("id") or "")
+                    if new_comp_id and "pin_nodes" in new_component:
+                        node_map[new_comp_id] = list(
+                            new_component["pin_nodes"]
+                        )
 
     def _should_skip_component(self, comp_type: ComponentType) -> bool:
         """Return True for GUI-only instrumentation components.
@@ -641,6 +1003,73 @@ class CircuitConverter:
                     set_tau(name, tau_load)
             return
 
+        if comp_type == ComponentType.INDUCTION_MOTOR:
+            # 4-pin (A, B, C, N). pulsim 1.5+ add_induction_motor —
+            # adds Rs + leakage-L + back-EMF source per phase and needs
+            # make_induction_motor_observer wired at simulate time. The
+            # shim records the handle in ``nonlinear_observer_specs``;
+            # the backend reads it to compose the observer.
+            n_a, n_b, n_c, n_neutral = self._require_nodes(name, nodes, 4)
+            n_a_idx = self._node_index(circuit, n_a, node_cache)
+            n_b_idx = self._node_index(circuit, n_b, node_cache)
+            n_c_idx = self._node_index(circuit, n_c, node_cache)
+            n_n_idx = self._node_index(circuit, n_neutral, node_cache)
+
+            add_im = getattr(circuit, "add_induction_motor", None)
+            if add_im is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the induction "
+                    "motor component (need pulsim>=1.5). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+            im_params = {
+                "R_s": self._as_float(params.get("R_s"), default=0.5),
+                "L_s": self._as_float(params.get("L_s"), default=0.05),
+                "R_r": self._as_float(params.get("R_r"), default=0.4),
+                "L_r": self._as_float(params.get("L_r"), default=0.05),
+                "L_m": self._as_float(params.get("L_m"), default=0.045),
+                "pole_pairs": int(self._as_float(params.get("pole_pairs"), default=2)),
+                "J": self._as_float(params.get("J"), default=1e-3),
+                "B": self._as_float(params.get("B"), default=0.0),
+                "T_load": self._as_float(params.get("T_load"), default=0.0),
+            }
+            try:
+                add_im(name, n_a_idx, n_b_idx, n_c_idx, n_n_idx, im_params)
+            except (ValueError, AttributeError) as exc:
+                raise CircuitConversionError(
+                    f"Induction motor '{name}': {exc}"
+                ) from exc
+            return
+
+        if comp_type == ComponentType.HYSTERETIC_INDUCTOR:
+            # 2-pin Jiles-Atherton hysteretic inductor (pulsim 1.5+).
+            # add_hysteretic_inductor adds L0 + dummy V_M source;
+            # make_hysteretic_inductor_observer drives V_M each step.
+            n1, n2 = self._require_nodes(name, nodes, 2)
+            n1_idx = self._node_index(circuit, n1, node_cache)
+            n2_idx = self._node_index(circuit, n2, node_cache)
+
+            add_hl = getattr(circuit, "add_hysteretic_inductor", None)
+            if add_hl is None:
+                raise CircuitConversionError(
+                    "This Pulsim runtime does not support the hysteretic "
+                    "inductor component (need pulsim>=1.5). Upgrade with "
+                    "`pip install -U pulsim`."
+                )
+            hl_params = {
+                "material": str(params.get("material", "si_steel_m19")),
+                "N_turns": int(self._as_float(params.get("N_turns"), default=100)),
+                "l_m": self._as_float(params.get("l_m"), default=0.1),
+                "A_core": self._as_float(params.get("A_core"), default=1e-4),
+            }
+            try:
+                add_hl(name, n1_idx, n2_idx, hl_params)
+            except (ValueError, AttributeError) as exc:
+                raise CircuitConversionError(
+                    f"Hysteretic inductor '{name}': {exc}"
+                ) from exc
+            return
+
         if comp_type == ComponentType.THREE_PHASE_SOURCE:
             # Pins: A, B, C, N (4-terminal). Calls Circuit::add_three_phase_source
             # which internally decomposes into 3 SineVoltageSource branches.
@@ -692,43 +1121,83 @@ class CircuitConverter:
 
             add_vsi = getattr(circuit, "add_three_phase_vsi", None)
             params_cls = getattr(self._sl, "ThreePhaseVsiParams", None)
-            if add_vsi is None or params_cls is None:
-                raise CircuitConversionError(
-                    "This Pulsim runtime does not support the 3-Phase VSI "
-                    "component (need pulsim>=0.10.0a5). "
-                    "Upgrade with `pip install -U pulsim`."
+            if add_vsi is not None and params_cls is not None:
+                vsi_p = params_cls()
+                vsi_p.switching_frequency_hz = self._as_float(
+                    params.get("switching_frequency_hz"), default=10e3
                 )
+                vsi_p.modulation_index = self._as_float(
+                    params.get("modulation_index"), default=0.8
+                )
+                vsi_p.modulation_frequency_hz = self._as_float(
+                    params.get("modulation_frequency_hz"), default=50.0
+                )
+                vsi_p.phase_a_deg = self._as_float(
+                    params.get("phase_a_deg"), default=0.0
+                )
+                vsi_p.positive_sequence = bool(
+                    params.get("positive_sequence", True)
+                )
+                vsi_p.v_gate_on = self._as_float(
+                    params.get("v_gate_on"), default=12.0
+                )
+                vsi_p.v_gate_off = self._as_float(
+                    params.get("v_gate_off"), default=0.0
+                )
+                vsi_p.mosfet_r_on_ohm = self._as_float(
+                    params.get("mosfet_r_on_ohm"), default=0.01
+                )
+                vsi_p.mosfet_vth = self._as_float(
+                    params.get("mosfet_vth"), default=1.0
+                )
+                add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
+                        n_a_idx, n_b_idx, n_c_idx, vsi_p)
+                return
 
-            vsi_p = params_cls()
-            vsi_p.switching_frequency_hz = self._as_float(
-                params.get("switching_frequency_hz"), default=10e3
-            )
-            vsi_p.modulation_index = self._as_float(
-                params.get("modulation_index"), default=0.8
-            )
-            vsi_p.modulation_frequency_hz = self._as_float(
+            # Pulsim 1.5+ retired the native VSI builder. Fall back to a
+            # BEHAVIORAL averaged model: three ideal sine voltage sources
+            # from each phase to ``VDC-``, at ``modulation_frequency_hz``
+            # with 120° phase shifts. Amplitude = (modulation_index ×
+            # V_dc_nominal) / 2 — a half-bus reference common to averaged
+            # VSI models. Does NOT model switching ripple or per-cycle PWM
+            # — adequate for V/f open-loop motor demos where the user
+            # cares about the fundamental.
+            import math
+            f_mod = self._as_float(
                 params.get("modulation_frequency_hz"), default=50.0
             )
-            vsi_p.phase_a_deg = self._as_float(
+            m_index = self._as_float(
+                params.get("modulation_index"), default=0.8
+            )
+            phase_a_deg = self._as_float(
                 params.get("phase_a_deg"), default=0.0
             )
-            vsi_p.positive_sequence = bool(
-                params.get("positive_sequence", True)
+            positive_seq = bool(params.get("positive_sequence", True))
+            v_dc_nominal = self._as_float(
+                params.get("v_dc_nominal"), default=400.0
             )
-            vsi_p.v_gate_on = self._as_float(
-                params.get("v_gate_on"), default=12.0
-            )
-            vsi_p.v_gate_off = self._as_float(
-                params.get("v_gate_off"), default=0.0
-            )
-            vsi_p.mosfet_r_on_ohm = self._as_float(
-                params.get("mosfet_r_on_ohm"), default=0.01
-            )
-            vsi_p.mosfet_vth = self._as_float(
-                params.get("mosfet_vth"), default=1.0
-            )
-            add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
-                    n_a_idx, n_b_idx, n_c_idx, vsi_p)
+            v_phase_peak = m_index * v_dc_nominal / 2.0
+            sign = 1.0 if positive_seq else -1.0
+            phase_a_rad = math.radians(phase_a_deg)
+            phase_b_rad = phase_a_rad - sign * (2.0 * math.pi / 3.0)
+            phase_c_rad = phase_a_rad - sign * (4.0 * math.pi / 3.0)
+
+            vdc_neg_name = circuit._name_of(n_vdc_neg_idx)
+            phase_a_name = circuit._name_of(n_a_idx)
+            phase_b_name = circuit._name_of(n_b_idx)
+            phase_c_name = circuit._name_of(n_c_idx)
+
+            for phase_name, node_name, phase_rad in (
+                ("A", phase_a_name, phase_a_rad),
+                ("B", phase_b_name, phase_b_rad),
+                ("C", phase_c_name, phase_c_rad),
+            ):
+                circuit._builder.add_sine_voltage_source(
+                    f"{name}_V{phase_name}",
+                    node_name, vdc_neg_name,
+                    v_dc_nominal / 2.0, v_phase_peak,
+                    f_mod, phase_rad,
+                )
             return
 
         if comp_type in (ComponentType.DIODE, ComponentType.ZENER_DIODE, ComponentType.LED):
@@ -813,6 +1282,230 @@ class CircuitConverter:
                     g_off,
                 )
                 return
+
+        if comp_type == ComponentType.SINGLE_PHASE_DIODE_BRIDGE:
+            # Pin layout: 0=AC+, 1=AC-, 2=DC+, 3=DC-
+            # Topology (Graetz): 4 diodes, current always flows DC+ → load → DC-.
+            #   D1: AC+ → DC+   (anode=AC+, cathode=DC+)
+            #   D2: AC- → DC+   (anode=AC-, cathode=DC+)
+            #   D3: DC- → AC+   (anode=DC-, cathode=AC+)
+            #   D4: DC- → AC-   (anode=DC-, cathode=AC-)
+            n_acp, n_acn, n_dcp, n_dcn = self._require_nodes(name, nodes, 4)
+            acp = self._node_index(circuit, n_acp, node_cache)
+            acn = self._node_index(circuit, n_acn, node_cache)
+            dcp = self._node_index(circuit, n_dcp, node_cache)
+            dcn = self._node_index(circuit, n_dcn, node_cache)
+            g_on, g_off = self._switch_conductances(params)
+            for diode_name, anode, cathode in (
+                (f"{name}_D1", acp, dcp),
+                (f"{name}_D2", acn, dcp),
+                (f"{name}_D3", dcn, acp),
+                (f"{name}_D4", dcn, acn),
+            ):
+                try:
+                    circuit.add_diode(diode_name, anode, cathode, g_on, g_off)
+                except TypeError:
+                    circuit.add_diode(diode_name, anode, cathode)
+            return
+
+        if comp_type == ComponentType.THREE_PHASE_DIODE_BRIDGE:
+            # Pin layout: 0=A, 1=B, 2=C, 3=DC+, 4=DC-
+            # Topology: 6-pulse bridge (3 upper diodes A/B/C → DC+, 3 lower
+            # DC- → A/B/C). Industry-standard 6-diode rectifier.
+            n_a, n_b, n_c, n_dcp, n_dcn = self._require_nodes(name, nodes, 5)
+            a = self._node_index(circuit, n_a, node_cache)
+            b = self._node_index(circuit, n_b, node_cache)
+            c = self._node_index(circuit, n_c, node_cache)
+            dcp = self._node_index(circuit, n_dcp, node_cache)
+            dcn = self._node_index(circuit, n_dcn, node_cache)
+            g_on, g_off = self._switch_conductances(params)
+            for diode_name, anode, cathode in (
+                (f"{name}_D1", a,   dcp),  # upper A
+                (f"{name}_D2", b,   dcp),  # upper B
+                (f"{name}_D3", c,   dcp),  # upper C
+                (f"{name}_D4", dcn, a),    # lower A
+                (f"{name}_D5", dcn, b),    # lower B
+                (f"{name}_D6", dcn, c),    # lower C
+            ):
+                try:
+                    circuit.add_diode(diode_name, anode, cathode, g_on, g_off)
+                except TypeError:
+                    circuit.add_diode(diode_name, anode, cathode)
+            return
+
+        if comp_type == ComponentType.MMC_CELL:
+            # Single MMC sub-module cell. ``cell_topology`` picks between
+            # half-bridge (2 switches, 4 pins) and full-bridge (4 switches,
+            # 6 pins). Switch on the parameter and expand into the right
+            # primitive set.
+            topology = str(params.get("cell_topology") or "Half-Bridge")
+
+            mosfet_params = self._sl.MOSFETParams()
+            mosfet_params.is_nmos = True
+            mosfet_params.R_on = self._as_float(params.get("r_ds_on"), default=25e-3)
+            mosfet_params.R_off = 1.0 / max(
+                self._as_float(params.get("g_off"), default=1e-9), 1e-30
+            )
+            c_cell = self._as_float(params.get("c_cell"), default=4.7e-3)
+            v_cell_init = self._as_float(params.get("v_cell_init"), default=0.0)
+
+            if topology == "Full-Bridge":
+                # Pin layout: 0=TOP, 1=BOT, 2=S1_G, 3=S2_G, 4=S3_G, 5=S4_G
+                # H-bridge with cap across CAP_TOP ↔ CAP_BOT internal nodes:
+                #   S1: CAP_TOP → TOP   (gate=S1_G)  upper-left
+                #   S2: TOP     → CAP_BOT (gate=S2_G)  lower-left
+                #   S3: CAP_TOP → BOT   (gate=S3_G)  upper-right
+                #   S4: BOT     → CAP_BOT (gate=S4_G)  lower-right
+                n_top, n_bot, n_g1, n_g2, n_g3, n_g4 = self._require_nodes(name, nodes, 6)
+                top = self._node_index(circuit, n_top, node_cache)
+                bot = self._node_index(circuit, n_bot, node_cache)
+                g1 = self._node_index(circuit, n_g1, node_cache)
+                g2 = self._node_index(circuit, n_g2, node_cache)
+                g3 = self._node_index(circuit, n_g3, node_cache)
+                g4 = self._node_index(circuit, n_g4, node_cache)
+                cap_top = self._node_index(circuit, f"__{name}_captop", node_cache)
+                cap_bot = self._node_index(circuit, f"__{name}_capbot", node_cache)
+
+                circuit.add_mosfet(f"{name}_S1", g1, cap_top, top, mosfet_params)
+                circuit.add_mosfet(f"{name}_S2", g2, top, cap_bot, mosfet_params)
+                circuit.add_mosfet(f"{name}_S3", g3, cap_top, bot, mosfet_params)
+                circuit.add_mosfet(f"{name}_S4", g4, bot, cap_bot, mosfet_params)
+                circuit.add_capacitor(f"{name}_C", cap_top, cap_bot, c_cell, v_cell_init)
+            else:
+                # Half-bridge — pin layout: 0=TOP, 1=BOT, 2=S1_G, 3=S2_G
+                #   S1 (upper): CAP_TOP → TOP   (gate=S1_G)
+                #   S2 (lower): TOP     → BOT   (gate=S2_G)
+                #   C: CAP_TOP → BOT
+                n_top, n_bot, n_g1, n_g2 = self._require_nodes(name, nodes, 4)
+                top = self._node_index(circuit, n_top, node_cache)
+                bot = self._node_index(circuit, n_bot, node_cache)
+                g1 = self._node_index(circuit, n_g1, node_cache)
+                g2 = self._node_index(circuit, n_g2, node_cache)
+                cap_top = self._node_index(circuit, f"__{name}_captop", node_cache)
+
+                circuit.add_mosfet(f"{name}_S1", g1, cap_top, top, mosfet_params)
+                circuit.add_mosfet(f"{name}_S2", g2, top, bot, mosfet_params)
+                circuit.add_capacitor(f"{name}_C", cap_top, bot, c_cell, v_cell_init)
+            return
+
+        if comp_type == ComponentType.MMC_ARM:
+            # Pin layout: 0=TOP, 1=BOT, 2=M_REF (signal — ignored in
+            # this initial mapping; pulsim's add_mmc_arm_* takes m_ref
+            # as a float constant unless wired to a callable).
+            n_top, n_bot, _n_mref = self._require_nodes(name, nodes, 3)
+            top = self._node_index(circuit, n_top, node_cache)
+            bot = self._node_index(circuit, n_bot, node_cache)
+            top_name = circuit._name_of(top)
+            bot_name = circuit._name_of(bot)
+
+            fidelity = str(params.get("model_fidelity") or "L3 Detailed")
+            level = fidelity.split(" ", 1)[0].upper()  # "L0".."L3"
+
+            # Resolve pulsim.mmc module on the backend (pulsim 1.5+
+            # exposes it as ``pulsim.mmc``). Older runtimes that lack
+            # it raise a clear error instead of failing silently.
+            ps_module = getattr(self._sl, "_wrapped", None) or self._sl
+            mmc_mod = getattr(ps_module, "mmc", None)
+            if mmc_mod is None:
+                raise CircuitConversionError(
+                    f"MMC_ARM component '{name}' requires pulsim>=1.5 "
+                    "with the ``pulsim.mmc`` module. Upgrade pulsim."
+                )
+
+            n_sm = max(1, int(self._as_float(
+                params.get("n_submodules"), default=4)))
+            c_sm = self._as_float(params.get("c_sm"), default=4.7e-3)
+            v_c0 = self._as_float(params.get("v_c0"), default=0.0)
+            r_arm = self._as_float(params.get("r_arm"), default=0.01)
+            f_carrier = self._as_float(params.get("f_carrier"), default=1e3)
+            m_ref_const = self._as_float(
+                params.get("m_ref_constant"), default=0.5)
+
+            # Submodule type — pulsim.mmc.SubmoduleType is Literal
+            # ['half_bridge', 'full_bridge'] (a typing.Literal type,
+            # not an enum). Map the GUI label to the literal string.
+            sm_type_str = str(params.get("submodule_type") or "Half-Bridge")
+            sm_type_value = ("full_bridge" if "Full" in sm_type_str
+                              else "half_bridge")
+
+            # Modulation scheme — Literal ['ps_pwm', 'ipd']. Map the
+            # GUI's PSC/PD/POD/APOD labels to pulsim's 2 supported
+            # variants: PSC → ps_pwm (phase-shifted PWM), anything
+            # else falls back to 'ipd' (in-phase disposition).
+            mod_scheme_str = str(params.get("modulation_scheme") or "PSC")
+            mod_scheme_value = (
+                "ps_pwm" if mod_scheme_str.upper().startswith("PS")
+                else "ipd"
+            )
+
+            # Pick the helper + params class per fidelity level
+            level_table = {
+                "L0": ("add_mmc_arm_average",    "MmcArmAverageParams"),
+                "L1": ("add_mmc_arm_multilevel", "MmcArmMultilevelParams"),
+                "L2": ("add_mmc_arm_equivalent", "MmcArmEquivalentParams"),
+                "L3": ("add_mmc_arm_detailed",   "MmcArmDetailedParams"),
+            }
+            if level not in level_table:
+                raise CircuitConversionError(
+                    f"MMC_ARM '{name}': unknown model_fidelity={fidelity!r}; "
+                    f"expected one of {list(level_table.keys())}."
+                )
+            helper_name, params_cls_name = level_table[level]
+            helper = getattr(mmc_mod, helper_name, None)
+            params_cls = getattr(mmc_mod, params_cls_name, None)
+            if helper is None or params_cls is None:
+                raise CircuitConversionError(
+                    f"MMC_ARM '{name}': pulsim.mmc lacks {helper_name} / "
+                    f"{params_cls_name}. Upgrade pulsim."
+                )
+
+            # Build the params instance. n_sm + c_sm are required;
+            # everything else is optional with sensible defaults.
+            mmc_kwargs: dict[str, Any] = {
+                "n_sm": n_sm,
+                "c_sm": c_sm,
+                "sm_type": sm_type_value,
+                "v_c0": v_c0,
+                "r_p": r_arm,
+            }
+            # L1/L2/L3 take a carrier frequency and modulation scheme
+            if level in {"L1", "L2", "L3"}:
+                mmc_kwargs["f_carrier"] = f_carrier
+                mmc_kwargs["modulation_scheme"] = mod_scheme_value
+            # L2 also takes dead-time + minimum-on-time
+            if level == "L2":
+                mmc_kwargs["t_dead"] = self._as_float(
+                    params.get("t_dead"), default=1.0e-6)
+                mmc_kwargs["t_min"] = self._as_float(
+                    params.get("t_min"), default=1.0e-7)
+            # L3 takes a balancing strategy (Literal, not bool)
+            if level == "L3":
+                balancing_val = params.get("balancing", True)
+                # GUI used to expose a bool; pulsim wants a literal.
+                if isinstance(balancing_val, bool):
+                    mmc_kwargs["balancing"] = (
+                        "sort_and_select" if balancing_val else "none"
+                    )
+                else:
+                    mmc_kwargs["balancing"] = str(balancing_val)
+
+            mmc_p = params_cls(**mmc_kwargs)
+
+            # Call the helper. Modulation reference is a constant
+            # for now — callable references (signal-driven
+            # modulation) need backend observer wiring, which is a
+            # separate task. The kwarg name differs between L0
+            # (``m_b``, branch modulation) and L1/L2/L3 (``m_ref``).
+            mod_kw = {"m_b" if level == "L0" else "m_ref": m_ref_const}
+            helper(
+                circuit._builder,
+                name=name,
+                node_a=top_name,
+                node_b=bot_name,
+                params=mmc_p,
+                **mod_kw,
+            )
+            return
 
         if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
             n1, n2 = self._require_nodes(name, nodes, 2)
@@ -1230,6 +1923,7 @@ class CircuitConverter:
         dict[str, list[str]],
         list[dict[str, Any]],
         set[str],
+        list[dict[str, Any]],
     ]:
         """Infer canonical PI/PWM control overrides for buck-style closed loops.
 
@@ -1238,13 +1932,28 @@ class CircuitConverter:
         - PWM nodes => [0]
         - PWM metadata => duty_from_channel + target_component
         - C_BLOCK/PID duty wiring to PWM DUTY_IN => duty_from_channel
+
+        Returns
+        -------
+        tuple
+            The legacy six overrides plus a seventh ``closed_loop_descriptors``
+            list — one structured dict per detected ``PI_CONTROLLER →
+            PWM_GENERATOR → MOSFET`` chain. The backend uses these to
+            wire ``pulsim.bind_pi_to_switch`` since pulsim ≥ 1.4 retired
+            the in-kernel ``pi_controller`` / ``pwm_generator`` virtual
+            blocks the converter still emits for legacy reasons.
+
+            Each descriptor carries everything ``bind_pi_to_switch``
+            needs: PI gains + clamps, setpoint value, the kernel-known
+            node name to read feedback from, the MOSFET device name, and
+            the PWM carrier frequency.
         """
         try:
             supports_virtual = hasattr(self._sl.Circuit(), "add_virtual_component")
         except Exception:
             supports_virtual = False
         if not supports_virtual:
-            return {}, {}, {}, {}, [], set()
+            return {}, {}, {}, {}, [], set(), []
 
         by_id: dict[str, dict[str, Any]] = {}
         by_type: dict[ComponentType, list[dict[str, Any]]] = {}
@@ -1281,6 +1990,8 @@ class CircuitConverter:
             except (TypeError, ValueError):
                 continue
 
+        # Voltage-probe outputs: maps "signal node" → (positive node,
+        # negative node). The backend computes V = state[pos] - state[neg].
         probe_outputs: dict[str, tuple[str, str]] = {}
         for component in by_type.get(ComponentType.VOLTAGE_PROBE, []):
             nodes = _raw_nodes(component)
@@ -1297,12 +2008,50 @@ class CircuitConverter:
             if out_node:
                 probe_outputs[out_node] = (nodes[0], "0")
 
+        # Current-probe outputs: maps "signal node" → (in_node, out_node,
+        # bypass_resistance). The probe is implemented as a tiny series
+        # resistor; the backend computes I = (V_in - V_out) / R_bypass.
+        # This enables cascaded controllers where the inner loop is
+        # current-mode (PI sees inductor current via a CURRENT_PROBE).
+        current_probe_outputs: dict[str, tuple[str, str, float]] = {}
+        for component in by_type.get(ComponentType.CURRENT_PROBE, []):
+            nodes = _raw_nodes(component)
+            if len(nodes) < 3:
+                continue
+            sig_node = nodes[2]
+            if not sig_node:
+                continue
+            params = component.get("parameters") if isinstance(
+                component.get("parameters"), dict
+            ) else {}
+            try:
+                bypass_r = float(
+                    params.get("series_resistance",
+                                self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS)
+                )
+            except (TypeError, ValueError):
+                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+            if bypass_r <= 0.0:
+                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+            current_probe_outputs[sig_node] = (nodes[0], nodes[1], bypass_r)
+
+        # PI-output map: maps each PI's OUT node → the PI component dict.
+        # Used by cascaded detection — the inner loop's SUBTRACTOR
+        # setpoint pin reads from an OUTER PI's OUT node rather than
+        # from a CONSTANT.
+        pi_output_to_component: dict[str, dict[str, Any]] = {}
+        for pi_comp in by_type.get(ComponentType.PI_CONTROLLER, []):
+            pi_nodes_local = _raw_nodes(pi_comp)
+            if len(pi_nodes_local) >= 2 and pi_nodes_local[1]:
+                pi_output_to_component[pi_nodes_local[1]] = pi_comp
+
         pi_node_overrides: dict[str, list[str]] = {}
         pwm_node_overrides: dict[str, list[str]] = {}
         pwm_param_overrides: dict[str, dict[str, Any]] = {}
         controlled_target_node_overrides: dict[str, list[str]] = {}
         synthetic_sources: list[dict[str, Any]] = []
         suppressed_component_ids: set[str] = set()
+        closed_loop_descriptors: list[dict[str, Any]] = []
 
         for pi_component in by_type.get(ComponentType.PI_CONTROLLER, []):
             pi_id = str(pi_component.get("id") or "").strip()
@@ -1335,17 +2084,41 @@ class CircuitConverter:
             if len(sub_nodes) < 2:
                 continue
 
+            # Inner-loop SUB inputs can be:
+            #   - feedback: VOLTAGE_PROBE (voltage mode) or CURRENT_PROBE
+            #     (current mode, for cascaded inner loop)
+            #   - setpoint: CONSTANT (single-loop) or another PI's OUT
+            #     (cascaded — outer voltage loop feeds inner current ref)
             feedback_pair: tuple[str, str] | None = None
+            current_feedback: tuple[str, str, float] | None = None
             setpoint_constant: float | None = None
             setpoint_constant_id: str | None = None
+            outer_pi_component: dict[str, Any] | None = None
             for node in sub_nodes[:2]:
-                if node in probe_outputs and feedback_pair is None:
+                if node in probe_outputs and feedback_pair is None \
+                        and current_feedback is None:
                     feedback_pair = probe_outputs[node]
                     continue
-                if node in constant_outputs and setpoint_constant is None:
+                if node in current_probe_outputs and current_feedback is None \
+                        and feedback_pair is None:
+                    current_feedback = current_probe_outputs[node]
+                    continue
+                if node in constant_outputs and setpoint_constant is None \
+                        and outer_pi_component is None:
                     setpoint_constant, setpoint_constant_id = constant_outputs[node]
+                    continue
+                # Cascaded: setpoint comes from another PI's OUT
+                if node in pi_output_to_component and outer_pi_component is None \
+                        and setpoint_constant is None:
+                    candidate_outer = pi_output_to_component[node]
+                    # Don't treat the inner PI itself as its own outer
+                    if str(candidate_outer.get("id") or "") != pi_id:
+                        outer_pi_component = candidate_outer
 
-            if feedback_pair is None or setpoint_constant is None:
+            # Need at least one feedback source AND one setpoint source
+            has_feedback = feedback_pair is not None or current_feedback is not None
+            has_setpoint = setpoint_constant is not None or outer_pi_component is not None
+            if not has_feedback or not has_setpoint:
                 continue
 
             pwm_id = str(pwm_component.get("id") or "").strip()
@@ -1379,20 +2152,39 @@ class CircuitConverter:
                 target_component_nodes = _raw_nodes(candidate)
                 break
 
-            setpoint_raw_node = self._find_reference_voltage_node(components, node_map, setpoint_constant)
-            if setpoint_raw_node:
-                setpoint_node = self._node_label(setpoint_raw_node, alias_map)
-            else:
-                setpoint_node = f"{pi_name}_REF".replace(" ", "_")
-                synthetic_sources.append(
-                    {
+            # Resolve setpoint info. For single-loop we tie it to a
+            # specific CONSTANT voltage source node; for cascaded the
+            # inner setpoint is dynamic (driven by outer PI output),
+            # so we just synthesize a placeholder.
+            if setpoint_constant is not None:
+                setpoint_raw_node = self._find_reference_voltage_node(
+                    components, node_map, setpoint_constant,
+                )
+                if setpoint_raw_node:
+                    setpoint_node = self._node_label(setpoint_raw_node, alias_map)
+                else:
+                    setpoint_node = f"{pi_name}_REF".replace(" ", "_")
+                    synthetic_sources.append({
                         "name": setpoint_node,
                         "node": setpoint_node,
                         "value": float(setpoint_constant),
-                    }
-                )
-            feedback_plus = self._node_label(feedback_pair[0], alias_map)
-            feedback_minus = self._node_label(feedback_pair[1], alias_map)
+                    })
+            else:
+                # Cascaded inner: setpoint comes from outer PI at sim time.
+                setpoint_node = f"{pi_name}_INNER_REF".replace(" ", "_")
+
+            # Resolve feedback nodes (voltage or current). The legacy
+            # virtual-block path only uses voltage feedback so we wire
+            # ``feedback_plus``/``feedback_minus`` from EITHER source —
+            # for current mode we use the probe's IN/OUT pair (the
+            # backend then computes I = (V_in - V_out) / R_bypass).
+            if current_feedback is not None:
+                feedback_plus = self._node_label(current_feedback[0], alias_map)
+                feedback_minus = self._node_label(current_feedback[1], alias_map)
+            else:
+                assert feedback_pair is not None
+                feedback_plus = self._node_label(feedback_pair[0], alias_map)
+                feedback_minus = self._node_label(feedback_pair[1], alias_map)
             pi_node_overrides[pi_id] = [setpoint_node, feedback_plus, feedback_minus]
             pwm_node_overrides[pwm_id] = ["0"]
             pwm_param_overrides[pwm_id] = {
@@ -1420,6 +2212,139 @@ class CircuitConverter:
                 suppressed_component_ids.add(subtractor_id)
             if setpoint_constant_id:
                 suppressed_component_ids.add(setpoint_constant_id)
+
+            # Structured descriptor — handed to the backend so it can
+            # call ``pulsim.bind_pi_to_switch`` at simulate time. The
+            # legacy ``pwm_param_overrides`` above still go in because
+            # other code paths depend on them, but the backend now
+            # prefers this descriptor for actually driving the loop.
+            pi_params = pi_component.get("parameters") if isinstance(
+                pi_component.get("parameters"), dict
+            ) else {}
+            pwm_params = pwm_component.get("parameters") if isinstance(
+                pwm_component.get("parameters"), dict
+            ) else {}
+
+            def _float(d: dict[str, Any], key: str, default: float) -> float:
+                # Tolerate either case — canonical is lowercase
+                # (matches DEFAULT_PARAMETERS / the properties panel),
+                # but older project files and some hand-edited examples
+                # used CamelCase. Try lowercase first, then capitalized.
+                for candidate in (key, key.capitalize(), key.lower()):
+                    val = d.get(candidate)
+                    if val is None:
+                        continue
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        continue
+                return default
+
+            descriptor: dict[str, Any] = {
+                "pi_name": pi_name,
+                "pwm_name": self._component_name(
+                    pwm_component, ComponentType.PWM_GENERATOR,
+                ),
+                "switch_device": target_name,
+                "kp": _float(pi_params, "kp", 0.1),
+                "ki": _float(pi_params, "ki", 100.0),
+                "output_min": _float(pi_params, "output_min", 0.0),
+                "output_max": _float(pi_params, "output_max", 1.0),
+                "pwm_frequency": _float(pwm_params, "frequency", 100_000.0),
+                # Kernel-known feedback node name (alias if available,
+                # else the ``N{node_id}`` fallback). The backend uses
+                # this with ``builder.node_id_of(...)`` to build the
+                # ``measured`` callable.
+                "feedback_node": feedback_plus,
+                # Setpoint side. For single-loop the backend uses
+                # ``setpoint_value``; for cascaded it consults
+                # ``outer_pi`` and ignores ``setpoint_value``.
+                "setpoint_value": (
+                    float(setpoint_constant)
+                    if setpoint_constant is not None else 0.0
+                ),
+            }
+
+            # Current-mode inner feedback (cascaded current loop): the
+            # backend reads I = (V(in) - V(out)) / R_bypass instead of
+            # a single node voltage.
+            if current_feedback is not None:
+                descriptor["feedback_kind"] = "current"
+                descriptor["feedback_node_in"] = self._node_label(
+                    current_feedback[0], alias_map,
+                )
+                descriptor["feedback_node_out"] = self._node_label(
+                    current_feedback[1], alias_map,
+                )
+                descriptor["feedback_bypass_r"] = float(current_feedback[2])
+            else:
+                descriptor["feedback_kind"] = "voltage"
+
+            # Cascaded: emit a nested ``outer_pi`` block when the inner
+            # SUB's setpoint pin reads from another PI's OUT.
+            if outer_pi_component is not None:
+                outer_id = str(outer_pi_component.get("id") or "").strip()
+                outer_name = self._component_name(
+                    outer_pi_component, ComponentType.PI_CONTROLLER,
+                )
+                outer_nodes_loc = _raw_nodes(outer_pi_component)
+                outer_input_node = outer_nodes_loc[0] if outer_nodes_loc else ""
+
+                # Find the outer SUBTRACTOR (its OUT feeds outer PI.IN)
+                outer_sub: dict[str, Any] | None = None
+                for cand in by_type.get(ComponentType.SUBTRACTOR, []):
+                    cand_nodes = _raw_nodes(cand)
+                    if (len(cand_nodes) >= 3
+                            and cand_nodes[2] == outer_input_node
+                            and str(cand.get("id") or "") != subtractor_id):
+                        outer_sub = cand
+                        break
+
+                if outer_sub is not None:
+                    outer_sub_nodes = _raw_nodes(outer_sub)
+                    outer_feedback_pair: tuple[str, str] | None = None
+                    outer_setpoint_val: float | None = None
+                    outer_setpoint_const_id: str | None = None
+                    for node in outer_sub_nodes[:2]:
+                        if node in probe_outputs and outer_feedback_pair is None:
+                            outer_feedback_pair = probe_outputs[node]
+                            continue
+                        if node in constant_outputs and outer_setpoint_val is None:
+                            outer_setpoint_val, outer_setpoint_const_id = constant_outputs[node]
+
+                    if outer_feedback_pair is not None and outer_setpoint_val is not None:
+                        outer_params = outer_pi_component.get("parameters")
+                        outer_params = outer_params if isinstance(outer_params, dict) else {}
+                        descriptor["outer_pi"] = {
+                            "pi_name": outer_name,
+                            "kp": _float(outer_params, "kp", 0.1),
+                            "ki": _float(outer_params, "ki", 100.0),
+                            "output_min": _float(outer_params, "output_min", 0.0),
+                            "output_max": _float(outer_params, "output_max", 1.0),
+                            "setpoint_value": float(outer_setpoint_val),
+                            "feedback_node": self._node_label(
+                                outer_feedback_pair[0], alias_map,
+                            ),
+                            "feedback_node_neg": self._node_label(
+                                outer_feedback_pair[1], alias_map,
+                            ),
+                            # Outer-loop sample period — the backend
+                            # uses this to throttle outer PI updates
+                            # to a slower rate than the inner PWM
+                            # tick (typical: 1 ms vs 20 µs).
+                            "sample_time": _float(outer_params, "sample_time", 1.0e-3),
+                        }
+                        # Suppress the outer sub + outer setpoint constant
+                        # so they don't get emitted as virtual blocks too.
+                        outer_sub_id = str(outer_sub.get("id") or "")
+                        if outer_sub_id:
+                            suppressed_component_ids.add(outer_sub_id)
+                        if outer_setpoint_const_id:
+                            suppressed_component_ids.add(outer_setpoint_const_id)
+                        if outer_id:
+                            suppressed_component_ids.add(outer_id)
+
+            closed_loop_descriptors.append(descriptor)
 
         # Generic wiring-based duty inference:
         # If PWM DUTY_IN is driven by a known virtual control block output, convert PWM
@@ -1605,6 +2530,7 @@ class CircuitConverter:
             controlled_target_node_overrides,
             synthetic_sources,
             suppressed_component_ids,
+            closed_loop_descriptors,
         )
 
     def _infer_cblock_input_channel_overrides(
@@ -1866,6 +2792,154 @@ class CircuitConverter:
             overrides[comp_id] = cblock_override
 
         return overrides
+
+    def _infer_cblock_control_loops(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Detect ``python_numba`` C_BLOCKs that regulate a PWM-driven
+        switch, and emit one ``cblock_loop_descriptor`` each.
+
+        Topology matched (the SISO controller case):
+
+            <feedback node> ──(probe)──▶ C_BLOCK.in0
+            C_BLOCK.out0 ───────────────▶ PWM.duty_in ──▶ switch
+
+        For each python_numba C_BLOCK we resolve:
+          * the PWM whose duty-input node equals the C_BLOCK's first
+            output node (same wiring rule the PI detector uses), then
+            that PWM's target switch via
+            :meth:`_infer_pwm_target_component_name`;
+          * the feedback electrical node from the C_BLOCK's first
+            input — through a voltage probe when one drives that input,
+            else the input node directly.
+
+        Standalone + defensive: this pass does NOT share state with
+        ``_infer_native_buck_control_overrides`` (the PI detector), so
+        it cannot perturb existing closed-loop detection. A C_BLOCK
+        that doesn't match the topology is simply skipped.
+
+        Returns the descriptor list (empty when no fast_block
+        controller is present). The backend
+        (``_build_cblock_closed_loops``) compiles + runs each.
+        """
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            return [str(node or "").strip() for node in node_map.get(comp_id, [])]
+
+        # Group by type (only the few we care about).
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        cblocks = by_type.get(ComponentType.C_BLOCK, [])
+        if not cblocks:
+            return []
+
+        pwms = by_type.get(ComponentType.PWM_GENERATOR, [])
+
+        # signal node → measured electrical node (positive side). Same
+        # construction as the PI detector's ``probe_outputs``.
+        probe_outputs: dict[str, str] = {}
+        for probe in by_type.get(ComponentType.VOLTAGE_PROBE, []):
+            nodes = _raw_nodes(probe)
+            if len(nodes) >= 3 and nodes[2]:
+                probe_outputs[nodes[2]] = nodes[0]
+        for probe in by_type.get(ComponentType.VOLTAGE_PROBE_GND, []):
+            nodes = _raw_nodes(probe)
+            if len(nodes) >= 2 and nodes[1]:
+                probe_outputs[nodes[1]] = nodes[0]
+
+        def _float(d: dict[str, Any], key: str, default: float) -> float:
+            for candidate in (key, key.capitalize(), key.lower()):
+                val = d.get(candidate)
+                if val is None:
+                    continue
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+            return default
+
+        descriptors: list[dict[str, Any]] = []
+        for cblock in cblocks:
+            params = cblock.get("parameters") if isinstance(
+                cblock.get("parameters"), dict
+            ) else {}
+            impl = str(params.get("implementation", "") or "").strip().lower()
+            if impl not in {"python_numba", "python", "fast_block"}:
+                continue
+            source = str(params.get("python_source", "") or "").strip()
+            if not source:
+                continue
+
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+            nodes = _raw_nodes(cblock)
+            # Need at least one input pin + the first output pin.
+            if len(nodes) <= n_inputs:
+                continue
+            input_node = nodes[0]
+            output_node = nodes[n_inputs]
+            if not output_node:
+                continue
+
+            # Find the PWM whose duty-input node == the C_BLOCK output.
+            pwm_component: dict[str, Any] | None = None
+            for candidate in pwms:
+                cn = _raw_nodes(candidate)
+                if len(cn) >= 2 and cn[1] == output_node:
+                    pwm_component = candidate
+                    break
+            if pwm_component is None:
+                continue
+
+            pwm_nodes = _raw_nodes(pwm_component)
+            pwm_out_node = pwm_nodes[0] if pwm_nodes else ""
+            switch_name = self._infer_pwm_target_component_name(
+                components, node_map, pwm_out_node,
+            )
+            if not switch_name:
+                continue
+
+            # Feedback electrical node: via a probe driving the C_BLOCK
+            # input, else the input node directly.
+            measured_raw = probe_outputs.get(input_node, input_node)
+            feedback_node = self._node_label(measured_raw, alias_map)
+
+            pwm_params = pwm_component.get("parameters") if isinstance(
+                pwm_component.get("parameters"), dict
+            ) else {}
+            try:
+                n_states = max(0, int(params.get("n_states", 1) or 1))
+            except (TypeError, ValueError):
+                n_states = 1
+
+            descriptors.append({
+                "cblock_name": self._component_name(cblock, ComponentType.C_BLOCK),
+                "source": source,
+                "n_states": n_states,
+                "feedback_node": feedback_node,
+                "switch_device": switch_name,
+                "pwm_frequency": _float(pwm_params, "frequency", 100_000.0),
+                "sample_time": _float(params, "sample_time", 0.0),
+                "setpoint_value": _float(params, "setpoint", 0.0),
+                "output_min": _float(params, "output_min", 0.0),
+                "output_max": _float(params, "output_max", 1.0),
+            })
+
+        return descriptors
 
     def _constant_names_used_as_cblock_inputs(
         self,

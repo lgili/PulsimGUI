@@ -85,7 +85,18 @@ class Circuit:
         """Deserialize circuit from dictionary."""
         circuit = cls(name=data.get("name", "untitled"))
         for comp_data in data.get("components", []):
-            comp = Component.from_dict(comp_data)
+            # SUBCIRCUIT components are SubcircuitInstance subclasses
+            # with an extra ``subcircuit_id`` field; route them through
+            # the right deserializer so that field survives the round
+            # trip. Without this special case, a saved subcircuit
+            # would lose its definition pointer and double-click
+            # navigation would dead-end at "Missing subcircuit".
+            ctype = str(comp_data.get("type", "")).upper()
+            if ctype == "SUBCIRCUIT":
+                from pulsimgui.models.subcircuit import SubcircuitInstance
+                comp = SubcircuitInstance.from_dict(comp_data)
+            else:
+                comp = Component.from_dict(comp_data)
             circuit.components[comp.id] = comp
         for wire_data in data.get("wires", []):
             wire = Wire.from_dict(wire_data)

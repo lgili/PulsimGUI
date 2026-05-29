@@ -151,7 +151,10 @@ def test_palette_lists_three_phase_source() -> None:
         None,
     )
     assert three_phase_entry is not None
-    assert three_phase_entry["name"] == "3-Phase Source"
+    # Palette uses the short "3φ Src" label to match its siblings
+    # ("3φ VSI", "3φ RL", "1φ/3φ Bridge"). The catalog is the source
+    # of truth — don't rename without re-flowing those neighbors too.
+    assert three_phase_entry["name"] == "3φ Src"
 
     quick_add_entry = next(
         (

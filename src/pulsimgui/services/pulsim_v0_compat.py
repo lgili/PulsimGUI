@@ -386,6 +386,32 @@ class Circuit:
         # that wiring is outside this shim's scope.
         self.virtual_component_records: list[dict[str, Any]] = []
 
+        # Closed-loop descriptors stashed by ``CircuitConverter.build()``
+        # after it detects a PI+PWM+MOSFET chain. The backend reads this
+        # to wire ``pulsim.bind_pi_to_switch`` at simulate time. Empty
+        # list = open-loop circuit; backend uses the legacy static
+        # switch_fn path instead.
+        self.closed_loop_descriptors: list[dict[str, Any]] = []
+
+        # Nonlinear-device observer handles (pulsim 1.5+ induction
+        # motor + Jiles-Atherton hysteretic inductor). Each ``add_*``
+        # below appends ``{"kind": str, "name": str, "handle": obj}``;
+        # the backend reads this list at simulate time, calls
+        # ``make_<kind>_observer(builder, handle)`` for each, and
+        # composes the resulting step-observers into the run's
+        # observer chain so the device's nonlinear back-EMF / dM/dt
+        # contribution is driven every step.
+        self.nonlinear_observer_specs: list[dict[str, Any]] = []
+
+        # C_BLOCK control-loop descriptors (pulsim 1.5 fast_block).
+        # Populated by ``CircuitConverter`` when it detects a
+        # python_numba C_BLOCK regulating a PWM-driven switch from a
+        # single-node feedback. Each entry carries the compiled-law
+        # source + feedback node + switch + sample time; the backend
+        # compiles it via FastBlockService and runs it as a ClosedLoop
+        # (measured node → control law → duty → switch) each step.
+        self.cblock_loop_descriptors: list[dict[str, Any]] = []
+
         # Position metadata — never round-tripped to the builder.
         self._positions: dict[str, SchematicPosition] = {}
 
@@ -928,6 +954,93 @@ class Circuit:
             self._builder.node(inner)
             self._builder.add_resistor(f"{name}_R", self._name_of(n1), inner, float(R))
             self._builder.add_capacitor(f"{name}_C", inner, self._name_of(n2), float(C))
+
+    # --- nonlinear devices needing a simulate-time observer -----------
+    def add_induction_motor(
+        self,
+        name: str,
+        a: int,
+        b: int,
+        c: int,
+        n: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Add a 3-phase squirrel-cage induction motor via pulsim
+        1.5's ``add_induction_motor`` and stash its handle so the
+        backend can wire ``make_induction_motor_observer`` into the
+        step-observer chain at simulate time.
+
+        ``a/b/c`` are the stator phase terminal node ids, ``n`` the
+        star-point neutral. ``params`` carries the equivalent-circuit
+        R/L set + mechanical parameters (see DEFAULT_PARAMETERS).
+
+        Raises ``AttributeError`` if the host pulsim predates 1.5 (no
+        ``add_induction_motor``) so the converter can surface a clear
+        "runtime does not support" message instead of a silent skip.
+        """
+        add_im = getattr(self._pm, "add_induction_motor", None)
+        if add_im is None:
+            raise AttributeError(
+                "pulsim runtime has no add_induction_motor "
+                "(requires pulsim >= 1.5)"
+            )
+        motor = add_im(
+            self._builder,
+            name=name,
+            phase_nodes=[self._name_of(a), self._name_of(b), self._name_of(c)],
+            neutral_node=self._name_of(n),
+            R_s=float(params.get("R_s", 0.5)),
+            L_s=float(params.get("L_s", 0.05)),
+            R_r=float(params.get("R_r", 0.4)),
+            L_r=float(params.get("L_r", 0.05)),
+            L_m=float(params.get("L_m", 0.045)),
+            pole_pairs=int(params.get("pole_pairs", 2)),
+            J=float(params.get("J", 1e-3)),
+            B=float(params.get("B", 0.0)),
+            T_load=float(params.get("T_load", 0.0)),
+        )
+        self.nonlinear_observer_specs.append(
+            {"kind": "induction_motor", "name": name, "handle": motor}
+        )
+
+    def add_hysteretic_inductor(
+        self,
+        name: str,
+        n1: int,
+        n2: int,
+        params: dict[str, Any],
+    ) -> None:
+        """Add a Jiles-Atherton hysteretic inductor via pulsim 1.5's
+        ``add_hysteretic_inductor`` and stash its handle for the
+        backend's observer wiring.
+
+        ``params["material"]`` selects a built-in J-A parameter set
+        through ``pulsim.reference_material``; geometry
+        (``N_turns`` / ``l_m`` / ``A_core``) sizes the linear
+        air-core inductance and the hysteresis contribution.
+        """
+        add_hl = getattr(self._pm, "add_hysteretic_inductor", None)
+        ref_material = getattr(self._pm, "reference_material", None)
+        if add_hl is None or ref_material is None:
+            raise AttributeError(
+                "pulsim runtime has no add_hysteretic_inductor "
+                "(requires pulsim >= 1.5)"
+            )
+        material = str(params.get("material", "si_steel_m19"))
+        ja_params = ref_material(material)
+        hyst = add_hl(
+            self._builder,
+            name=name,
+            from_node=self._name_of(n1),
+            to_node=self._name_of(n2),
+            params=ja_params,
+            N_turns=int(params.get("N_turns", 100)),
+            l_m=float(params.get("l_m", 0.1)),
+            A_core=float(params.get("A_core", 1e-4)),
+        )
+        self.nonlinear_observer_specs.append(
+            {"kind": "hysteretic_inductor", "name": name, "handle": hyst}
+        )
 
     # --- virtual / control components ---------------------------------
     def add_virtual_component(

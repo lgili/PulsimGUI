@@ -261,6 +261,47 @@ def create_subcircuit_from_selection(
     return definition, ports, (center_x, center_y)
 
 
+def create_empty_subcircuit_definition(
+    name: str = "Subcircuit",
+    description: str = "",
+    symbol_size: tuple[float, float] | None = None,
+) -> SubcircuitDefinition:
+    """Build an empty SubcircuitDefinition with no inner components,
+    no wires, and no ports.
+
+    Used by the GUI's "create empty subcircuit" flow: the user opens
+    the dialog without a prior selection, accepts a name, and a blank
+    instance lands on the canvas. They then descend into it and
+    populate the body (components + SUBCIRCUIT_PORT markers).
+
+    The marker-based port sync (``sync_definition_ports_from_markers``)
+    runs automatically as the user wires things up, so the outer
+    symbol's pins materialize without any extra step.
+
+    Args:
+        name: Display name for the new definition.
+        description: Optional free-text description.
+        symbol_size: ``(width, height)`` of the placeholder symbol.
+            Defaults to (80, 60) — matching the GUI dialog default.
+
+    Returns:
+        A fresh ``SubcircuitDefinition`` with a new UUID, an empty
+        internal ``Circuit``, and an empty ports list.
+    """
+    width, height = (80.0, 60.0) if symbol_size is None else (
+        float(symbol_size[0]), float(symbol_size[1])
+    )
+    safe_name = (name or "Subcircuit").strip() or "Subcircuit"
+    return SubcircuitDefinition(
+        name=safe_name,
+        description=description,
+        circuit=Circuit(name=f"{safe_name}_internal"),
+        ports=[],
+        symbol_width=width,
+        symbol_height=height,
+    )
+
+
 def detect_boundary_ports(
     circuit: Circuit,
     selected_component_ids: list[UUID],
@@ -339,3 +380,156 @@ def _derive_port_label(
             pin_name = comp.pins[refs[0][1]].name if comp.pins else str(refs[0][1])
             return f"{comp.name}.{pin_name}"
     return f"NET_{fallback}"
+
+
+def sync_definition_ports_from_markers(
+    definition: "SubcircuitDefinition",
+) -> bool:
+    """Rebuild ``definition.ports`` from SUBCIRCUIT_PORT marker
+    components placed inside ``definition.circuit``.
+
+    Each marker contributes one port whose:
+      * ``name``           = marker.parameters["port_name"]
+      * ``internal_node``  = net name at the marker's pin (via union-find)
+      * ``pin_index``      = stable index assigned per side, in
+                              creation order
+      * ``(x, y)``         = position on the outer symbol's rectangle,
+                              distributed along the matching side
+
+    Markers are the new (preferred) source of truth for subcircuit
+    boundary connections. Definitions created via the older
+    ``create_subcircuit_from_selection`` path keep working because
+    we only overwrite ``definition.ports`` when at least one marker
+    is found — definitions without markers fall through untouched
+    (their pre-existing ``internal_node`` strings remain authoritative).
+
+    Returns True if ``definition.ports`` actually changed.
+    """
+    from pulsimgui.models.component import ComponentType  # avoid cycles
+
+    inner = definition.circuit
+    markers: list[Component] = [
+        c for c in inner.components.values()
+        if c.type == ComponentType.SUBCIRCUIT_PORT
+    ]
+    if not markers:
+        # No markers — preserve existing ports list as-is. Callers
+        # that need a fresh layout from a different mechanism (e.g.
+        # detect_boundary_ports) must do that themselves.
+        return False
+
+    # Look up the net each marker pin sits on. ``build_node_map`` is
+    # keyed by (str(component.id), pin_index).
+    node_map = build_node_map(inner)
+
+    # Group markers by side so we can lay them out along the outer
+    # rectangle independently per edge.
+    by_side: dict[str, list[Component]] = {"left": [], "right": [], "top": [], "bottom": []}
+    for marker in markers:
+        side = str(marker.parameters.get("side", "left")).lower()
+        if side not in by_side:
+            side = "left"
+        by_side[side].append(marker)
+
+    # Stable ordering per side: alphabetical by port_name keeps the
+    # outer symbol layout predictable across edits.
+    for side in by_side:
+        by_side[side].sort(key=lambda m: str(m.parameters.get("port_name", "")))
+
+    width = definition.symbol_width
+    height = definition.symbol_height
+    half_w = width / 2.0
+    half_h = height / 2.0
+
+    new_ports: list[SubcircuitPort] = []
+    pin_index = 0
+    used_names: dict[str, int] = {}
+
+    def _distribute(n: int, axis_len: float) -> list[float]:
+        # Evenly space n pins along a length, leaving margins at the
+        # ends so they don't crowd the corners.
+        if n <= 0:
+            return []
+        if n == 1:
+            return [0.0]
+        margin = axis_len * 0.18
+        usable = axis_len - 2 * margin
+        step = usable / (n - 1)
+        return [(-axis_len / 2 + margin + i * step) for i in range(n)]
+
+    for side, ms in by_side.items():
+        if not ms:
+            continue
+        if side in ("left", "right"):
+            ys = _distribute(len(ms), height)
+            x = -half_w if side == "left" else +half_w
+            for marker, y in zip(ms, ys):
+                name = str(marker.parameters.get("port_name", "")).strip() or "port"
+                # De-dup names so two markers with the same label
+                # don't collide silently.
+                count = used_names.get(name, 0)
+                used = name if count == 0 else f"{name}_{count + 1}"
+                used_names[name] = count + 1
+                internal = node_map.get((str(marker.id), 0), "")
+                new_ports.append(SubcircuitPort(
+                    name=used,
+                    internal_node=internal,
+                    pin_index=pin_index,
+                    x=x, y=y,
+                ))
+                pin_index += 1
+        else:
+            xs = _distribute(len(ms), width)
+            y = -half_h if side == "top" else +half_h
+            for marker, x in zip(ms, xs):
+                name = str(marker.parameters.get("port_name", "")).strip() or "port"
+                count = used_names.get(name, 0)
+                used = name if count == 0 else f"{name}_{count + 1}"
+                used_names[name] = count + 1
+                internal = node_map.get((str(marker.id), 0), "")
+                new_ports.append(SubcircuitPort(
+                    name=used,
+                    internal_node=internal,
+                    pin_index=pin_index,
+                    x=x, y=y,
+                ))
+                pin_index += 1
+
+    # Compare against previous list — only signal a change if
+    # something actually moved/renamed.
+    def _signature(ports: list[SubcircuitPort]) -> list[tuple]:
+        return [(p.name, p.internal_node, p.pin_index,
+                 round(p.x, 2), round(p.y, 2)) for p in ports]
+
+    if _signature(definition.ports) == _signature(new_ports):
+        return False
+
+    definition.ports = new_ports
+    return True
+
+
+def refresh_subcircuit_instance_pins(
+    project,
+    definition: "SubcircuitDefinition",
+) -> int:
+    """After a definition's ports change, propagate the new pin layout
+    to every ``SubcircuitInstance`` in the project that points to it.
+
+    Returns the number of instances that were updated. Callers should
+    refresh the schematic scene afterward so the new pins render.
+    """
+    target_id = definition.id
+    new_pins = definition.get_pins()
+    touched = 0
+    for circuit in getattr(project, "circuits", {}).values():
+        for comp in circuit.components.values():
+            if (
+                getattr(comp, "type", None) is not None
+                and comp.type.name == "SUBCIRCUIT"
+                and getattr(comp, "subcircuit_id", None) == target_id
+            ):
+                comp.pins = [
+                    Pin(p.index, p.name, p.x, p.y) for p in new_pins
+                ]
+                touched += 1
+    return touched

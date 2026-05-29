@@ -5,21 +5,33 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QKeySequence,
+    QPalette,
+    QShortcut,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QStatusBar,
+    QTabBar,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +60,7 @@ from pulsimgui.models.component import (
     pin_connection_domain,
 )
 from pulsimgui.models.project import Project
-from pulsimgui.scope_workbench import ScopeWorkspaceState, ScopeWorkbenchSession
+from pulsimgui.views.editor_document import EditorDocument
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
     create_subcircuit_from_selection,
@@ -77,6 +89,7 @@ from pulsimgui.services.simulation_service import (
 from pulsimgui.services.template_service import TemplateService
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.services.thermal_service import ThermalAnalysisService
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.dialogs import (
     BodePlotDialog,
@@ -94,13 +107,22 @@ from pulsimgui.views.dialogs import (
 from pulsimgui.views.library import LibraryPanel
 from pulsimgui.views.properties import PropertiesPanel
 from pulsimgui.views.schematic import SchematicScene, SchematicView, Tool
-from pulsimgui.views.scope import ScopeWindow, build_scope_channel_bindings
+from pulsimgui.views.scope_v2 import BaseScopeWindow
 from pulsimgui.views.waveform import WaveformViewer
 from pulsimgui.views.widgets import HierarchyBar, MinimapOverlay
 
 
 class MainWindow(QMainWindow):
     """Main application window with docking panels."""
+
+    # Emitted whenever ``_latest_electrical_result`` is rebuilt — the
+    # payload is the *probe-enriched* SimulationResult (i.e. with the
+    # ``VP(name)`` / ``IP(name)`` / ``PP(name)`` synthetic channels
+    # appended), which is what the scope_v2 PostSimCapability needs
+    # in order for its ``signal_key`` lookups to succeed.
+    # ``simulation_service.simulation_finished`` carries the *raw*
+    # kernel result and would yield "0 of 2 matched" in the drawer.
+    electrical_result_ready = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -109,8 +131,17 @@ class MainWindow(QMainWindow):
         self._theme_service = ThemeService(parent=self)
         self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
-        self._project = Project()
-        self._scope_workbench_session = self._build_scope_workbench_session()
+        # Open documents (tabs). ``_project`` is a property delegating to
+        # the active document, so the ~60 existing ``self._project``
+        # reads keep working unchanged. Must be set up before anything
+        # touches ``self._project``.
+        self._documents: list[EditorDocument] = [EditorDocument(Project())]
+        self._active_doc: int = 0
+        self._tab_bar: QTabBar | None = None  # set in _setup_window via _build_tab_row
+        # Guards programmatic QTabBar mutations from re-entering the
+        # user-driven switch path (setCurrentIndex / insertTab / removeTab
+        # all emit currentChanged).
+        self._suppress_tab_signals = False
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
@@ -118,10 +149,12 @@ class MainWindow(QMainWindow):
             allow_synthetic_fallback=False,
             parent=self,
         )
-        self._scope_windows: dict[str, ScopeWindow] = {}
+        # Open scope windows keyed by the source component's id. One
+        # ``BaseScopeWindow`` instance per scope component on the
+        # schematic; re-opening focuses the existing window.
+        self._scope_windows: dict[str, BaseScopeWindow] = {}
         self._suppress_scope_state = False
         self._latest_electrical_result: SimulationResult | None = None
-        self._latest_thermal_waveform: SimulationResult | None = None
         self._component_state_cache: dict[UUID, dict] = {}
         self._sim_progress_active = False
         self._sim_progress_last_value = 0
@@ -172,10 +205,17 @@ class MainWindow(QMainWindow):
             stop_callback=self._on_stop_from_run_bar,
         )
 
+        # Document tab row (PSIM-style): one tab per open project, with a
+        # trailing "+" button to open a fresh circuit. A single shared
+        # scene/view renders whichever document is active; switching tabs
+        # rebinds that scene (see _switch_to_document).
+        tab_row = self._build_tab_row()
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addWidget(tab_row)
         layout.addWidget(self._hierarchy_bar)
         layout.addWidget(self._run_bar)
         layout.addWidget(self._schematic_view)
@@ -199,6 +239,7 @@ class MainWindow(QMainWindow):
         self._schematic_view.zoom_changed.connect(lambda _: self._minimap.update_minimap())
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
+        self._schematic_view.component_pasted.connect(self._on_component_pasted)
         self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_view.component_delete_requested.connect(
             self._on_component_delete_requested
@@ -219,6 +260,8 @@ class MainWindow(QMainWindow):
         self._schematic_scene.selection_changed_custom.connect(self.update_selection)
         self._schematic_scene.selectionChanged.connect(self._on_scene_selection_changed)
         self._schematic_scene.component_removed.connect(self._on_component_removed)
+        self._schematic_scene.component_added.connect(self._on_component_added_for_port_sync)
+        self._schematic_scene.wire_added.connect(self._on_wire_added_for_port_sync)
         self._schematic_scene.component_moved.connect(self._on_component_moved)
         self._schematic_scene.net_label_navigation_requested.connect(
             self._on_net_label_navigation_requested
@@ -231,6 +274,308 @@ class MainWindow(QMainWindow):
         self._schematic_scene.changed.connect(lambda _: self._schedule_minimap_update())
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._refresh_component_state_cache()
+
+    # ------------------------------------------------------------------
+    # Active-document delegation
+    # ------------------------------------------------------------------
+    @property
+    def _project(self) -> Project:
+        """The active tab's project. A property so the ~60 existing
+        ``self._project`` reads transparently follow the active
+        document."""
+        return self._documents[self._active_doc].project
+
+    @_project.setter
+    def _project(self, value: Project) -> None:
+        """Replace the active document's project in place (used by the
+        new/open/template/close paths that swap the project of the
+        current tab). Opening into a *new* tab goes through
+        ``_add_document`` instead."""
+        self._documents[self._active_doc].project = value
+
+    @property
+    def _active_document(self) -> EditorDocument:
+        return self._documents[self._active_doc]
+
+    # ------------------------------------------------------------------
+    # Document tabs (PSIM-style multi-circuit)
+    # ------------------------------------------------------------------
+    def _build_tab_row(self) -> QWidget:
+        """Construct the tab strip: a closable/elided ``QTabBar`` plus a
+        trailing ``+`` button. Seeds one tab for the initial document.
+
+        Returns the container widget to drop into the central layout."""
+        self._tab_bar = QTabBar()
+        self._tab_bar.setObjectName("documentTabBar")
+        self._tab_bar.setTabsClosable(True)
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setMovable(False)  # v1: keep tab index == _documents index
+        self._tab_bar.setDocumentMode(True)
+        self._tab_bar.setUsesScrollButtons(True)
+        self._tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
+        self._tab_bar.setDrawBase(True)
+
+        self._tab_bar.currentChanged.connect(self._on_tab_changed)
+        self._tab_bar.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._tab_bar.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
+
+        self._new_tab_button = QToolButton()
+        self._new_tab_button.setObjectName("newTabButton")
+        self._new_tab_button.setText("+")
+        self._new_tab_button.setToolTip("New circuit tab")
+        self._new_tab_button.setAutoRaise(True)
+        self._new_tab_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._new_tab_button.clicked.connect(self._on_new_tab_clicked)
+
+        row = QWidget()
+        row.setObjectName("documentTabRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        row_layout.addWidget(self._tab_bar)
+        row_layout.addWidget(self._new_tab_button)
+        row_layout.addStretch(1)
+
+        # Keyboard tab navigation (Ctrl+Tab / Ctrl+Shift+Tab).
+        next_tab = QShortcut(QKeySequence.StandardKey.NextChild, self)
+        next_tab.activated.connect(self._on_next_tab)
+        prev_tab = QShortcut(QKeySequence.StandardKey.PreviousChild, self)
+        prev_tab.activated.connect(self._on_prev_tab)
+
+        # Seed the tab for the document that already exists.
+        self._suppress_tab_signals = True
+        try:
+            doc = self._documents[0]
+            self._tab_bar.addTab(doc.title)
+            self._tab_bar.setTabToolTip(0, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+        return row
+
+    def _set_tab_current_silently(self, index: int) -> None:
+        """Move the tab-bar selection without triggering ``_on_tab_changed``."""
+        if self._tab_bar is None or self._tab_bar.currentIndex() == index:
+            return
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.setCurrentIndex(index)
+        finally:
+            self._suppress_tab_signals = False
+
+    def _refresh_tab(self, index: int) -> None:
+        """Sync a tab's label + tooltip from its document (dirty dot, name)."""
+        if self._tab_bar is None or not (0 <= index < self._tab_bar.count()):
+            return
+        if index >= len(self._documents):
+            return
+        doc = self._documents[index]
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.setTabText(index, doc.title)
+            self._tab_bar.setTabToolTip(index, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+
+    def _capture_view_state(self, index: int) -> None:
+        """Snapshot the shared view's zoom + pan into a document."""
+        if not (0 <= index < len(self._documents)):
+            return
+        view = getattr(self, "_schematic_view", None)
+        if view is None:
+            return
+        doc = self._documents[index]
+        doc.view_transform = QTransform(view.transform())
+        doc.h_scroll = view.horizontalScrollBar().value()
+        doc.v_scroll = view.verticalScrollBar().value()
+
+    def _restore_view_state(self, index: int) -> None:
+        """Reapply a document's saved zoom + pan, or auto-fit if unseen."""
+        if not (0 <= index < len(self._documents)):
+            return
+        view = getattr(self, "_schematic_view", None)
+        if view is None:
+            return
+        doc = self._documents[index]
+        if doc.view_transform is not None:
+            view.setTransform(doc.view_transform)
+            view.horizontalScrollBar().setValue(doc.h_scroll)
+            view.verticalScrollBar().setValue(doc.v_scroll)
+        else:
+            # First time this document is shown — frame its contents.
+            self._schedule_auto_fit_view()
+
+    def _rebind_active_document(self) -> None:
+        """(Re)load the active document into the shared scene/view and
+        refresh chrome. Assumes ``self._active_doc`` is already correct
+        and any document-coupled shared state (scopes, command stack,
+        latest result) has already been reset by the caller."""
+        self._load_project_to_scene()
+        self._apply_project_simulation_settings_to_service()
+        self._restore_view_state(self._active_doc)
+        self._update_title()
+        self._update_modified_indicator()
+
+    def _switch_to_document(self, new_index: int) -> None:
+        """Make ``new_index`` the active tab. Switching never prompts to
+        save (PSIM-style) — only closing does. Shared, per-document state
+        (scope windows, undo stack, last result) is reset so circuits
+        never cross-contaminate (documented v1 limitation)."""
+        if not (0 <= new_index < len(self._documents)):
+            return
+        self._set_tab_current_silently(new_index)
+        if new_index == self._active_doc:
+            return
+        self._capture_view_state(self._active_doc)
+        self._close_all_scope_windows(persist_state=False)
+        self._command_stack.clear()
+        self._latest_electrical_result = None
+        self._active_doc = new_index
+        self._rebind_active_document()
+
+    def _add_document(self, project: Project, *, make_active: bool = True) -> int:
+        """Append a new document + tab. Returns its index. When
+        ``make_active`` the new tab is selected and rendered."""
+        assert self._tab_bar is not None  # built in _setup_window
+        doc = EditorDocument(project)
+        self._documents.append(doc)
+        new_index = len(self._documents) - 1
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.addTab(doc.title)
+            self._tab_bar.setTabToolTip(new_index, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+        if make_active:
+            self._switch_to_document(new_index)
+        return new_index
+
+    def _replace_active_document(self, project: Project) -> None:
+        """Swap the active tab's project in place (used by new/open/close
+        when reusing a pristine tab). Resets the tab's view + shared
+        document-coupled state and refreshes the label."""
+        self._close_all_scope_windows(persist_state=False)
+        self._command_stack.clear()
+        self._latest_electrical_result = None
+        doc = self._documents[self._active_doc]
+        doc.project = project
+        doc.view_transform = None
+        doc.h_scroll = 0
+        doc.v_scroll = 0
+        self._rebind_active_document()
+        self._refresh_tab(self._active_doc)
+
+    def _is_pristine_document(self, doc: EditorDocument) -> bool:
+        """True when a document is an untouched blank tab (no file, not
+        dirty, empty active circuit) — safe to reuse for an open/new."""
+        project = doc.project
+        if project.path is not None or project.is_dirty:
+            return False
+        try:
+            circuit = project.get_active_circuit()
+        except Exception:
+            return False
+        return not circuit.components
+
+    def _close_document(self, index: int) -> None:
+        """Close a tab. Prompts to save if that document is dirty. Closing
+        the last remaining tab resets it to a blank project rather than
+        leaving the editor with zero tabs."""
+        if not (0 <= index < len(self._documents)):
+            return
+        doc = self._documents[index]
+        # Dirty guard: surface the doc first so the prompt is about it.
+        if doc.project.is_dirty:
+            previous_active = self._active_doc
+            self._switch_to_document(index)
+            if not self._check_save():
+                # User cancelled — don't leave them parked on a tab they
+                # declined to close; return focus to where they were.
+                if previous_active != self._active_doc and previous_active < len(
+                    self._documents
+                ):
+                    self._switch_to_document(previous_active)
+                return
+            index = self._active_doc  # _check_save/save don't move tabs, but be safe
+        # Keep at least one tab alive: closing the only tab blanks it.
+        if len(self._documents) == 1:
+            self._replace_active_document(Project())
+            self.statusBar().showMessage("Project closed", 3000)
+            return
+        assert self._tab_bar is not None  # built in _setup_window
+        closing_active = index == self._active_doc
+        if closing_active:
+            self._close_all_scope_windows(persist_state=False)
+            self._command_stack.clear()
+            self._latest_electrical_result = None
+        # Drop the model + tab (suppress the auto currentChanged).
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.removeTab(index)
+        finally:
+            self._suppress_tab_signals = False
+        del self._documents[index]
+        if closing_active:
+            target = min(index, len(self._documents) - 1)
+            self._active_doc = target
+            self._set_tab_current_silently(target)
+            self._rebind_active_document()
+        else:
+            if index < self._active_doc:
+                self._active_doc -= 1
+            self._set_tab_current_silently(self._active_doc)
+
+    def _rename_document(self, index: int) -> None:
+        """Prompt for a new display name for a tab (double-click)."""
+        if not (0 <= index < len(self._documents)):
+            return
+        doc = self._documents[index]
+        current = doc.display_name or (
+            doc.project.path.stem if doc.project.path else (doc.project.name or "untitled")
+        )
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Tab", "Tab name:", text=current
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        doc.display_name = new_name
+        doc.project.name = new_name
+        doc.project.mark_dirty()
+        self._refresh_tab(index)
+        if index == self._active_doc:
+            self._update_title()
+            self._update_modified_indicator()
+
+    # Tab-bar signal slots ------------------------------------------------
+    def _on_tab_changed(self, index: int) -> None:
+        if self._suppress_tab_signals:
+            return
+        self._switch_to_document(index)
+
+    def _on_tab_close_requested(self, index: int) -> None:
+        self._close_document(index)
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        if index < 0:
+            # Double-click on the empty strip area → new tab (PSIM-ish).
+            self._on_new_tab_clicked()
+            return
+        self._rename_document(index)
+
+    def _on_new_tab_clicked(self) -> None:
+        self._add_document(Project())
+
+    def _on_next_tab(self) -> None:
+        n = len(self._documents)
+        if n > 1:
+            self._switch_to_document((self._active_doc + 1) % n)
+
+    def _on_prev_tab(self) -> None:
+        n = len(self._documents)
+        if n > 1:
+            self._switch_to_document((self._active_doc - 1) % n)
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -338,7 +683,14 @@ class MainWindow(QMainWindow):
         self.action_rename_signal.triggered.connect(self._on_rename_signal)
 
         self.action_create_subcircuit = QAction("Create &Subcircuit...", self)
-        self.action_create_subcircuit.setEnabled(False)
+        # Always enabled so users discover the feature exists. When
+        # invoked without a selection, the handler shows an info
+        # message explaining what's needed instead of being silently
+        # grayed out (which the user just complained about).
+        self.action_create_subcircuit.setEnabled(True)
+        self.action_create_subcircuit.setStatusTip(
+            "Group the selected components into a reusable subcircuit block."
+        )
         self.action_create_subcircuit.triggered.connect(self._on_create_subcircuit)
 
         self.action_preferences = QAction("&Preferences...", self)
@@ -502,6 +854,7 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("&File")
+        self._file_menu = file_menu
         file_menu.addAction(self.action_new)
         file_menu.addAction(self.action_new_from_template)
         file_menu.addAction(self.action_open)
@@ -514,6 +867,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_close)
         file_menu.addSeparator()
         export_menu = file_menu.addMenu("&Export")
+        self._export_menu = export_menu
         export_menu.addAction(self.action_export_spice)
         export_menu.addAction(self.action_export_json)
         export_menu.addSeparator()
@@ -567,6 +921,7 @@ class MainWindow(QMainWindow):
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
+        self._sim_menu = sim_menu
         sim_menu.addAction(self.action_run)
         sim_menu.addAction(self.action_pause)
         sim_menu.addAction(self.action_stop)
@@ -588,6 +943,69 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Help")
         help_menu.addAction(self.action_about)
+
+        # Hide menu items whose backend capability isn't present in the
+        # currently-loaded pulsim kernel. Actions stay alive (Python
+        # refs + parent menus) so they reappear automatically when the
+        # kernel ships those features later — remove the matching line
+        # from ``_hide_unavailable_menu_items`` at that point.
+        self._hide_unavailable_menu_items()
+
+    def _hide_unavailable_menu_items(self) -> None:
+        """Hide menu actions for backend capabilities pulsim 1.5 doesn't ship.
+
+        Pulsim 1.5 advertises ``transient`` / ``dc`` / ``ac`` /
+        ``frequency_analysis`` / ``thermal`` via ``has_capability``.
+        Several Wave-4 actions (parameter sweep, losses dashboard,
+        FRA, periodic steady-state, harmonic balance, FMU + C99
+        export) were authored ahead of the kernel and currently sit in
+        the menus permanently disabled — clutters the user's choices.
+        """
+        sim_caps_to_action = {
+            "parameter_sweep": self.action_parameter_sweep,
+            "losses_analysis": self.action_losses_dashboard,
+            "fra": self.action_fra,
+            "periodic_steady_state": self.action_periodic_ss,
+            "harmonic_balance": self.action_harmonic_balance,
+            "fmu_export": self.action_export_fmu,
+            "c99_codegen": self.action_export_c99,
+        }
+        for cap, action in sim_caps_to_action.items():
+            if not self._simulation_service.has_capability(cap):
+                action.setVisible(False)
+        # Collapse empty separator runs that the now-hidden actions
+        # left behind, using the direct menu refs stored in
+        # ``_create_menus`` (looking up by title via menuBar().actions()
+        # was returning proxy actions whose .menu() handle gets
+        # garbage-collected before we can iterate it).
+        if getattr(self, "_sim_menu", None) is not None:
+            MainWindow._collapse_separators_flat(self._sim_menu)
+        if getattr(self, "_export_menu", None) is not None:
+            MainWindow._collapse_separators_flat(self._export_menu)
+
+    @staticmethod
+    def _collapse_separators_flat(menu) -> None:
+        """Hide consecutive / leading / trailing separators in one menu.
+
+        Strict non-recursive walk — never touches child submenus, those
+        get populated by later code paths that would crash if we'd
+        already poked their actions.
+        """
+        prev_was_visible_sep = False
+        last_visible = None
+        for action in menu.actions():
+            if not action.isVisible():
+                continue
+            if action.isSeparator():
+                if prev_was_visible_sep or last_visible is None:
+                    action.setVisible(False)
+                    continue
+                prev_was_visible_sep = True
+            else:
+                prev_was_visible_sep = False
+            last_visible = action
+        if last_visible is not None and last_visible.isSeparator():
+            last_visible.setVisible(False)
 
     def _create_toolbar(self) -> None:
         """Create the main toolbar with professional icons and overflow menu."""
@@ -872,6 +1290,12 @@ class MainWindow(QMainWindow):
         self._hierarchy_service.breadcrumb_updated.connect(self._on_breadcrumb_updated)
         self._hierarchy_bar.navigate_up.connect(self._hierarchy_service.ascend)
         self._hierarchy_bar.navigate_to_level.connect(self._hierarchy_service.navigate_to_level)
+        # Backspace = "go up one level" — matches the HierarchyBar tooltip.
+        # Parented to the main window so it's available anywhere in the
+        # schematic, but inert at root level (ascend() returns False).
+        self._ascend_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
+        self._ascend_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._ascend_shortcut.activated.connect(self._hierarchy_service.ascend)
 
     def _create_dock_toggle_action(self, label: str, dock: QDockWidget) -> QAction:
         """Create a stable checkable menu action for one dock widget."""
@@ -1256,18 +1680,24 @@ class MainWindow(QMainWindow):
         self._update_recent_menu()
 
     def _update_title(self) -> None:
-        """Update window title based on project state."""
-        if self._project.path:
-            title = f"PulsimGui - {self._project.path.name}"
+        """Update window title based on the active document's state."""
+        doc = self._active_document
+        if doc.display_name:
+            base = doc.display_name
+        elif self._project.path:
+            base = self._project.path.name
         else:
-            title = f"PulsimGui - {self._project.name}"
+            base = self._project.name
+        title = f"PulsimGui - {base}"
         if self._project.is_dirty:
             title += " *"
         self.setWindowTitle(title)
 
     def _update_modified_indicator(self) -> None:
-        """Update the modified indicator in the status bar."""
+        """Update the modified indicator in the status bar and the active
+        tab's dirty dot."""
         self._modified_widget.setModified(self._project.is_dirty)
+        self._refresh_tab(self._active_doc)
 
     def _current_circuit(self) -> Circuit:
         """Return the circuit for the current hierarchy level."""
@@ -1290,30 +1720,36 @@ class MainWindow(QMainWindow):
             self._autosave_timer.stop()
 
     def _on_autosave(self) -> None:
-        """Handle auto-save timer timeout."""
-        if not self._project.is_dirty:
-            return
+        """Handle auto-save timer timeout — back up every dirty tab, not
+        just the active one, so unsaved work in background tabs is also
+        recoverable."""
+        saved_any = False
+        for doc in self._documents:
+            if doc.project.is_dirty and self._autosave_backup(doc.project):
+                saved_any = True
+        if saved_any:
+            self.statusBar().showMessage("Auto-saved backup", 2000)
 
-        # Save backup copy
-        if self._project.path:
-            # Save to backup file (original.pulsim.bak)
-            backup_path = Path(str(self._project.path) + ".bak")
-            try:
-                self._project.save_copy(backup_path)
-                self.statusBar().showMessage("Auto-saved backup", 2000)
-            except Exception:
-                pass  # Silently fail on backup
+    def _autosave_backup(self, project: Project) -> bool:
+        """Write a best-effort ``.bak`` copy of one project (beside its
+        file, or into a temp dir if it has never been saved). Returns True
+        on success; failures are swallowed (backups must never interrupt
+        editing)."""
+        if project.path:
+            backup_path = Path(str(project.path) + ".bak")
         else:
-            # No file yet - save to temp location
             import tempfile
+
             temp_dir = Path(tempfile.gettempdir()) / "pulsimgui_autosave"
             temp_dir.mkdir(exist_ok=True)
-            backup_path = temp_dir / f"{self._project.name}.pulsim.bak"
-            try:
-                self._project.save_copy(backup_path)
-                self.statusBar().showMessage(f"Auto-saved to {backup_path}", 2000)
-            except Exception:
-                pass  # Silently fail on backup
+            # Discriminate by object id so two unsaved "Untitled Project"
+            # tabs don't overwrite each other's backup.
+            backup_path = temp_dir / f"{project.name}_{id(project):x}.pulsim.bak"
+        try:
+            project.save_copy(backup_path)
+            return True
+        except Exception:
+            return False  # Silently fail on backup
 
     def update_coordinates(self, x: float, y: float) -> None:
         """Update coordinate display in status bar."""
@@ -1351,7 +1787,11 @@ class MainWindow(QMainWindow):
         has_selected_components = len(selected_components) > 0
         self.action_rotate_ccw.setEnabled(has_selected_components)
         self.action_rotate_cw.setEnabled(has_selected_components)
-        self.action_create_subcircuit.setEnabled(len(selected_components) > 0)
+        # action_create_subcircuit stays ALWAYS enabled so it's
+        # discoverable in the Edit menu even with no selection — the
+        # handler shows a friendly info dialog telling the user what
+        # to do next. (Was previously grayed-out on no-selection,
+        # which left users guessing why the menu item was dim.)
 
         # Don't update properties if user is editing there
         if self._has_properties_focus():
@@ -1482,16 +1922,57 @@ class MainWindow(QMainWindow):
 
     def _on_subcircuit_open_requested(self, component) -> None:
         """Handle double-click on a subcircuit instance to descend."""
+        # Two paths to the subcircuit-definition pointer:
+        # 1. ``SubcircuitInstance`` attribute set directly (live + the
+        #    Circuit.from_dict path that handles SUBCIRCUIT specially).
+        # 2. ``parameters["subcircuit_id"]`` — a fallback for older
+        #    .pulsim files that round-tripped through the plain
+        #    ``Component.from_dict`` before the type-aware loader.
         definition_id = getattr(component, "subcircuit_id", None)
         if not definition_id:
-            QMessageBox.warning(self, "Missing subcircuit", "This subcircuit has no definition attached.")
+            params = getattr(component, "parameters", {}) or {}
+            raw = params.get("subcircuit_id")
+            if raw:
+                try:
+                    from uuid import UUID
+                    definition_id = UUID(str(raw))
+                    # Repair the live instance so subsequent clicks
+                    # don't hit the fallback path.
+                    component.subcircuit_id = definition_id
+                except (ValueError, TypeError):
+                    definition_id = None
+
+        if not definition_id:
+            QMessageBox.warning(
+                self, "Missing subcircuit",
+                "This subcircuit instance has no definition attached.\n\n"
+                "It may have been imported without its subcircuit_id, "
+                "or the definition was deleted from the project.",
+            )
             return
 
+        # Make sure the HierarchyService knows about the definition.
+        # When a project loads, definitions are auto-registered in
+        # HierarchyService.__init__, but if someone calls
+        # ``project.add_subcircuit`` later (e.g., a paste from another
+        # file), the service doesn't see it until we explicitly tell it.
+        if self._hierarchy_service.get_subcircuit_definition(definition_id) is None:
+            defn = self._project.get_subcircuit(definition_id)
+            if defn is not None:
+                self._hierarchy_service.register_subcircuit(defn)
+
         if not self._hierarchy_service.descend_into(component.id, definition_id):
-            QMessageBox.warning(self, "Cannot navigate", "Subcircuit definition could not be loaded.")
+            QMessageBox.warning(
+                self, "Cannot navigate",
+                "Subcircuit definition could not be loaded — "
+                "the project may be missing the matching definition.",
+            )
 
     def _on_create_subcircuit(self) -> None:
-        """Create a subcircuit definition from the current selection."""
+        """Create a subcircuit definition — either from the current
+        selection (groups the picked components into a block) or as
+        an empty block when nothing is selected (user fills it in
+        later by descending into the body)."""
         from pulsimgui.models.component import ComponentType
         from pulsimgui.views.schematic.items import ComponentItem, WireItem
 
@@ -1499,8 +1980,12 @@ class MainWindow(QMainWindow):
         component_items = [item for item in selected_items if isinstance(item, ComponentItem)]
         wire_items = [item for item in selected_items if isinstance(item, WireItem)]
 
+        # Empty-creation branch: no selection → blank subcircuit body,
+        # placed at the viewport center, then we auto-descend so the
+        # user lands inside the body ready to drop components and
+        # SUBCIRCUIT_PORT markers.
         if not component_items:
-            QMessageBox.information(self, "Create Subcircuit", "Select at least one component.")
+            self._create_empty_subcircuit_via_dialog()
             return
 
         current_circuit = self._current_circuit()
@@ -1569,6 +2054,81 @@ class MainWindow(QMainWindow):
             f"Created subcircuit '{definition.name}' with {len(ports)} port(s)", 3000
         )
 
+    def _create_empty_subcircuit_via_dialog(self) -> None:
+        """Open the CreateSubcircuitDialog without a selection and,
+        on accept, drop an empty subcircuit instance at the viewport
+        center, register the definition, and descend into it so the
+        user can start populating the body right away.
+
+        The dialog handles the name/description/symbol-size; ports
+        are populated later by ``SUBCIRCUIT_PORT`` markers the user
+        places inside the body (auto-synced by
+        ``_sync_subcircuit_ports_if_editing``).
+        """
+        from pulsimgui.models.component import ComponentType
+        from pulsimgui.models.subcircuit import (
+            create_empty_subcircuit_definition,
+        )
+
+        # No selection → no boundary nets, so pass an empty list. The
+        # dialog already branches on selected_count==0 to show the
+        # right wording.
+        dialog = CreateSubcircuitDialog(0, [], self)
+        if not dialog.exec():
+            return
+
+        definition = create_empty_subcircuit_definition(
+            name=dialog.get_name(),
+            description=dialog.get_description(),
+            symbol_size=dialog.get_symbol_size(),
+        )
+        self._project.add_subcircuit(definition)
+        self._hierarchy_service.register_subcircuit(definition)
+
+        # Place the instance at the viewport center so it lands where
+        # the user is looking, not at the scene origin (which may be
+        # off-screen after they panned).
+        view_center = self._schematic_view.mapToScene(
+            self._schematic_view.viewport().rect().center()
+        )
+
+        current_circuit = self._current_circuit()
+        instance = SubcircuitInstance(
+            name=self._generate_component_name(ComponentType.SUBCIRCUIT),
+            x=view_center.x(),
+            y=view_center.y(),
+            parameters={
+                "symbol_width": definition.symbol_width,
+                "symbol_height": definition.symbol_height,
+            },
+            pins=definition.get_pins(),  # empty for a blank definition
+            subcircuit_id=definition.id,
+        )
+        current_circuit.add_component(instance)
+        self._schematic_scene.add_component(instance)
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+        # Auto-descend into the new (empty) body so the user can
+        # immediately drop components and SUBCIRCUIT_PORT markers.
+        # If descend fails for any reason (shouldn't, since we just
+        # registered the definition), we stay at the parent level
+        # — the empty block is still placed and visible.
+        if self._hierarchy_service.descend_into(instance.id, definition.id):
+            self.statusBar().showMessage(
+                f"Empty subcircuit '{definition.name}' created — "
+                f"add components and port markers, then press "
+                f"Backspace to return.",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Empty subcircuit '{definition.name}' placed on canvas",
+                3000,
+            )
+
     def _clear_scene(self) -> None:
         """Clear all items from the schematic scene."""
         self._schematic_scene.clear()
@@ -1581,124 +2141,6 @@ class MainWindow(QMainWindow):
         self._refresh_component_state_cache()
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._apply_current_theme()
-        self._reset_scope_workbench_session()
-        self._restore_saved_scope_windows()
-
-    def _build_scope_workbench_session(self) -> ScopeWorkbenchSession:
-        """Build standalone scope workspace session from project persistence."""
-        raw_state = self._project.scope_workspace_state
-        workspace_state = (
-            ScopeWorkspaceState.from_dict(raw_state)
-            if isinstance(raw_state, dict)
-            else None
-        )
-        return ScopeWorkbenchSession("project-main", state=workspace_state)
-
-    def _reset_scope_workbench_session(self) -> None:
-        """Reset standalone scope workspace session for current project."""
-        self._scope_workbench_session = self._build_scope_workbench_session()
-
-    def _persist_scope_workspace_state(self, *, mark_dirty: bool) -> None:
-        """Persist standalone workspace snapshot back into project model."""
-        self._project.scope_workspace_state = self._scope_workbench_session.export_state_dict()
-        if mark_dirty:
-            self._project.mark_dirty()
-            self._update_modified_indicator()
-
-    def _sync_open_scope_window_states(self) -> None:
-        """Snapshot currently open scope windows into project/session state."""
-        if not self._scope_windows:
-            self._persist_scope_workspace_state(mark_dirty=False)
-            return
-        circuit = self._current_circuit()
-        for scope_id, window in list(self._scope_windows.items()):
-            state = self._project.scope_state_for(scope_id)
-            state.is_open = True
-            state.geometry = list(window.capture_geometry_state())
-            state.ui_state = window.capture_ui_state()
-            component = self._get_component_by_id(scope_id, circuit)
-            if component is None:
-                continue
-            self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
-
-    def _scope_signal_keys_from_bindings(self, component) -> list[str]:
-        """Collect unique bound signal keys for one scope component."""
-        bindings = build_scope_channel_bindings(component, self._current_circuit())
-        keys: list[str] = []
-        seen: set[str] = set()
-        for binding in bindings:
-            for signal in binding.signals:
-                key = str(signal.signal_key or "").strip()
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                keys.append(key)
-        return keys
-
-    def _sync_scope_session_for_component(self, component, window: ScopeWindow | None = None) -> None:
-        """Mirror scope component/window state into standalone session model."""
-        scope_id = str(component.id)
-        self._scope_workbench_session.ensure_scope(scope_id, component.name)
-        self._scope_workbench_session.set_scope_signals(
-            scope_id,
-            self._scope_signal_keys_from_bindings(component),
-        )
-
-        if window is not None:
-            ui_state = window.capture_ui_state()
-            self._scope_workbench_session.set_scope_measurements(
-                scope_id,
-                [str(key) for key in ui_state.get("measurement_keys", [])],
-            )
-            self._scope_workbench_session.set_scope_plot_groups(
-                scope_id,
-                {
-                    str(signal_name): str(leader_name)
-                    for signal_name, leader_name in ui_state.get("plot_groups", {}).items()
-                    if str(signal_name).strip() and str(leader_name).strip()
-                }
-                if isinstance(ui_state.get("plot_groups"), dict)
-                else {},
-            )
-            self._scope_workbench_session.set_scope_cursors(
-                scope_id,
-                enabled=bool(ui_state.get("cursors_enabled", False)),
-                cursor_a=(
-                    float(ui_state["cursor_a"])
-                    if isinstance(ui_state.get("cursor_a"), (int, float))
-                    else None
-                ),
-                cursor_b=(
-                    float(ui_state["cursor_b"])
-                    if isinstance(ui_state.get("cursor_b"), (int, float))
-                    else None
-                ),
-            )
-            self._scope_workbench_session.set_sidebar_collapsed(
-                not bool(ui_state.get("left_panel_visible", True))
-            )
-        self._scope_workbench_session.set_active_scope(scope_id)
-
-    def _restore_saved_scope_windows(self) -> None:
-        """Reopen scope windows that were persisted as open in the project state."""
-        if not self._project.scope_windows:
-            return
-        circuit = self._current_circuit()
-        previous = self._suppress_scope_state
-        self._suppress_scope_state = True
-        try:
-            for scope_id, state in self._project.scope_windows.items():
-                if not state.is_open:
-                    continue
-                component = self._get_component_by_id(scope_id, circuit)
-                if component is None:
-                    continue
-                if component.type not in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
-                    continue
-                self._open_scope_window(component, geometry=state.geometry, update_state=False)
-        finally:
-            self._suppress_scope_state = previous
 
     def _apply_project_simulation_settings_to_service(self) -> None:
         """Mirror project transient settings into the runtime simulation service."""
@@ -1932,77 +2374,60 @@ class MainWindow(QMainWindow):
         )
 
     # Slots
-    def _on_new_project(self) -> None:
-        """Create a new project."""
-        if not self._check_save():
-            return
-        self._close_all_scope_windows(persist_state=False)
-        self._project = Project()
-        self._reset_scope_workbench_session()
-        self._latest_electrical_result = None
-        self._latest_thermal_waveform = None
-        self._command_stack.clear()
-        self._hierarchy_service.set_project(self._project)
-        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
-        self._refresh_component_state_cache()
-        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
-        self._apply_project_simulation_settings_to_service()
+    def _place_project_in_tab(self, project: Project, *, dirty: bool = False) -> None:
+        """Surface a freshly built / loaded project in a tab.
+
+        Reuses the active tab when it's a pristine blank (so a fresh
+        launch doesn't accumulate empty tabs), otherwise opens a new tab
+        and switches to it. ``dirty=True`` marks the result modified
+        (templates start unsaved)."""
+        if self._is_pristine_document(self._active_document):
+            self._replace_active_document(project)
+        else:
+            self._add_document(project)
+        if dirty:
+            self._project.mark_dirty()
+        self._refresh_tab(self._active_doc)
         self._update_title()
         self._update_modified_indicator()
 
+    def _on_new_project(self) -> None:
+        """Create a new blank circuit (PSIM-style: in its own tab, reusing
+        a pristine active tab if present). Never destroys unsaved work."""
+        self._place_project_in_tab(Project())
+
     def _on_new_from_template(self) -> None:
-        """Create a new project from a template."""
-        if not self._check_save():
+        """Create a new project from a template, in a tab."""
+        dialog = TemplateDialog(self)
+        if not dialog.exec():
+            return
+        template_id = dialog.get_selected_template_id()
+        if not template_id:
             return
 
-        dialog = TemplateDialog(self)
-        if dialog.exec():
-            template_id = dialog.get_selected_template_id()
-            if template_id:
-                # Prefer full project templates (includes saved simulation settings).
-                template_project = TemplateService.create_project_from_template(template_id)
+        # Prefer full project templates (includes saved simulation settings).
+        template_project = TemplateService.create_project_from_template(template_id)
+        if template_project is not None:
+            template_project.path = None
+            self._place_project_in_tab(template_project, dirty=True)
+            self.statusBar().showMessage(
+                f"Created new project from template: {template_project.name}", 3000
+            )
+            return
 
-                if template_project is not None:
-                    self._close_all_scope_windows(persist_state=False)
-                    template_project.path = None
-                    self._project = template_project
-                    self._latest_electrical_result = None
-                    self._latest_thermal_waveform = None
-                    self._command_stack.clear()
-                    self._load_project_to_scene()
-                    self._apply_project_simulation_settings_to_service()
-                    self._project.mark_dirty()
-                    self._update_title()
-                    self._update_modified_indicator()
-                    self.statusBar().showMessage(
-                        f"Created new project from template: {self._project.name}", 3000
-                    )
-                    return
-
-                # Fallback: legacy circuit-only templates.
-                circuit = TemplateService.create_circuit_from_template(template_id)
-                if circuit:
-                    self._close_all_scope_windows(persist_state=False)
-                    self._project = Project(name=circuit.name)
-                    self._latest_electrical_result = None
-                    self._latest_thermal_waveform = None
-                    self._project.circuits = {"main": circuit}
-                    self._project.active_circuit = "main"
-                    self._command_stack.clear()
-                    self._load_project_to_scene()
-                    self._apply_project_simulation_settings_to_service()
-                    self._project.mark_dirty()
-                    self._update_title()
-                    self._update_modified_indicator()
-                    self.statusBar().showMessage(
-                        f"Created new project from template: {circuit.name}", 3000
-                    )
+        # Fallback: legacy circuit-only templates.
+        circuit = TemplateService.create_circuit_from_template(template_id)
+        if circuit:
+            project = Project(name=circuit.name)
+            project.circuits = {"main": circuit}
+            project.active_circuit = "main"
+            self._place_project_in_tab(project, dirty=True)
+            self.statusBar().showMessage(
+                f"Created new project from template: {circuit.name}", 3000
+            )
 
     def _on_open_project(self) -> None:
-        """Open a project file."""
-        if not self._check_save():
-            return
-
+        """Open a project file (in a new tab)."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Project",
@@ -2013,27 +2438,37 @@ class MainWindow(QMainWindow):
             self._open_project_file(path)
 
     def _open_project_file(self, path: str) -> None:
-        """Open a project from the given path."""
+        """Open a project from the given path in a tab. If the file is
+        already open, just switch to its tab instead of opening twice."""
+        # Dedup against already-open documents.
         try:
-            self._close_all_scope_windows(persist_state=False)
-            self._project = Project.load(path)
-            self._latest_electrical_result = None
-            self._latest_thermal_waveform = None
-            self._command_stack.clear()
-            self._load_project_to_scene()
-            self._apply_project_simulation_settings_to_service()
-            self._settings.add_recent_project(path)
-            self._update_recent_menu()
-            self._update_title()
-            self._update_modified_indicator()
-            self.statusBar().showMessage(f"Opened: {path}", 3000)
-            # P0.2 — auto-fit the schematic so the user immediately sees the
-            # whole circuit instead of having to manually press F-to-fit.
-            # Defer one event-loop tick so the scene's bounding rect reflects
-            # the just-loaded components (otherwise we fit to an empty rect).
-            self._schedule_auto_fit_view()
+            resolved = Path(path).resolve()
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            for i, doc in enumerate(self._documents):
+                existing = doc.project.path
+                if existing is None:
+                    continue
+                try:
+                    same = existing.resolve() == resolved
+                except Exception:
+                    same = False
+                if same:
+                    self._switch_to_document(i)
+                    self.statusBar().showMessage(f"Already open: {path}", 3000)
+                    return
+        try:
+            project = Project.load(path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
+            return
+        # Reuse a pristine tab or open a new one; _restore_view_state
+        # auto-fits the freshly loaded circuit (its view_transform is None).
+        self._place_project_in_tab(project)
+        self._settings.add_recent_project(path)
+        self._update_recent_menu()
+        self.statusBar().showMessage(f"Opened: {path}", 3000)
 
     def _schedule_auto_fit_view(self) -> None:
         """Defer ``zoom_to_fit`` until after the scene has settled."""
@@ -2045,15 +2480,17 @@ class MainWindow(QMainWindow):
     def _on_save(self) -> None:
         """Save the current project."""
         self._apply_simulation_service_settings_to_project()
-        self._sync_open_scope_window_states()
         if self._project.path is None:
             self._on_save_as()
         else:
             try:
                 self._project.save()
                 self._command_stack.set_clean()
+                # The on-disk filename is now the document's identity.
+                self._active_document.display_name = None
                 self._update_title()
                 self._update_modified_indicator()
+                self._refresh_tab(self._active_doc)
                 self.statusBar().showMessage("Project saved", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
@@ -2061,7 +2498,6 @@ class MainWindow(QMainWindow):
     def _on_save_as(self) -> None:
         """Save the project with a new name."""
         self._apply_simulation_service_settings_to_project()
-        self._sync_open_scope_window_states()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project As",
@@ -2074,31 +2510,21 @@ class MainWindow(QMainWindow):
             try:
                 self._project.save(path)
                 self._command_stack.set_clean()
+                # The on-disk filename is now the document's identity.
+                self._active_document.display_name = None
                 self._settings.add_recent_project(path)
                 self._update_recent_menu()
                 self._update_title()
                 self._update_modified_indicator()
+                self._refresh_tab(self._active_doc)
                 self.statusBar().showMessage(f"Saved: {path}", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
 
     def _on_close_project(self) -> None:
-        """Close the current project and create a new empty one."""
-        if not self._check_save():
-            return
-        self._close_all_scope_windows(persist_state=False)
-        self._project = Project()
-        self._reset_scope_workbench_session()
-        self._latest_electrical_result = None
-        self._latest_thermal_waveform = None
-        self._command_stack.clear()
-        self._hierarchy_service.set_project(self._project)
-        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
-        self._refresh_component_state_cache()
-        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
-        self._update_title()
-        self._update_modified_indicator()
-        self.statusBar().showMessage("Project closed", 3000)
+        """Close the active tab (prompting to save if it's dirty). Closing
+        the last remaining tab resets it to a fresh blank project."""
+        self._close_document(self._active_doc)
 
     def _on_undo(self) -> None:
         """Undo the last command."""
@@ -2392,8 +2818,15 @@ class MainWindow(QMainWindow):
             snapped = scene.snap_to_grid(QPointF(x, y))
             x, y = snapped.x(), snapped.y()
 
-        # Create component
-        component = Component(comp_type, x=x, y=y)
+        # Create component. NOTE: ``type=`` is mandatory — Component's first
+        # positional field is ``id`` (a UUID), so a positional comp_type would
+        # silently land in ``id`` and leave ``type`` defaulted to RESISTOR.
+        component = Component(
+            type=comp_type,
+            name=self._generate_component_name(comp_type),
+            x=x,
+            y=y,
+        )
         self._execute_schematic_command(
             AddComponentCommand(self._current_circuit(), component),
             refresh_scene=True,
@@ -2539,18 +2972,66 @@ class MainWindow(QMainWindow):
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
 
+    def _on_component_pasted(self, component) -> None:
+        """Add a clipboard-pasted component (built by the view, with its
+        edited properties intact) to the active circuit through the undo
+        stack, so it persists and is part of the model — not a scene-only
+        orphan."""
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
+
     def _on_component_removed(self, component) -> None:
         """Tear down scope window state when a component disappears."""
         comp_id = str(component.id)
-        window = self._scope_windows.get(comp_id)
+        window = self._scope_windows.pop(comp_id, None)
         if window is not None:
             window.close()
-        self._scope_workbench_session.discard_scope(comp_id)
-        self._persist_scope_workspace_state(mark_dirty=False)
-        if comp_id in self._project.scope_windows:
-            del self._project.scope_windows[comp_id]
-            self._project.mark_dirty()
-            self._update_modified_indicator()
+        # If we're editing inside a subcircuit, removing any component
+        # (including a SUBCIRCUIT_PORT marker) can shift the port list.
+        # Re-sync so the outer symbol stays consistent.
+        self._sync_subcircuit_ports_if_editing()
+
+    def _on_component_added_for_port_sync(self, _component) -> None:
+        """Re-sync subcircuit port markers when a component lands in
+        the body. No-op at root."""
+        self._sync_subcircuit_ports_if_editing()
+
+    def _on_wire_added_for_port_sync(self, _wire) -> None:
+        """Re-sync subcircuit port markers when a wire changes the
+        internal connectivity (which net the marker pin sits on)."""
+        self._sync_subcircuit_ports_if_editing()
+
+    def _sync_subcircuit_ports_if_editing(self) -> None:
+        """If the user is currently editing the body of a subcircuit
+        definition, rebuild ``definition.ports`` from any
+        SUBCIRCUIT_PORT markers inside, then propagate the new pin
+        layout to every instance of this definition in the project.
+
+        Cheap no-op when at root (most common case).
+        """
+        from pulsimgui.models.subcircuit import (
+            refresh_subcircuit_instance_pins,
+            sync_definition_ports_from_markers,
+        )
+
+        definition = self._hierarchy_service.get_current_definition()
+        if definition is None:
+            return
+
+        changed = sync_definition_ports_from_markers(definition)
+        if not changed:
+            return
+
+        # Mirror the new pin list onto every instance pointing at us.
+        refresh_subcircuit_instance_pins(self._project, definition)
+
+        # If the parent circuit happens to be visible elsewhere
+        # (e.g. a backed-up scene), force-redraw the current scene so
+        # users see the marker name update on the inner schematic.
+        self._schematic_scene.update()
 
     def _on_component_delete_requested(self, component_id: str) -> None:
         """Delete a component via command stack."""
@@ -2915,10 +3396,101 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Select a wire to rename.", 3000)
 
     def _on_scope_open_requested(self, component) -> None:
-        """Open (or focus) a dedicated window for the requested scope."""
+        """Open (or focus) the scope_v2 window for the requested component."""
         if component is None:
             return
         self._open_scope_window(component)
+
+    def _open_scope_window(self, component) -> None:
+        """Open the modular scope_v2 ``BaseScopeWindow`` for ``component``.
+
+        Resolves the wired-up probe channels via
+        :func:`resolve_scope_signal_specs`, builds the live + post-sim
+        capabilities, and instantiates the variant matching the scope
+        component's type (electrical / thermal). Re-opening the same
+        component focuses the existing window instead of duplicating.
+        """
+        from pulsimgui.models.component import ComponentType
+        from pulsimgui.views.scope_v2 import (
+            CursorsCapability,
+            ExportCapability,
+            FFTCapability,
+            LiveStreamCapability,
+            MathSignalsCapability,
+            PostSimCapability,
+            SMPSMacrosCapability,
+            TriggerCapability,
+        )
+        from pulsimgui.views.scope_v2.resolver import resolve_scope_signal_specs
+        from pulsimgui.views.scope_v2.variants import (
+            ElectricalScopeVariant,
+            ThermalScopeVariant,
+        )
+
+        comp_id = str(component.id)
+        existing = self._scope_windows.get(comp_id)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        circuit = self._current_circuit()
+        live_specs, post_specs = resolve_scope_signal_specs(
+            component, circuit, self._simulation_service, self._project,
+        )
+
+        variant_cls = (
+            ThermalScopeVariant
+            if component.type == ComponentType.THERMAL_SCOPE
+            else ElectricalScopeVariant
+        )
+        variant = variant_cls(name=f"Scope: {component.name}")
+
+        try:
+            from pulsimgui import __version__ as _pg_version
+        except Exception:  # pragma: no cover
+            _pg_version = ""
+
+        capabilities: list = []
+        if live_specs:
+            capabilities.append(LiveStreamCapability(self._simulation_service, live_specs))
+        if post_specs:
+            # Feed PostSim the probe-enriched result, not the raw kernel
+            # one — see ``electrical_result_ready`` on the class for why.
+            capabilities.append(PostSimCapability(
+                self._simulation_service,
+                post_specs,
+                result_signal=self.electrical_result_ready,
+                result_getter=lambda: self._latest_electrical_result,
+            ))
+        capabilities.append(CursorsCapability())
+        capabilities.append(MathSignalsCapability())
+        # TriggerCapability disabled by request — barely used in
+        # practice and was contributing visual clutter / theme stress
+        # in the Inspector. Code is kept; re-enable by uncommenting.
+        # capabilities.append(TriggerCapability())
+        capabilities.append(SMPSMacrosCapability())
+        capabilities.append(ExportCapability())
+        capabilities.append(FFTCapability())
+
+        window = BaseScopeWindow(
+            variant=variant,
+            capabilities=capabilities,
+            version=_pg_version,
+            # Hand the host's ThemeService over so the scope picks up
+            # the same theme as MainWindow (light ↔ dark) AND keeps
+            # following along when the user switches in Preferences.
+            theme_service=self._theme_service,
+        )
+        # The LiveStream capability needs the project reference so its
+        # Run button can drive ``simulation_service.run_transient_project``.
+        window._project = self._project
+        window.closed.connect(lambda cid=comp_id: self._scope_windows.pop(cid, None))
+        self._scope_windows[comp_id] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _on_component_properties_requested(self, component) -> None:
         """Open modal component properties editor and apply on confirmation."""
@@ -2978,22 +3550,6 @@ class MainWindow(QMainWindow):
             return
 
         self._schematic_scene.request_net_label_navigation(source_component)
-
-    def _on_scope_window_closed(self, component_id: str, geometry: tuple[int, int, int, int]) -> None:
-        """Persist window state whenever a scope window closes."""
-        window = self._scope_windows.pop(component_id, None)
-        if self._suppress_scope_state:
-            return
-        state = self._project.scope_state_for(component_id)
-        state.is_open = False
-        state.geometry = list(geometry)
-        state.ui_state = window.capture_ui_state() if window is not None else None
-        component = self._get_component_by_id(component_id, self._current_circuit())
-        if component is not None:
-            self._sync_scope_session_for_component(component, window=window)
-            self._persist_scope_workspace_state(mark_dirty=False)
-        self._project.mark_dirty()
-        self._update_modified_indicator()
 
     def _generate_component_name(self, comp_type) -> str:
         """Generate a unique component name."""
@@ -3070,9 +3626,32 @@ class MainWindow(QMainWindow):
                     "n_inputs",
                     "n_outputs",
                     "signs",
+                    # SUBCIRCUIT_PORT marker: ``side`` moves the pin to
+                    # a different edge of the marker; ``port_name``
+                    # rewrites the pin label. Both demand a geometry
+                    # refresh + a definition re-sync so the parent
+                    # symbol updates immediately.
+                    "side",
+                    "port_name",
                 }
                 if pin_layout_changed:
                     item.prepareGeometryChange()
+                # When the edited component is a SUBCIRCUIT_PORT and
+                # any of its identity-affecting params changed, push
+                # the change through to the SubcircuitDefinition so
+                # outer-symbol pins update without an explicit save.
+                if name in {"port_name", "side", "direction"}:
+                    from pulsimgui.models.component import ComponentType as _CT
+                    if edited_component.type == _CT.SUBCIRCUIT_PORT:
+                        # Re-run the model-level pin sync so the
+                        # marker's own pin moves to the new ``side``
+                        # / picks up the new ``port_name`` before we
+                        # rebuild the definition's port list.
+                        from pulsimgui.models.component import (
+                            _synchronize_special_component,
+                        )
+                        _synchronize_special_component(edited_component)
+                        self._sync_subcircuit_ports_if_editing()
                 # Update position if changed
                 if name == "position_x":
                     item.setPos(edited_component.x, edited_component.y)
@@ -3098,415 +3677,36 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Scope window helpers
     # ------------------------------------------------------------------
-    def _open_scope_window(
-        self,
-        component,
-        geometry: list[int] | None = None,
-        update_state: bool = True,
-    ) -> ScopeWindow:
-        comp_id = str(component.id)
-        window = self._scope_windows.get(comp_id)
-        if window is None:
-            window = ScopeWindow(
-                comp_id,
-                component.name,
-                component.type,
-                theme_service=self._theme_service,
-                parent=self,
-            )
-            window.closed.connect(self._on_scope_window_closed)
-            self._scope_windows[comp_id] = window
-
-        window.set_component_name(component.name)
-        circuit = self._current_circuit()
-        window.set_bindings(build_scope_channel_bindings(component, circuit))
-
-        target_geometry = geometry
-        target_ui_state: dict[str, object] | None = None
-        state = self._project.scope_windows.get(comp_id)
-        if state and isinstance(state.ui_state, dict):
-            target_ui_state = dict(state.ui_state)
-        if target_geometry is None:
-            if state and state.geometry:
-                target_geometry = state.geometry
-        window.apply_geometry_state(target_geometry)
-        window.apply_simulation_result(self._scope_result_for_component(component))
-        if target_ui_state is not None:
-            window.apply_ui_state(target_ui_state)
-
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-        self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
-
-        if update_state and not self._suppress_scope_state:
-            state = self._project.scope_state_for(comp_id)
-            state.is_open = True
-            state.geometry = list(window.capture_geometry_state())
-            state.ui_state = window.capture_ui_state()
-            self._project.mark_dirty()
-            self._update_modified_indicator()
-        return window
-
     def _close_all_scope_windows(self, persist_state: bool = True) -> None:
-        if not self._scope_windows:
-            return
-        previous = self._suppress_scope_state
-        self._suppress_scope_state = not persist_state
-        try:
-            for window in list(self._scope_windows.values()):
-                window.close()
-        finally:
-            self._suppress_scope_state = previous
-        if not persist_state:
-            self._scope_windows.clear()
+        """Close every open scope_v2 window — used on project new/open/close."""
+        del persist_state  # legacy kwarg retained for caller compatibility
+        for window in list(self._scope_windows.values()):
+            window.close()
+        self._scope_windows.clear()
 
     def _refresh_scope_window_bindings(self) -> None:
+        """Rebuild capabilities for every open scope after a schematic edit.
+
+        When the user re-wires a probe to a scope on the canvas, the
+        ``ScopeChannelBinding``s change. We rebuild the simplest way:
+        close + reopen each open window so the resolver runs fresh.
+        """
         if not self._scope_windows:
             return
         circuit = self._current_circuit()
-        for comp_id, window in list(self._scope_windows.items()):
+        comp_ids = list(self._scope_windows.keys())
+        for comp_id in comp_ids:
             component = self._get_component_by_id(comp_id, circuit)
             if component is None:
+                window = self._scope_windows.pop(comp_id, None)
+                if window is not None:
+                    window.close()
+                continue
+            window = self._scope_windows.pop(comp_id, None)
+            if window is not None:
                 window.close()
-                continue
-            window.set_component_name(component.name)
-            window.set_bindings(build_scope_channel_bindings(component, circuit))
-            window.apply_simulation_result(self._scope_result_for_component(component))
-            self._sync_scope_session_for_component(component, window=window)
-        self._persist_scope_workspace_state(mark_dirty=False)
+            self._open_scope_window(component)
 
-    def _scope_result_for_component(self, component) -> SimulationResult | None:
-        if component.type == ComponentType.THERMAL_SCOPE:
-            return self._ensure_thermal_waveform()
-        return self._latest_electrical_result
-
-    @staticmethod
-    def _canonical_scope_token(value: str | None) -> str:
-        token = str(value or "").strip().lower()
-        if not token:
-            return ""
-        return "".join(ch for ch in token if ch.isalnum())
-
-    @staticmethod
-    def _safe_float(value, fallback: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(fallback)
-
-    @staticmethod
-    def _is_thermal_signal_key(signal_key: str) -> bool:
-        upper = str(signal_key or "").strip().upper()
-        if not upper:
-            return False
-        if upper.startswith(("T(", "TEMP(", "TJ(", "THERMAL(")):
-            return True
-        if upper.startswith(("T_", "TJ_", "TEMP_")):
-            return True
-        return "TEMP" in upper
-
-    @staticmethod
-    def _extract_thermal_signal_label(signal_key: str) -> str | None:
-        raw = str(signal_key or "").strip()
-        if not raw:
-            return None
-
-        # Canonical backend forms: T(M1), TJ(M1), TEMP(M1), THERMAL(M1)
-        match = re.match(r"^(?:T|TEMP|TJ|THERMAL)\(([^)]+)\)$", raw, re.IGNORECASE)
-        if match:
-            label = match.group(1).strip()
-            return label or None
-
-        # Legacy/native variants seen across backend versions: T_M1, TJ_M1, TEMP.M1, T:M1
-        match = re.match(r"^(?:T|TEMP|TJ)(?:[_:./-]+)(.+)$", raw, re.IGNORECASE)
-        if match:
-            label = match.group(1).strip()
-            return label or None
-
-        return None
-
-    @staticmethod
-    def _extract_wrapped_signal_label(signal_key: str) -> str | None:
-        match = re.match(r"^[A-Za-z][A-Za-z0-9_.:-]*\(([^)]+)\)$", str(signal_key or "").strip())
-        if not match:
-            return None
-        label = match.group(1).strip()
-        return label or None
-
-    def _build_scope_component_lookup(
-        self,
-    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
-        by_id: dict[str, str] = {}
-        by_name: dict[str, str] = {}
-        by_backend_default_name: dict[str, str] = {}
-        by_canonical: dict[str, str] = {}
-
-        circuit = self._current_circuit()
-        if circuit is None:
-            return by_id, by_name, by_backend_default_name, by_canonical
-
-        for component in circuit.components.values():
-            label = component.name or component.type.name.replace("_", " ").title()
-            comp_id = str(component.id)
-            by_id[comp_id.lower()] = label
-            if component.name:
-                by_name[component.name.strip().lower()] = label
-            backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
-            by_backend_default_name[backend_default] = label
-
-            for token in (label, component.name, comp_id, backend_default):
-                canonical = self._canonical_scope_token(token)
-                if canonical and canonical not in by_canonical:
-                    by_canonical[canonical] = label
-
-        return by_id, by_name, by_backend_default_name, by_canonical
-
-    def _resolve_scope_component_name(
-        self,
-        raw_name: str | None,
-        raw_id: str | None = None,
-    ) -> str:
-        by_id, by_name, by_backend_default_name, by_canonical = self._build_scope_component_lookup()
-        candidates = [str(raw_name or "").strip(), str(raw_id or "").strip()]
-        for token in list(candidates):
-            if not token:
-                continue
-            for separator in ("::", ":", "/", "."):
-                if separator in token:
-                    candidates.extend(part for part in token.split(separator) if part)
-
-        for candidate in candidates:
-            lowered = candidate.strip().lower()
-            if not lowered:
-                continue
-            if lowered in by_id:
-                return by_id[lowered]
-            if lowered in by_name:
-                return by_name[lowered]
-            if lowered in by_backend_default_name:
-                return by_backend_default_name[lowered]
-            canonical = self._canonical_scope_token(lowered)
-            if canonical and canonical in by_canonical:
-                return by_canonical[canonical]
-
-        return str(raw_name or raw_id or "").strip() or "Unknown"
-
-    def _thermal_waveform_from_electrothermal_telemetry(self) -> SimulationResult | None:
-        electrical = self._latest_electrical_result
-        if electrical is None or not electrical.time:
-            return None
-
-        circuit = self._current_circuit()
-        target_len = len(electrical.time)
-        stats = electrical.statistics if isinstance(electrical.statistics, dict) else {}
-        virtual_metadata = (
-            stats.get("virtual_channel_metadata")
-            if isinstance(stats.get("virtual_channel_metadata"), dict)
-            else {}
-        )
-        subset = SimulationResult(
-            time=list(electrical.time),
-            signals={},
-            statistics=dict(electrical.statistics),
-        )
-        thermal_scope_by_name: dict[str, object] = {}
-        thermal_scope_by_id: dict[str, object] = {}
-        if circuit is not None:
-            for component in circuit.components.values():
-                if component.type != ComponentType.THERMAL_SCOPE:
-                    continue
-                thermal_scope_by_id[str(component.id).strip().lower()] = component
-                scoped_name = str(component.name or "").strip().lower()
-                if scoped_name:
-                    thermal_scope_by_name[scoped_name] = component
-        thermal_scope_series: dict[str, list[float]] = {}
-
-        for key, values in electrical.signals.items():
-            text = str(key or "").strip()
-            if not text:
-                continue
-            trace = list(values)[:target_len]
-            if not trace:
-                continue
-            if len(trace) < target_len:
-                trace.extend([trace[-1]] * (target_len - len(trace)))
-
-            entry = virtual_metadata.get(text) if isinstance(virtual_metadata, dict) else None
-            meta_domain = (
-                str(entry.get("domain", "")).strip().lower()
-                if isinstance(entry, dict)
-                else ""
-            )
-            meta_component_type = (
-                str(entry.get("component_type", "")).strip().lower()
-                if isinstance(entry, dict)
-                else ""
-            )
-            meta_source_component = (
-                str(entry.get("source_component", "")).strip()
-                if isinstance(entry, dict)
-                else ""
-            )
-            is_metadata_thermal = (
-                meta_domain == "thermal"
-                or meta_component_type == "thermal_trace"
-            )
-
-            # Prefer fully sampled thermal traces when backend already exported them.
-            if is_metadata_thermal or self._is_thermal_signal_key(text):
-                subset.signals[text] = trace
-                extracted = meta_source_component or self._extract_thermal_signal_label(text)
-                if extracted:
-                    resolved = self._resolve_scope_component_name(extracted)
-                    subset.signals.setdefault(format_signal_key("T", extracted), trace)
-                    subset.signals.setdefault(format_signal_key("T", resolved), trace)
-                continue
-
-            lowered = text.lower()
-            scope_component = thermal_scope_by_name.get(lowered) or thermal_scope_by_id.get(lowered)
-            if scope_component is None:
-                wrapped_name = self._extract_wrapped_signal_label(text)
-                if wrapped_name:
-                    wrapped_lower = wrapped_name.lower()
-                    scope_component = (
-                        thermal_scope_by_name.get(wrapped_lower)
-                        or thermal_scope_by_id.get(wrapped_lower)
-                    )
-            if scope_component is None:
-                continue
-            subset.signals[text] = trace
-            thermal_scope_series[str(scope_component.id)] = trace
-
-        # Backend thermal_scope channels may come keyed by the scope name/id.
-        # Mirror those traces to the connected component T(...) keys expected by GUI bindings.
-        if circuit is not None and thermal_scope_series:
-            for scope_id, trace in thermal_scope_series.items():
-                scope_component = thermal_scope_by_id.get(scope_id.lower())
-                if scope_component is None:
-                    continue
-                for binding in build_scope_channel_bindings(scope_component, circuit):
-                    for signal in binding.signals:
-                        key = str(signal.signal_key or "").strip()
-                        if not key:
-                            continue
-                        subset.signals.setdefault(key, list(trace))
-
-        if subset.signals:
-            return subset
-        return None
-
-    def _ensure_thermal_waveform(self) -> SimulationResult | None:
-        if self._latest_thermal_waveform is not None:
-            return self._latest_thermal_waveform
-        if not self._latest_electrical_result:
-            self.statusBar().showMessage(
-                "No electrical waveform available for thermal scope. "
-                "Run a successful transient simulation first.",
-                6000,
-            )
-            return None
-        telemetry_waveform = self._thermal_waveform_from_electrothermal_telemetry()
-        if telemetry_waveform is not None:
-            self._latest_thermal_waveform = telemetry_waveform
-            return self._latest_thermal_waveform
-        stats = (
-            self._latest_electrical_result.statistics
-            if isinstance(self._latest_electrical_result.statistics, dict)
-            else {}
-        )
-        has_summary_only = bool(
-            isinstance(stats.get("thermal_summary"), dict)
-            or isinstance(stats.get("component_electrothermal"), list)
-        )
-        if has_summary_only:
-            self.statusBar().showMessage(
-                "Backend returned only thermal summary (final/avg/peak) without sampled T(...) traces. "
-                "Thermal scope requires sampled channels from backend.",
-                7000,
-            )
-            self._latest_thermal_waveform = None
-            return None
-        self.statusBar().showMessage(
-            "No thermal telemetry available in transient result. "
-            "Enable losses/thermal and run simulation again.",
-            6000,
-        )
-        self._latest_thermal_waveform = None
-        return None
-
-    def _update_scope_results(self) -> None:
-        """Refresh scope windows after simulation state changes."""
-        self._latest_thermal_waveform = None
-        self._refresh_scope_window_bindings()
-
-    def _thermal_result_to_waveform(self, thermal_result) -> SimulationResult | None:
-        if not thermal_result or not thermal_result.time:
-            return None
-        circuit = self._current_circuit()
-        component_by_id: dict[str, str] = {}
-        component_by_name: dict[str, str] = {}
-        component_by_backend_default_name: dict[str, str] = {}
-        component_by_canonical: dict[str, str] = {}
-
-        def _canonical_token(value: str | None) -> str:
-            token = str(value or "").strip().lower()
-            if not token:
-                return ""
-            return "".join(ch for ch in token if ch.isalnum())
-
-        if circuit is not None:
-            for component in circuit.components.values():
-                label = component.name or component.type.name.replace("_", " ").title()
-                comp_id = str(component.id)
-                component_by_id[comp_id] = label
-                if component.name:
-                    component_by_name[component.name.strip().lower()] = label
-                backend_default = f"{component.type.name}_{comp_id[:6]}".lower()
-                component_by_backend_default_name[backend_default] = label
-                for token in (label, component.name, comp_id, backend_default):
-                    canonical = _canonical_token(token)
-                    if canonical and canonical not in component_by_canonical:
-                        component_by_canonical[canonical] = label
-
-        subset = SimulationResult()
-        subset.time = list(thermal_result.time)
-        subset.signals = {}
-        subset.statistics = {
-            "ambient": thermal_result.ambient_temperature,
-            "devices": len(thermal_result.devices),
-        }
-        for device in thermal_result.devices:
-            if not device.temperature_trace:
-                continue
-            resolved_name = component_by_id.get(str(device.component_id))
-            if not resolved_name:
-                resolved_name = component_by_name.get(str(device.component_name or "").strip().lower())
-            if not resolved_name:
-                resolved_name = component_by_backend_default_name.get(
-                    str(device.component_name or "").strip().lower()
-                )
-            if not resolved_name:
-                resolved_name = component_by_canonical.get(
-                    _canonical_token(device.component_name),
-                    device.component_name,
-                )
-
-            key = format_signal_key("T", resolved_name)
-            trace = list(device.temperature_trace)
-            subset.signals[key] = trace
-            raw_backend_key = format_signal_key("T", device.component_name)
-            if raw_backend_key != key and raw_backend_key not in subset.signals:
-                subset.signals[raw_backend_key] = trace
-            raw_id_key = format_signal_key("T", str(device.component_id))
-            if raw_id_key != key and raw_id_key not in subset.signals:
-                subset.signals[raw_id_key] = trace
-            legacy_key = f"T({resolved_name})"
-            if legacy_key != key and legacy_key not in subset.signals:
-                subset.signals[legacy_key] = trace
-        return subset if subset.signals else None
 
     def _get_component_by_id(self, component_id: str, circuit: Circuit | None = None):
         circuit = circuit or self._current_circuit()
@@ -3540,9 +3740,21 @@ class MainWindow(QMainWindow):
         else:
             return False
 
+    def _check_save_all(self) -> bool:
+        """Prompt to save every dirty open document before a destructive
+        action (window close). Returns False if the user cancels any
+        prompt — the caller must abort. Each dirty document is surfaced
+        first so the save dialog acts on the right project."""
+        for i in range(len(self._documents)):
+            if self._documents[i].project.is_dirty:
+                self._switch_to_document(i)
+                if not self._check_save():
+                    return False
+        return True
+
     def closeEvent(self, event) -> None:
         """Handle window close event."""
-        if not self._check_save():
+        if not self._check_save_all():
             event.ignore()
             return
 
@@ -3981,86 +4193,13 @@ class MainWindow(QMainWindow):
         # Keep streaming data in the dock viewer without forcing it open.
         self._waveform_viewer.add_data_point(time, signals)
 
-    def _on_live_stream_ready(self, stream) -> None:
-        """Attach the LiveScopeWidget to the kernel's freshly-allocated
-        live ring (v1.5+ streaming).
+    def _on_live_stream_ready(self, _stream) -> None:
+        """No-op — scope_v2's ``LiveStreamCapability`` subscribes directly.
 
-        Opens a non-modal scope window the user can leave open across
-        runs. Adds every named node voltage as a signal so the default
-        view is "all node voltages, real time". The window starts
-        polling immediately — by the time the worker thread enters the
-        blocking simulate() call, samples are already arriving.
+        The signal stays connected so older code paths (e.g. analytics
+        that hook into ``live_stream_ready``) keep functioning; routing
+        is done by each open ``BaseScopeWindow``'s ``LiveStreamCapability``.
         """
-        # Lazy import — pyqtgraph is heavy and not all users of the
-        # GUI need the live scope.
-        try:
-            from pulsimgui.views.scope.live_scope_widget import (
-                LiveScopeWidget, LiveSignalSpec, DEFAULT_PALETTE,
-            )
-        except Exception:  # noqa: BLE001 — gracefully no-op
-            return
-
-        # Build the signal list from the current project's circuit
-        # builder. We rely on the project's already-converted builder
-        # via the simulation service; this matches what the kernel
-        # actually sees on its state vector.
-        builder = None
-        try:
-            project = getattr(self, "_project", None)
-            converter = getattr(self._simulation_service, "_circuit_converter", None)
-            if project is not None and converter is not None:
-                circuit_data = converter.project_to_dict(project)
-                builder = circuit_data.get("circuit", None)
-                if builder is not None:
-                    builder = getattr(builder, "builder", builder)
-        except Exception:  # noqa: BLE001
-            builder = None
-
-        # Without a builder we can't resolve node indices — still open
-        # the scope (the user can register signals manually later), but
-        # with an empty signal set so the user at least sees the
-        # streaming infrastructure react.
-        signals: list = []
-        if builder is not None:
-            try:
-                # ``builder.graph.node_names`` returns nodes in
-                # registration order; ``node_id_of`` resolves a state
-                # vector slot.
-                names = list(getattr(builder.graph, "node_names", []) or [])
-                if not names:
-                    n_nodes = int(getattr(builder.graph, "num_nodes", 0))
-                    names = [f"n{i}" for i in range(n_nodes)]
-                for i, name in enumerate(names):
-                    try:
-                        idx = int(builder.node_id_of(name))
-                    except Exception:  # noqa: BLE001
-                        continue
-                    color = DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
-                    signals.append(LiveSignalSpec(
-                        name=f"V({name})", state_idx=idx,
-                        color=color, unit="V",
-                    ))
-            except Exception:  # noqa: BLE001
-                signals = []
-
-        # Re-use the same window across runs to avoid a window-storm
-        # when the user clicks Run repeatedly.
-        existing = getattr(self, "_live_scope_window", None)
-        if existing is not None:
-            try:
-                existing.stop_polling()
-                existing.close()
-            except Exception:  # noqa: BLE001
-                pass
-        widget = LiveScopeWidget(
-            stream, signals, window_seconds=3e-3, update_hz=60.0,
-        )
-        widget.setWindowTitle("Pulsim — Live Scope (streaming)")
-        widget.resize(1100, 600)
-        widget.stop_requested.connect(self._simulation_service.cancel)
-        widget.show()
-        widget.start()
-        self._live_scope_window = widget
 
     def _on_post_processing_requested(self, jobs: list[dict]) -> None:
         """Run waveform post-processing for the latest electrical result."""
@@ -4070,29 +4209,12 @@ class MainWindow(QMainWindow):
     def _on_simulation_finished(self, result) -> None:
         """Handle simulation completion."""
         pill = getattr(self, "_solver_pill", None)
+        # scope_v2's PostSimCapability replaces streamed data with the
+        # full result inside each open scope window — nothing extra to
+        # do here for live → finalized transitions.
         if result.is_valid:
             # Finalize streaming in the dock viewer.
             self._waveform_viewer.finalize_streaming(result)
-
-            # NEW (v1.5+): finalise the live-streaming scope with the
-            # full result so the user sees the entire run, not just
-            # the rolling window. We pull the result's time + state
-            # matrix straight from ``result.states`` (a list of
-            # per-step numpy vectors); the widget reshapes into a 2D
-            # array internally.
-            live_scope = getattr(self, "_live_scope_window", None)
-            if live_scope is not None:
-                try:
-                    import numpy as _np
-                    t_arr = _np.asarray(result.time, dtype=_np.float64)
-                    states = getattr(result, "states", None)
-                    if states is not None and len(states) > 0:
-                        x_arr = _np.asarray(states, dtype=_np.float64)
-                    else:
-                        x_arr = _np.zeros((t_arr.size, 0), dtype=_np.float64)
-                    live_scope.finalize(t_arr, x_arr)
-                except Exception:  # noqa: BLE001 — non-critical view sync
-                    pass
 
             self.statusBar().showMessage(
                 f"Simulation complete: {len(result.time)} points, "
@@ -4100,6 +4222,14 @@ class MainWindow(QMainWindow):
                 5000,
             )
             self._latest_electrical_result = self._result_with_probe_signals(result)
+            # Push the *enriched* result through to any open scope_v2
+            # windows — they need the ``VP(name)`` / ``IP(name)`` /
+            # ``PP(name)`` synthetic channels to match their probe
+            # ``signal_key`` lookups. The raw ``simulation_finished``
+            # signal that scope_v2's PostSimCapability used to listen
+            # to carries only the kernel-native keys and produced
+            # "0 of N signals matched" in the drawer.
+            self.electrical_result_ready.emit(self._latest_electrical_result)
             # P1.3 — surface convergence health on the solver pill.
             if pill is not None:
                 stats = getattr(result, "statistics", {}) or {}
@@ -4119,10 +4249,22 @@ class MainWindow(QMainWindow):
             if pill is not None:
                 pill.set_state(pill.STATE_FAILED)
 
-        self._update_scope_results()
+        # Intentionally do NOT call ``_refresh_scope_window_bindings``
+        # here — that helper closes + reopens every scope window, which
+        # is appropriate after a *schematic* edit (probe wiring changed)
+        # but wasteful right after a run. The enriched-result signal
+        # above already delivers fresh data to every open scope.
 
     def _result_with_probe_signals(self, result: SimulationResult) -> SimulationResult:
-        """Build an enriched result view with probe-exported scope channels."""
+        """Build an enriched result view with probe-exported scope channels.
+
+        The kernel emits node voltages under ``V(<wire-label>)`` keys
+        (e.g. ``V(SW)``, ``V(VOUT)``) using the wire alias from the
+        schematic — *not* the probe component name. So we resolve each
+        probe to its connected node first, then look up the data by
+        ``V(<node-label>)`` (with case variants) before falling back to
+        the probe's own name.
+        """
         circuit = self._current_circuit()
         if circuit is None or not result.time:
             return result
@@ -4134,13 +4276,24 @@ class MainWindow(QMainWindow):
             error_message=result.error_message,
         )
 
+        # Resolve the schematic topology once — used to find which node
+        # each probe component is wired to and what alias the kernel
+        # likely used for that node.
+        node_map = build_node_map(circuit)
+        alias_map = build_node_alias_map(circuit, node_map)
+
         for component in circuit.components.values():
             if component.type == ComponentType.VOLTAGE_PROBE:
                 probe_name = component.name or "VoltageProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="V",
                 )
                 if backend_series is not None:
                     scale = float(component.parameters.get("scale", 1.0) or 1.0)
@@ -4152,10 +4305,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.VOLTAGE_PROBE_GND:
                 probe_name = component.name or "VoltageProbeGND"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="V",
                 )
                 if backend_series is not None:
                     scale = float(component.parameters.get("scale", 1.0) or 1.0)
@@ -4167,10 +4325,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.CURRENT_PROBE:
                 probe_name = component.name or "CurrentProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="I",
                 )
                 if backend_series is None:
                     continue
@@ -4183,10 +4346,15 @@ class MainWindow(QMainWindow):
 
             if component.type == ComponentType.POWER_PROBE:
                 probe_name = component.name or "PowerProbe"
+                node_label = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=0,
+                )
                 backend_series = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
+                    node_label=node_label,
+                    kernel_prefix="P",
                 )
                 if backend_series is None:
                     continue
@@ -4199,16 +4367,73 @@ class MainWindow(QMainWindow):
         return enriched
 
     @staticmethod
+    def _probe_node_label(
+        component,
+        node_map: dict[tuple[str, int], str],
+        alias_map: dict[str, str],
+        *,
+        pin_index: int = 0,
+    ) -> str | None:
+        """Return the wire-alias label for the node a probe pin connects to.
+
+        Falls back to the raw node-id (e.g. ``"7"``) when the wire has no
+        explicit alias — caller can still try ``V(7)`` style lookups.
+        """
+        node_id = node_map.get((str(component.id), pin_index))
+        if not node_id:
+            return None
+        return alias_map.get(node_id) or node_id
+
+    @staticmethod
     def _probe_backend_series(
         result: SimulationResult,
         component_name: str,
         component_id: str,
+        *,
+        node_label: str | None = None,
+        kernel_prefix: str = "V",
     ) -> list[float] | None:
-        """Resolve backend-native probe channel names to a signal series."""
-        for key in (component_name, component_id):
+        """Resolve backend-native probe channel names to a signal series.
+
+        Tries, in order:
+
+        1. ``component_name`` (e.g. ``"Xsw"``) — works when the kernel
+           registers the probe under its component name.
+        2. ``component_id`` (UUID).
+        3. ``node_label`` directly, ``V(node_label)``, plus case
+           variants — works when the kernel emits the node's voltage
+           under the wire alias (e.g. ``"V(SW)"``).
+        4. Last-resort: a case-insensitive sweep of ``result.signals``
+           keys whose body inside ``V(…)`` / ``I(…)`` matches
+           ``node_label``.
+        """
+        candidates: list[str] = [component_name, component_id]
+        if node_label:
+            label_variants = {
+                node_label,
+                node_label.upper(),
+                node_label.lower(),
+            }
+            for variant in label_variants:
+                candidates.append(variant)
+                candidates.append(f"{kernel_prefix}({variant})")
+
+        for key in candidates:
+            if not key:
+                continue
             series = result.signals.get(key)
             if series is not None:
                 return list(series)
+
+        # Case-insensitive fuzzy sweep using the node label's body.
+        if node_label:
+            needle = node_label.lower()
+            for key, series in result.signals.items():
+                key_str = str(key)
+                if "(" in key_str and key_str.endswith(")"):
+                    body = key_str[key_str.index("(") + 1 : -1]
+                    if body.lower() == needle:
+                        return list(series)
         return None
 
     def _on_dc_finished(self, result) -> None:

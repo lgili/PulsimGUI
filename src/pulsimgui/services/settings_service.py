@@ -28,6 +28,20 @@ class SettingsService:
         recent = recent[:10]  # Keep last 10
         self._settings.setValue("recent_projects", recent)
 
+    def remove_recent_project(self, path: str) -> None:
+        """Remove a project from the recent list (e.g. a stale entry whose
+        file no longer exists). Matches on the resolved path, the same way
+        ``add_recent_project`` stores it."""
+        recent = self.get_recent_projects()
+        try:
+            resolved = str(Path(path).resolve())
+        except Exception:
+            resolved = str(path)
+        # Drop both the resolved form and any raw form that slipped in.
+        filtered = [p for p in recent if p != resolved and p != str(path)]
+        if filtered != recent:
+            self._settings.setValue("recent_projects", filtered)
+
     def clear_recent_projects(self) -> None:
         """Clear the recent projects list."""
         self._settings.setValue("recent_projects", [])

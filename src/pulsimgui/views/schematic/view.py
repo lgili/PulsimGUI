@@ -235,6 +235,7 @@ class SchematicView(QGraphicsView):
     mouse_moved = Signal(float, float)
     tool_changed = Signal(Tool)
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
+    component_pasted = Signal(object)  # full Component built from clipboard (preserves edits)
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
     wire_alias_changed = Signal(object)  # Wire model reference
     grid_toggle_requested = Signal()  # emitted when G key is pressed
@@ -859,23 +860,34 @@ class SchematicView(QGraphicsView):
                 event.accept()
                 return
         elif event.button() == Qt.MouseButton.LeftButton and self._current_tool == Tool.SELECT:
-            item = self.itemAt(event.position().toPoint())
-            if item is not None:
-                from pulsimgui.views.schematic.items import ComponentItem
+            from pulsimgui.views.schematic.items import ComponentItem
 
-                if isinstance(item, ComponentItem):
-                    comp_type = item.component.type
-                    if comp_type == ComponentType.SUBCIRCUIT:
-                        self.subcircuit_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
-                        self.scope_open_requested.emit(item.component)
-                        event.accept()
-                        return
-                    self.component_properties_requested.emit(item.component)
+            # ``itemAt`` returns the visually topmost graphics item —
+            # which for a ComponentItem with child labels can be one
+            # of those children, NOT the ComponentItem itself. Walk
+            # up the parent chain so a double-click on the name
+            # label still opens the component.
+            hit = self.itemAt(event.position().toPoint())
+            comp_item = None
+            while hit is not None:
+                if isinstance(hit, ComponentItem):
+                    comp_item = hit
+                    break
+                hit = hit.parentItem()
+
+            if comp_item is not None:
+                comp_type = comp_item.component.type
+                if comp_type == ComponentType.SUBCIRCUIT:
+                    self.subcircuit_open_requested.emit(comp_item.component)
                     event.accept()
                     return
+                if comp_type in (ComponentType.ELECTRICAL_SCOPE, ComponentType.THERMAL_SCOPE):
+                    self.scope_open_requested.emit(comp_item.component)
+                    event.accept()
+                    return
+                self.component_properties_requested.emit(comp_item.component)
+                event.accept()
+                return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -1234,7 +1246,6 @@ class SchematicView(QGraphicsView):
         from uuid import uuid4
 
         from pulsimgui.models.component import Component
-        from pulsimgui.views.schematic.items import create_component_item
 
         if self._clipboard_component_data is None:
             return
@@ -1288,13 +1299,12 @@ class SchematicView(QGraphicsView):
         # Create the component from the data
         component = Component.from_dict(data)
 
-        # Create the graphics item
-        comp_item = create_component_item(component)
-        scene.addItem(comp_item)
-
-        # Select the new component
-        scene.clearSelection()
-        comp_item.setSelected(True)
+        # Hand the fully-built component (edited properties intact) to the
+        # model layer, which adds it through the undo stack and rebuilds the
+        # scene from the model. We must NOT scene.addItem() it here — doing
+        # so produced a scene-only orphan that was never in circuit.components
+        # and silently vanished on the next scene reload / save / simulate.
+        self.component_pasted.emit(component)
 
     def _cut_component(self, comp_item) -> None:
         """Cut a component (copy to clipboard and delete)."""

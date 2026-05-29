@@ -90,6 +90,42 @@ def assemble_switch_fn(
     """Build a ``switch_fn(t) -> SwitchStateMask`` callback that
     toggles every switch on ``circuit`` according to ``configs``.
 
+    Auto-swaps to pulsim 1.6's native PWM class
+    (``NativeMultiMaskPwm`` — bridge.12) when every enabled config
+    shares the same frequency. Both engines detect the native
+    instance at ``simulate()``-construction and dispatch the gate
+    pattern through pure C++ instead of calling back into a Python
+    ``switch_fn`` every step:
+
+    * **PWL engine** (default) — bridge.13's native-PWM detection
+      makes the fixed-step trapezoidal loop ~2× faster on PWM-driven
+      circuits, since each step skips the GIL roundtrip into Python.
+    * **DSED engine** — bridge.12's native PWM is one of the layers
+      behind the changelog's 24× headline. As of pulsim **1.6.2** the
+      native C++ scheduler adapter (bridge.11) ships in the published
+      wheel — 1.6.1 had a scipy top-level import that crashed the
+      whole dsed module and masked the native path; 1.6.2 lazy-imports
+      it. So the fast native DSED path now works on a plain
+      ``pip install`` (changelog buck-CCM bench: PWL 143 ms vs DSED
+      0.6 ms). scipy is only needed for the pure-Python BDF2 fallback
+      that the native extractor falls back to on the rare unsupported
+      circuit.
+
+    When the frequencies disagree (cascaded converters, MMC arms
+    with phase-shifted carriers, etc.) the function falls back to
+    the per-device ``make_pwm_switch_fn`` + ``make_combined_switch_fn``
+    composition path, which still works but pays a GIL hop per step.
+
+    DSED + plain Python switch_fn: a plain callable doesn't expose
+    ``next_edge_after``, so under ``engine='dsed'`` pulsim (>=1.6.4)
+    uses a defensive-polling path that re-samples the mask every
+    ``dt_max/10`` and emits a one-shot ``UserWarning`` suggesting
+    ``NativePwm2Switch``. Correct + still ~10× faster than PWL, just
+    not the analytical fast path. The native ``NativeMultiMaskPwm``
+    this builder returns DOES expose ``next_edge_after`` → no warning,
+    full speed. (Before 1.6.4 the plain-callable path silently froze
+    the switch at the t=0 mask — that's the regression 1.6.4 fixes.)
+
     Parameters
     ----------
     circuit
@@ -101,14 +137,16 @@ def assemble_switch_fn(
         from the dict default to OFF.
     pulsim_module
         The real pulsim module — used to source ``make_pwm_switch_fn``,
-        ``make_combined_switch_fn``, and ``SwitchStateMask``.
+        ``make_combined_switch_fn``, ``SwitchStateMask``, and (when
+        available) ``NativeMultiMaskPwm``.
 
     Returns
     -------
     Callable or None
         ``None`` when ``circuit`` has zero switching branches (no
-        ``switch_fn`` needed). Otherwise a callable suitable for
-        ``simulate(switch_fn=…)``.
+        ``switch_fn`` needed). Otherwise either a
+        ``NativeMultiMaskPwm`` instance (the fast path) or a Python
+        callable suitable for ``simulate(switch_fn=…)``.
     """
     num_switches = int(getattr(circuit, "num_switches", 0))
     if num_switches <= 0:
@@ -121,6 +159,17 @@ def assemble_switch_fn(
         # start.
         return _make_constant_off_fn(pulsim_module, num_switches)
 
+    # ── Fast path: native C++ PWM (pulsim 1.6 bridge.12) ─────────
+    # Only succeeds when every enabled config shares the same
+    # frequency. Returns None when the shapes don't fit; we then
+    # fall through to the Python composition below.
+    native = _try_build_native_multimask_pwm(
+        configs, indices, num_switches, pulsim_module,
+    )
+    if native is not None:
+        return native
+
+    # ── Fallback: per-device Python make_pwm_switch_fn composed ──
     per_switch_fns: list[Callable[[float], Any]] = []
     for device_name, switch_idx in indices.items():
         cfg = configs.get(device_name)
@@ -229,6 +278,147 @@ def configs_from_pwm_records(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+# Numerical tolerance for collapsing nearly-coincident phase boundaries
+# (e.g. duty=0.3333... + phase=0 vs duty=0.6666... starting at the same
+# 1/3 boundary). 1e-9 of a period at 100 kHz is 10 fs — well below any
+# real PWM clock jitter.
+_PHASE_EPS = 1e-9
+
+
+def _try_build_native_multimask_pwm(
+    configs: dict[str, SwitchPwmConfig],
+    indices: dict[str, int],
+    num_switches: int,
+    pulsim_module: Any,
+) -> Any | None:
+    """Build a ``pulsim.NativeMultiMaskPwm`` instance when every
+    enabled PWM config in ``configs`` shares the same frequency.
+
+    Returns ``None`` (fall back to Python composition) when:
+      * pulsim < 1.6 (no ``NativeMultiMaskPwm`` symbol),
+      * configs disagree on frequency (cascaded converters,
+        phase-shifted carriers across stages, etc.),
+      * no enabled configs at all — the caller emits an all-off
+        mask instead so the all-off case keeps its existing
+        constant-off shortcut without paying for a phase table,
+      * the boundary computation produces an empty mask list (would
+        violate the ``NativeMultiMaskPwm`` invariant).
+
+    Algorithm — for each enabled device:
+      1. Convert (phase_rad, duty) into a fractional ON window
+         inside ``[0, 1]`` (units of period). Wrap-around windows
+         (start + duty > 1) split into two sub-intervals.
+      2. Collect every boundary fraction across all devices, sort
+         them, deduplicate within ``_PHASE_EPS``.
+      3. For each sub-interval, midpoint-test which devices are ON
+         and stamp the corresponding bits on a fresh
+         ``SwitchStateMask``.
+      4. Return ``NativeMultiMaskPwm(T_sw, phase_boundaries, masks)``
+         where ``phase_boundaries`` are the strictly-increasing
+         boundary fractions in ``(0, 1]`` and ``masks`` has one entry
+         per sub-interval.
+
+    The pulsim engines (DSED and PWL after bridge.13) detect a
+    ``NativeMultiMaskPwm`` instance at ``simulate()``-construction
+    time and dispatch through pure C++, skipping the per-step GIL
+    roundtrip the equivalent Python composition would pay.
+    """
+    NativeMultiMaskPwm = getattr(pulsim_module, "NativeMultiMaskPwm", None)
+    SwitchStateMask = getattr(pulsim_module, "SwitchStateMask", None)
+    if NativeMultiMaskPwm is None or SwitchStateMask is None:
+        return None
+
+    enabled = [
+        (indices[name], cfg)
+        for name, cfg in configs.items()
+        if name in indices
+        and cfg is not None
+        and cfg.enabled
+        and cfg.duty > 0.0
+    ]
+    if not enabled:
+        return None
+
+    # All enabled devices must share the same frequency to fit in one
+    # NativeMultiMaskPwm. Round to 9 decimals so 100000.000001 ==
+    # 100000.0 from a user's perspective.
+    frequencies = {round(float(cfg.frequency), 6) for _, cfg in enabled}
+    if len(frequencies) != 1:
+        return None
+    frequency = next(iter(frequencies))
+    if frequency <= 0.0:
+        return None
+    T_sw = 1.0 / float(frequency)
+
+    # Step 1: compute per-device ON window(s) as (switch_idx, start,
+    # end) tuples where ``start``/``end`` are fractions of T_sw in
+    # ``[0, 1]``. Wrap-around → two segments.
+    import math
+    on_intervals: list[tuple[int, float, float]] = []
+    for switch_idx, cfg in enabled:
+        clamped_duty = min(1.0, max(0.0, float(cfg.duty)))
+        if clamped_duty <= 0.0:
+            continue
+        phase_frac = (float(cfg.phase) / (2.0 * math.pi)) % 1.0
+        on_start = phase_frac
+        on_end = phase_frac + clamped_duty
+        if on_end <= 1.0 + _PHASE_EPS:
+            on_intervals.append((int(switch_idx), on_start, min(on_end, 1.0)))
+        else:
+            # Wraps past T_sw — split.
+            on_intervals.append((int(switch_idx), on_start, 1.0))
+            on_intervals.append((int(switch_idx), 0.0, on_end - 1.0))
+
+    if not on_intervals:
+        return None
+
+    # Step 2: collect, sort, dedupe boundaries. Always include 0 and 1.
+    boundaries = {0.0, 1.0}
+    for _, s, e in on_intervals:
+        boundaries.add(s)
+        boundaries.add(e)
+    sorted_b = sorted(boundaries)
+    cleaned: list[float] = [sorted_b[0]]
+    for b in sorted_b[1:]:
+        if b - cleaned[-1] > _PHASE_EPS:
+            cleaned.append(b)
+    # Make absolutely sure the period closes exactly at 1.0 — caller
+    # passes the fractions to a C++ ctor with strict invariants.
+    if cleaned[-1] < 1.0 - _PHASE_EPS:
+        cleaned.append(1.0)
+    elif cleaned[-1] != 1.0:
+        cleaned[-1] = 1.0
+
+    if len(cleaned) < 2:
+        return None
+
+    # Step 3: build a SwitchStateMask for each sub-interval. Midpoint
+    # test: a device is ON during [b_k-1, b_k] if its own ON window
+    # contains the midpoint.
+    masks: list[Any] = []
+    for k in range(1, len(cleaned)):
+        b_start = cleaned[k - 1]
+        b_end = cleaned[k]
+        midpoint = 0.5 * (b_start + b_end)
+        mask = SwitchStateMask(int(num_switches))
+        for switch_idx, s, e in on_intervals:
+            if s <= midpoint < e or (e == 1.0 and midpoint >= s and midpoint <= 1.0):
+                mask.set(int(switch_idx), True)
+        masks.append(mask)
+
+    # Step 4: construct. ``phase_boundaries`` excludes 0 — it's the
+    # ENDs of each interval as fractions of T_sw.
+    phase_boundaries = [float(b) for b in cleaned[1:]]
+
+    try:
+        return NativeMultiMaskPwm(float(T_sw), phase_boundaries, masks)
+    except (TypeError, ValueError, RuntimeError):
+        # Defensive: any pulsim-side rejection of the boundaries
+        # array falls back to the Python composition path so the
+        # sim still runs.
+        return None
+
+
 def _make_constant_off_fn(
     pulsim_module: Any,
     num_switches: int,
