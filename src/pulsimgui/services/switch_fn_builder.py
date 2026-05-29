@@ -97,17 +97,19 @@ def assemble_switch_fn(
     pattern through pure C++ instead of calling back into a Python
     ``switch_fn`` every step:
 
-    * **PWL engine** (default, in every pip wheel) — bridge.13's
-      native-PWM detection makes the fixed-step trapezoidal loop
-      ~2× faster on PWM-driven circuits, since each step skips the
-      GIL roundtrip into Python.
+    * **PWL engine** (default) — bridge.13's native-PWM detection
+      makes the fixed-step trapezoidal loop ~2× faster on PWM-driven
+      circuits, since each step skips the GIL roundtrip into Python.
     * **DSED engine** — bridge.12's native PWM is one of the layers
-      behind the changelog's 24× headline, BUT that figure requires
-      the from-source build that ships the native C++ scheduler
-      adapter (bridge.11). The pip-distributed wheel runs the
-      pure-Python DSED scheduler, so DSED there is currently *slower*
-      than PWL regardless of the switch_fn. Native PWM still helps
-      (no per-step Python gate call), just not 24×.
+      behind the changelog's 24× headline. As of pulsim **1.6.2** the
+      native C++ scheduler adapter (bridge.11) ships in the published
+      wheel — 1.6.1 had a scipy top-level import that crashed the
+      whole dsed module and masked the native path; 1.6.2 lazy-imports
+      it. So the fast native DSED path now works on a plain
+      ``pip install`` (changelog buck-CCM bench: PWL 143 ms vs DSED
+      0.6 ms). scipy is only needed for the pure-Python BDF2 fallback
+      that the native extractor falls back to on the rare unsupported
+      circuit.
 
     When the frequencies disagree (cascaded converters, MMC arms
     with phase-shifted carriers, etc.) the function falls back to

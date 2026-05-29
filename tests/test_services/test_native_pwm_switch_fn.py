@@ -239,13 +239,11 @@ def test_pulsim_simulate_accepts_native_pwm_from_assembler() -> None:
         "in 2ms — PWL didn't accept the NativeMultiMaskPwm"
     )
 
-    # DSED leg uses a deliberately tiny window. The pip-distributed
-    # pulsim wheel runs the *pure-Python* DSED scheduler (the native
-    # C++ Bridge.11/12 adapter that delivers the changelog's 24×
-    # speedup is only present in a from-source build), so a full 2 ms
-    # / 100 kHz run would take many seconds. 50 µs = 5 switching
-    # periods is enough to prove DSED accepts the NativeMultiMaskPwm
-    # without making the test suite slow.
+    # DSED leg uses a short window purely to keep the suite fast.
+    # (pulsim 1.6.2 ships the native C++ DSED adapter in the wheel, so
+    # this runs at native speed — no longer the pure-Python-scheduler
+    # slowness of 1.6.1.) 50 µs = 5 switching periods is enough to
+    # prove DSED accepts the NativeMultiMaskPwm.
     res_dsed = p.simulate(
         b, t_end=50e-6, engine="dsed",
         rtol=1e-6, atol=1e-9, switch_fn=sf,
