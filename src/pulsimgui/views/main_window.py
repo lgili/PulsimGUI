@@ -1611,7 +1611,10 @@ class MainWindow(QMainWindow):
             )
 
     def _on_create_subcircuit(self) -> None:
-        """Create a subcircuit definition from the current selection."""
+        """Create a subcircuit definition — either from the current
+        selection (groups the picked components into a block) or as
+        an empty block when nothing is selected (user fills it in
+        later by descending into the body)."""
         from pulsimgui.models.component import ComponentType
         from pulsimgui.views.schematic.items import ComponentItem, WireItem
 
@@ -1619,15 +1622,12 @@ class MainWindow(QMainWindow):
         component_items = [item for item in selected_items if isinstance(item, ComponentItem)]
         wire_items = [item for item in selected_items if isinstance(item, WireItem)]
 
+        # Empty-creation branch: no selection → blank subcircuit body,
+        # placed at the viewport center, then we auto-descend so the
+        # user lands inside the body ready to drop components and
+        # SUBCIRCUIT_PORT markers.
         if not component_items:
-            QMessageBox.information(
-                self, "Create Subcircuit",
-                "Select one or more components on the schematic first, "
-                "then run this command to group them into a reusable "
-                "subcircuit block.\n\n"
-                "Tip: hold Shift and click to add to a selection, or "
-                "drag a rectangle around several components.",
-            )
+            self._create_empty_subcircuit_via_dialog()
             return
 
         current_circuit = self._current_circuit()
@@ -1695,6 +1695,81 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Created subcircuit '{definition.name}' with {len(ports)} port(s)", 3000
         )
+
+    def _create_empty_subcircuit_via_dialog(self) -> None:
+        """Open the CreateSubcircuitDialog without a selection and,
+        on accept, drop an empty subcircuit instance at the viewport
+        center, register the definition, and descend into it so the
+        user can start populating the body right away.
+
+        The dialog handles the name/description/symbol-size; ports
+        are populated later by ``SUBCIRCUIT_PORT`` markers the user
+        places inside the body (auto-synced by
+        ``_sync_subcircuit_ports_if_editing``).
+        """
+        from pulsimgui.models.component import ComponentType
+        from pulsimgui.models.subcircuit import (
+            create_empty_subcircuit_definition,
+        )
+
+        # No selection → no boundary nets, so pass an empty list. The
+        # dialog already branches on selected_count==0 to show the
+        # right wording.
+        dialog = CreateSubcircuitDialog(0, [], self)
+        if not dialog.exec():
+            return
+
+        definition = create_empty_subcircuit_definition(
+            name=dialog.get_name(),
+            description=dialog.get_description(),
+            symbol_size=dialog.get_symbol_size(),
+        )
+        self._project.add_subcircuit(definition)
+        self._hierarchy_service.register_subcircuit(definition)
+
+        # Place the instance at the viewport center so it lands where
+        # the user is looking, not at the scene origin (which may be
+        # off-screen after they panned).
+        view_center = self._schematic_view.mapToScene(
+            self._schematic_view.viewport().rect().center()
+        )
+
+        current_circuit = self._current_circuit()
+        instance = SubcircuitInstance(
+            name=self._generate_component_name(ComponentType.SUBCIRCUIT),
+            x=view_center.x(),
+            y=view_center.y(),
+            parameters={
+                "symbol_width": definition.symbol_width,
+                "symbol_height": definition.symbol_height,
+            },
+            pins=definition.get_pins(),  # empty for a blank definition
+            subcircuit_id=definition.id,
+        )
+        current_circuit.add_component(instance)
+        self._schematic_scene.add_component(instance)
+
+        self._project.mark_dirty()
+        self._update_title()
+        self._update_modified_indicator()
+
+        # Auto-descend into the new (empty) body so the user can
+        # immediately drop components and SUBCIRCUIT_PORT markers.
+        # If descend fails for any reason (shouldn't, since we just
+        # registered the definition), we stay at the parent level
+        # — the empty block is still placed and visible.
+        if self._hierarchy_service.descend_into(instance.id, definition.id):
+            self.statusBar().showMessage(
+                f"Empty subcircuit '{definition.name}' created — "
+                f"add components and port markers, then press "
+                f"Backspace to return.",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Empty subcircuit '{definition.name}' placed on canvas",
+                3000,
+            )
 
     def _clear_scene(self) -> None:
         """Clear all items from the schematic scene."""

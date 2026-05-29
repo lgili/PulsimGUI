@@ -261,6 +261,47 @@ def create_subcircuit_from_selection(
     return definition, ports, (center_x, center_y)
 
 
+def create_empty_subcircuit_definition(
+    name: str = "Subcircuit",
+    description: str = "",
+    symbol_size: tuple[float, float] | None = None,
+) -> SubcircuitDefinition:
+    """Build an empty SubcircuitDefinition with no inner components,
+    no wires, and no ports.
+
+    Used by the GUI's "create empty subcircuit" flow: the user opens
+    the dialog without a prior selection, accepts a name, and a blank
+    instance lands on the canvas. They then descend into it and
+    populate the body (components + SUBCIRCUIT_PORT markers).
+
+    The marker-based port sync (``sync_definition_ports_from_markers``)
+    runs automatically as the user wires things up, so the outer
+    symbol's pins materialize without any extra step.
+
+    Args:
+        name: Display name for the new definition.
+        description: Optional free-text description.
+        symbol_size: ``(width, height)`` of the placeholder symbol.
+            Defaults to (80, 60) — matching the GUI dialog default.
+
+    Returns:
+        A fresh ``SubcircuitDefinition`` with a new UUID, an empty
+        internal ``Circuit``, and an empty ports list.
+    """
+    width, height = (80.0, 60.0) if symbol_size is None else (
+        float(symbol_size[0]), float(symbol_size[1])
+    )
+    safe_name = (name or "Subcircuit").strip() or "Subcircuit"
+    return SubcircuitDefinition(
+        name=safe_name,
+        description=description,
+        circuit=Circuit(name=f"{safe_name}_internal"),
+        ports=[],
+        symbol_width=width,
+        symbol_height=height,
+    )
+
+
 def detect_boundary_ports(
     circuit: Circuit,
     selected_component_ids: list[UUID],
