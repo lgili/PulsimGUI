@@ -9,14 +9,12 @@ from PySide6.QtTest import QTest
 
 import pulsimgui.views.main_window as main_window_module
 from pulsimgui.models.circuit import Circuit
-from pulsimgui.models.component import Component, ComponentType, set_thermal_port_enabled
+from pulsimgui.models.component import Component, ComponentType
 from pulsimgui.models.project import Project
-from pulsimgui.models.wire import Wire, WireSegment
 from pulsimgui.services.backend_types import ConvergenceInfo
 from pulsimgui.services.template_service import TemplateService
-from pulsimgui.services.simulation_service import DCResult, SimulationResult, SimulationState
+from pulsimgui.services.simulation_service import DCResult, SimulationState
 from pulsimgui.utils.net_utils import build_node_map
-from pulsimgui.utils.signal_utils import format_signal_key
 from pulsimgui.views.main_window import MainWindow
 from pulsimgui.views.schematic.items import ComponentItem
 
@@ -295,39 +293,22 @@ def test_apply_theme_updates_qt_palette(qapp) -> None:
         window.close()
 
 
-def test_thermal_scope_uses_transient_telemetry_without_secondary_backend_call(
-    monkeypatch, qapp
-) -> None:
-    """Thermal scope should not synthesize sampled traces from summary-only telemetry."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        circuit.add_component(Component(type=ComponentType.MOSFET_N, name="M1"))
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={},
-            statistics={
-                "thermal_summary": {
-                    "enabled": True,
-                    "ambient": 25.0,
-                    "device_temperatures": [
-                        {"device_name": "M1", "final_temperature": 55.0},
-                    ],
-                },
-            },
-        )
-
-        def _should_not_call(*_args, **_kwargs):
-            raise AssertionError("thermal backend should not be called for telemetry-backed scope")
-
-        monkeypatch.setattr(window._thermal_service, "build_result", _should_not_call)
-
-        waveform = window._ensure_thermal_waveform()
-        assert waveform is None
-    finally:
-        window.close()
+# NOTE: The 8 ``test_thermal_scope_*`` tests that used to live around
+# this file targeted ``MainWindow._ensure_thermal_waveform`` and its
+# helper chain. That ~325-line helper was deleted in commit a7e8911
+# ("purge thermal-helper dead code") after scope_v2 took over thermal-
+# channel routing — but the tests were not deleted in the same pass,
+# leaving the suite in a permanent-fail state.
+#
+# Equivalent coverage now lives in:
+#   * ``pulsimgui.views.scope_v2.bindings`` (signal routing for
+#     THERMAL_SCOPE — T(...), TJ(...), wrapped TS<N>, virtual
+#     channel metadata)
+#   * ``pulsimgui.views.scope_v2.resolver`` (is_thermal detection)
+#   * ``pulsimgui.views.scope_v2.variants.thermal_scope``
+#     (variant-level rendering)
+#
+# Tests touching the new path live under ``tests/test_scope_v2/``.
 
 
 def test_simulation_progress_resets_on_retry_message(qapp) -> None:
@@ -545,224 +526,57 @@ def test_function_shortcuts_trigger_expected_actions(
     key: Qt.Key,
     modifiers: Qt.KeyboardModifier,
 ) -> None:
-    """Function-key shortcuts should trigger their corresponding actions."""
+    """Function-key shortcuts must be bound to the matching action AND
+    fire that action's ``triggered`` signal when invoked.
+
+    The earlier version of this test drove ``QTest.keyClick(window, ...)``
+    directly. That works in isolation but is flaky in a session where
+    earlier tests instantiated MainWindow and closed it without fully
+    draining DeferredDelete events — Qt routes the keypress through a
+    stale top-level activation stack and the action's ``triggered``
+    signal never fires. The flake migrated between F5/F6/F7/F8 depending
+    on test order.
+
+    We split the contract into two strictly-checkable invariants:
+      1. The action's ``shortcut()`` matches the expected
+         (modifier, key) combination — pure state, no event loop.
+      2. Invoking the shortcut by ``action.trigger()`` fires the
+         ``triggered`` signal exactly once — exercises the connection
+         chain without keyboard-delivery fragility.
+    """
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeySequence
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+
     window = MainWindow()
     try:
         monkeypatch.setattr(window, "_check_save", lambda: True)
         action = getattr(window, action_name)
 
-        # Isolate the shortcut trigger check from business-logic side effects.
+        # (1) Binding: the user-visible shortcut is the expected one.
+        expected = QKeySequence(int(modifiers.value) | int(key.value))
+        assert action.shortcut() == expected, (
+            f"{action_name} shortcut is {action.shortcut().toString()!r}, "
+            f"expected {expected.toString()!r}"
+        )
+
+        # (2) Trigger path: the production wiring routes triggered →
+        # the rest of the app. We swap in a capture handler and invoke
+        # the action the same way Qt would when the shortcut fires.
         action.triggered.disconnect()
         fired: list[bool] = []
         action.triggered.connect(lambda *_: fired.append(True))
         action.setEnabled(True)
-
-        window.show()
-        window.activateWindow()
-        window.setFocus()
-        qapp.processEvents()
-        QTest.keyClick(window, key, modifiers)
+        action.trigger()
         qapp.processEvents()
 
         assert fired == [True]
     finally:
+        window.hide()
         window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
-def test_thermal_scope_prefers_sampled_thermal_channels_from_transient(qapp) -> None:
-    """Sampled T(...) channels from transient output should be reused as-is."""
-
-    window = MainWindow()
-    try:
-        key = format_signal_key("T", "M1")
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3, 2e-3],
-            signals={key: [26.0, 31.0, 37.5]},
-            statistics={},
-        )
-
-        waveform = window._ensure_thermal_waveform()
-        assert waveform is not None
-        assert waveform.signals[key] == [26.0, 31.0, 37.5]
-    finally:
-        window.close()
-
-
-def _connect_pins(
-    circuit: Circuit,
-    left: Component,
-    left_pin: int,
-    right: Component,
-    right_pin: int,
-) -> None:
-    x1, y1 = left.get_pin_position(left_pin)
-    x2, y2 = right.get_pin_position(right_pin)
-    circuit.add_wire(Wire(segments=[WireSegment(x1, y1, x2, y2)]))
-
-
-def test_thermal_scope_maps_scope_virtual_channel_to_component_binding(monkeypatch, qapp) -> None:
-    """Thermal scope channels keyed by scope name should map to connected T(component) keys."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        resistor = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
-        set_thermal_port_enabled(resistor, True)
-        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1", x=220.0, y=109.0)
-        circuit.add_component(resistor)
-        circuit.add_component(scope)
-        _connect_pins(circuit, resistor, 2, scope, 0)
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"TS1": [35.0, 42.0]},
-            statistics={},
-        )
-
-        def _should_not_call(*_args, **_kwargs):
-            raise AssertionError("thermal backend should not be called for thermal-scope telemetry")
-
-        monkeypatch.setattr(window._thermal_service, "build_result", _should_not_call)
-
-        waveform = window._ensure_thermal_waveform()
-        key = format_signal_key("T", "R1")
-        assert waveform is not None
-        assert key in waveform.signals
-        assert waveform.signals[key] == [35.0, 42.0]
-    finally:
-        window.close()
-
-
-def test_thermal_scope_maps_wrapped_scope_channel_to_component_binding(monkeypatch, qapp) -> None:
-    """Wrapped channels like V(TS1) should resolve to connected thermal bindings."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        resistor = Component(type=ComponentType.RESISTOR, name="R1", x=100.0, y=100.0)
-        set_thermal_port_enabled(resistor, True)
-        scope = Component(type=ComponentType.THERMAL_SCOPE, name="TS1", x=220.0, y=109.0)
-        circuit.add_component(resistor)
-        circuit.add_component(scope)
-        _connect_pins(circuit, resistor, 2, scope, 0)
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"V(TS1)": [36.0, 43.0]},
-            statistics={},
-        )
-
-        def _should_not_call(*_args, **_kwargs):
-            raise AssertionError("thermal backend should not be called for thermal-scope telemetry")
-
-        monkeypatch.setattr(window._thermal_service, "build_result", _should_not_call)
-
-        waveform = window._ensure_thermal_waveform()
-        key = format_signal_key("T", "R1")
-        assert waveform is not None
-        assert key in waveform.signals
-        assert waveform.signals[key] == [36.0, 43.0]
-    finally:
-        window.close()
-
-
-def test_thermal_scope_accepts_tj_prefixed_channels(qapp) -> None:
-    """TJ(...) backend channels should be aliased to canonical T(...) keys."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        circuit.add_component(Component(type=ComponentType.MOSFET_N, name="M1"))
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"TJ(M1)": [27.0, 49.5]},
-            statistics={},
-        )
-
-        waveform = window._ensure_thermal_waveform()
-        key = format_signal_key("T", "M1")
-        assert waveform is not None
-        assert key in waveform.signals
-        assert waveform.signals[key] == [27.0, 49.5]
-    finally:
-        window.close()
-
-
-def test_thermal_scope_accepts_underscore_tj_channels(qapp) -> None:
-    """TJ_<name> backend channels should be aliased to canonical T(...) keys."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        circuit.add_component(Component(type=ComponentType.MOSFET_N, name="M1"))
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"TJ_M1": [28.0, 50.0]},
-            statistics={},
-        )
-
-        waveform = window._ensure_thermal_waveform()
-        key = format_signal_key("T", "M1")
-        assert waveform is not None
-        assert key in waveform.signals
-        assert waveform.signals[key] == [28.0, 50.0]
-    finally:
-        window.close()
-
-
-def test_thermal_scope_uses_virtual_channel_metadata_for_thermal_domain(qapp) -> None:
-    """Thermal domain metadata should map non-canonical keys to T(component)."""
-
-    window = MainWindow()
-    try:
-        circuit = window._current_circuit()
-        circuit.add_component(Component(type=ComponentType.MOSFET_N, name="M1"))
-
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"thermal:trace:1": [25.2, 26.1]},
-            statistics={
-                "virtual_channel_metadata": {
-                    "thermal:trace:1": {
-                        "domain": "thermal",
-                        "component_type": "thermal_trace",
-                        "source_component": "M1",
-                        "unit": "degC",
-                    }
-                }
-            },
-        )
-
-        waveform = window._ensure_thermal_waveform()
-        key = format_signal_key("T", "M1")
-        assert waveform is not None
-        assert key in waveform.signals
-        assert waveform.signals[key] == [25.2, 26.1]
-    finally:
-        window.close()
-
-
-def test_thermal_scope_without_transient_telemetry_does_not_call_secondary_backend(
-    monkeypatch, qapp
-) -> None:
-    """Thermal scope should not trigger separate thermal backend runs."""
-
-    window = MainWindow()
-    try:
-        window._latest_electrical_result = SimulationResult(
-            time=[0.0, 1e-3],
-            signals={"V(OUT)": [0.0, 1.0]},
-            statistics={},
-        )
-
-        def _should_not_call(*_args, **_kwargs):
-            raise AssertionError("secondary thermal backend path must not be called")
-
-        monkeypatch.setattr(window._thermal_service, "build_result", _should_not_call)
-
-        waveform = window._ensure_thermal_waveform()
-        assert waveform is None
-    finally:
-        window.close()

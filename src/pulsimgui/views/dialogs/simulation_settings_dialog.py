@@ -54,9 +54,17 @@ class SimulationSettingsDialog(QDialog):
     # the kernel anymore, so we don't expose them. ``Auto`` is kept as
     # an alias for trapezoidal so legacy projects with ``solver="auto"``
     # keep loading without warnings.
+    # Surfaces the integration schemes that round-trip through
+    # SimulationSettings.solver. ``normalize_integration_method`` (in
+    # simulation_service) maps legacy aliases (rk4/rk45 → trapezoidal,
+    # bdf → bdf2) onto these canonical values, so the combo's
+    # ``findData`` always lands on a row when loading old projects.
     _INTEGRATION_OPTIONS: tuple[tuple[str, str], ...] = (
-        ("Auto (trapezoidal)", "auto"),
+        ("Auto (let backend choose)", "auto"),
         ("Trapezoidal", "trapezoidal"),
+        ("BDF1 (Backward Euler)", "bdf1"),
+        ("BDF2 (2nd-order BDF)", "bdf2"),
+        ("TR-BDF2 (hybrid)", "trbdf2"),
     )
 
     _PRESET_CARDS: tuple[tuple[str, str, str], ...] = (
@@ -234,12 +242,15 @@ class SimulationSettingsDialog(QDialog):
         self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
         form.addRow("Integration method:", self._solver_combo)
 
-        # Step mode is intentionally NOT exposed — pulsim 1.5 is a
-        # fixed-step PWL discrete-time simulator, there's no
-        # variable-step path. We keep ``_step_mode_combo`` as a hidden
-        # constant so ``_save_settings`` doesn't crash on missing attr.
+        # Step mode is hidden in the current GUI (pulsim 1.5 is
+        # fixed-step PWL only), but BOTH options need to be in the
+        # combo so legacy projects with step_mode="variable" round-trip
+        # through the dialog without dropping the value silently —
+        # findData("variable") otherwise returns -1 and load falls
+        # back to "fixed", which corrupts the user's saved setting.
         self._step_mode_combo = QComboBox()
         self._step_mode_combo.addItem("Fixed step", "fixed")
+        self._step_mode_combo.addItem("Variable step", "variable")
         self._step_mode_combo.hide()
 
         self._solver_desc = QLabel("")
@@ -269,11 +280,17 @@ class SimulationSettingsDialog(QDialog):
         self._max_step_edit.hide()
 
         # rel/abs tolerance: also legacy variable-step controls.
+        # NOTE: ``setDecimals`` MUST come before ``setValue`` — QDoubleSpinBox
+        # defaults to 2 decimal places, which silently rounds 1e-4 → 0.00
+        # and 1e-6 → 0.00. Hidden ≠ value-less; ``_save_settings`` reads
+        # these and writes them back to ``SimulationSettings``.
         self._rel_tol_spin = QDoubleSpinBox()
+        self._rel_tol_spin.setDecimals(10)
         self._rel_tol_spin.setRange(1e-10, 1e-1)
         self._rel_tol_spin.setValue(1e-4)
         self._rel_tol_spin.hide()
         self._abs_tol_spin = QDoubleSpinBox()
+        self._abs_tol_spin.setDecimals(12)
         self._abs_tol_spin.setRange(1e-12, 1e-3)
         self._abs_tol_spin.setValue(1e-6)
         self._abs_tol_spin.hide()
@@ -382,35 +399,39 @@ class SimulationSettingsDialog(QDialog):
         self._advanced_tabs.setUsesScrollButtons(True)
         self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
 
-        # Newton + Events tab — the only one currently wired to
-        # pulsim 1.5's simulate() kwargs. The DC Setup / Thermal /
-        # Frequency / Solver Stack sub-tabs were authored for the
-        # legacy backend that has since retired those settings; we
-        # build the widgets (so ``_save_settings`` doesn't crash) but
-        # don't surface them as tabs. Restore as needed when pulsim
-        # ships a matching API.
-        tab_scroll = QScrollArea()
-        tab_scroll.setWidgetResizable(True)
-        tab_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        tab_scroll.setWidget(self._create_newton_card())
-        self._advanced_tabs.addTab(tab_scroll, "Newton + Events")
+        # Five sub-tabs of the Advanced page. The underlying widgets
+        # (rel/abs tol, DC strategy, thermal, AC sweep, linear solver
+        # stack) ALL still live in SimulationSettings and round-trip
+        # through .pulsim files — pulsim 1.5 simply ignores the ones
+        # it doesn't honor, so surfacing them is forward-compatible
+        # and keeps the dialog truthful about what the user can
+        # configure.
+        #
+        # Labels match what test_solver_options /
+        # test_simulation_settings_advanced expect — don't rename
+        # without updating those tests.
+        def _scroll(card: QWidget) -> QScrollArea:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setWidget(card)
+            return scroll
 
-        # Build the legacy cards once and re-parent them to ``self``
-        # so their child widgets stay alive (Qt's C++ side deletes
-        # widgets with no parent on GC). The cards themselves are
-        # never added to a layout, so the user never sees them — but
-        # ``_load_settings`` / ``_save_settings`` can still poke their
-        # inner spinboxes / combos without crashing.
-        for builder in (
-            self._create_dc_card,
-            self._create_thermal_card,
-            self._create_frequency_card,
-            self._create_solver_stack_card,
-        ):
-            card = builder()
-            if card is not None:
-                card.setParent(self)
-                card.hide()
+        self._advanced_tabs.addTab(
+            _scroll(self._create_newton_card()), "Transient"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_dc_card()), "DC Setup"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_thermal_card()), "Thermal & Losses"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_frequency_card()), "Frequency Analysis"
+        )
+        self._advanced_tabs.addTab(
+            _scroll(self._create_solver_stack_card()), "Solver Stack"
+        )
 
         layout.addWidget(self._advanced_tabs, 1)
         return page
@@ -783,6 +804,15 @@ class SimulationSettingsDialog(QDialog):
         self._max_voltage_step_spin.setRange(0.1, 100.0)
         self._max_voltage_step_spin.setValue(5.0)
         self._max_voltage_step_spin.hide()
+        # Spinbox enable state mirrors the limiting check — both for
+        # the GUI (when these widgets are eventually surfaced) and for
+        # tests that drive the checkbox programmatically.
+        self._voltage_limiting_check.toggled.connect(
+            self._max_voltage_step_spin.setEnabled
+        )
+        self._max_voltage_step_spin.setEnabled(
+            self._voltage_limiting_check.isChecked()
+        )
         self._transient_robust_mode_check = QCheckBox(self)
         self._transient_robust_mode_check.setChecked(True)
         self._transient_robust_mode_check.hide()
@@ -790,7 +820,11 @@ class SimulationSettingsDialog(QDialog):
         self._transient_auto_regularize_check.setChecked(True)
         self._transient_auto_regularize_check.hide()
         self._formulation_mode_combo = QComboBox(self)
+        # Both formulation modes must be in the combo so legacy
+        # projects with formulation_mode="direct" round-trip without
+        # findData("direct") missing and falling back to index 0.
         self._formulation_mode_combo.addItem("projected_wrapper", "projected_wrapper")
+        self._formulation_mode_combo.addItem("direct", "direct")
         self._formulation_mode_combo.hide()
         self._direct_formulation_fallback_check = QCheckBox(self)
         self._direct_formulation_fallback_check.setChecked(True)
