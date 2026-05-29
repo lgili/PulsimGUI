@@ -6192,6 +6192,19 @@ class PulsimBackend(SimulationBackend):
                               # statistics.
         )
 
+    # Default Foster network: single-stage TO-220 ballpark
+    # (R_th_jc ≈ 1.5 K/W, τ ≈ 75 ms). Used for every loss-carrying
+    # device until the GUI threads per-device Foster params through.
+    _DEFAULT_FOSTER_RTH = 1.5
+    _DEFAULT_FOSTER_TAU = 0.075
+
+    # Device kinds that ``device_thermal_summary`` /
+    # ``device_loss_summary`` can model. Capacitors / sources are
+    # skipped (no conduction-loss model).
+    _LOSS_CARRYING_KINDS = frozenset(
+        {"resistor", "inductor", "switch", "diode"}
+    )
+
     def _compute_per_device_electrothermal(
         self,
         builder: Any,
@@ -6201,23 +6214,154 @@ class PulsimBackend(SimulationBackend):
     ) -> list[dict[str, Any]]:
         """Post-process device losses + per-device junction temperature.
 
-        Walks ``pulsim.losses.device_loss_summary`` to get per-device
-        average power; for every device with ``P_avg > 0`` we build
-        a simple single-stage Foster network with sensible defaults
-        (R_th = 1.5 K/W, C_th = 0.05 J/K — typical TO-220) and call
-        ``pulsim.compute_temperature`` to convolve the constant-power
-        approximation into a junction-temperature trace.
+        Primary path (pulsim ≥ 1.5): one
+        ``pulsim.device_thermal_summary`` call that, per device,
+        reconstructs the real per-step conduction power ``P_cond(t)``
+        (NOT a constant ``P_avg`` approximation), layers the
+        averaged switching / core loss, and convolves the result
+        with the device's Foster network into a junction-temperature
+        trace. Strictly more accurate than the legacy constant-power
+        approximation for circuits whose conduction current isn't
+        flat (everything switching).
 
-        Returns a list of row dicts matching the shape
+        Fallback path (pulsim < 1.5 or any failure): the legacy
+        ``device_loss_summary`` + manual ``compute_temperature``
+        loop with a constant ``P_avg``.
+
+        Both produce the same row shape that
         ``thermal_service._build_from_transient_backend_telemetry``
-        consumes: ``component_name``, ``final_temperature``,
-        ``conduction``, ``turn_on``, ``turn_off``,
-        ``temperature_trace``.
+        consumes: ``component_name``, ``kind``, ``final_temperature``,
+        ``peak_temperature``, ``conduction``, ``turn_on``,
+        ``turn_off``, ``temperature_trace``.
 
-        Silently returns ``[]`` if pulsim's losses module isn't
-        available or the post-process raises — keeps the transient
-        run from blowing up on a thermal-only failure.
+        Returns ``[]`` if no thermal post-processing is possible —
+        keeps the transient run from blowing up on a thermal-only
+        failure.
         """
+        rows = self._electrothermal_via_thermal_summary(
+            builder, sim_result, switch_fn, t_amb_celsius,
+        )
+        if rows is not None:
+            return rows
+        # Either pulsim < 1.5 (no device_thermal_summary) or the
+        # call raised — fall back to the legacy constant-power loop.
+        return self._electrothermal_legacy_constant_power(
+            builder, sim_result, switch_fn, t_amb_celsius,
+        )
+
+    def _electrothermal_via_thermal_summary(
+        self,
+        builder: Any,
+        sim_result: Any,
+        switch_fn: Any,
+        t_amb_celsius: float,
+    ) -> list[dict[str, Any]] | None:
+        """Primary electrothermal path via pulsim 1.5's
+        ``device_thermal_summary``.
+
+        Returns ``None`` (signal the caller to fall back) when the
+        function isn't importable or raises; returns a (possibly
+        empty) row list otherwise.
+        """
+        try:
+            from pulsim import device_thermal_summary
+        except Exception:  # noqa: BLE001 - pulsim < 1.5
+            return None
+
+        FosterStage = getattr(self._module, "FosterStage", None)
+        if FosterStage is None:
+            return None
+
+        # Enumerate the builder's branches and build a thermal_specs
+        # entry for every loss-carrying device, each with the default
+        # single-stage Foster network. Names come straight from
+        # ``builder.components()`` so the strict-mode KeyError that
+        # device_loss_summary now raises on unknown names can't fire.
+        try:
+            components = list(builder.components())
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            default_stage = FosterStage(
+                R_th_K_per_W=self._DEFAULT_FOSTER_RTH,
+                tau_s=self._DEFAULT_FOSTER_TAU,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        thermal_specs: dict[str, dict[str, Any]] = {}
+        kind_by_name: dict[str, str] = {}
+        for comp in components:
+            name = str(comp.get("name") or "").strip()
+            kind = str(comp.get("kind") or "").lower()
+            if not name or kind not in self._LOSS_CARRYING_KINDS:
+                continue
+            thermal_specs[name] = {"stages": [default_stage]}
+            kind_by_name[name] = kind
+
+        if not thermal_specs:
+            return []
+
+        try:
+            summary = device_thermal_summary(
+                builder, sim_result,
+                thermal_specs=thermal_specs,
+                T_ambient_C=float(t_amb_celsius),
+                switch_fn=switch_fn,
+            )
+        except Exception:  # noqa: BLE001 - kernel/version mismatch
+            return None
+
+        rows: list[dict[str, Any]] = []
+        for entry in summary or []:
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            trace = entry.get("T_j_trace")
+            temp_list = (
+                [float(v) for v in trace] if trace is not None else []
+            )
+            if not temp_list:
+                continue
+            p_cond = max(0.0, float(entry.get("P_cond_avg") or 0.0))
+            p_sw = max(0.0, float(entry.get("P_sw_avg") or 0.0))
+            p_core = max(0.0, float(entry.get("P_core_avg") or 0.0))
+            # Skip devices that dissipate nothing (ideal inductors,
+            # open switches) — they'd sit at ambient and only clutter
+            # the thermal panel. Matches the legacy path's
+            # ``P_avg <= 0: continue`` filter.
+            if (p_cond + p_sw + p_core) <= 0.0:
+                continue
+            # thermal_service has conduction / switching_on /
+            # switching_off / reverse_recovery buckets but no core
+            # bucket. Core loss is continuous (like conduction), so
+            # fold it into ``conduction``. Switching avg has no
+            # on/off split from the summary, so report it under
+            # ``turn_on`` (keeps total = cond + core + sw correct).
+            rows.append({
+                "component_name": name,
+                "kind": kind_by_name.get(name, str(entry.get("kind") or "").lower()),
+                "final_temperature": temp_list[-1],
+                "peak_temperature": max(temp_list),
+                "conduction": p_cond + p_core,
+                "turn_on": p_sw,
+                "turn_off": 0.0,
+                "temperature_trace": temp_list,
+            })
+        return rows
+
+    def _electrothermal_legacy_constant_power(
+        self,
+        builder: Any,
+        sim_result: Any,
+        switch_fn: Any,
+        t_amb_celsius: float,
+    ) -> list[dict[str, Any]]:
+        """Legacy electrothermal path: ``device_loss_summary`` +
+        constant-``P_avg`` Foster convolution. Used only when
+        ``device_thermal_summary`` is unavailable (pulsim < 1.5) or
+        raised. Behaviourally identical to the pre-1.5 GUI."""
         try:
             import numpy as np
             from pulsim.losses import device_loss_summary
@@ -6239,14 +6383,13 @@ class PulsimBackend(SimulationBackend):
         if times.size < 2:
             return []
 
-        # Default Foster network: single-stage TO-220 ballpark
-        # (R_th_jc ≈ 1.5 K/W, τ ≈ 75 ms ⇒ C_th ≈ 0.05 J/K). Plays
-        # well with both MOSFETs and diodes — when GUI Component
-        # parameters add per-device Foster stages, those override
-        # via thermal_service's stage lookup. Pulsim 1.5 spells it
-        # ``FosterStage(R_th_K_per_W, tau_s)``.
         try:
-            stages = [self._module.FosterStage(R_th_K_per_W=1.5, tau_s=0.075)]
+            stages = [
+                self._module.FosterStage(
+                    R_th_K_per_W=self._DEFAULT_FOSTER_RTH,
+                    tau_s=self._DEFAULT_FOSTER_TAU,
+                )
+            ]
         except Exception:  # noqa: BLE001
             return []
 
@@ -6270,11 +6413,6 @@ class PulsimBackend(SimulationBackend):
             if not temp_list:
                 continue
             kind = str(entry.get("kind") or "").lower()
-            # device_loss_summary lumps switching loss into P_avg via
-            # E_total — the breakdown into conduction/turn-on/turn-off
-            # isn't separable from this summary, so we report P_avg
-            # as conduction and zero the switching terms. When pulsim
-            # ships per-mechanism breakdowns we'll wire them here.
             rows.append({
                 "component_name": name,
                 "kind": kind,
