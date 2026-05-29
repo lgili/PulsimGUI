@@ -6,20 +6,32 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPalette, QShortcut
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QKeySequence,
+    QPalette,
+    QShortcut,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QStatusBar,
+    QTabBar,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +60,7 @@ from pulsimgui.models.component import (
     pin_connection_domain,
 )
 from pulsimgui.models.project import Project
+from pulsimgui.views.editor_document import EditorDocument
 from pulsimgui.models.subcircuit import (
     SubcircuitInstance,
     create_subcircuit_from_selection,
@@ -118,7 +131,17 @@ class MainWindow(QMainWindow):
         self._theme_service = ThemeService(parent=self)
         self._shortcut_service = ShortcutService(self._settings, parent=self)
         self._command_stack = CommandStack(parent=self)
-        self._project = Project()
+        # Open documents (tabs). ``_project`` is a property delegating to
+        # the active document, so the ~60 existing ``self._project``
+        # reads keep working unchanged. Must be set up before anything
+        # touches ``self._project``.
+        self._documents: list[EditorDocument] = [EditorDocument(Project())]
+        self._active_doc: int = 0
+        self._tab_bar: QTabBar | None = None  # set in _setup_window via _build_tab_row
+        # Guards programmatic QTabBar mutations from re-entering the
+        # user-driven switch path (setCurrentIndex / insertTab / removeTab
+        # all emit currentChanged).
+        self._suppress_tab_signals = False
         self._hierarchy_service = HierarchyService(self._project, parent=self)
         self._simulation_service = SimulationService(settings_service=self._settings, parent=self)
         self._thermal_service = ThermalAnalysisService(
@@ -170,10 +193,17 @@ class MainWindow(QMainWindow):
         self._schematic_view = SchematicView(self._schematic_scene)
         self._hierarchy_bar = HierarchyBar()
 
+        # Document tab row (PSIM-style): one tab per open project, with a
+        # trailing "+" button to open a fresh circuit. A single shared
+        # scene/view renders whichever document is active; switching tabs
+        # rebinds that scene (see _switch_to_document).
+        tab_row = self._build_tab_row()
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addWidget(tab_row)
         layout.addWidget(self._hierarchy_bar)
         layout.addWidget(self._schematic_view)
         self.setCentralWidget(central)
@@ -230,6 +260,301 @@ class MainWindow(QMainWindow):
         self._schematic_scene.changed.connect(lambda _: self._schedule_minimap_update())
         self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
         self._refresh_component_state_cache()
+
+    # ------------------------------------------------------------------
+    # Active-document delegation
+    # ------------------------------------------------------------------
+    @property
+    def _project(self) -> Project:
+        """The active tab's project. A property so the ~60 existing
+        ``self._project`` reads transparently follow the active
+        document."""
+        return self._documents[self._active_doc].project
+
+    @_project.setter
+    def _project(self, value: Project) -> None:
+        """Replace the active document's project in place (used by the
+        new/open/template/close paths that swap the project of the
+        current tab). Opening into a *new* tab goes through
+        ``_add_document`` instead."""
+        self._documents[self._active_doc].project = value
+
+    @property
+    def _active_document(self) -> EditorDocument:
+        return self._documents[self._active_doc]
+
+    # ------------------------------------------------------------------
+    # Document tabs (PSIM-style multi-circuit)
+    # ------------------------------------------------------------------
+    def _build_tab_row(self) -> QWidget:
+        """Construct the tab strip: a closable/elided ``QTabBar`` plus a
+        trailing ``+`` button. Seeds one tab for the initial document.
+
+        Returns the container widget to drop into the central layout."""
+        self._tab_bar = QTabBar()
+        self._tab_bar.setObjectName("documentTabBar")
+        self._tab_bar.setTabsClosable(True)
+        self._tab_bar.setExpanding(False)
+        self._tab_bar.setMovable(False)  # v1: keep tab index == _documents index
+        self._tab_bar.setDocumentMode(True)
+        self._tab_bar.setUsesScrollButtons(True)
+        self._tab_bar.setElideMode(Qt.TextElideMode.ElideRight)
+        self._tab_bar.setDrawBase(True)
+
+        self._tab_bar.currentChanged.connect(self._on_tab_changed)
+        self._tab_bar.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._tab_bar.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
+
+        self._new_tab_button = QToolButton()
+        self._new_tab_button.setObjectName("newTabButton")
+        self._new_tab_button.setText("+")
+        self._new_tab_button.setToolTip("New circuit tab")
+        self._new_tab_button.setAutoRaise(True)
+        self._new_tab_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._new_tab_button.clicked.connect(self._on_new_tab_clicked)
+
+        row = QWidget()
+        row.setObjectName("documentTabRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        row_layout.addWidget(self._tab_bar)
+        row_layout.addWidget(self._new_tab_button)
+        row_layout.addStretch(1)
+
+        # Keyboard tab navigation (Ctrl+Tab / Ctrl+Shift+Tab).
+        next_tab = QShortcut(QKeySequence.StandardKey.NextChild, self)
+        next_tab.activated.connect(self._on_next_tab)
+        prev_tab = QShortcut(QKeySequence.StandardKey.PreviousChild, self)
+        prev_tab.activated.connect(self._on_prev_tab)
+
+        # Seed the tab for the document that already exists.
+        self._suppress_tab_signals = True
+        try:
+            doc = self._documents[0]
+            self._tab_bar.addTab(doc.title)
+            self._tab_bar.setTabToolTip(0, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+        return row
+
+    def _set_tab_current_silently(self, index: int) -> None:
+        """Move the tab-bar selection without triggering ``_on_tab_changed``."""
+        if self._tab_bar is None or self._tab_bar.currentIndex() == index:
+            return
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.setCurrentIndex(index)
+        finally:
+            self._suppress_tab_signals = False
+
+    def _refresh_tab(self, index: int) -> None:
+        """Sync a tab's label + tooltip from its document (dirty dot, name)."""
+        if self._tab_bar is None or not (0 <= index < self._tab_bar.count()):
+            return
+        if index >= len(self._documents):
+            return
+        doc = self._documents[index]
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.setTabText(index, doc.title)
+            self._tab_bar.setTabToolTip(index, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+
+    def _capture_view_state(self, index: int) -> None:
+        """Snapshot the shared view's zoom + pan into a document."""
+        if not (0 <= index < len(self._documents)):
+            return
+        view = getattr(self, "_schematic_view", None)
+        if view is None:
+            return
+        doc = self._documents[index]
+        doc.view_transform = QTransform(view.transform())
+        doc.h_scroll = view.horizontalScrollBar().value()
+        doc.v_scroll = view.verticalScrollBar().value()
+
+    def _restore_view_state(self, index: int) -> None:
+        """Reapply a document's saved zoom + pan, or auto-fit if unseen."""
+        if not (0 <= index < len(self._documents)):
+            return
+        view = getattr(self, "_schematic_view", None)
+        if view is None:
+            return
+        doc = self._documents[index]
+        if doc.view_transform is not None:
+            view.setTransform(doc.view_transform)
+            view.horizontalScrollBar().setValue(doc.h_scroll)
+            view.verticalScrollBar().setValue(doc.v_scroll)
+        else:
+            # First time this document is shown — frame its contents.
+            self._schedule_auto_fit_view()
+
+    def _rebind_active_document(self) -> None:
+        """(Re)load the active document into the shared scene/view and
+        refresh chrome. Assumes ``self._active_doc`` is already correct
+        and any document-coupled shared state (scopes, command stack,
+        latest result) has already been reset by the caller."""
+        self._load_project_to_scene()
+        self._apply_project_simulation_settings_to_service()
+        self._restore_view_state(self._active_doc)
+        self._update_title()
+        self._update_modified_indicator()
+
+    def _switch_to_document(self, new_index: int) -> None:
+        """Make ``new_index`` the active tab. Switching never prompts to
+        save (PSIM-style) — only closing does. Shared, per-document state
+        (scope windows, undo stack, last result) is reset so circuits
+        never cross-contaminate (documented v1 limitation)."""
+        if not (0 <= new_index < len(self._documents)):
+            return
+        self._set_tab_current_silently(new_index)
+        if new_index == self._active_doc:
+            return
+        self._capture_view_state(self._active_doc)
+        self._close_all_scope_windows(persist_state=False)
+        self._command_stack.clear()
+        self._latest_electrical_result = None
+        self._active_doc = new_index
+        self._rebind_active_document()
+
+    def _add_document(self, project: Project, *, make_active: bool = True) -> int:
+        """Append a new document + tab. Returns its index. When
+        ``make_active`` the new tab is selected and rendered."""
+        assert self._tab_bar is not None  # built in _setup_window
+        doc = EditorDocument(project)
+        self._documents.append(doc)
+        new_index = len(self._documents) - 1
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.addTab(doc.title)
+            self._tab_bar.setTabToolTip(new_index, doc.tooltip)
+        finally:
+            self._suppress_tab_signals = False
+        if make_active:
+            self._switch_to_document(new_index)
+        return new_index
+
+    def _replace_active_document(self, project: Project) -> None:
+        """Swap the active tab's project in place (used by new/open/close
+        when reusing a pristine tab). Resets the tab's view + shared
+        document-coupled state and refreshes the label."""
+        self._close_all_scope_windows(persist_state=False)
+        self._command_stack.clear()
+        self._latest_electrical_result = None
+        doc = self._documents[self._active_doc]
+        doc.project = project
+        doc.view_transform = None
+        doc.h_scroll = 0
+        doc.v_scroll = 0
+        self._rebind_active_document()
+        self._refresh_tab(self._active_doc)
+
+    def _is_pristine_document(self, doc: EditorDocument) -> bool:
+        """True when a document is an untouched blank tab (no file, not
+        dirty, empty active circuit) — safe to reuse for an open/new."""
+        project = doc.project
+        if project.path is not None or project.is_dirty:
+            return False
+        try:
+            circuit = project.get_active_circuit()
+        except Exception:
+            return False
+        return not circuit.components
+
+    def _close_document(self, index: int) -> None:
+        """Close a tab. Prompts to save if that document is dirty. Closing
+        the last remaining tab resets it to a blank project rather than
+        leaving the editor with zero tabs."""
+        if not (0 <= index < len(self._documents)):
+            return
+        doc = self._documents[index]
+        # Dirty guard: surface the doc first so the prompt is about it.
+        if doc.project.is_dirty:
+            self._switch_to_document(index)
+            if not self._check_save():
+                return
+            index = self._active_doc  # _check_save/save don't move tabs, but be safe
+        # Keep at least one tab alive: closing the only tab blanks it.
+        if len(self._documents) == 1:
+            self._replace_active_document(Project())
+            self.statusBar().showMessage("Project closed", 3000)
+            return
+        assert self._tab_bar is not None  # built in _setup_window
+        closing_active = index == self._active_doc
+        if closing_active:
+            self._close_all_scope_windows(persist_state=False)
+            self._command_stack.clear()
+            self._latest_electrical_result = None
+        # Drop the model + tab (suppress the auto currentChanged).
+        self._suppress_tab_signals = True
+        try:
+            self._tab_bar.removeTab(index)
+        finally:
+            self._suppress_tab_signals = False
+        del self._documents[index]
+        if closing_active:
+            target = min(index, len(self._documents) - 1)
+            self._active_doc = target
+            self._set_tab_current_silently(target)
+            self._rebind_active_document()
+        else:
+            if index < self._active_doc:
+                self._active_doc -= 1
+            self._set_tab_current_silently(self._active_doc)
+
+    def _rename_document(self, index: int) -> None:
+        """Prompt for a new display name for a tab (double-click)."""
+        if not (0 <= index < len(self._documents)):
+            return
+        doc = self._documents[index]
+        current = doc.display_name or (
+            doc.project.path.stem if doc.project.path else (doc.project.name or "untitled")
+        )
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Tab", "Tab name:", text=current
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        doc.display_name = new_name
+        doc.project.name = new_name
+        doc.project.mark_dirty()
+        self._refresh_tab(index)
+        if index == self._active_doc:
+            self._update_title()
+            self._update_modified_indicator()
+
+    # Tab-bar signal slots ------------------------------------------------
+    def _on_tab_changed(self, index: int) -> None:
+        if self._suppress_tab_signals:
+            return
+        self._switch_to_document(index)
+
+    def _on_tab_close_requested(self, index: int) -> None:
+        self._close_document(index)
+
+    def _on_tab_double_clicked(self, index: int) -> None:
+        if index < 0:
+            # Double-click on the empty strip area → new tab (PSIM-ish).
+            self._on_new_tab_clicked()
+            return
+        self._rename_document(index)
+
+    def _on_new_tab_clicked(self) -> None:
+        self._add_document(Project())
+
+    def _on_next_tab(self) -> None:
+        n = len(self._documents)
+        if n > 1:
+            self._switch_to_document((self._active_doc + 1) % n)
+
+    def _on_prev_tab(self) -> None:
+        n = len(self._documents)
+        if n > 1:
+            self._switch_to_document((self._active_doc - 1) % n)
 
     def _create_actions(self) -> None:
         """Create all menu and toolbar actions."""
@@ -1334,18 +1659,24 @@ class MainWindow(QMainWindow):
         self._update_recent_menu()
 
     def _update_title(self) -> None:
-        """Update window title based on project state."""
-        if self._project.path:
-            title = f"PulsimGui - {self._project.path.name}"
+        """Update window title based on the active document's state."""
+        doc = self._active_document
+        if doc.display_name:
+            base = doc.display_name
+        elif self._project.path:
+            base = self._project.path.name
         else:
-            title = f"PulsimGui - {self._project.name}"
+            base = self._project.name
+        title = f"PulsimGui - {base}"
         if self._project.is_dirty:
             title += " *"
         self.setWindowTitle(title)
 
     def _update_modified_indicator(self) -> None:
-        """Update the modified indicator in the status bar."""
+        """Update the modified indicator in the status bar and the active
+        tab's dirty dot."""
         self._modified_widget.setModified(self._project.is_dirty)
+        self._refresh_tab(self._active_doc)
 
     def _current_circuit(self) -> Circuit:
         """Return the circuit for the current hierarchy level."""
@@ -1368,30 +1699,36 @@ class MainWindow(QMainWindow):
             self._autosave_timer.stop()
 
     def _on_autosave(self) -> None:
-        """Handle auto-save timer timeout."""
-        if not self._project.is_dirty:
-            return
+        """Handle auto-save timer timeout — back up every dirty tab, not
+        just the active one, so unsaved work in background tabs is also
+        recoverable."""
+        saved_any = False
+        for doc in self._documents:
+            if doc.project.is_dirty and self._autosave_backup(doc.project):
+                saved_any = True
+        if saved_any:
+            self.statusBar().showMessage("Auto-saved backup", 2000)
 
-        # Save backup copy
-        if self._project.path:
-            # Save to backup file (original.pulsim.bak)
-            backup_path = Path(str(self._project.path) + ".bak")
-            try:
-                self._project.save_copy(backup_path)
-                self.statusBar().showMessage("Auto-saved backup", 2000)
-            except Exception:
-                pass  # Silently fail on backup
+    def _autosave_backup(self, project: Project) -> bool:
+        """Write a best-effort ``.bak`` copy of one project (beside its
+        file, or into a temp dir if it has never been saved). Returns True
+        on success; failures are swallowed (backups must never interrupt
+        editing)."""
+        if project.path:
+            backup_path = Path(str(project.path) + ".bak")
         else:
-            # No file yet - save to temp location
             import tempfile
+
             temp_dir = Path(tempfile.gettempdir()) / "pulsimgui_autosave"
             temp_dir.mkdir(exist_ok=True)
-            backup_path = temp_dir / f"{self._project.name}.pulsim.bak"
-            try:
-                self._project.save_copy(backup_path)
-                self.statusBar().showMessage(f"Auto-saved to {backup_path}", 2000)
-            except Exception:
-                pass  # Silently fail on backup
+            # Discriminate by object id so two unsaved "Untitled Project"
+            # tabs don't overwrite each other's backup.
+            backup_path = temp_dir / f"{project.name}_{id(project):x}.pulsim.bak"
+        try:
+            project.save_copy(backup_path)
+            return True
+        except Exception:
+            return False  # Silently fail on backup
 
     def update_coordinates(self, x: float, y: float) -> None:
         """Update coordinate display in status bar."""
@@ -2016,73 +2353,60 @@ class MainWindow(QMainWindow):
         )
 
     # Slots
-    def _on_new_project(self) -> None:
-        """Create a new project."""
-        if not self._check_save():
-            return
-        self._close_all_scope_windows(persist_state=False)
-        self._project = Project()
-        self._latest_electrical_result = None
-        self._command_stack.clear()
-        self._hierarchy_service.set_project(self._project)
-        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
-        self._refresh_component_state_cache()
-        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
-        self._apply_project_simulation_settings_to_service()
+    def _place_project_in_tab(self, project: Project, *, dirty: bool = False) -> None:
+        """Surface a freshly built / loaded project in a tab.
+
+        Reuses the active tab when it's a pristine blank (so a fresh
+        launch doesn't accumulate empty tabs), otherwise opens a new tab
+        and switches to it. ``dirty=True`` marks the result modified
+        (templates start unsaved)."""
+        if self._is_pristine_document(self._active_document):
+            self._replace_active_document(project)
+        else:
+            self._add_document(project)
+        if dirty:
+            self._project.mark_dirty()
+        self._refresh_tab(self._active_doc)
         self._update_title()
         self._update_modified_indicator()
 
+    def _on_new_project(self) -> None:
+        """Create a new blank circuit (PSIM-style: in its own tab, reusing
+        a pristine active tab if present). Never destroys unsaved work."""
+        self._place_project_in_tab(Project())
+
     def _on_new_from_template(self) -> None:
-        """Create a new project from a template."""
-        if not self._check_save():
+        """Create a new project from a template, in a tab."""
+        dialog = TemplateDialog(self)
+        if not dialog.exec():
+            return
+        template_id = dialog.get_selected_template_id()
+        if not template_id:
             return
 
-        dialog = TemplateDialog(self)
-        if dialog.exec():
-            template_id = dialog.get_selected_template_id()
-            if template_id:
-                # Prefer full project templates (includes saved simulation settings).
-                template_project = TemplateService.create_project_from_template(template_id)
+        # Prefer full project templates (includes saved simulation settings).
+        template_project = TemplateService.create_project_from_template(template_id)
+        if template_project is not None:
+            template_project.path = None
+            self._place_project_in_tab(template_project, dirty=True)
+            self.statusBar().showMessage(
+                f"Created new project from template: {template_project.name}", 3000
+            )
+            return
 
-                if template_project is not None:
-                    self._close_all_scope_windows(persist_state=False)
-                    template_project.path = None
-                    self._project = template_project
-                    self._latest_electrical_result = None
-                    self._command_stack.clear()
-                    self._load_project_to_scene()
-                    self._apply_project_simulation_settings_to_service()
-                    self._project.mark_dirty()
-                    self._update_title()
-                    self._update_modified_indicator()
-                    self.statusBar().showMessage(
-                        f"Created new project from template: {self._project.name}", 3000
-                    )
-                    return
-
-                # Fallback: legacy circuit-only templates.
-                circuit = TemplateService.create_circuit_from_template(template_id)
-                if circuit:
-                    self._close_all_scope_windows(persist_state=False)
-                    self._project = Project(name=circuit.name)
-                    self._latest_electrical_result = None
-                    self._project.circuits = {"main": circuit}
-                    self._project.active_circuit = "main"
-                    self._command_stack.clear()
-                    self._load_project_to_scene()
-                    self._apply_project_simulation_settings_to_service()
-                    self._project.mark_dirty()
-                    self._update_title()
-                    self._update_modified_indicator()
-                    self.statusBar().showMessage(
-                        f"Created new project from template: {circuit.name}", 3000
-                    )
+        # Fallback: legacy circuit-only templates.
+        circuit = TemplateService.create_circuit_from_template(template_id)
+        if circuit:
+            project = Project(name=circuit.name)
+            project.circuits = {"main": circuit}
+            project.active_circuit = "main"
+            self._place_project_in_tab(project, dirty=True)
+            self.statusBar().showMessage(
+                f"Created new project from template: {circuit.name}", 3000
+            )
 
     def _on_open_project(self) -> None:
-        """Open a project file."""
-        if not self._check_save():
-            return
-
+        """Open a project file (in a new tab)."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Project",
@@ -2093,26 +2417,37 @@ class MainWindow(QMainWindow):
             self._open_project_file(path)
 
     def _open_project_file(self, path: str) -> None:
-        """Open a project from the given path."""
+        """Open a project from the given path in a tab. If the file is
+        already open, just switch to its tab instead of opening twice."""
+        # Dedup against already-open documents.
         try:
-            self._close_all_scope_windows(persist_state=False)
-            self._project = Project.load(path)
-            self._latest_electrical_result = None
-            self._command_stack.clear()
-            self._load_project_to_scene()
-            self._apply_project_simulation_settings_to_service()
-            self._settings.add_recent_project(path)
-            self._update_recent_menu()
-            self._update_title()
-            self._update_modified_indicator()
-            self.statusBar().showMessage(f"Opened: {path}", 3000)
-            # P0.2 — auto-fit the schematic so the user immediately sees the
-            # whole circuit instead of having to manually press F-to-fit.
-            # Defer one event-loop tick so the scene's bounding rect reflects
-            # the just-loaded components (otherwise we fit to an empty rect).
-            self._schedule_auto_fit_view()
+            resolved = Path(path).resolve()
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            for i, doc in enumerate(self._documents):
+                existing = doc.project.path
+                if existing is None:
+                    continue
+                try:
+                    same = existing.resolve() == resolved
+                except Exception:
+                    same = False
+                if same:
+                    self._switch_to_document(i)
+                    self.statusBar().showMessage(f"Already open: {path}", 3000)
+                    return
+        try:
+            project = Project.load(path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open project:\n{e}")
+            return
+        # Reuse a pristine tab or open a new one; _restore_view_state
+        # auto-fits the freshly loaded circuit (its view_transform is None).
+        self._place_project_in_tab(project)
+        self._settings.add_recent_project(path)
+        self._update_recent_menu()
+        self.statusBar().showMessage(f"Opened: {path}", 3000)
 
     def _schedule_auto_fit_view(self) -> None:
         """Defer ``zoom_to_fit`` until after the scene has settled."""
@@ -2130,8 +2465,11 @@ class MainWindow(QMainWindow):
             try:
                 self._project.save()
                 self._command_stack.set_clean()
+                # The on-disk filename is now the document's identity.
+                self._active_document.display_name = None
                 self._update_title()
                 self._update_modified_indicator()
+                self._refresh_tab(self._active_doc)
                 self.statusBar().showMessage("Project saved", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
@@ -2151,29 +2489,21 @@ class MainWindow(QMainWindow):
             try:
                 self._project.save(path)
                 self._command_stack.set_clean()
+                # The on-disk filename is now the document's identity.
+                self._active_document.display_name = None
                 self._settings.add_recent_project(path)
                 self._update_recent_menu()
                 self._update_title()
                 self._update_modified_indicator()
+                self._refresh_tab(self._active_doc)
                 self.statusBar().showMessage(f"Saved: {path}", 3000)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
 
     def _on_close_project(self) -> None:
-        """Close the current project and create a new empty one."""
-        if not self._check_save():
-            return
-        self._close_all_scope_windows(persist_state=False)
-        self._project = Project()
-        self._latest_electrical_result = None
-        self._command_stack.clear()
-        self._hierarchy_service.set_project(self._project)
-        self._schematic_scene.circuit = self._hierarchy_service.get_current_circuit()
-        self._refresh_component_state_cache()
-        self._hierarchy_bar.update_hierarchy(self._hierarchy_service.breadcrumb_path)
-        self._update_title()
-        self._update_modified_indicator()
-        self.statusBar().showMessage("Project closed", 3000)
+        """Close the active tab (prompting to save if it's dirty). Closing
+        the last remaining tab resets it to a fresh blank project."""
+        self._close_document(self._active_doc)
 
     def _on_undo(self) -> None:
         """Undo the last command."""
@@ -3371,9 +3701,21 @@ class MainWindow(QMainWindow):
         else:
             return False
 
+    def _check_save_all(self) -> bool:
+        """Prompt to save every dirty open document before a destructive
+        action (window close). Returns False if the user cancels any
+        prompt — the caller must abort. Each dirty document is surfaced
+        first so the save dialog acts on the right project."""
+        for i in range(len(self._documents)):
+            if self._documents[i].project.is_dirty:
+                self._switch_to_document(i)
+                if not self._check_save():
+                    return False
+        return True
+
     def closeEvent(self, event) -> None:
         """Handle window close event."""
-        if not self._check_save():
+        if not self._check_save_all():
             event.ignore()
             return
 
