@@ -229,6 +229,24 @@ def test_close_dirty_tab_can_be_cancelled(monkeypatch, qapp) -> None:
         window.close()
 
 
+def test_cancel_closing_dirty_background_tab_restores_focus(monkeypatch, qapp) -> None:
+    """Cancelling the close of a dirty *background* tab must not leave the
+    user parked on the tab they declined to close — focus returns to where
+    they were."""
+    window = MainWindow()
+    try:
+        window._add_component_at(ComponentType.RESISTOR, 0.0, 0.0)  # tab0 dirty
+        window._on_new_tab_clicked()  # tab1 created + active
+        assert window._active_doc == 1
+        # User cancels the save prompt when closing the background dirty tab0.
+        monkeypatch.setattr(window, "_check_save", lambda: False)
+        window._close_document(0)
+        assert window._tab_bar.count() == 2  # nothing closed
+        assert window._active_doc == 1  # focus restored to where we were
+    finally:
+        window.close()
+
+
 def test_close_dirty_tab_proceeds_when_saved(monkeypatch, qapp) -> None:
     window = MainWindow()
     try:

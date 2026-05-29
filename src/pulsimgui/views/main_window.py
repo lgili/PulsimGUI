@@ -226,6 +226,7 @@ class MainWindow(QMainWindow):
         self._schematic_view.zoom_changed.connect(lambda _: self._minimap.update_minimap())
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
+        self._schematic_view.component_pasted.connect(self._on_component_pasted)
         self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_view.component_delete_requested.connect(
             self._on_component_delete_requested
@@ -471,8 +472,15 @@ class MainWindow(QMainWindow):
         doc = self._documents[index]
         # Dirty guard: surface the doc first so the prompt is about it.
         if doc.project.is_dirty:
+            previous_active = self._active_doc
             self._switch_to_document(index)
             if not self._check_save():
+                # User cancelled — don't leave them parked on a tab they
+                # declined to close; return focus to where they were.
+                if previous_active != self._active_doc and previous_active < len(
+                    self._documents
+                ):
+                    self._switch_to_document(previous_active)
                 return
             index = self._active_doc  # _check_save/save don't move tabs, but be safe
         # Keep at least one tab alive: closing the only tab blanks it.
@@ -2797,8 +2805,15 @@ class MainWindow(QMainWindow):
             snapped = scene.snap_to_grid(QPointF(x, y))
             x, y = snapped.x(), snapped.y()
 
-        # Create component
-        component = Component(comp_type, x=x, y=y)
+        # Create component. NOTE: ``type=`` is mandatory — Component's first
+        # positional field is ``id`` (a UUID), so a positional comp_type would
+        # silently land in ``id`` and leave ``type`` defaulted to RESISTOR.
+        component = Component(
+            type=comp_type,
+            name=self._generate_component_name(comp_type),
+            x=x,
+            y=y,
+        )
         self._execute_schematic_command(
             AddComponentCommand(self._current_circuit(), component),
             refresh_scene=True,
@@ -2943,6 +2958,17 @@ class MainWindow(QMainWindow):
 
         # Update library recent list
         self._library_panel.add_to_recent(comp_type)
+
+    def _on_component_pasted(self, component) -> None:
+        """Add a clipboard-pasted component (built by the view, with its
+        edited properties intact) to the active circuit through the undo
+        stack, so it persists and is part of the model — not a scene-only
+        orphan."""
+        self._execute_schematic_command(
+            AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
 
     def _on_component_removed(self, component) -> None:
         """Tear down scope window state when a component disappears."""
