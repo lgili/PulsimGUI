@@ -403,6 +403,15 @@ class Circuit:
         # contribution is driven every step.
         self.nonlinear_observer_specs: list[dict[str, Any]] = []
 
+        # C_BLOCK control-loop descriptors (pulsim 1.5 fast_block).
+        # Populated by ``CircuitConverter`` when it detects a
+        # python_numba C_BLOCK regulating a PWM-driven switch from a
+        # single-node feedback. Each entry carries the compiled-law
+        # source + feedback node + switch + sample time; the backend
+        # compiles it via FastBlockService and runs it as a ClosedLoop
+        # (measured node → control law → duty → switch) each step.
+        self.cblock_loop_descriptors: list[dict[str, Any]] = []
+
         # Position metadata — never round-tripped to the builder.
         self._positions: dict[str, SchematicPosition] = {}
 

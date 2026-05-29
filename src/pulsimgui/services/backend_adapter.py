@@ -6534,6 +6534,137 @@ class PulsimBackend(SimulationBackend):
 
         return step_observers, combined_b_extra
 
+    def _build_cblock_closed_loops(
+        self,
+        descriptors: list[dict[str, Any]],
+        builder: Any,
+        t_start: float,
+    ) -> list[Any]:
+        """Build a ClosedLoop per C_BLOCK control-loop descriptor.
+
+        Each descriptor (emitted by the converter for a python_numba
+        C_BLOCK regulating a PWM-driven switch) carries the control-law
+        source, the feedback node, the switch device, the PWM
+        frequency, and the sample time. We compile the source via
+        :class:`FastBlockService` and return a duck-typed ClosedLoop
+        whose:
+
+        * ``step_observer(t, x)`` — throttled to the sample time —
+          reads the feedback ``measured = x[fb_idx]``, calls the
+          control law ``law(measured, setpoint, dt, state) → duty``,
+          and stores the clamped duty;
+        * ``switch_fn(t)`` — produces the PWM mask by comparing the
+          carrier phase against the stored duty.
+
+        Mirrors the duty/PWM mechanics ``bind_pi_to_switch`` runs
+        internally, but with the user's compiled law in place of the
+        PI. A descriptor that fails to compile or resolve is skipped
+        (logged-silent) so one bad block doesn't abort the run.
+        """
+        if not descriptors:
+            return []
+
+        from pulsimgui.services.fast_block_service import (
+            FastBlockCompileError,
+            FastBlockService,
+        )
+
+        ps = self._module
+        mask_cls = getattr(ps, "SwitchStateMask", None)
+        if mask_cls is None:
+            return []
+
+        try:
+            num_sw = int(builder.graph.num_switches)
+        except Exception:  # noqa: BLE001
+            num_sw = 1
+
+        svc = FastBlockService()
+        loops: list[Any] = []
+
+        for desc in descriptors:
+            try:
+                source = str(desc.get("source") or "")
+                n_states = max(0, int(desc.get("n_states", 1) or 1))
+                law = svc.compile_control_law(source, n_states=n_states)
+            except FastBlockCompileError:
+                # Bad user code — skip this loop. (The properties-panel
+                # "Validate" button is where the user gets the detailed
+                # error; here we just keep the sim alive.)
+                continue
+
+            try:
+                fb_idx = int(builder.node_id_of(str(desc["feedback_node"])))
+                switch_idx = int(builder.switch_index_of(str(desc["switch_device"]))) \
+                    if hasattr(builder, "switch_index_of") else int(desc.get("switch_index", 0))
+            except Exception:  # noqa: BLE001
+                continue
+
+            freq = max(1.0, float(desc.get("pwm_frequency", 100_000.0)))
+            t_pwm = 1.0 / freq
+            sample_time = float(desc.get("sample_time", 0.0) or 0.0)
+            # Default the control period to one PWM period when the
+            # user left sample_time at 0 (continuous-ish).
+            ctrl_dt = sample_time if sample_time > 0.0 else t_pwm
+            setpoint = float(desc.get("setpoint_value", 0.0) or 0.0)
+            duty_min = float(desc.get("output_min", 0.0))
+            duty_max = float(desc.get("output_max", 1.0))
+            arg_count = law.arg_count
+
+            state = law.make_state()
+            duty_cell = [max(duty_min, min(duty_max, 0.5))]
+            last_update = [float(t_start) - ctrl_dt]
+
+            def _make_observer(
+                _law=law, _fb=fb_idx, _state=state, _duty=duty_cell,
+                _last=last_update, _dt=ctrl_dt, _sp=setpoint,
+                _argc=arg_count, _dmin=duty_min, _dmax=duty_max,
+            ) -> Callable[[float, Any], None]:
+                def observer(t: float, x: Any) -> None:
+                    if (t - _last[0]) < _dt:
+                        return
+                    _last[0] = t
+                    measured = float(x[_fb])
+                    # Supply exactly ``_argc`` scalar arguments (the
+                    # count BEFORE the trailing ``state`` param), in the
+                    # canonical order [measured, setpoint, dt], padded
+                    # with zeros, then the persistent state vector:
+                    #   1 → control(measured, state)
+                    #   2 → control(measured, setpoint, state)
+                    #   3 → control(measured, setpoint, dt, state)
+                    #   n → control(measured, setpoint, dt, 0…, state)
+                    canonical = [measured, _sp, _dt]
+                    if _argc <= len(canonical):
+                        scalars = canonical[:_argc]
+                    else:
+                        scalars = canonical + [0.0] * (_argc - len(canonical))
+                    try:
+                        out = float(_law(*scalars, _state))
+                    except Exception:  # noqa: BLE001
+                        return
+                    _duty[0] = max(_dmin, min(_dmax, out))
+                return observer
+
+            def _make_switch_fn(
+                _idx=switch_idx, _freq=freq, _duty=duty_cell,
+                _n=num_sw, _mask=mask_cls,
+            ) -> Callable[[float], Any]:
+                def switch_fn(t: float) -> Any:
+                    phase = (t * _freq) % 1.0
+                    mask = _mask(int(_n))
+                    if phase < _duty[0]:
+                        mask.set(int(_idx), True)
+                    return mask
+                return switch_fn
+
+            from types import SimpleNamespace
+            loops.append(SimpleNamespace(
+                switch_fn=_make_switch_fn(),
+                step_observer=_make_observer(),
+            ))
+
+        return loops
+
     def _build_closed_loops(
         self,
         circuit: Any,
@@ -6558,7 +6689,10 @@ class PulsimBackend(SimulationBackend):
         ``switch_fn`` + ``step_observer`` pair.
         """
         descriptors = list(getattr(circuit, "closed_loop_descriptors", []) or [])
-        if not descriptors:
+        cblock_descriptors = list(
+            getattr(circuit, "cblock_loop_descriptors", []) or []
+        )
+        if not descriptors and not cblock_descriptors:
             return None
 
         ps = self._module
@@ -6704,6 +6838,14 @@ class PulsimBackend(SimulationBackend):
                     t_start=float(t_start),
                 )
             real_loops.append(loop)
+
+        # C_BLOCK control loops (pulsim 1.5 fast_block). Each compiles
+        # its Python control law and runs it as a duty-driving loop —
+        # same shape as the PI loops above, so it composes into the
+        # combined switch_fn + observer transparently.
+        real_loops.extend(
+            self._build_cblock_closed_loops(cblock_descriptors, builder, t_start)
+        )
 
         if not real_loops:
             return None
