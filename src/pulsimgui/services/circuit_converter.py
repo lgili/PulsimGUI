@@ -229,6 +229,19 @@ class CircuitConverter:
         except Exception:  # noqa: BLE001 - some shims may be slot-restricted
             pass
 
+        # Detect python_numba C_BLOCKs regulating a PWM-driven switch
+        # and attach their loop descriptors. This is a standalone pass
+        # (it does NOT touch the PI-detection logic above) — the
+        # backend compiles each via FastBlockService and runs it as a
+        # ClosedLoop. Empty list ⇒ no fast_block controllers.
+        try:
+            cblock_loops = self._infer_cblock_control_loops(
+                components, node_map, alias_map,
+            )
+            setattr(circuit, "cblock_loop_descriptors", cblock_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
         return circuit
 
     # ------------------------------------------------------------------
@@ -2779,6 +2792,154 @@ class CircuitConverter:
             overrides[comp_id] = cblock_override
 
         return overrides
+
+    def _infer_cblock_control_loops(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Detect ``python_numba`` C_BLOCKs that regulate a PWM-driven
+        switch, and emit one ``cblock_loop_descriptor`` each.
+
+        Topology matched (the SISO controller case):
+
+            <feedback node> ──(probe)──▶ C_BLOCK.in0
+            C_BLOCK.out0 ───────────────▶ PWM.duty_in ──▶ switch
+
+        For each python_numba C_BLOCK we resolve:
+          * the PWM whose duty-input node equals the C_BLOCK's first
+            output node (same wiring rule the PI detector uses), then
+            that PWM's target switch via
+            :meth:`_infer_pwm_target_component_name`;
+          * the feedback electrical node from the C_BLOCK's first
+            input — through a voltage probe when one drives that input,
+            else the input node directly.
+
+        Standalone + defensive: this pass does NOT share state with
+        ``_infer_native_buck_control_overrides`` (the PI detector), so
+        it cannot perturb existing closed-loop detection. A C_BLOCK
+        that doesn't match the topology is simply skipped.
+
+        Returns the descriptor list (empty when no fast_block
+        controller is present). The backend
+        (``_build_cblock_closed_loops``) compiles + runs each.
+        """
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            return [str(node or "").strip() for node in node_map.get(comp_id, [])]
+
+        # Group by type (only the few we care about).
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        cblocks = by_type.get(ComponentType.C_BLOCK, [])
+        if not cblocks:
+            return []
+
+        pwms = by_type.get(ComponentType.PWM_GENERATOR, [])
+
+        # signal node → measured electrical node (positive side). Same
+        # construction as the PI detector's ``probe_outputs``.
+        probe_outputs: dict[str, str] = {}
+        for probe in by_type.get(ComponentType.VOLTAGE_PROBE, []):
+            nodes = _raw_nodes(probe)
+            if len(nodes) >= 3 and nodes[2]:
+                probe_outputs[nodes[2]] = nodes[0]
+        for probe in by_type.get(ComponentType.VOLTAGE_PROBE_GND, []):
+            nodes = _raw_nodes(probe)
+            if len(nodes) >= 2 and nodes[1]:
+                probe_outputs[nodes[1]] = nodes[0]
+
+        def _float(d: dict[str, Any], key: str, default: float) -> float:
+            for candidate in (key, key.capitalize(), key.lower()):
+                val = d.get(candidate)
+                if val is None:
+                    continue
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+            return default
+
+        descriptors: list[dict[str, Any]] = []
+        for cblock in cblocks:
+            params = cblock.get("parameters") if isinstance(
+                cblock.get("parameters"), dict
+            ) else {}
+            impl = str(params.get("implementation", "") or "").strip().lower()
+            if impl not in {"python_numba", "python", "fast_block"}:
+                continue
+            source = str(params.get("python_source", "") or "").strip()
+            if not source:
+                continue
+
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+            nodes = _raw_nodes(cblock)
+            # Need at least one input pin + the first output pin.
+            if len(nodes) <= n_inputs:
+                continue
+            input_node = nodes[0]
+            output_node = nodes[n_inputs]
+            if not output_node:
+                continue
+
+            # Find the PWM whose duty-input node == the C_BLOCK output.
+            pwm_component: dict[str, Any] | None = None
+            for candidate in pwms:
+                cn = _raw_nodes(candidate)
+                if len(cn) >= 2 and cn[1] == output_node:
+                    pwm_component = candidate
+                    break
+            if pwm_component is None:
+                continue
+
+            pwm_nodes = _raw_nodes(pwm_component)
+            pwm_out_node = pwm_nodes[0] if pwm_nodes else ""
+            switch_name = self._infer_pwm_target_component_name(
+                components, node_map, pwm_out_node,
+            )
+            if not switch_name:
+                continue
+
+            # Feedback electrical node: via a probe driving the C_BLOCK
+            # input, else the input node directly.
+            measured_raw = probe_outputs.get(input_node, input_node)
+            feedback_node = self._node_label(measured_raw, alias_map)
+
+            pwm_params = pwm_component.get("parameters") if isinstance(
+                pwm_component.get("parameters"), dict
+            ) else {}
+            try:
+                n_states = max(0, int(params.get("n_states", 1) or 1))
+            except (TypeError, ValueError):
+                n_states = 1
+
+            descriptors.append({
+                "cblock_name": self._component_name(cblock, ComponentType.C_BLOCK),
+                "source": source,
+                "n_states": n_states,
+                "feedback_node": feedback_node,
+                "switch_device": switch_name,
+                "pwm_frequency": _float(pwm_params, "frequency", 100_000.0),
+                "sample_time": _float(params, "sample_time", 0.0),
+                "setpoint_value": _float(params, "setpoint", 0.0),
+                "output_min": _float(params, "output_min", 0.0),
+                "output_max": _float(params, "output_max", 1.0),
+            })
+
+        return descriptors
 
     def _constant_names_used_as_cblock_inputs(
         self,
