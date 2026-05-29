@@ -156,6 +156,27 @@ def test_apply_project_settings_mirrors_engine_fields(qapp) -> None:
     assert svc.settings.dsed_stiffness_threshold == 15.0
 
 
+def test_apply_project_settings_mirrors_enable_newton_lm(qapp) -> None:
+    """``enable_newton_lm`` persisted in the .pulsim file schema must be
+    mirrored onto the runtime ``SimulationSettings`` by
+    ``apply_project_simulation_settings`` so ``backend_adapter`` forwards
+    it to ``pulsim.simulate`` on the next Run. This is the bridge example
+    20 (boost PFC + switched VSI) relies on — that drive only converges
+    with LM damping, and the flag must come from the project file rather
+    than app preferences on a fresh GUI Run."""
+    from pulsimgui.services.simulation_service import SimulationService
+
+    svc = SimulationService()
+    assert svc.settings.enable_newton_lm is False  # default
+
+    class _ProjectStub:
+        def __init__(self):
+            self.simulation_settings = ProjectSettings(enable_newton_lm=True)
+
+    svc.apply_project_simulation_settings(_ProjectStub())
+    assert svc.settings.enable_newton_lm is True
+
+
 def test_apply_project_settings_normalises_aliases(qapp) -> None:
     """``engine="variable"`` and ``integrator="dopri5"`` should land
     on the runtime as their canonical equivalents."""

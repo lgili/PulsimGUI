@@ -589,12 +589,31 @@ class Circuit:
         records the *gate node it drives* in its
         ``virtual_component_records[*]["nodes"]`` — this property is
         the bridge that lets ``backend_adapter`` connect a PWM gen to
-        the switch bit it should toggle."""
-        return {
-            entry["gate_node"]: entry["switch_idx"]
-            for entry in self.pending_gate_signals
-            if entry.get("gate_node")
-        }
+        the switch bit it should toggle.
+
+        ``pending_gate_signals`` records ``gate_node`` as the *symbolic*
+        node name (``add_mosfet`` passes ``self._name_of(gate)``), but a
+        virtual PWM-generator record stores its output node as the
+        *integer* node id (``add_virtual_component`` is handed
+        ``node_indices``). ``configs_from_pwm_records`` looks the gate up
+        by whatever the record carries, so we expose BOTH spellings —
+        the symbolic name AND the integer id (and its string form) — for
+        every gate. The keys are disjoint (a name is never a bare int),
+        so adding the id aliases can't shadow a real symbolic lookup."""
+        mapping: dict[str, int] = {}
+        for entry in self.pending_gate_signals:
+            gate_name = entry.get("gate_node")
+            if not gate_name:
+                continue
+            switch_idx = entry["switch_idx"]
+            mapping[gate_name] = switch_idx
+            node_id = self._node_name_to_id.get(gate_name)
+            if node_id is not None:
+                # Integer id + its string form, so a record that stored
+                # the gate as ``8`` (int) or ``"8"`` (str) still matches.
+                mapping[node_id] = switch_idx  # type: ignore[index]
+                mapping[str(node_id)] = switch_idx
+        return mapping
 
     def node_names(self) -> list[str]:
         return [
@@ -910,12 +929,20 @@ class Circuit:
         )
 
     def _next_switch_idx(self) -> int:
-        """Return the bit position pulsim 1.3 will use for the next
-        switching device added to the builder. The graph numbers them
-        in call order, so the shim just tracks its own counter — kept
-        in sync via every ``add_mosfet`` / ``add_igbt`` / ``add_switch``
-        / ``add_vcswitch`` path."""
-        return len(self.pending_gate_signals)
+        """Return the *builder-global* bit position pulsim will assign to
+        the next switching device added to the builder.
+
+        The graph numbers EVERY switching branch — diodes, diode bridges,
+        MOSFET body diodes, plain switches — in call order, so the next
+        device's bit is simply the builder's current switch count. We
+        must read it from the builder (not ``len(pending_gate_signals)``):
+        ``pending_gate_signals`` only tracks gate-driven devices, so any
+        diodes / bridge added before a MOSFET would make a name-counter
+        under-count and hand the ``switch_fn`` the wrong bit (it would
+        toggle a bridge diode instead of the MOSFET, leaving the MOSFET
+        permanently OFF). Called BEFORE the underlying ``add_*`` so the
+        count is the pre-add index the new device's primary branch gets."""
+        return int(self._builder.graph.num_switches)
 
     def add_mosfet(
         self,
@@ -1051,23 +1078,31 @@ class Circuit:
         C: float,  # noqa: N803
         initial_voltage: float = 0.0,  # noqa: ARG002 - v1.3 add_rc_snubber doesn't take IC
     ) -> None:
-        # pulsim 1.3 exposes ``add_rc_snubber(builder, name, R, C)`` at
-        # the module level.
+        # pulsim exposes ``add_rc_snubber`` at the module level. pulsim
+        # 1.6 made the signature keyword-only:
+        # ``add_rc_snubber(builder, *, R, C, from_node, to_node,
+        # name_prefix='Snub')`` (older drafts were positional). Call it
+        # by keyword so we work against 1.6.x; fall back to expanding into
+        # series R+C if the symbol is missing or rejects the kwargs.
         if hasattr(self._pm, "add_rc_snubber"):
-            self._pm.add_rc_snubber(
-                self._builder,
-                name,
-                self._name_of(n1),
-                self._name_of(n2),
-                float(R),
-                float(C),
-            )
-        else:
-            # Fallback: expand into series R + C.
-            inner = f"{name}__snub_node"
-            self._builder.node(inner)
-            self._builder.add_resistor(f"{name}_R", self._name_of(n1), inner, float(R))
-            self._builder.add_capacitor(f"{name}_C", inner, self._name_of(n2), float(C))
+            try:
+                self._pm.add_rc_snubber(
+                    self._builder,
+                    R=float(R),
+                    C=float(C),
+                    from_node=self._name_of(n1),
+                    to_node=self._name_of(n2),
+                    name_prefix=name,
+                )
+                return
+            except TypeError:
+                pass  # signature mismatch — fall through to manual expansion
+        # Fallback: expand into series R + C (symbol absent or kwargs
+        # rejected by an unexpected signature).
+        inner = f"{name}__snub_node"
+        self._builder.node(inner)
+        self._builder.add_resistor(f"{name}_R", self._name_of(n1), inner, float(R))
+        self._builder.add_capacitor(f"{name}_C", inner, self._name_of(n2), float(C))
 
     # --- nonlinear devices needing a simulate-time observer -----------
     def add_induction_motor(

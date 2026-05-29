@@ -2170,6 +2170,9 @@ class MainWindow(QMainWindow):
         )
         runtime_settings.max_newton_iterations = int(project_settings.max_iterations)
         runtime_settings.enable_voltage_limiting = bool(project_settings.enable_voltage_limiting)
+        runtime_settings.enable_newton_lm = bool(
+            getattr(project_settings, "enable_newton_lm", runtime_settings.enable_newton_lm)
+        )
         runtime_settings.max_voltage_step = float(project_settings.max_voltage_step)
         runtime_settings.dc_strategy = str(project_settings.dc_strategy)
         runtime_settings.gmin_initial = float(project_settings.gmin_initial)
@@ -2315,6 +2318,7 @@ class MainWindow(QMainWindow):
         project_settings.max_step_retries = int(runtime_settings.max_step_retries)
         project_settings.max_iterations = int(runtime_settings.max_newton_iterations)
         project_settings.enable_voltage_limiting = bool(runtime_settings.enable_voltage_limiting)
+        project_settings.enable_newton_lm = bool(runtime_settings.enable_newton_lm)
         project_settings.max_voltage_step = float(runtime_settings.max_voltage_step)
         project_settings.dc_strategy = str(runtime_settings.dc_strategy)
         project_settings.gmin_initial = float(runtime_settings.gmin_initial)

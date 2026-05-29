@@ -31,6 +31,28 @@ def test_project_simulation_settings_normalizes_control_mode_and_sample_time() -
     assert restored.control_sample_time == 0.0
 
 
+def test_project_simulation_settings_roundtrip_enable_newton_lm() -> None:
+    """``enable_newton_lm`` must round-trip through the file schema so a
+    project can persist the Levenberg-Marquardt Newton damping that some
+    ill-conditioned multi-switch drives (e.g. a boost PFC stage composed
+    with a switched VSI) need to converge — instead of relying on app
+    preferences that a fresh GUI Run wouldn't carry."""
+    settings = SimulationSettings(enable_newton_lm=True)
+
+    payload = settings.to_dict()
+    restored = SimulationSettings.from_dict(payload)
+
+    assert payload["enable_newton_lm"] is True
+    assert restored.enable_newton_lm is True
+
+
+def test_project_simulation_settings_enable_newton_lm_defaults_false() -> None:
+    """A legacy file (no ``enable_newton_lm`` key) defaults to False so
+    pre-existing projects keep their bit-identical Newton behavior."""
+    assert SimulationSettings().enable_newton_lm is False
+    assert SimulationSettings.from_dict({"tstop": 1e-3}).enable_newton_lm is False
+
+
 def test_project_simulation_settings_thermal_policy_defaults_roundtrip() -> None:
     settings = SimulationSettings(
         thermal_policy="loss_only",

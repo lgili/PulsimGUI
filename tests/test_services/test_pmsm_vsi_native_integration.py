@@ -357,6 +357,94 @@ def test_vsi_spwm_composes_with_pfc_pwm_without_clobber() -> None:
     assert len(patterns) >= 4
 
 
+def test_gate_node_indices_exposes_symbolic_and_integer_keys() -> None:
+    """An open-loop PWM that drives a boost MOSFET gate is recorded by the
+    converter with the gate as an *integer* node id, while the shim's
+    ``pending_gate_signals`` records the *symbolic* gate name. The
+    ``gate_node_indices`` bridge must expose BOTH spellings so
+    ``configs_from_pwm_records`` can match the virtual PWM record to the
+    switch bit (otherwise the boost MOSFET silently stays OFF)."""
+    compat = make_compat_module(p)
+    circuit = compat.Circuit()
+    gate = circuit.add_node("Q_BOOST_GATE")
+    drain = circuit.add_node("n_sw")
+    source = circuit.add_node("vbus_neg")
+    circuit.add_mosfet("Q_boost", gate, drain, source, compat.MOSFETParams())
+
+    gni = circuit.gate_node_indices
+    # Symbolic name AND the integer id (+ its string form) all resolve to
+    # the same switch bit.
+    assert gni["Q_BOOST_GATE"] == 0
+    assert gni[gate] == 0
+    assert gni[str(gate)] == 0
+
+
+def test_mosfet_switch_idx_is_builder_global_after_diodes() -> None:
+    """A MOSFET added AFTER diodes (e.g. a boost MOSFET downstream of a
+    diode bridge) must receive its *builder-global* switch bit, not a
+    name-counter index. ``add_mosfet_with_body_diode`` consumes builder
+    switch bits for the channel + body diode, and prior diodes consume
+    bits too; if the shim handed back ``len(pending_gate_signals)`` (== 0
+    for the first gated device) the switch_fn would toggle a diode bit and
+    leave the MOSFET permanently OFF."""
+    compat = make_compat_module(p)
+    circuit = compat.Circuit()
+    # Two plain diodes first (consume builder switch bits 0 and 1).
+    a, b, c = (circuit.add_node(n) for n in ("a", "b", "c"))
+    circuit.add_diode("D1", a, b)
+    circuit.add_diode("D2", b, c)
+    gate, drain, source = (circuit.add_node(n) for n in ("g", "d", "s"))
+    circuit.add_mosfet("Q", gate, drain, source, compat.MOSFETParams())
+
+    # The MOSFET channel is builder bit 2 (after the two diodes), NOT 0.
+    rec = next(e for e in circuit.pending_gate_signals if e["device"] == "Q")
+    assert rec["switch_idx"] == 2
+    # Sanity: the builder now has 4 switches (2 diodes + MOSFET + body).
+    assert circuit.builder.graph.num_switches == 4
+
+
+def test_add_snubber_rc_uses_pulsim_keyword_signature() -> None:
+    """pulsim 1.6's ``add_rc_snubber`` is keyword-only
+    ``(builder, *, R, C, from_node, to_node, name_prefix)``. The shim must
+    call it by keyword (the old positional call raised TypeError and broke
+    every SNUBBER_RC). After the call the snubber's R+C primitives exist
+    and add a switch-free damped node."""
+    compat = make_compat_module(p)
+    circuit = compat.Circuit()
+    n1, n2 = circuit.add_node("sw"), circuit.add_node("gnd2")
+    nsw_before = circuit.builder.graph.num_switches
+    # Must not raise.
+    circuit.add_snubber_rc("SNUB", n1, n2, 100.0, 100e-9)
+    # An RC snubber is passive (no switching branch added).
+    assert circuit.builder.graph.num_switches == nsw_before
+
+
+def test_configs_from_pwm_records_matches_integer_gate_node() -> None:
+    """End-to-end of the gate-node bridge: a virtual PWM record whose
+    output node is stored as the integer gate id yields a SwitchPwmConfig
+    for the boost MOSFET with the recorded frequency / duty."""
+    from pulsimgui.services.switch_fn_builder import configs_from_pwm_records
+
+    compat = make_compat_module(p)
+    circuit = compat.Circuit()
+    gate = circuit.add_node("Q_BOOST_GATE")
+    drain = circuit.add_node("n_sw")
+    source = circuit.add_node("vbus_neg")
+    circuit.add_mosfet("Q_boost", gate, drain, source, compat.MOSFETParams())
+    # Mirror how CircuitConverter records an open-loop PWM generator: the
+    # output node is the *integer* gate id, params carry frequency/duty.
+    circuit.add_virtual_component(
+        "pwm_generator", "PWM_BOOST", [gate],
+        {"frequency": 65000.0, "duty": 0.23, "phase": 0.0},
+        {},
+    )
+
+    cfgs = configs_from_pwm_records(circuit)
+    assert "Q_boost" in cfgs
+    assert cfgs["Q_boost"].frequency == 65000.0
+    assert cfgs["Q_boost"].duty == 0.23
+
+
 def test_full_native_vsi_pmsm_drive_simulates() -> None:
     """End-to-end through the converter + backend helpers: ±155 V bus →
     native switched VSI → dynamic PMSM. The SPWM switch_fn + PMSM
