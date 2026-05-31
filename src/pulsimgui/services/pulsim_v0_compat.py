@@ -526,6 +526,17 @@ class Circuit:
         # (measured node → control law → duty → switch) each step.
         self.cblock_loop_descriptors: list[dict[str, Any]] = []
 
+        # Field-Oriented-Control loop descriptors. Populated by
+        # ``CircuitConverter`` when it detects a C_BLOCK marker carrying
+        # ``control_kind="foc"`` alongside a native 3φ VSI + a dynamic
+        # PMSM. Each entry carries the loop gains / speed-reference ramp /
+        # limits + the controlled VSI name + the observed PMSM name; the
+        # backend (``_build_foc_loops``) closes i_d/i_q + speed PI loops
+        # over the PMSM observer bundle and drives the VSI switches via
+        # inverse Park/Clarke (replacing the VSI's open-loop SPWM). Empty
+        # = no FOC drive.
+        self.foc_loop_descriptors: list[dict[str, Any]] = []
+
         # Position metadata — never round-tripped to the builder.
         self._positions: dict[str, SchematicPosition] = {}
 
@@ -1257,7 +1268,18 @@ class Circuit:
                 except (AttributeError, TypeError):  # pragma: no cover
                     pass
         self.nonlinear_observer_specs.append(
-            {"kind": "pmsm", "name": name, "handle": motor}
+            {
+                "kind": "pmsm",
+                "name": name,
+                "handle": motor,
+                # Carry the electrical params the backend's FOC loop needs
+                # (pole pairs + stator L + PM flux) so it can size the
+                # back-EMF decoupling + electrical angle without reaching
+                # into kernel-specific handle attribute names.
+                "pole_pairs": int(getattr(params, "pole_pairs", 2)),
+                "L_s": float(getattr(params, "Ld", 2e-3)),
+                "psi_pm": float(getattr(params, "psi_pm", 0.1)),
+            }
         )
 
     def set_pmsm_tau_load(self, name: str, tau: float) -> None:

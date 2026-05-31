@@ -5969,6 +5969,32 @@ class PulsimBackend(SimulationBackend):
         configs = configs_from_pwm_records(circuit)
         switch_fn = assemble_switch_fn(circuit, configs, self._module)
 
+        # Nonlinear-device observers FIRST (before the VSI switch_fns):
+        # the dynamic-PMSM observer build also stashes the live
+        # ``MotorObserverBundle`` on its spec, which the FOC loop below
+        # reads for d-q feedback. Building it here (instead of after the
+        # step-observer adapter) keeps that data available to
+        # ``_build_foc_loops`` without a second observer instance. The
+        # step-observers are folded into the adapter further down.
+        device_step_observers, device_b_extra_fn = (
+            self._build_nonlinear_device_observers(circuit, builder, dt)
+        )
+        has_pmsm = any(
+            str(spec.get("kind") or "") == "pmsm"
+            for spec in (getattr(circuit, "nonlinear_observer_specs", []) or [])
+        )
+
+        # Field-Oriented Control (additive): when the converter detected a
+        # FOC marker (``circuit.foc_loop_descriptors``), close the i_d/i_q
+        # + speed PI loops over the PMSM observer bundle and drive the
+        # bound VSI's six switches via inverse Park/Clarke. The FOC step-
+        # observers run AFTER the PMSM observer (fresh d-q feedback); the
+        # FOC switch_fns REPLACE the open-loop SPWM for the controlled
+        # inverter (so the two never fight for the same switch bits).
+        foc_step_observers, foc_switch_fns, foc_vsi_names = (
+            self._build_foc_loops(circuit, builder)
+        )
+
         # Native 3φ VSI SPWM (pulsim 1.6.4): the converter recorded each
         # inverter's six builder-global switch indices + SPWM drive on
         # ``circuit.vsi_specs``. Build one SPWM switch_fn per inverter and
@@ -5980,8 +6006,13 @@ class PulsimBackend(SimulationBackend):
         # PWM mask (from ``assemble_switch_fn``) and the SPWM mask drive
         # disjoint switch bits, so the OR preserves both. The SPWM
         # callables emit a full-width mask touching only the inverter's
-        # bits, so no index clobbers another.
-        vsi_switch_fns = self._build_vsi_switch_fns(circuit, builder)
+        # bits, so no index clobbers another. Any FOC-controlled VSI is
+        # excluded here — its FOC switch_fn drives those six bits instead.
+        vsi_switch_fns = self._build_vsi_switch_fns(
+            circuit, builder, exclude_names=foc_vsi_names,
+        )
+        # FOC switch_fns drive their inverter bits in place of the SPWM.
+        vsi_switch_fns = list(vsi_switch_fns) + list(foc_switch_fns)
         if vsi_switch_fns:
             num_switches = int(getattr(builder.graph, "num_switches", 0))
             make_combined = getattr(
@@ -6057,30 +6088,26 @@ class PulsimBackend(SimulationBackend):
         # both ``closed_loops`` and ``switch_fn``/``step_observer``, so
         # we either go all-closed-loop or all-static.
         # Nonlinear-device observers (pulsim 1.5+ induction motor +
-        # Jiles-Atherton hysteretic inductor). The converter recorded
-        # each device's handle on ``circuit.nonlinear_observer_specs``;
-        # here we build the ``(step_observer, b_extra_fn)`` pair per
-        # device, fold the step-observers into the base observer, and
-        # sum the b_extra residual injections into one callable. Both
-        # are no-ops when no such device is present.
-        device_step_observers, device_b_extra_fn = (
-            self._build_nonlinear_device_observers(circuit, builder, dt)
-        )
+        # Jiles-Atherton hysteretic inductor + dynamic PMSM) were built
+        # ABOVE (so the PMSM bundle was available to ``_build_foc_loops``).
         # A dynamic PMSM observer integrates the d-q current ODE off the
         # terminal voltages each step — its back-EMF residual only stays
         # consistent if the kernel re-evaluates the nonlinear sources
-        # between substeps. Force enable_nonlinear_refresh on when one is
-        # present (overrides the Simulation-Settings default below).
-        has_pmsm = any(
-            str(spec.get("kind") or "") == "pmsm"
-            for spec in (getattr(circuit, "nonlinear_observer_specs", []) or [])
+        # between substeps. ``has_pmsm`` (computed above) forces
+        # enable_nonlinear_refresh on below.
+        #
+        # Fold the device step-observers into the base observer, then the
+        # FOC step-observers AFTER them — the FOC reads the d-q feedback
+        # the PMSM observer just refreshed, so it MUST run last.
+        all_post_observers = list(device_step_observers) + list(
+            foc_step_observers
         )
-        if device_step_observers:
+        if all_post_observers:
             base_step_observer = step_observer
 
             def step_observer(t: float, x: Any) -> None:  # noqa: F811
                 base_step_observer(t, x)
-                for obs in device_step_observers:
+                for obs in all_post_observers:
                     obs(t, x)
 
         composed_loop = self._build_closed_loops(
@@ -6560,6 +6587,14 @@ class PulsimBackend(SimulationBackend):
                 step_observers.append(obs)
             if callable(b_extra):
                 b_extra_fns.append(b_extra)
+            # For the dynamic PMSM, ``obs`` IS the MotorObserverBundle
+            # (it is iterable as ``(bundle, b_extra_fn)`` and exposes live
+            # trace lists ``.i_d``/``.i_q``/``.omega_rad_s``/``.theta_rad``).
+            # Stash it back on the spec so ``_build_foc_loops`` can close
+            # the current/speed loops over the fresh d-q feedback without
+            # rebuilding (and double-stepping) the observer.
+            if kind == "pmsm":
+                spec["bundle"] = obs
 
         if not b_extra_fns:
             return step_observers, None
@@ -6591,9 +6626,15 @@ class PulsimBackend(SimulationBackend):
         self,
         circuit: Any,
         builder: Any,
+        exclude_names: set[str] | None = None,
     ) -> list[Callable[[float], Any]]:
         """Build one SPWM ``switch_fn`` per native 3φ VSI the converter
         recorded on ``circuit.vsi_specs``.
+
+        ``exclude_names`` (optional) names VSIs to SKIP — used to omit any
+        inverter that a FOC loop already drives via inverse Park/Clarke,
+        so the open-loop SPWM and the FOC don't fight for the same six
+        switch bits.
 
         Each spec carries the inverter's builder-global high/low-side
         switch indices (from ``add_three_phase_vsi``'s result) plus the
@@ -6623,9 +6664,12 @@ class PulsimBackend(SimulationBackend):
         if num_switches <= 0:
             return []
 
+        skip = exclude_names or set()
         import math
         fns: list[Callable[[float], Any]] = []
         for spec in specs:
+            if str(spec.get("name") or "") in skip:
+                continue
             hs = list(spec.get("high_side_switch_indices") or [])
             ls = list(spec.get("low_side_switch_indices") or [])
             if len(hs) != 3 or len(ls) != 3:
@@ -6650,6 +6694,259 @@ class PulsimBackend(SimulationBackend):
             if callable(fn):
                 fns.append(fn)
         return fns
+
+    def _build_foc_loops(
+        self,
+        circuit: Any,
+        builder: Any,
+    ) -> tuple[
+        list[Callable[[float, Any], None]],
+        list[Callable[[float], Any]],
+        set[str],
+    ]:
+        """Build the simulate-time Field-Oriented-Control loop(s) the
+        converter recorded on ``circuit.foc_loop_descriptors``.
+
+        Each descriptor binds a FOC marker to a native 3φ VSI (the
+        ``circuit.vsi_specs`` entry whose ``name`` matches ``vsi_name``)
+        and a dynamic PMSM (the ``circuit.nonlinear_observer_specs`` entry
+        whose ``name`` matches ``pmsm_name``). The PMSM spec carries the
+        live ``MotorObserverBundle`` (stashed by
+        :meth:`_build_nonlinear_device_observers`) exposing the d-q
+        currents + rotor angle each step.
+
+        Returns ``(step_observers, switch_fns, controlled_vsi_names)``:
+
+        * Each ``step_observer(t, x)`` runs the cascaded PI law AFTER the
+          PMSM observer has refreshed the bundle's d-q feedback for this
+          step: an outer speed PI produces ``iq_ref`` (clamped), inner
+          ``i_d``/``i_q`` PIs (with the standard cross-coupling +
+          back-EMF decoupling) produce ``v_d``/``v_q`` (clamped to a
+          fraction of the half-bus), and the electrical angle
+          ``θ_e = pole_pairs · θ_mech`` is latched.
+        * Each ``switch_fn(t)`` runs inverse Park (with ``θ_e``) →
+          inverse Clarke → per-phase carrier comparison at the switching
+          frequency, emitting a complementary SwitchStateMask on exactly
+          that inverter's six bits.
+        * ``controlled_vsi_names`` is the set of VSI names the FOC drives
+          — the caller EXCLUDES these from the open-loop SPWM
+          (``_build_vsi_switch_fns``) so the two never fight for the same
+          switch bits.
+
+        CRITICAL: the inverse Park uses the ELECTRICAL angle
+        ``pole_pairs · θ_mech``. The bundle's ``theta_rad`` is the
+        MECHANICAL angle; feeding it raw makes i_d explode and the rotor
+        stall. Empty result (``[], [], set()``) when no FOC marker is
+        present or a binding can't be resolved.
+        """
+        descriptors = list(getattr(circuit, "foc_loop_descriptors", []) or [])
+        if not descriptors:
+            return [], [], set()
+
+        ps = self._module
+        mask_cls = getattr(ps, "SwitchStateMask", None)
+        if mask_cls is None:
+            return [], [], set()
+
+        num_switches = int(getattr(builder.graph, "num_switches", 0))
+        if num_switches <= 0:
+            return [], [], set()
+
+        # Index the VSI specs + PMSM bundles by name for binding.
+        vsi_by_name: dict[str, dict[str, Any]] = {}
+        for spec in (getattr(circuit, "vsi_specs", []) or []):
+            vsi_by_name[str(spec.get("name") or "")] = spec
+        pmsm_by_name: dict[str, dict[str, Any]] = {}
+        for spec in (getattr(circuit, "nonlinear_observer_specs", []) or []):
+            if str(spec.get("kind") or "") == "pmsm":
+                pmsm_by_name[str(spec.get("name") or "")] = spec
+
+        import math
+
+        step_observers: list[Callable[[float, Any], None]] = []
+        switch_fns: list[Callable[[float], Any]] = []
+        controlled_vsi_names: set[str] = set()
+
+        for desc in descriptors:
+            vsi_name = str(desc.get("vsi_name") or "")
+            pmsm_name = str(desc.get("pmsm_name") or "")
+            vsi_spec = vsi_by_name.get(vsi_name)
+            pmsm_spec = pmsm_by_name.get(pmsm_name)
+            if vsi_spec is None or pmsm_spec is None:
+                continue
+            bundle = pmsm_spec.get("bundle")
+            if bundle is None:
+                continue
+            hs = [int(i) for i in (vsi_spec.get("high_side_switch_indices") or [])]
+            ls = [int(i) for i in (vsi_spec.get("low_side_switch_indices") or [])]
+            if len(hs) != 3 or len(ls) != 3:
+                continue
+
+            # --- resolve the DC-bus magnitude for normalisation ---------
+            # The VSI half-bus (Vbus/2) normalises the modulation and sets
+            # the voltage clamp. Prefer the descriptor's explicit value;
+            # else read it off the live builder by probing the two DC-rail
+            # nodes the topology registered, falling back to a sane VLT403U
+            # default (360 V bus). The kernel exposes the rail nodes on the
+            # PMSM/VSI topology result only indirectly, so we accept an
+            # optional descriptor override and otherwise use the default.
+            v_bus = float(desc.get("v_bus", 360.0))
+            half_bus = max(1.0, 0.5 * v_bus)
+
+            pole_pairs = int(pmsm_spec.get("pole_pairs", 0) or 0)
+            if pole_pairs <= 0:
+                handle = pmsm_spec.get("handle")
+                pole_pairs = int(getattr(handle, "pole_pairs", 3) or 3)
+            l_s = float(pmsm_spec.get("L_s", 0.0) or 0.0)
+            psi = float(pmsm_spec.get("psi_pm", 0.0) or 0.0)
+            if l_s <= 0.0 or psi <= 0.0:
+                handle = pmsm_spec.get("handle")
+                l_s = float(getattr(handle, "L_s_H", 12e-3) or 12e-3)
+                psi = float(getattr(handle, "psi_pm_Wb", 0.05) or 0.05)
+
+            kp_w = float(desc.get("speed_kp", 0.17))
+            ki_w = float(desc.get("speed_ki", 6.0))
+            kp_i = float(desc.get("current_kp", 45.0))
+            ki_i = float(desc.get("current_ki", 24000.0))
+            id_ref = float(desc.get("id_ref", 0.0))
+            iq_lim = float(desc.get("iq_limit", 3.0))
+            v_lim = float(desc.get("v_limit_frac", 0.92)) * half_bus
+            ref_rpm = float(desc.get("speed_ref_rpm", 1800.0))
+            ramp_s = max(1e-9, float(desc.get("speed_ramp_s", 0.10)))
+            f_sw = float(desc.get("switching_frequency_hz", 20000.0))
+            # Mechanical speed reference: 0 → ref_rpm over ramp_s, then hold.
+            ref_rad_s = ref_rpm * 2.0 * math.pi / 60.0
+
+            def _make_loop(
+                bundle: Any = bundle,
+                hs: list[int] = hs,
+                ls: list[int] = ls,
+                pole_pairs: int = pole_pairs,
+                l_s: float = l_s,
+                psi: float = psi,
+                kp_w: float = kp_w, ki_w: float = ki_w,
+                kp_i: float = kp_i, ki_i: float = ki_i,
+                id_ref: float = id_ref, iq_lim: float = iq_lim,
+                v_lim: float = v_lim, half_bus: float = half_bus,
+                ref_rad_s: float = ref_rad_s, ramp_s: float = ramp_s,
+                f_sw: float = f_sw,
+            ) -> tuple[Callable[[float, Any], None], Callable[[float], Any]]:
+                # Mutable per-loop FOC state (integrators + latched
+                # commands). Mirrors the validated /tmp/foc_demo.py state.
+                st = {
+                    "iw": 0.0, "iiq": 0.0, "iid": 0.0,
+                    "vd": 0.0, "vq": 0.0, "th_e": 0.0, "last": -1.0,
+                }
+                # Per-step command log ``(t, vd, vq, th_e)`` so the
+                # switch_fn is a deterministic, REPLAYABLE function of t.
+                # pulsim evaluates ``switch_fn(t_n)`` BEFORE
+                # ``step_observer(t_n, x)`` each step, so a switch_fn that
+                # closed over the live ``st`` would (a) lag by one step —
+                # matching the standalone demo, good — but (b) break when
+                # the electrothermal post-processor REPLAYS ``switch_fn``
+                # at historical timesteps (``st`` is frozen at its final
+                # value → a wrong, near-DC pattern → garbage loss). The
+                # log + ``_lookup`` give the historically-correct command
+                # for any queried t while preserving the one-step lag.
+                log_t: list[float] = [0.0]
+                log_cmd: list[tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+                cursor = {"i": 0}
+
+                def _clip(v: float, lo: float, hi: float) -> float:
+                    return lo if v < lo else (hi if v > hi else v)
+
+                def _wref(t: float) -> float:
+                    frac = t / ramp_s
+                    if frac > 1.0:
+                        frac = 1.0
+                    return ref_rad_s * frac
+
+                def _lookup(t: float) -> tuple[float, float, float]:
+                    # Last logged command with logged_t <= t (the most
+                    # recent COMPLETED step's command). A monotonic forward
+                    # cursor handles the in-order live + replay sweep in
+                    # O(1) amortised; reset + rescan on a backward jump.
+                    i = cursor["i"]
+                    if i >= len(log_t) or log_t[i] > t:
+                        i = 0
+                    while i + 1 < len(log_t) and log_t[i + 1] <= t:
+                        i += 1
+                    cursor["i"] = i
+                    return log_cmd[i]
+
+                def step_observer(t: float, x: Any) -> None:
+                    dt = 2e-6 if st["last"] < 0.0 else max(1e-9, t - st["last"])
+                    st["last"] = t
+                    # Latest observer feedback (bundle refreshed THIS step
+                    # by the PMSM observer that runs before us).
+                    try:
+                        w = float(bundle.omega_rad_s[-1])
+                        th = float(bundle.theta_rad[-1])
+                        idm = float(bundle.i_d[-1])
+                        iqm = float(bundle.i_q[-1])
+                    except (IndexError, TypeError):
+                        return
+                    we = pole_pairs * w
+                    # Outer speed PI -> iq_ref (clamped).
+                    ew = _wref(t) - w
+                    st["iw"] += ew * dt
+                    iqref = _clip(kp_w * ew + ki_w * st["iw"], -iq_lim, iq_lim)
+                    # Inner current PIs with cross-coupling + back-EMF
+                    # decoupling (id_ref typically 0 for a non-salient PMSM).
+                    eq = iqref - iqm
+                    st["iiq"] += eq * dt
+                    vq = kp_i * eq + ki_i * st["iiq"] + we * (l_s * idm + psi)
+                    ed = id_ref - idm
+                    st["iid"] += ed * dt
+                    vd = kp_i * ed + ki_i * st["iid"] - we * l_s * iqm
+                    st["vd"] = _clip(vd, -v_lim, v_lim)
+                    st["vq"] = _clip(vq, -v_lim, v_lim)
+                    # ELECTRICAL angle for the inverse Park (pp · θ_mech).
+                    st["th_e"] = pole_pairs * th
+                    # Append this step's command to the replay log (kept
+                    # monotonic in t; duplicate-t guarded so a substep
+                    # re-call doesn't corrupt the lookup ordering).
+                    if t > log_t[-1]:
+                        log_t.append(t)
+                        log_cmd.append((st["vd"], st["vq"], st["th_e"]))
+                    else:
+                        log_cmd[-1] = (st["vd"], st["vq"], st["th_e"])
+
+                _sqrt3_2 = math.sqrt(3.0) / 2.0
+
+                def switch_fn(t: float) -> Any:
+                    m = mask_cls(num_switches)
+                    vd, vq, th_e = _lookup(t)
+                    c = math.cos(th_e)
+                    s = math.sin(th_e)
+                    # Inverse Park (dq -> αβ).
+                    va = vd * c - vq * s
+                    vb = vd * s + vq * c
+                    # Inverse Clarke (αβ -> abc).
+                    v_a = va
+                    v_b = -0.5 * va + _sqrt3_2 * vb
+                    v_c = -0.5 * va - _sqrt3_2 * vb
+                    # Symmetric triangle carrier in [-1, 1] at f_sw.
+                    car = 4.0 * abs(((t * f_sw) % 1.0) - 0.5) - 1.0
+                    for k, vk in enumerate((v_a, v_b, v_c)):
+                        ref = vk / half_bus
+                        if ref > 1.0:
+                            ref = 1.0
+                        elif ref < -1.0:
+                            ref = -1.0
+                        on = ref > car
+                        m.set(hs[k], bool(on))
+                        m.set(ls[k], bool(not on))
+                    return m
+
+                return step_observer, switch_fn
+
+            step_obs, sw_fn = _make_loop()
+            step_observers.append(step_obs)
+            switch_fns.append(sw_fn)
+            controlled_vsi_names.add(vsi_name)
+
+        return step_observers, switch_fns, controlled_vsi_names
 
     def _build_cblock_closed_loops(
         self,
