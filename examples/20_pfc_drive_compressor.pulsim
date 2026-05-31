@@ -1,15 +1,15 @@
 {
   "version": "1.0",
-  "name": "20 PFC Drive \u2014 220 V 1\u03c6 Rectifier + switched Boost PFC (~400 V bus) + VSI + PMSM (Embraco VLT403U)",
-  "created": "2026-05-29T18:57:28",
-  "modified": "2026-05-29T18:57:28",
+  "name": "20 PFC Drive \u2014 220 V 1\u03c6 Rectifier + switched Boost PFC (~400 V bus) + FOC VSI + PMSM (Embraco VLT403U)",
+  "created": "2026-05-31T11:47:12",
+  "modified": "2026-05-31T11:47:12",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.04,
-    "dt": 1e-06,
+    "tstop": 0.22,
+    "dt": 2e-06,
     "tstart": 0.0,
     "output_points": 20000,
-    "control_sample_time": 5e-06,
+    "control_sample_time": 2e-06,
     "control_mode": "auto",
     "formulation_mode": "projected_wrapper",
     "direct_formulation_fallback": true,
@@ -522,6 +522,33 @@
           ]
         },
         {
+          "id": "ed8553db-87d1-5a53-ace8-cab1999caf27",
+          "type": "RESISTOR",
+          "name": "R_busload",
+          "x": 120.0,
+          "y": 360.0,
+          "rotation": 90,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 24.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
           "id": "966a05b6-e706-57bc-9e3e-f4d662d49baa",
           "type": "PWM_GENERATOR",
           "name": "PWM_BOOST",
@@ -731,23 +758,34 @@
           ]
         },
         {
-          "id": "be264d6a-42ee-52c6-bcf2-d1f471f91512",
-          "type": "GROUND",
-          "name": "GND_motor",
+          "id": "490a4968-b787-546f-a5d6-d92c5a8c3f4c",
+          "type": "C_BLOCK",
+          "name": "FOC",
           "x": 660.0,
-          "y": 140.0,
+          "y": -220.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {},
-          "pins": [
-            {
-              "index": 0,
-              "name": "gnd",
-              "x": 0.0,
-              "y": -20.0
-            }
-          ]
+          "parameters": {
+            "control_kind": "foc",
+            "vsi_name": "VSI",
+            "pmsm_name": "M1",
+            "v_bus": 400.0,
+            "speed_kp": 0.17,
+            "speed_ki": 6.0,
+            "current_kp": 45.0,
+            "current_ki": 24000.0,
+            "id_ref": 0.0,
+            "iq_limit": 3.0,
+            "v_limit_frac": 0.92,
+            "speed_ref_rpm": 1800.0,
+            "speed_ramp_s": 0.1,
+            "switching_frequency_hz": 20000.0,
+            "n_inputs": 0,
+            "n_outputs": 0,
+            "implementation": "source"
+          },
+          "pins": []
         },
         {
           "id": "24f715e3-ef5a-5c37-bc07-bcc5ee396b93",
@@ -1391,6 +1429,62 @@
           "alias": ""
         },
         {
+          "id": "bf485abe-87f0-5c6f-a6c6-bdf60fc018f2",
+          "segments": [
+            {
+              "x1": -220.0,
+              "y1": -60.0,
+              "x2": 120.0,
+              "y2": -60.0
+            },
+            {
+              "x1": 120.0,
+              "y1": -60.0,
+              "x2": 120.0,
+              "y2": 340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "1ea5cc22-21d8-526c-9ef0-74d85ca24f0d",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "ed8553db-87d1-5a53-ace8-cab1999caf27",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "VBUS_POS",
+          "alias": ""
+        },
+        {
+          "id": "ece2961d-f58d-5979-a5a1-1add553a163f",
+          "segments": [
+            {
+              "x1": 120.0,
+              "y1": 380.0,
+              "x2": -220.0,
+              "y2": 380.0
+            },
+            {
+              "x1": -220.0,
+              "y1": 380.0,
+              "x2": -220.0,
+              "y2": 340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "ed8553db-87d1-5a53-ace8-cab1999caf27",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "fd8dc540-5122-574e-88cb-b61d4d41ea8e",
+            "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "VBUS_NEG",
+          "alias": ""
+        },
+        {
           "id": "5cc76b05-e632-5dbe-acb5-eed77e57d44f",
           "segments": [
             {
@@ -1553,45 +1647,23 @@
           "alias": ""
         },
         {
-          "id": "3b6d541c-9e44-5cdd-926f-9b9f5a2c4376",
-          "segments": [
-            {
-              "x1": 680.0,
-              "y1": 0.0,
-              "x2": 680.0,
-              "y2": 120.0
-            },
-            {
-              "x1": 680.0,
-              "y1": 120.0,
-              "x2": 660.0,
-              "y2": 120.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "f085ebf1-e282-50af-ac52-638205910c08",
-            "pin_index": 3
-          },
-          "end_connection": {
-            "component_id": "be264d6a-42ee-52c6-bcf2-d1f471f91512",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "0",
-          "alias": ""
-        },
-        {
           "id": "e3869322-8170-5098-a924-3609b3108075",
           "segments": [
             {
               "x1": 200.0,
               "y1": 0.0,
               "x2": 200.0,
-              "y2": -200.0
+              "y2": -180.0
             },
             {
               "x1": 200.0,
-              "y1": -200.0,
+              "y1": -180.0,
+              "x2": 900.0,
+              "y2": -180.0
+            },
+            {
+              "x1": 900.0,
+              "y1": -180.0,
               "x2": 900.0,
               "y2": -200.0
             }

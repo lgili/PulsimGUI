@@ -9,8 +9,8 @@ Regenerates ``examples/19_doubler_drive_compressor.pulsim`` deterministically
 (component IDs are stable across runs so diffs stay clean).
 
 This reproduces the backend "doubler" front-end (127 V low-line, North-
-American compressor application) feeding an open-loop V/f (SPWM) inverter
-that drives an Embraco VLT403U PMSM:
+American compressor application) feeding a Field-Oriented-Control (FOC)
+inverter that drives an Embraco VLT403U PMSM:
 
     Vac (1φ, 179.6 V peak ≈ 127 Vrms, 60 Hz)
         → source R/L + PFC choke R/L
@@ -20,19 +20,47 @@ that drives an Embraco VLT403U PMSM:
           AC return (ground). Tying the cap midpoint to the rectified-AC
           return is exactly what turns a full-bridge front-end into a
           voltage doubler at low line.
-        → 3φ 2-level VSI (native switched SPWM, 20 kHz, m=0.8, f_mod=90 Hz
-          ≈ 1800 rpm × 3 pole pairs)
-        → PMSM (dynamic, VLT403U), neutral tied to ground
+        → 3φ 2-level VSI (six ideal switches)
+        → PMSM (dynamic, VLT403U), neutral FLOATING (isolated star point —
+          opens the common-mode/zero-sequence path)
+        + FOC controller (a C_BLOCK marker, control_kind="foc")
 
 Caps are pre-charged to ~175 V each (near the doubler steady-state, where
 each cap sits at the AC peak ≈ 180 V) so the bridge has already settled the
 bus before t=0 — this avoids a huge inrush transient that would otherwise
 dominate a short ms-scale validation run.
 
-The native switched VSI emits a ``switch_fn`` and the dynamic PMSM emits a
-``step_observer`` — there is NO closed-loop descriptor in this topology, so
-both paths coexist cleanly (the ``closed_loops`` vs ``switch_fn`` conflict
-that pulsim ≥1.4 rejects never arises here).
+WHY FOC instead of open-loop V/f
+--------------------------------
+Open-loop V/f pole-slips a PMSM: the imposed stator-field angle and the
+true rotor angle drift apart, the motor never locks, and the phase current
+runs to 17-29 A of useless garbage on a ~1.6 A (FLA) motor. Closing the
+i_d (=0) / i_q current loops + an outer speed PI is what lets the rotor
+actually track a speed reference drawing only rated current (~1.6 A phase).
+
+The FOC controller is represented (lowest-friction option) as a C_BLOCK
+carrying ``control_kind="foc"`` plus the loop gains / speed-reference ramp
+/ limits in its ``parameters``. It is a pure *marker* — no pins, NOT wired
+into the power stage — that the converter detects (``_infer_foc_loops``)
+and the backend executes (``_build_foc_loops``): an outer speed PI →
+``iq_ref``, inner i_d/i_q PIs (with back-EMF + cross-coupling decoupling)
+→ ``v_d``/``v_q``, then inverse Park (electrical angle pp·θ_mech) → inverse
+Clarke → per-phase carrier compare at f_sw drives the VSI's six switches,
+REPLACING its open-loop SPWM. The VSI's SPWM params below are inert.
+
+DC-bus reference (v_bus)
+------------------------
+The FOC normalises modulation + clamps v_d/v_q by the descriptor ``v_bus``
+(the backend can't infer the live, rippling bus). With FOC drawing only
+~1.6 A (vs 17-29 A open-loop) the doubler bus sags far LESS than the old
+open-loop run; under FOC load it settles near ~337 V (rails +166 / -171),
+so ``v_bus`` is set to ~340 V (the ripple center). A slightly-off value is
+fine — the inner current PI compensates.
+
+The native switched VSI (now FOC-commanded) emits a ``switch_fn`` and the
+dynamic PMSM emits a ``step_observer`` — the FOC descriptor is NOT a
+``closed_loops`` entry, so the ``closed_loops`` vs ``switch_fn`` conflict
+that pulsim ≥1.4 rejects never arises here.
 """
 from __future__ import annotations
 
@@ -50,6 +78,12 @@ OUT_PATH = REPO / "examples" / "19_doubler_drive_compressor.pulsim"
 # Deterministic IDs: a fixed namespace + per-component name keeps the
 # generated JSON byte-stable across runs.
 _NS = uuid.UUID("19000000-0d0b-1e72-d21e-000000000000")
+
+FSW = 20000.0     # inverter switching frequency [Hz]
+# Nominal DC bus the FOC uses to normalise modulation + clamp v_d/v_q.
+# Measured under FOC load (~1.6 A draw) the doubler bus settles ~337 V
+# (rails +166 / -171, mid-tap pinned at 0); ~340 V is the ripple center.
+VBUS_FOC = 340.0
 
 
 def uid(tag: str) -> str:
@@ -245,10 +279,13 @@ vp_bus = comp(
 components.append(vp_bus)
 
 # ------------------ 3φ VSI ------------------
+# The SPWM drive params below are inert — the FOC controller commands the
+# six switches via inverse Park/Clarke and the converter excludes a FOC-
+# controlled VSI from the open-loop SPWM path.
 vsi = comp(
     type="THREE_PHASE_VSI", name="VSI", x=360, y=0,
     parameters={
-        "switching_frequency_hz": 20000.0,
+        "switching_frequency_hz": FSW,
         "modulation_index": 0.8,
         "modulation_frequency_hz": 90.0,   # ≈1800 rpm × 3 pole pairs
         "phase_a_deg": 0.0,
@@ -304,12 +341,52 @@ pmsm = comp(
 )
 components.append(pmsm)
 
-gnd_motor = comp(
-    type="GROUND", name="GND_motor", x=620, y=140,
-    parameters={},
-    pins=[pin(0, "gnd", 0, -20)],
+# NOTE: the PMSM neutral ("N", pin 3) is deliberately LEFT FLOATING — a
+# real PMSM compressor has an ISOLATED star point (the backend YAML uses a
+# floating ``neutral_node``). It is NOT wired to ground: the star point
+# sits on its own net, referenced through the machine windings to the three
+# VSI phases, with its potential fixed by KCL (i_a + i_b + i_c = 0). A
+# floating neutral opens the common-mode (zero-sequence) path so no bus
+# ripple can drive zero-sequence current through the phases. No
+# ``GND_motor`` component exists.
+
+# ------------------ FOC controller (C_BLOCK marker) ------------------
+# control_kind="foc" → the converter emits a foc_loop_descriptor binding
+# this marker to the VSI (commanded) + the PMSM (observed). It carries no
+# pins and is NOT wired into the power stage; the backend reads the loop
+# gains / speed-reference ramp / limits / v_bus below and closes the loops
+# at simulate time, driving the VSI's six switches (replacing its open-loop
+# SPWM). Gains match the validated VLT403U FOC recipe (example 21).
+foc = comp(
+    type="C_BLOCK", name="FOC", x=620, y=-220,
+    parameters={
+        "control_kind": "foc",
+        "vsi_name": "VSI",
+        "pmsm_name": "M1",
+        # Nominal DC bus for modulation normalisation / voltage clamp.
+        "v_bus": VBUS_FOC,
+        # Speed (outer) PI -> iq_ref.
+        "speed_kp": 0.17,
+        "speed_ki": 6.0,
+        # Current (inner) PIs (shared id/iq gains).
+        "current_kp": 45.0,
+        "current_ki": 24000.0,
+        # References / limits.
+        "id_ref": 0.0,
+        "iq_limit": 3.0,
+        "v_limit_frac": 0.92,
+        # Speed reference: 0 -> 1800 rpm over 0.10 s, then hold.
+        "speed_ref_rpm": 1800.0,
+        "speed_ramp_s": 0.10,
+        "switching_frequency_hz": FSW,
+        # No fast_block law / IO — pure descriptor marker.
+        "n_inputs": 0,
+        "n_outputs": 0,
+        "implementation": "source",
+    },
+    pins=[],
 )
-components.append(gnd_motor)
+components.append(foc)
 
 # ------------------ Scopes ------------------
 scope_bus = comp(
@@ -385,8 +462,10 @@ w(vsi, 2, vp_motor_a, 0, node_name="MOT_A")
 w(vp_motor_a, 0, pmsm, 0, node_name="MOT_A")
 w(vsi, 3, pmsm, 1, node_name="MOT_B")
 w(vsi, 4, pmsm, 2, node_name="MOT_C")
-# PMSM neutral → ground "0"
-w(pmsm, 3, gnd_motor, 0, node_name="0")
+# PMSM neutral ("N", pin 3) is LEFT FLOATING — isolated star point. No wire
+# to ground: the node is referenced through the machine windings to the VSI
+# phases and pinned by KCL (sum of phase currents = 0), opening the common-
+# mode (zero-sequence) path.
 
 # ===== Scope wires =====
 w(vp_bus, 2, scope_bus, 0)
@@ -395,12 +474,15 @@ w(vp_motor_a, 1, scope_bus, 1)
 # ---------------------------------------------------------------------------
 # Simulation settings (pulsim 1.6 compatible)
 # ---------------------------------------------------------------------------
+# t_stop = 0.22 s lets the FOC speed loop ramp (0.10 s) + overshoot + settle
+# to ~1800 rpm. dt = 2 µs resolves the 20 kHz carrier (25 samples/period).
+# The FOC switch_fn is plain Python, so the run is tens of seconds of wall.
 sim_settings = {
-    "tstop": 0.05,
-    "dt": 1.0e-6,
+    "tstop": 0.22,
+    "dt": 2.0e-6,
     "tstart": 0.0,
     "output_points": 20000,
-    "control_sample_time": 5.0e-6,
+    "control_sample_time": 2.0e-6,
     "control_mode": "auto",
     "formulation_mode": "projected_wrapper",
     "direct_formulation_fallback": True,
@@ -426,7 +508,7 @@ sim_settings = {
 now = datetime.now().isoformat(timespec="seconds")
 project = {
     "version": "1.0",
-    "name": "19 Doubler Drive — 127 V 1φ Voltage-Doubler Front-End + VSI + PMSM (Embraco VLT403U)",
+    "name": "19 Doubler Drive — 127 V 1φ Voltage-Doubler Front-End + FOC VSI + PMSM (Embraco VLT403U)",
     "created": now,
     "modified": now,
     "active_circuit": "main",

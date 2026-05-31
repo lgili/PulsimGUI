@@ -3096,6 +3096,12 @@ class CircuitConverter:
                 "name": self._component_name(cblock, ComponentType.C_BLOCK),
                 "vsi_name": vsi_name,
                 "pmsm_name": pmsm_name,
+                # DC-bus magnitude the backend uses to normalise the
+                # modulation + clamp v_d/v_q (Vbus/2). The kernel can't
+                # infer the live, rippling bus, so the marker carries the
+                # NOMINAL bus of its front-end (e.g. ~360 V doubler,
+                # ~400 V PFC). Defaults to the VLT403U 360 V reference.
+                "v_bus": _float(params, "v_bus", 360.0),
                 # --- speed (outer) PI -> iq_ref ---
                 "speed_kp": _float(params, "speed_kp", 0.17),
                 "speed_ki": _float(params, "speed_ki", 6.0),

@@ -9,12 +9,13 @@ Regenerates ``examples/20_pfc_drive_compressor.pulsim`` deterministically
 (stable component IDs -> clean diffs across runs).
 
 This is a *genuine active-PFC* compressor drive: it has TWO independently
-PWM'd switching stages composed into one simulation —
+PWM'd switching stages composed into one simulation — an OPEN-LOOP boost
+PFC pre-regulator AND a Field-Oriented-Control (FOC) inverter —
 
     Vac (1phi, 311 V peak ~ 220 Vrms, 60 Hz)
         -> source R/L
         -> 1phi Diode Bridge (Graetz)              [v_rect_pos / v_rect_neg]
-        -> BOOST PFC PRE-REGULATOR (switched):
+        -> BOOST PFC PRE-REGULATOR (switched, OPEN-LOOP):
               R_Lboost (0.10 ohm) + L_boost (5 mH)  v_rect_pos -> n_sw_boost
               D_boost  (0.7 V)                       n_sw_boost -> vbus_pos
               Q_boost  (MOSFET_N, R_on 50 mohm)      n_sw_boost -> vbus_neg
@@ -22,25 +23,57 @@ PWM'd switching stages composed into one simulation —
            Q_boost gate is driven OPEN-LOOP by PWM_BOOST (PWM_GENERATOR,
            65 kHz, fixed duty ~0.23 -> 311 V mains lifted to ~400 V bus).
            No PI / no SUBTRACTOR -> the converter emits NO ``closed_loops``
-           descriptor, so the native VSI ``switch_fn`` + the PMSM
-           ``step_observer`` compose normally (pulsim >=1.4 forbids
-           ``closed_loops`` + ``switch_fn`` together).
+           descriptor; the boost PWM mask composes with the FOC VSI
+           switch_fn (disjoint switch bits) without tripping the
+           ``closed_loops`` + ``switch_fn`` conflict pulsim >=1.4 rejects.
         -> DC bus: two SERIES caps (470 uF, 20 mohm ESR), pre-charged
            ~155 V each (~310 V bus ~ rectified-AC peak), midpoint pinned
            to the rectifier return (ground) through R_mid_tap = 1 mohm for
-           a stable split-bus reference the VSI + PMSM observer want. The
-           active boost pumps this bus UP toward ~400 V over the run.
-        -> 3phi 2-level VSI (native switched SPWM, 20 kHz, m=0.8,
-           f_mod=90 Hz ~ 1800 rpm x 3 pole pairs)
-        -> PMSM (dynamic, Embraco VLT403U), neutral tied to ground
+           a stable split-bus reference the VSI + PMSM observer want.
+        -> R_busload across the bus: the load line for the OPEN-LOOP boost
+           (see below) — sets the operating point near ~400 V.
+        -> 3phi 2-level VSI (six ideal switches)
+        -> PMSM (dynamic, Embraco VLT403U), neutral FLOATING (isolated
+           star point — breaks the common-mode path the bus ripple would
+           otherwise drive through a grounded neutral)
+        + FOC controller (a C_BLOCK marker, control_kind="foc")
 
-The boost MOSFET (65 kHz) and the VSI six switches (20 kHz) run at
-different carrier frequencies, so the GUI's switch_fn assembler composes
-them through the Python ``make_combined_switch_fn`` path (a single native
-``NativeMultiMaskPwm`` only models one period). backend_adapter
-explicitly handles this VSI + PFC-boost case: the boost PWM mask and the
-SPWM mask drive disjoint switch bits, OR'd together (see
-``_simulate_streaming`` around the ``_build_vsi_switch_fns`` call).
+WHY FOC instead of open-loop V/f
+--------------------------------
+Open-loop V/f pole-slips a PMSM (imposed stator angle vs true rotor angle
+drift apart, the motor never locks, phase current runs to 17-29 A of
+garbage on a ~1.6 A motor). Closing the i_d (=0) / i_q current loops + an
+outer speed PI lets the rotor track a speed reference at rated current.
+The FOC is a pure C_BLOCK *marker* (control_kind="foc", no pins, NOT wired
+into the power stage): the converter detects it (``_infer_foc_loops``) and
+the backend (``_build_foc_loops``) closes the loops over the PMSM observer
+and drives the VSI's six switches via inverse Park/Clarke, REPLACING the
+VSI's open-loop SPWM. The VSI's SPWM params below are inert.
+
+TWO switched stages compose
+---------------------------
+The boost MOSFET (65 kHz, open-loop fixed-duty PWM) and the FOC-commanded
+VSI (20 kHz) run at different carrier frequencies and drive DISJOINT switch
+bits — the boost PWM mask + the FOC switch_fn are OR'd together through the
+Python ``make_combined_switch_fn`` path (a single native
+``NativeMultiMaskPwm`` only models one period). The FOC switch_fn replaces
+the SPWM on the VSI's six bits (the converter excludes the FOC-controlled
+VSI from ``_build_vsi_switch_fns``), while the boost PWM keeps its own bit.
+
+Bus operating point (R_busload) + v_bus
+---------------------------------------
+The open-loop fixed-duty boost has NO output-voltage regulation. Under the
+FOC's light, correct ~100 W draw (vs the old open-loop V/f's KILOWATTS of
+pole-slip garbage) the L_boost/D_boost peak-charge pump runs the bus high
+with nothing to push against (the boost diode peak-charges the caps almost
+independent of MOSFET duty, so the duty is NOT a usable bus knob here).
+``R_busload`` is the only effective lever: it restores a defined load line
+— it stands in for the heavy downstream draw the broken drive used to
+impose — placing the bus near ~390 V (24 Ω; see the ``R_BUSLOAD`` note for
+the sweep and why the value dropped from 68 Ω when the motor neutral was
+floated). The FOC normalises modulation + clamps v_d/v_q by the descriptor
+``v_bus`` (the backend can't infer the live, rippling bus), set to ~400 V;
+a slightly-off value is fine — the inner current PI compensates.
 
 ENGINE: ``pwl`` + ``enable_newton_lm=True`` (+ the RC snubber above).
 The DSED event-driven scheduler (pulsim 1.6) was tried FIRST -- it is the
@@ -93,6 +126,52 @@ REPO = Path("/Users/lgili/Documents/01 - Codes/01 - Github/PulsimGUI")
 OUT_PATH = REPO / "examples" / "20_pfc_drive_compressor.pulsim"
 
 _NS = uuid.UUID("20000000-0fc0-1e72-d21e-000000000000")
+
+FSW = 20000.0     # inverter switching frequency [Hz]
+# Nominal DC bus the FOC uses to normalise modulation + clamp v_d/v_q.
+# The active boost lifts the ~310 V pre-charge toward ~400 V under FOC
+# load; ~400 V is the boosted operating point.
+VBUS_FOC = 400.0
+# Bus load resistor [ohm]. The open-loop fixed-duty boost has NO output-
+# voltage regulation, so its DC-bus operating point is set purely by the
+# input-power vs load-power balance. The FOC motor draws only ~100 W
+# (1800 rpm × 0.30 N·m mech ≈ 56 W + losses) — far too light to hold the
+# bus down: the 220 Vrms doubler-style front-end (grounded mid-tap) plus
+# the L_boost/D_boost peak-charge pump integrate the bus high under that
+# light draw. Crucially the peak-charge pump is ACTIVE essentially
+# independent of MOSFET duty — a build-time GUI sweep at the floating-
+# neutral operating point showed duty 0.23 → 0.10 barely moves the bus
+# (527 → 496 V mean at R=68 Ω): the boost DIODE conducts the inductor's
+# rectified-peak energy into the caps regardless of the gate, so the gate
+# duty is NOT a usable bus-control knob here. R_busload is therefore the
+# ONLY effective lever on the bus operating point: it restores the load
+# line the heavy downstream draw would impose. It models the compressor's
+# rated electrical load that the efficient, no-slip FOC does not itself
+# draw on an unloaded shaft (a literal bleed of this size dissipates ~kW —
+# it stands in for the load, it is not a real bleed resistor).
+#
+# RE-SIZED FOR THE FLOATING NEUTRAL (see the PMSM wiring below). The motor
+# neutral was previously GROUNDED. The 120 Hz bus ripple then drove a
+# common-mode (zero-sequence) current through the phases that cancelled in
+# d-q (i_d≈0, i_q≈1.3 A rated, rotor locked: torque control was always
+# correct) but inflated the abc phase PEAK to ~11-13 A (RMS ~5.5 A) — and
+# that CM current was itself a heavy (~0.4 kW I²R) load that helped pin the
+# bus near ~375 V at R=68 Ω. FLOATING the neutral (isolated star point, as
+# a real PMSM compressor has) opens the zero-sequence path: the phase peak
+# collapses to the true ~2 A motor current (~3.2 A incl. switching ripple),
+# but it ALSO removes that CM load, so the same R=68 Ω now lets the bus
+# climb to ~527 V (out of the 360-410 band). R_busload is dropped to 24 Ω
+# to re-impose the load line the CM current used to provide, landing the
+# bus mean back at ~390 V (build-time GUI sweep, floating neutral: R=24 →
+# 390 V, R=28 → 410 V, R=68 → 527 V; settled bus mean over the last 25 %
+# of a 0.22 s run). The phase peak stays ~3.2-3.5 A across that whole sweep
+# (the fix is robust to the load value). Trade-off (inherent to an open-
+# loop boost feeding a floating-neutral motor at light shaft load): the
+# heavier load widens the 120 Hz + 65 kHz bus ripple (p5-p95 ≈ 216-571 V);
+# a real drive would close a boost voltage loop instead, but this example
+# keeps the boost open-loop (no PI → no ``closed_loops`` descriptor, so the
+# boost PWM mask composes with the FOC switch_fn — see the module docstring).
+R_BUSLOAD = 24.0
 
 
 def uid(tag: str) -> str:
@@ -332,6 +411,20 @@ vp_bus = comp(
 )
 components.append(vp_bus)
 
+# ------------------ Bus load resistor (load line for the open-loop boost) -
+# vbus_pos -> R_busload -> vbus_neg. WITHOUT a defined load the open-loop
+# fixed-duty boost has no output-voltage operating point and the bus
+# integrates up past ~900 V under the light FOC draw. R_busload sets the
+# load line so the bus settles near ~400 V at the 0.23 duty (see the
+# module-level note on R_BUSLOAD).
+r_busload = comp(
+    type="RESISTOR", name="R_busload", x=120, y=360,
+    parameters={"resistance": R_BUSLOAD},
+    pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)],
+    rotation=90,
+)
+components.append(r_busload)
+
 # ------------------ Boost-gate PWM (open-loop, fixed duty) ------------------
 # 65 kHz, ~0.23 duty.  ``target_component`` set so the converter routes
 # the gate drive through the virtual-PWM -> switch_fn path (NOT a closed
@@ -368,10 +461,14 @@ from_gate = comp(
 components.append(from_gate)
 
 # ------------------ 3phi VSI ------------------
+# The SPWM drive params below are inert — the FOC controller commands the
+# six switches via inverse Park/Clarke and the converter excludes a FOC-
+# controlled VSI from the open-loop SPWM path. The boost MOSFET keeps its
+# own open-loop PWM bit; the two switched stages compose (disjoint bits).
 vsi = comp(
     type="THREE_PHASE_VSI", name="VSI", x=400, y=0,
     parameters={
-        "switching_frequency_hz": 20000.0,
+        "switching_frequency_hz": FSW,
         "modulation_index": 0.8,
         "modulation_frequency_hz": 90.0,   # ~1800 rpm x 3 pole pairs
         "phase_a_deg": 0.0,
@@ -427,12 +524,56 @@ pmsm = comp(
 )
 components.append(pmsm)
 
-gnd_motor = comp(
-    type="GROUND", name="GND_motor", x=660, y=140,
-    parameters={},
-    pins=[pin(0, "gnd", 0, -20)],
+# NOTE: the PMSM neutral ("N", pin 3) is deliberately LEFT FLOATING — a
+# real PMSM compressor has an ISOLATED star point (the backend YAML uses a
+# floating ``neutral_node``). It is NOT wired to ground: the star point
+# sits on its own net, referenced through the machine windings to the three
+# VSI phases, and its potential is fixed by KCL (i_a + i_b + i_c = 0). This
+# breaks the common-mode (zero-sequence) path that the 120 Hz bus ripple
+# would otherwise drive through a grounded neutral, so the abc phase peak
+# collapses to the true ~2 A motor current (vs ~11-13 A with the neutral
+# grounded). No ``GND_motor`` component exists.
+
+# ------------------ FOC controller (C_BLOCK marker) ------------------
+# control_kind="foc" → the converter emits a foc_loop_descriptor binding
+# this marker to the VSI (commanded) + the PMSM (observed). It carries no
+# pins and is NOT wired into the power stage; the backend reads the loop
+# gains / speed-reference ramp / limits / v_bus below and closes the loops
+# at simulate time, driving the VSI's six switches (replacing its open-loop
+# SPWM). The boost MOSFET keeps its own open-loop 65 kHz PWM bit — the two
+# switched stages compose (disjoint switch bits OR'd together). Gains match
+# the validated VLT403U FOC recipe (example 21).
+foc = comp(
+    type="C_BLOCK", name="FOC", x=660, y=-220,
+    parameters={
+        "control_kind": "foc",
+        "vsi_name": "VSI",
+        "pmsm_name": "M1",
+        # Nominal DC bus for modulation normalisation / voltage clamp
+        # (the active boost lifts the bus to ~400 V under FOC load).
+        "v_bus": VBUS_FOC,
+        # Speed (outer) PI -> iq_ref.
+        "speed_kp": 0.17,
+        "speed_ki": 6.0,
+        # Current (inner) PIs (shared id/iq gains).
+        "current_kp": 45.0,
+        "current_ki": 24000.0,
+        # References / limits.
+        "id_ref": 0.0,
+        "iq_limit": 3.0,
+        "v_limit_frac": 0.92,
+        # Speed reference: 0 -> 1800 rpm over 0.10 s, then hold.
+        "speed_ref_rpm": 1800.0,
+        "speed_ramp_s": 0.10,
+        "switching_frequency_hz": FSW,
+        # No fast_block law / IO — pure descriptor marker.
+        "n_inputs": 0,
+        "n_outputs": 0,
+        "implementation": "source",
+    },
+    pins=[],
 )
-components.append(gnd_motor)
+components.append(foc)
 
 # ------------------ Scopes ------------------
 scope_bus = comp(
@@ -512,6 +653,10 @@ w(r_mid_tap, 1, gnd_mid, 0, node_name="0")
 w(r_esr_c1, 0, vp_bus, 0, node_name="VBUS_POS")
 w(c2, 1, vp_bus, 1, node_name="VBUS_NEG")
 
+# ===== Bus load resistor across vbus_pos / vbus_neg =====
+w(r_esr_c1, 0, r_busload, 0, node_name="VBUS_POS")
+w(r_busload, 1, c2, 1, node_name="VBUS_NEG")
+
 # ===== DC bus -> VSI =====
 w(r_esr_c1, 0, vsi, 0, node_name="VBUS_POS")
 w(c2, 1, vsi, 1, node_name="VBUS_NEG")
@@ -521,22 +666,30 @@ w(vsi, 2, vp_motor_a, 0, node_name="MOT_A")
 w(vp_motor_a, 0, pmsm, 0, node_name="MOT_A")
 w(vsi, 3, pmsm, 1, node_name="MOT_B")
 w(vsi, 4, pmsm, 2, node_name="MOT_C")
-# PMSM neutral -> ground "0"
-w(pmsm, 3, gnd_motor, 0, node_name="0")
+# PMSM neutral ("N", pin 3) is LEFT FLOATING — isolated star point. No wire
+# to ground: the node is referenced through the machine windings to the VSI
+# phases and pinned by KCL (sum of phase currents = 0). This breaks the
+# common-mode path the bus ripple would drive through a grounded neutral.
 
 # ===== Scope wires =====
 w(vp_bus, 2, scope_bus, 0)
 w(vp_motor_a, 1, scope_bus, 1)
 
 # ---------------------------------------------------------------------------
-# Simulation settings (pulsim 1.6, DSED engine)
+# Simulation settings (pulsim 1.6, PWL engine + Newton LM)
 # ---------------------------------------------------------------------------
+# t_stop = 0.22 s lets the FOC speed loop ramp (0.10 s) + overshoot + settle
+# to ~1800 rpm while the boost pumps the bus toward ~400 V. dt = 2 µs
+# resolves the 20 kHz VSI carrier (25 samples/period); the 65 kHz boost is
+# coarser (~7.7 samples/period) but it only pumps the bus, and the RC
+# snubber damps its commutation. The FOC switch_fn is plain Python so the
+# run is tens of seconds of wall.
 sim_settings = {
-    "tstop": 0.04,
-    "dt": 1.0e-6,
+    "tstop": 0.22,
+    "dt": 2.0e-6,
     "tstart": 0.0,
     "output_points": 20000,
-    "control_sample_time": 5.0e-6,
+    "control_sample_time": 2.0e-6,
     "control_mode": "auto",
     "formulation_mode": "projected_wrapper",
     "direct_formulation_fallback": True,
@@ -578,7 +731,7 @@ sim_settings = {
 now = datetime.now().isoformat(timespec="seconds")
 project = {
     "version": "1.0",
-    "name": "20 PFC Drive — 220 V 1φ Rectifier + switched Boost PFC (~400 V bus) + VSI + PMSM (Embraco VLT403U)",
+    "name": "20 PFC Drive — 220 V 1φ Rectifier + switched Boost PFC (~400 V bus) + FOC VSI + PMSM (Embraco VLT403U)",
     "created": now,
     "modified": now,
     "active_circuit": "main",

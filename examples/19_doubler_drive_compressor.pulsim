@@ -1,15 +1,15 @@
 {
   "version": "1.0",
-  "name": "19 Doubler Drive \u2014 127 V 1\u03c6 Voltage-Doubler Front-End + VSI + PMSM (Embraco VLT403U)",
-  "created": "2026-05-29T17:52:39",
-  "modified": "2026-05-29T17:52:39",
+  "name": "19 Doubler Drive \u2014 127 V 1\u03c6 Voltage-Doubler Front-End + FOC VSI + PMSM (Embraco VLT403U)",
+  "created": "2026-05-31T11:47:12",
+  "modified": "2026-05-31T11:47:12",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.05,
-    "dt": 1e-06,
+    "tstop": 0.22,
+    "dt": 2e-06,
     "tstart": 0.0,
     "output_points": 20000,
-    "control_sample_time": 5e-06,
+    "control_sample_time": 2e-06,
     "control_mode": "auto",
     "formulation_mode": "projected_wrapper",
     "direct_formulation_fallback": true,
@@ -561,23 +561,34 @@
           ]
         },
         {
-          "id": "ea51090e-c0b3-5ad0-a242-68ea227f9c45",
-          "type": "GROUND",
-          "name": "GND_motor",
+          "id": "6333a1ca-dcc2-5c53-84fa-49b8bd29f107",
+          "type": "C_BLOCK",
+          "name": "FOC",
           "x": 620.0,
-          "y": 140.0,
+          "y": -220.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
-          "parameters": {},
-          "pins": [
-            {
-              "index": 0,
-              "name": "gnd",
-              "x": 0.0,
-              "y": -20.0
-            }
-          ]
+          "parameters": {
+            "control_kind": "foc",
+            "vsi_name": "VSI",
+            "pmsm_name": "M1",
+            "v_bus": 340.0,
+            "speed_kp": 0.17,
+            "speed_ki": 6.0,
+            "current_kp": 45.0,
+            "current_ki": 24000.0,
+            "id_ref": 0.0,
+            "iq_limit": 3.0,
+            "v_limit_frac": 0.92,
+            "speed_ref_rpm": 1800.0,
+            "speed_ramp_s": 0.1,
+            "switching_frequency_hz": 20000.0,
+            "n_inputs": 0,
+            "n_outputs": 0,
+            "implementation": "source"
+          },
+          "pins": []
         },
         {
           "id": "bb64366d-0407-596c-a12b-a835c0067fd9",
@@ -1205,45 +1216,23 @@
           "alias": ""
         },
         {
-          "id": "90fbca91-9cfb-5c6a-a465-dae66bf3801a",
-          "segments": [
-            {
-              "x1": 640.0,
-              "y1": 0.0,
-              "x2": 640.0,
-              "y2": 120.0
-            },
-            {
-              "x1": 640.0,
-              "y1": 120.0,
-              "x2": 620.0,
-              "y2": 120.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "91b1df8a-fa20-57ed-afbf-2483fb00b8be",
-            "pin_index": 3
-          },
-          "end_connection": {
-            "component_id": "ea51090e-c0b3-5ad0-a242-68ea227f9c45",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "0",
-          "alias": ""
-        },
-        {
           "id": "0b0131ff-63b3-5731-aded-d9f75fbb1ba9",
           "segments": [
             {
               "x1": 140.0,
               "y1": 0.0,
               "x2": 140.0,
-              "y2": -200.0
+              "y2": -180.0
             },
             {
               "x1": 140.0,
-              "y1": -200.0,
+              "y1": -180.0,
+              "x2": 860.0,
+              "y2": -180.0
+            },
+            {
+              "x1": 860.0,
+              "y1": -180.0,
               "x2": 860.0,
               "y2": -200.0
             }

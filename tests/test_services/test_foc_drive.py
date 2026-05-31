@@ -25,14 +25,20 @@ from __future__ import annotations
 import math
 import types
 import uuid
+from pathlib import Path
 
 import numpy as np
 import pulsim as p
+import pytest
 
 from pulsimgui.models.component import DEFAULT_PARAMETERS, ComponentType
+from pulsimgui.models.project import Project
 from pulsimgui.services.backend_adapter import PulsimBackend
 from pulsimgui.services.circuit_converter import CircuitConverter
 from pulsimgui.services.pulsim_v0_compat import make_compat_module
+from pulsimgui.utils.net_utils import build_node_map
+
+_EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 
 def _cid() -> str:
@@ -355,3 +361,92 @@ def test_build_foc_loops_empty_without_descriptor() -> None:
         circuit, p.CircuitBuilder()
     )
     assert step_obs == [] and sw_fns == [] and names == set()
+
+
+# ---------------------------------------------------------------------------
+# Shipped examples — the doubler (19) + PFC (20) compressor drives must each
+# carry a FOC marker bound to their VSI + PMSM, and convert without error.
+# (No long sim here — just the converter/backend wiring.)
+# ---------------------------------------------------------------------------
+def _convert_example(name: str):
+    """Load a shipped ``.pulsim``, build its per-component node map the same
+    way the GUI does, and convert it through ``CircuitConverter``."""
+    path = _EXAMPLES / name
+    project = Project.load(path)
+    circ = project.get_active_circuit()
+    node_map_raw = build_node_map(circ)
+    comps: list[dict] = []
+    node_map: dict[str, list[str]] = {}
+    for component in circ.components.values():
+        cid = str(component.id)
+        comps.append(component.to_dict())
+        node_map[cid] = [
+            str(node_map_raw.get((cid, pin.index), f"_nc_{cid}_{pin.index}"))
+            for pin in sorted(component.pins, key=lambda pp: pp.index)
+        ]
+    conv = CircuitConverter(make_compat_module(p))
+    return conv.build({"components": comps, "node_map": node_map})
+
+
+@pytest.mark.parametrize(
+    "example, v_bus",
+    [
+        ("19_doubler_drive_compressor.pulsim", 340.0),
+        ("20_pfc_drive_compressor.pulsim", 400.0),
+    ],
+)
+def test_compressor_example_carries_foc_marker(example: str, v_bus: float) -> None:
+    """Both compressor-drive examples must convert without error and emit
+    exactly one FOC descriptor bound to their VSI ("VSI") + PMSM ("M1"),
+    carrying the front-end's nominal ``v_bus`` and the validated VLT403U
+    gain recipe. This is what makes the persisted file drive the PMSM with
+    field-oriented control (closed i_d/i_q/speed loops) instead of the
+    pole-slipping open-loop V/f."""
+    circ = _convert_example(example)
+
+    descs = list(getattr(circ, "foc_loop_descriptors", []))
+    assert len(descs) == 1, f"{example}: expected one FOC descriptor"
+    d = descs[0]
+    assert d["vsi_name"] == "VSI"
+    assert d["pmsm_name"] == "M1"
+    # The descriptor carries the front-end's nominal DC bus (used by the
+    # backend to normalise modulation + clamp v_d/v_q).
+    assert d["v_bus"] == pytest.approx(v_bus)
+    # Validated VLT403U FOC recipe (same gains as example 21).
+    assert d["speed_kp"] == pytest.approx(0.17)
+    assert d["speed_ki"] == pytest.approx(6.0)
+    assert d["current_kp"] == pytest.approx(45.0)
+    assert d["current_ki"] == pytest.approx(24000.0)
+    assert d["id_ref"] == pytest.approx(0.0)
+    assert d["iq_limit"] == pytest.approx(3.0)
+    assert d["speed_ref_rpm"] == pytest.approx(1800.0)
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "19_doubler_drive_compressor.pulsim",
+        "20_pfc_drive_compressor.pulsim",
+    ],
+)
+def test_compressor_example_foc_binds_to_native_vsi_and_pmsm(example: str) -> None:
+    """The FOC descriptor in each example resolves to the example's native
+    3φ VSI (six switches) + dynamic PMSM observer — the binding the backend
+    ``_build_foc_loops`` needs to close the loops + drive the inverter."""
+    circ = _convert_example(example)
+    b = circ.builder
+    adapter = _adapter()
+
+    # The PMSM observer build stashes the bundle the FOC loop reads.
+    adapter._build_nonlinear_device_observers(circ, b, dt=2e-6)
+    step_obs, sw_fns, vsi_names = adapter._build_foc_loops(circ, b)
+    assert len(step_obs) == 1
+    assert len(sw_fns) == 1
+    assert vsi_names == {"VSI"}
+    # The FOC-controlled VSI is excluded from the open-loop SPWM path so the
+    # SPWM + FOC don't both drive the same six switch bits.
+    assert adapter._build_vsi_switch_fns(circ, b, exclude_names=vsi_names) == []
+    # The example's native VSI contributes the six switches the FOC drives
+    # (plus any front-end switches: the doubler has none extra; the PFC adds
+    # its boost MOSFET + bridge diodes).
+    assert int(b.graph.num_switches) >= 6
