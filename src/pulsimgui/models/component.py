@@ -75,6 +75,17 @@ class ComponentType(Enum):
     STATE_MACHINE = auto()
     C_BLOCK = auto()
 
+    # Field-Oriented Control (FOC) drive controller for a 3-phase PMSM +
+    # native VSI. Two visible signal-domain inputs (SP = speed-setpoint
+    # reference, FB = motor feedback bus), with all the loop tuning knobs
+    # (cascaded speed / d-q current PI gains, id reference, q-axis current
+    # limit, voltage clamp, speed ramp) exposed as editable parameters.
+    # The converter auto-detects the controlled VSI + observed PMSM by
+    # tracing wires; the backend ``_build_foc_loops`` then closes the loops
+    # over the PMSM observer bundle and drives the VSI switches via inverse
+    # Park/Clarke, replacing the open-loop SPWM.
+    FOC_CONTROLLER = auto()
+
     # Measurement
     VOLTAGE_PROBE = auto()
     VOLTAGE_PROBE_GND = auto()
@@ -526,6 +537,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.SAMPLE_HOLD,
     ComponentType.STATE_MACHINE,
     ComponentType.C_BLOCK,
+    ComponentType.FOC_CONTROLLER,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
     # Three-phase / vector control
@@ -582,6 +594,7 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.SAMPLE_HOLD,
         ComponentType.STATE_MACHINE,
         ComponentType.C_BLOCK,
+        ComponentType.FOC_CONTROLLER,
         # Three-phase / vector control
         ComponentType.CLARKE_TRANSFORM,
         ComponentType.INVERSE_CLARKE_TRANSFORM,
@@ -901,6 +914,18 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "OUT", 35, 0),
     ],
     ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
+
+    # FOC controller: 2 signal-domain inputs.
+    # SP = speed-setpoint reference (rpm, signal). Typically driven by a
+    #      CONSTANT carrying the target speed.
+    # FB = motor feedback bus (signal). Wire to the PMSM's SIG pin (or to a
+    #      demux of it) so the converter can identify which PMSM to observe.
+    # The converter auto-detects the controlled VSI and drives its 6 switches
+    # via inverse Park/Clarke, so no output pin is needed.
+    ComponentType.FOC_CONTROLLER: [
+        Pin(0, "SP", -40, -15),
+        Pin(1, "FB", -40, 15),
+    ],
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: [
@@ -1420,6 +1445,39 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # properties editor seeds a PI template on first switch.
         "python_source": "",
         "n_states": 1,
+    },
+
+    # FOC drive controller — cascaded speed → d/q current PI loops over a
+    # PMSM observer bundle, with inverse Park/Clarke driving a native 3φ
+    # VSI. The defaults below are the validated VLT403U recipe; tune them
+    # in the properties dialog if your motor has different parameters.
+    ComponentType.FOC_CONTROLLER: {
+        # Outer speed loop (rpm error → q-axis current reference).
+        "speed_kp": 0.17,
+        "speed_ki": 6.0,
+        # Inner current loops (d/q current error → d/q voltage references).
+        "current_kp": 45.0,
+        "current_ki": 24000.0,
+        # d-axis current reference (0 for non-salient PMSM; flux-weakening
+        # uses a negative value at high speed).
+        "id_ref": 0.0,
+        # q-axis current saturation — clamps torque-producing current to
+        # a safe per-unit value.
+        "iq_limit": 3.0,
+        # Voltage clamp as fraction of Vdc/2 (modulation-index ceiling).
+        "v_limit_frac": 0.92,
+        # Speed-reference ramp time (s) — softens step changes in SP so the
+        # outer PI doesn't saturate or trip the q-current limit.
+        "speed_ramp_s": 0.1,
+        # Fallback PWM carrier when no VSI is configured upstream.
+        "switching_frequency_hz": 20000.0,
+        # Fallback speed reference (rpm) when the SP pin is left unwired.
+        "speed_ref_rpm": 1800.0,
+        # Optional explicit binding overrides — leave empty for auto-detect.
+        "pmsm_name": "",
+        "vsi_name": "",
+        # Optional explicit DC-bus magnitude — read from the VSI when blank.
+        "v_bus": 0.0,
     },
 
     # Measurement

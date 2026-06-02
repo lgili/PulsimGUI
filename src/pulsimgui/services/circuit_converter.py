@@ -143,10 +143,13 @@ class CircuitConverter:
                 continue
             if self._should_skip_component(comp_type) and comp_id not in control_override_ids:
                 continue
-            # FOC-controller markers (C_BLOCK ``control_kind="foc"``) carry
-            # no electrical connectivity — they are descriptor-only and are
-            # consumed later by ``_infer_foc_loops``. Skip node resolution
-            # so an unwired marker doesn't trip the connectivity check.
+            # FOC-controller markers (C_BLOCK ``control_kind="foc"`` legacy, or
+            # the dedicated ``FOC_CONTROLLER`` component) carry no electrical
+            # connectivity — they are descriptor-only and are consumed later by
+            # ``_infer_foc_loops``. Skip node resolution so an unwired controller
+            # doesn't trip the connectivity check.
+            if comp_type == ComponentType.FOC_CONTROLLER:
+                continue
             if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
                 component.get("parameters")
             ):
@@ -648,6 +651,11 @@ class CircuitConverter:
             # not an electrical terminal, so it may be unwired or wired to a
             # signal-domain demux without tripping electrical connectivity.
             return pin_index == 4
+        if comp_type == ComponentType.FOC_CONTROLLER:
+            # SP (speed setpoint) and FB (motor feedback bus) are control-
+            # domain inputs; they can be left unwired (parameters provide
+            # fallbacks) without breaking the electrical netlist.
+            return True
         return False
 
     def _node_label(self, node_id: str, alias_map: dict[str, str]) -> str:
@@ -3062,12 +3070,13 @@ class CircuitConverter:
             by_type.setdefault(ct, []).append(component)
 
         cblocks = by_type.get(ComponentType.C_BLOCK, [])
+        foc_blocks = by_type.get(ComponentType.FOC_CONTROLLER, [])
         vsis = by_type.get(ComponentType.THREE_PHASE_VSI, [])
         pmsms = by_type.get(ComponentType.PMSM, [])
 
         # FOC needs a switched VSI to command and a dynamic PMSM to
         # observe. No marker / no VSI / no PMSM ⇒ nothing to do.
-        if not cblocks or not vsis or not pmsms:
+        if (not cblocks and not foc_blocks) or not vsis or not pmsms:
             return []
 
         def _float(d: dict[str, Any], key: str, default: float) -> float:
@@ -3079,31 +3088,43 @@ class CircuitConverter:
             except (TypeError, ValueError):
                 return default
 
-        descriptors: list[dict[str, Any]] = []
-        for cblock in cblocks:
-            params = cblock.get("parameters") if isinstance(
-                cblock.get("parameters"), dict
-            ) else {}
-            kind = str(params.get("control_kind", "") or "").strip().lower()
-            if kind != "foc":
-                continue
+        def _params_of(comp: dict[str, Any]) -> dict[str, Any]:
+            raw = comp.get("parameters")
+            return raw if isinstance(raw, dict) else {}
 
-            # Bind to a named VSI / PMSM if the marker calls one out;
-            # otherwise default to the first of each (the common single-
-            # drive case). The backend resolves names → specs.
+        # Resolve the FB-pin wire of a FOC_CONTROLLER back to the PMSM that
+        # owns the bus, so wiring (not the parameter alone) drives the binding.
+        def _trace_pmsm_via_fb(foc_comp: dict[str, Any]) -> str:
+            pin_nodes = foc_comp.get("pin_nodes") or []
+            if len(pin_nodes) < 2:
+                return ""
+            fb_net = str(pin_nodes[1] or "").strip()
+            if not fb_net:
+                return ""
+            for motor in pmsms:
+                motor_pin_nodes = motor.get("pin_nodes") or []
+                # PMSM pin 4 is SIG (signal-bus output).
+                if len(motor_pin_nodes) >= 5 and str(motor_pin_nodes[4] or "").strip() == fb_net:
+                    return self._component_name(motor, ComponentType.PMSM)
+            return ""
+
+        def _make_descriptor(comp: dict[str, Any], owner_type: ComponentType) -> dict[str, Any]:
+            params = _params_of(comp)
+            # Wire-traced PMSM (FOC_CONTROLLER FB pin) wins over the explicit
+            # parameter; falls back to the explicit name, then to the single
+            # PMSM in the circuit.
+            pmsm_name = ""
+            if owner_type == ComponentType.FOC_CONTROLLER:
+                pmsm_name = _trace_pmsm_via_fb(comp)
+            if not pmsm_name:
+                pmsm_name = str(params.get("pmsm_name", "") or "").strip()
+            if not pmsm_name:
+                pmsm_name = self._component_name(pmsms[0], ComponentType.PMSM)
             vsi_name = str(params.get("vsi_name", "") or "").strip()
             if not vsi_name:
-                vsi_name = self._component_name(
-                    vsis[0], ComponentType.THREE_PHASE_VSI
-                )
-            pmsm_name = str(params.get("pmsm_name", "") or "").strip()
-            if not pmsm_name:
-                pmsm_name = self._component_name(
-                    pmsms[0], ComponentType.PMSM
-                )
-
-            descriptors.append({
-                "name": self._component_name(cblock, ComponentType.C_BLOCK),
+                vsi_name = self._component_name(vsis[0], ComponentType.THREE_PHASE_VSI)
+            return {
+                "name": self._component_name(comp, owner_type),
                 "vsi_name": vsi_name,
                 "pmsm_name": pmsm_name,
                 # DC-bus magnitude the backend uses to normalise the
@@ -3131,8 +3152,19 @@ class CircuitConverter:
                 "switching_frequency_hz": _float(
                     params, "switching_frequency_hz", 20000.0
                 ),
-            })
+            }
 
+        descriptors: list[dict[str, Any]] = []
+        # Legacy: C_BLOCK with ``control_kind="foc"`` marker.
+        for cblock in cblocks:
+            cb_params = _params_of(cblock)
+            if str(cb_params.get("control_kind", "") or "").strip().lower() == "foc":
+                descriptors.append(_make_descriptor(cblock, ComponentType.C_BLOCK))
+        # New: dedicated ``FOC_CONTROLLER`` component (visible, wireable).
+        for foc_comp in foc_blocks:
+            descriptors.append(
+                _make_descriptor(foc_comp, ComponentType.FOC_CONTROLLER)
+            )
         return descriptors
 
     def _constant_names_used_as_cblock_inputs(

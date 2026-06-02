@@ -55,6 +55,25 @@ def _component_tooltip(component: Component) -> str:
             "each output lane (in order) carries:\n"
             f"{lanes}"
         )
+    if component.type == ComponentType.FOC_CONTROLLER:
+        params = component.parameters or {}
+        ref = params.get("speed_ref_rpm", 1800.0) or 1800.0
+        try:
+            ref_text = f"{float(ref):g} rpm"
+        except (TypeError, ValueError):
+            ref_text = "1800 rpm"
+        return (
+            f"{base}\n\n"
+            "Cascaded speed → d/q current PI loops with inverse Park/Clarke\n"
+            "driving a native 3φ VSI. Auto-detects the controlled VSI + the\n"
+            "PMSM observed via the FB wire.\n\n"
+            "Pins:\n"
+            f"  SP  ←  speed-setpoint reference (rpm). Wire a CONSTANT to override\n"
+            f"          the parameter default ({ref_text}).\n"
+            "  FB  ←  motor feedback bus. Wire the PMSM's SIG pin so the\n"
+            "          converter knows which motor to observe.\n\n"
+            "Tune the loop gains in the properties dialog (Help)."
+        )
     return base
 
 
@@ -1198,6 +1217,31 @@ class CBlockItem(BlockComponentItem):
         except (TypeError, ValueError):
             n_outputs = 1
         return f"{n_inputs}->{n_outputs}"
+
+
+class FOCControllerItem(BlockComponentItem):
+    """Item for the Field-Oriented Control drive controller block.
+
+    Two visible inputs (SP = speed-setpoint reference, FB = motor feedback
+    bus), with all loop gains exposed as editable parameters. The converter
+    auto-detects the controlled VSI + observed PMSM by tracing the FB wire
+    and the single VSI in the circuit.
+    """
+
+    ACCENT_COLOR = QColor(210, 86, 168)  # Magenta — distinct from PI/PID/C
+
+    def block_label(self) -> str:
+        """Return the short label shown in the block body."""
+        return "FOC"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        ref = params.get("speed_ref_rpm", 0.0) or 0.0
+        ramp = params.get("speed_ramp_s", 0.0) or 0.0
+        try:
+            return f"{float(ref):g} rpm · ramp {float(ramp):g}s"
+        except (TypeError, ValueError):
+            return "FOC"
 
 
 class SumBaseItem(BlockComponentItem):
@@ -3858,6 +3902,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.MATH_BLOCK: MathBlockItem,
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
         ComponentType.C_BLOCK: CBlockItem,
+        ComponentType.FOC_CONTROLLER: FOCControllerItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

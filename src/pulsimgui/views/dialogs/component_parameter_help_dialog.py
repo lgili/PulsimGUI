@@ -318,6 +318,72 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "Controller tuning from damping target and noise sensitivity limits.",
         ),
     },
+    ComponentType.FOC_CONTROLLER: {
+        "speed_kp": ParameterHelp(
+            "Outer speed loop proportional gain (Δω → iq_ref).",
+            "Tune for the desired speed bandwidth. Start small and double until "
+            "rise time is acceptable; back off if overshoot exceeds ~10%.",
+        ),
+        "speed_ki": ParameterHelp(
+            "Outer speed loop integral gain (∫Δω → iq_ref).",
+            "Sets the steady-state speed error. Set so the integral takes "
+            "10×–20× the rise time to wind up the current reference fully.",
+        ),
+        "current_kp": ParameterHelp(
+            "Inner d/q current loops proportional gain (shared across axes).",
+            "Tune from R_s and L_s and the desired current-loop bandwidth: "
+            "Kp ≈ L_s · ω_c, where ω_c is the target loop crossover (rad/s).",
+        ),
+        "current_ki": ParameterHelp(
+            "Inner d/q current loops integral gain (shared across axes).",
+            "Sets the closed-loop pole at the motor stator pole: Ki ≈ R_s · ω_c.",
+        ),
+        "id_ref": ParameterHelp(
+            "d-axis current reference (A). Zero for non-salient PMSM (MTPA at "
+            "low speed); use a negative value for field-weakening above base speed.",
+            "Motor + drive datasheet (Ld/Lq, base speed, max DC bus).",
+        ),
+        "iq_limit": ParameterHelp(
+            "q-axis current saturation (A) — clamps torque-producing current "
+            "to a safe per-unit value of the rated stator current.",
+            "Motor datasheet (rated stator current) and inverter rating.",
+        ),
+        "v_limit_frac": ParameterHelp(
+            "Voltage clamp on the inverse-Park outputs, as a fraction of Vdc/2.",
+            "Modulation ceiling. 0.92 is a safe linear margin; 1.0 hits over-"
+            "modulation (3rd-harmonic injection); >1 enters 6-step territory.",
+        ),
+        "speed_ramp_s": ParameterHelp(
+            "Speed-reference ramp time (s) — softens step changes in SP so the "
+            "outer PI doesn't saturate or trip the q-current limit at startup.",
+            "Application requirement (e.g. compressor soft-start, traction).",
+        ),
+        "switching_frequency_hz": ParameterHelp(
+            "PWM carrier frequency for the inverse-Park modulator that drives "
+            "the VSI switches.",
+            "Inverter datasheet (max f_sw) and motor audible-noise / loss budget.",
+        ),
+        "speed_ref_rpm": ParameterHelp(
+            "Fallback speed reference (rpm) used when the SP pin is unwired.",
+            "Use as a constant baseline; for runtime control, wire a CONSTANT "
+            "(or any signal source) into the SP pin instead.",
+        ),
+        "pmsm_name": ParameterHelp(
+            "Optional explicit PMSM name override. Leave blank for auto-detect "
+            "by tracing the FB-pin wire back to the motor's SIG bus.",
+            "Component name of the PMSM in this schematic.",
+        ),
+        "vsi_name": ParameterHelp(
+            "Optional explicit VSI name override. Leave blank when there is "
+            "only one 3φ VSI in the schematic (auto-detected).",
+            "Component name of the THREE_PHASE_VSI to drive.",
+        ),
+        "v_bus": ParameterHelp(
+            "Optional explicit DC-bus magnitude (V). Leave 0 to read from the "
+            "VSI's vdc setting at simulate time. Used to normalise modulation.",
+            "Front-end nominal DC bus (e.g. 320 V doubler, 400 V PFC).",
+        ),
+    },
 }
 
 _DATASHEET_SEARCH_TERMS: dict[str, str] = {
