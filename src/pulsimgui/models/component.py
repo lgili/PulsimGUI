@@ -86,6 +86,19 @@ class ComponentType(Enum):
     # Park/Clarke, replacing the open-loop SPWM.
     FOC_CONTROLLER = auto()
 
+    # Closed-loop PFC boost controller — cascaded outer voltage / inner
+    # current PI loops with sine-modulated inner setpoint (CCM operation,
+    # 240–1000 W range). Three signal-domain inputs:
+    #   VBUS  — wire to a voltage probe on the bus capacitor (V_bus)
+    #   IL    — wire to a current probe on the boost inductor (i_L)
+    #   VAC   — wire to a voltage probe on the rectified AC line (|V_rect|)
+    # Tunable parameters: voltage/current PI gains, V_bus target, V_rect
+    # peak normalization, line and switching frequencies, duty clamp. The
+    # converter auto-detects the boost MOSFET by topology, and the backend
+    # ``_build_pfc_loops`` closes the loops via pulsim's ``bind_pi_to_switch``
+    # (inner current loop) plus a step-observer (outer voltage loop).
+    PFC_BOOST_CONTROLLER = auto()
+
     # Measurement
     VOLTAGE_PROBE = auto()
     VOLTAGE_PROBE_GND = auto()
@@ -538,6 +551,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.STATE_MACHINE,
     ComponentType.C_BLOCK,
     ComponentType.FOC_CONTROLLER,
+    ComponentType.PFC_BOOST_CONTROLLER,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
     # Three-phase / vector control
@@ -595,6 +609,7 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.STATE_MACHINE,
         ComponentType.C_BLOCK,
         ComponentType.FOC_CONTROLLER,
+        ComponentType.PFC_BOOST_CONTROLLER,
         # Three-phase / vector control
         ComponentType.CLARKE_TRANSFORM,
         ComponentType.INVERSE_CLARKE_TRANSFORM,
@@ -925,6 +940,21 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.FOC_CONTROLLER: [
         Pin(0, "SP", -40, -15),
         Pin(1, "FB", -40, 15),
+    ],
+
+    # PFC boost controller: 3 signal-domain inputs.
+    # VBUS = bus-voltage feedback (V). Wire to a voltage probe on the bus
+    #        capacitor.
+    # IL   = inductor-current feedback (A). Wire to a current probe on the
+    #        boost inductor.
+    # VAC  = rectified-input voltage (V). Wire to a voltage probe on the
+    #        diode-bridge DC+ rail (between bridge and L_boost).
+    # The converter auto-detects the boost MOSFET by topology (the switch
+    # whose drain is the inductor/diode junction); no output pin is needed.
+    ComponentType.PFC_BOOST_CONTROLLER: [
+        Pin(0, "VBUS", -40, -20),
+        Pin(1, "IL",   -40,   0),
+        Pin(2, "VAC",  -40,  20),
     ],
 
     # Measurement
@@ -1445,6 +1475,62 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # properties editor seeds a PI template on first switch.
         "python_source": "",
         "n_states": 1,
+    },
+
+    # PFC boost controller — cascaded outer voltage / inner current PI
+    # loops with sine-modulated inner setpoint. Defaults target a 240–
+    # 1000 W universal-input PFC stage operating in CCM (continuous-
+    # conduction mode) — the standard choice in this power range because:
+    #   - I_peak is ~2× I_avg vs ~4× in DCM, so MOSFET / inductor stress
+    #     is much lower and a smaller EMI filter is sufficient.
+    #   - Fixed switching frequency simplifies EMI compliance.
+    #   - Loop bandwidth is higher than DCM voltage-mode, giving better
+    #     transient response on load steps.
+    # DCM may be preferable below ~150 W (single voltage loop, no inner
+    # current loop), but for this range CCM wins.
+    ComponentType.PFC_BOOST_CONTROLLER: {
+        # CCM is the default mode (recommended for 240–1000 W). Switch to
+        # "DCM" only for lighter loads where DCM's simpler single-loop
+        # control is acceptable.
+        "mode": "CCM",
+        # --- Target / safety ---
+        # Universal-input PFC standard target (400 V) — high enough to
+        # accept up to 264 Vrms input without saturating.
+        "v_bus_ref": 400.0,
+        "v_bus_min": 0.0,
+        "v_bus_max": 450.0,
+        # --- Outer voltage loop (slow, ~10 Hz BW) ---
+        # Set well below 2·f_line so the 120 Hz bus ripple is NOT
+        # amplified into the current reference (the classic PFC trap).
+        "voltage_kp": 0.30,
+        "voltage_ki": 6.0,
+        # Output of the voltage loop is the peak input-current amplitude.
+        # Clamp to a safe per-unit of the inverter rating.
+        "i_pk_limit": 20.0,
+        # --- Inner current loop (fast, ~5 kHz BW) ---
+        # Tune from L_boost / R_dcr and the target loop crossover:
+        # Kp ≈ L · ω_c ; Ki ≈ R_dcr · ω_c. The defaults below match a
+        # 1 mH boost inductor with R_dcr ≈ 0.1 Ω at ω_c ≈ 2π·5 kHz.
+        "current_kp": 31.4,
+        "current_ki": 3140.0,
+        # Duty clamp (0..duty_max). Leave a small margin so the bus
+        # capacitor never charges through the body diode.
+        "duty_max": 0.95,
+        # --- Source / line ---
+        # Vac peak normalization (used as the sine-reference scale). For
+        # 230 Vrms line: 230·√2 ≈ 325 V. For 110 Vrms low-line: 156 V.
+        "vac_pk_nom": 325.0,
+        # Mains frequency (Hz). 50 (EU/SA) or 60 (NA).
+        "f_line": 60.0,
+        # --- Switching ---
+        # Standard high-power PFC carrier (65 kHz is the modern default).
+        "f_sw": 65000.0,
+        # --- Optional explicit binding overrides — leave blank for
+        # auto-detect by topology / single-instance fallback.
+        "boost_mosfet_name": "",
+        "v_bus_node_name": "",
+        "v_ac_node_name": "",
+        "i_l_branch_name": "",
     },
 
     # FOC drive controller — cascaded speed → d/q current PI loops over a

@@ -74,6 +74,29 @@ def _component_tooltip(component: Component) -> str:
             "          converter knows which motor to observe.\n\n"
             "Tune the loop gains in the properties dialog (Help)."
         )
+    if component.type == ComponentType.PFC_BOOST_CONTROLLER:
+        params = component.parameters or {}
+        mode = str(params.get("mode", "CCM") or "CCM").upper()
+        v_ref = params.get("v_bus_ref", 400.0) or 400.0
+        try:
+            v_text = f"{float(v_ref):g} V"
+        except (TypeError, ValueError):
+            v_text = "400 V"
+        return (
+            f"{base}\n\n"
+            f"Cascaded outer voltage / inner current PI loops ({mode} mode).\n"
+            "Outer loop regulates V_bus to its target; inner loop shapes i_L\n"
+            "to a sine reference (i_L_ref = I_pk_ref · |V_rect|/Vac_pk) so the\n"
+            "input current tracks the line voltage. The converter auto-detects\n"
+            "the boost MOSFET by topology (L/D junction) and drives its gate\n"
+            "at f_sw (default 65 kHz).\n\n"
+            "Pins (all signal-domain, wire to voltage/current probes):\n"
+            f"  VBUS ←  bus-voltage feedback (target: {v_text}).\n"
+            "  IL   ←  boost-inductor current feedback (i_L).\n"
+            "  VAC  ←  rectified-input voltage (|V_rect|) for shape ref.\n\n"
+            "CCM is the recommended mode for 240–1000 W (lower I_peak / EMI\n"
+            "vs. DCM). Tune loop gains in the properties dialog (Help)."
+        )
     return base
 
 
@@ -1242,6 +1265,30 @@ class FOCControllerItem(BlockComponentItem):
             return f"{float(ref):g} rpm · ramp {float(ramp):g}s"
         except (TypeError, ValueError):
             return "FOC"
+
+
+class PFCBoostControllerItem(BlockComponentItem):
+    """Item for the closed-loop PFC boost controller block.
+
+    Three visible inputs (VBUS, IL, VAC), with cascaded voltage/current PI
+    gains exposed as editable parameters. The converter auto-detects the
+    boost MOSFET by topology (single MOSFET whose drain is the L/D junction).
+    """
+
+    ACCENT_COLOR = QColor(220, 130, 50)  # Orange — distinct from FOC magenta
+
+    def block_label(self) -> str:
+        """Return the short label shown in the block body."""
+        return "PFC"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        mode = str(params.get("mode", "CCM") or "CCM").upper()
+        v_ref = params.get("v_bus_ref", 400.0) or 400.0
+        try:
+            return f"{mode} · Vbus {float(v_ref):g}V"
+        except (TypeError, ValueError):
+            return f"{mode} · PFC"
 
 
 class SumBaseItem(BlockComponentItem):
@@ -3903,6 +3950,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
         ComponentType.C_BLOCK: CBlockItem,
         ComponentType.FOC_CONTROLLER: FOCControllerItem,
+        ComponentType.PFC_BOOST_CONTROLLER: PFCBoostControllerItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

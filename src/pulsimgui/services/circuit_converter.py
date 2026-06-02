@@ -150,6 +150,10 @@ class CircuitConverter:
             # doesn't trip the connectivity check.
             if comp_type == ComponentType.FOC_CONTROLLER:
                 continue
+            # PFC boost controller — same pattern: descriptor-only,
+            # consumed later by ``_infer_pfc_loops``.
+            if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
+                continue
             if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
                 component.get("parameters")
             ):
@@ -655,6 +659,10 @@ class CircuitConverter:
             # SP (speed setpoint) and FB (motor feedback bus) are control-
             # domain inputs; they can be left unwired (parameters provide
             # fallbacks) without breaking the electrical netlist.
+            return True
+        if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
+            # VBUS / IL / VAC are signal-domain inputs that the parameter
+            # overrides also let the user bind by name without a wire.
             return True
         return False
 

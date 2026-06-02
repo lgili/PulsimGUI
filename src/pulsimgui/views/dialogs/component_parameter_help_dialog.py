@@ -318,6 +318,96 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "Controller tuning from damping target and noise sensitivity limits.",
         ),
     },
+    ComponentType.PFC_BOOST_CONTROLLER: {
+        "mode": ParameterHelp(
+            "Operating mode. CCM (continuous conduction, recommended for "
+            "240–1000 W) keeps i_L > 0 every switching cycle; DCM lets i_L "
+            "drop to zero (only worthwhile below ~150 W).",
+            "Application power band. CCM for >300 W is standard practice.",
+        ),
+        "v_bus_ref": ParameterHelp(
+            "Target DC-bus voltage (V) regulated by the outer loop. The "
+            "universal-input PFC standard is 400 V (high enough for 264 Vrms "
+            "input without saturation).",
+            "Downstream-converter datasheet (DC-link voltage rating).",
+        ),
+        "v_bus_max": ParameterHelp(
+            "Hard upper bound on V_bus (over-voltage trip / clamp).",
+            "Bus capacitor rating minus margin.",
+        ),
+        "v_bus_min": ParameterHelp(
+            "Lower bound used during startup so the outer loop doesn't "
+            "saturate before the bridge has charged the bus.",
+            "Front-end peak (Vac_pk · √2) — bus can't go below it.",
+        ),
+        "voltage_kp": ParameterHelp(
+            "Outer voltage loop proportional gain (V_bus error → I_pk_ref).",
+            "Tune for ~10 Hz crossover — well below 2·f_line so the 120 Hz "
+            "bus ripple is NOT amplified into the current reference.",
+        ),
+        "voltage_ki": ParameterHelp(
+            "Outer voltage loop integral gain.",
+            "Sets the DC bus regulation accuracy. Ki ≈ Kp · ω_c / 5 is a "
+            "safe starting point.",
+        ),
+        "i_pk_limit": ParameterHelp(
+            "Saturation on the outer-loop output (max peak input current). "
+            "Prevents inductor saturation and inrush during a load step.",
+            "Inductor saturation current and MOSFET pulsed-current rating.",
+        ),
+        "current_kp": ParameterHelp(
+            "Inner current loop proportional gain (i_L error → duty).",
+            "Tune from L_boost / R_dcr: Kp ≈ L · ω_c (rad/s). For L = 1 mH "
+            "and ω_c = 2π·5 kHz → Kp ≈ 31.4.",
+        ),
+        "current_ki": ParameterHelp(
+            "Inner current loop integral gain.",
+            "Cancels the inductor pole: Ki ≈ R_dcr · ω_c. For R_dcr = 0.1 Ω "
+            "and ω_c = 2π·5 kHz → Ki ≈ 3140.",
+        ),
+        "duty_max": ParameterHelp(
+            "Upper duty clamp (0..1). Leave a small margin (≤ 0.95) so the "
+            "bus capacitor never charges through the body diode.",
+            "MOSFET datasheet (gate-drive timing) and dead-time budget.",
+        ),
+        "vac_pk_nom": ParameterHelp(
+            "Nominal Vac peak (V) used as the sine-reference scale. For "
+            "230 Vrms line: 230·√2 ≈ 325 V; for 110 Vrms low-line: 156 V.",
+            "Worst-case input line voltage at nominal.",
+        ),
+        "f_line": ParameterHelp(
+            "Mains frequency (Hz). 50 Hz (EU/SA) or 60 Hz (NA). Used by the "
+            "outer loop's low-pass to track the line cycle.",
+            "Local grid standard.",
+        ),
+        "f_sw": ParameterHelp(
+            "Inner-loop PWM carrier frequency (Hz). 65 kHz is the modern "
+            "high-power PFC default — high enough for a small inductor, "
+            "low enough to keep MOSFET losses manageable.",
+            "Inverter MOSFET / driver datasheet (max f_sw, dead-time).",
+        ),
+        "boost_mosfet_name": ParameterHelp(
+            "Optional explicit boost MOSFET name override. Leave blank to "
+            "auto-detect by topology (a MOSFET whose drain is the boost "
+            "inductor / diode anode junction).",
+            "Component name of the boost MOSFET in the schematic.",
+        ),
+        "v_bus_node_name": ParameterHelp(
+            "Optional explicit V_bus node-alias override. Leave blank to "
+            "auto-detect via the VBUS pin's wire trace.",
+            "Wire alias attached to the bus-capacitor positive terminal.",
+        ),
+        "v_ac_node_name": ParameterHelp(
+            "Optional explicit V_rect node-alias override. Leave blank to "
+            "auto-detect via the VAC pin's wire trace.",
+            "Wire alias attached to the diode-bridge DC+ rail.",
+        ),
+        "i_l_branch_name": ParameterHelp(
+            "Optional explicit i_L branch label override. Leave blank to "
+            "auto-detect via the IL pin's wire trace.",
+            "Current probe name on the boost inductor.",
+        ),
+    },
     ComponentType.FOC_CONTROLLER: {
         "speed_kp": ParameterHelp(
             "Outer speed loop proportional gain (Δω → iq_ref).",
