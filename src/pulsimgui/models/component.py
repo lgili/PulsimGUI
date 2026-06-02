@@ -316,6 +316,33 @@ DUTY_INPUT_PARAMETER = "enable_duty_input"
 DUTY_INPUT_PIN_NAME = "DUTY_IN"
 VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
 CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+
+# Dynamic-machine signal bus. A single signal-domain output pin that carries
+# all of the motor's observable traces (rotor speed, per-phase + d/q currents,
+# torque). The user wires it to a SIGNAL_DEMUX to split the bus into the
+# individual channels and connect those to a scope. The CHANNEL ORDER below is
+# the demux lane order, and each suffix matches the key the backend publishes
+# in ``_merge_motor_observer_signals`` (``<motor>.speed_rpm`` etc.).
+MOTOR_SIGNAL_BUS_PIN_NAME = "SIG"
+MOTOR_SIGNAL_BUS_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("speed_rpm", "Speed (rpm)"),
+    ("i_a", "i_a"),
+    ("i_b", "i_b"),
+    ("i_c", "i_c"),
+    ("i_d", "i_d"),
+    ("i_q", "i_q"),
+    ("torque", "Torque (N·m)"),
+)
+MOTOR_SIGNAL_BUS_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.PMSM,
+}
+
+
+def supports_motor_signal_bus(component_type: ComponentType) -> bool:
+    """Return True when a component exposes a dynamic-machine signal bus pin."""
+    return component_type in MOTOR_SIGNAL_BUS_SUPPORTED_TYPES
+
+
 MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SATURABLE_INDUCTOR,
 }
@@ -671,6 +698,18 @@ def component_connection_domain(component_type: ComponentType) -> str:
     return CONNECTION_DOMAIN_CIRCUIT
 
 
+def is_motor_signal_bus_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for a dynamic machine's signal-bus output pin (``SIG``).
+
+    The pin carries the motor's full observable bus (speed / currents /
+    torque). A SIGNAL_DEMUX wired to it splits the bus into the individual
+    channels for scoping.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return False
+    return _pin_name(component, pin_index).strip().upper() == MOTOR_SIGNAL_BUS_PIN_NAME
+
+
 def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
     """Return True when the pin can feed an electrical scope with control-domain data."""
     if pin_index < 0 or pin_index >= len(component.pins):
@@ -689,6 +728,10 @@ def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
     if component.type == ComponentType.C_BLOCK:
         # C-Block control outputs follow OUT / OUTn ABI pin naming.
         return pin_name == "OUT" or pin_name.startswith("OUT")
+
+    # Dynamic-machine signal bus (PMSM ``SIG``) feeds a demux/scope.
+    if is_motor_signal_bus_pin(component, pin_index):
+        return True
 
     if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
         return False
@@ -738,6 +781,11 @@ def pin_connection_domain(component: "Component", pin_index: int) -> str:
 
     # Gate / base / control pins of switching devices accept signal-domain drives.
     if pin_index in _CONTROL_PIN_INDICES.get(component.type, set()):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    # A dynamic machine's signal-bus output (PMSM ``SIG``) is signal-domain
+    # even though the device itself is a circuit component.
+    if is_motor_signal_bus_pin(component, pin_index):
         return CONNECTION_DOMAIN_SIGNAL
 
     return component_connection_domain(component.type)
@@ -1043,14 +1091,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "N", 30, 0),
     ],
 
-    # PMSM dynamic (pulsim>=0.10.0a4). 4 pins: A, B, C, Neutral. Full
-    # device-variant: rotor inertia + electromagnetic torque feedback,
+    # PMSM dynamic (pulsim>=0.10.0a4). 4 power pins (A, B, C, Neutral) +
+    # a signal-bus output (SIG) carrying the motor's observable traces
+    # (speed / currents / torque) for wiring to a SIGNAL_DEMUX → scope.
+    # Full device-variant: rotor inertia + electromagnetic torque feedback,
     # 4 internal states tracked by the runtime.
     ComponentType.PMSM: [
         Pin(0, "A", -30, -25),
         Pin(1, "B", -30, 0),
         Pin(2, "C", -30, 25),
         Pin(3, "N", 30, 0),
+        Pin(4, MOTOR_SIGNAL_BUS_PIN_NAME, 30, 25),
     ],
     # Induction motor: 3 stator phase terminals + star-point neutral,
     # same terminal layout convention as PMSM.
@@ -1786,23 +1837,23 @@ class Component:
         if not self.parameters and self.type in DEFAULT_PARAMETERS:
             self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
 
-        saved_names: list[str] | None = None
         saved_geometry: dict[str, tuple[float, float]] | None = None
         if pins_were_loaded:
-            saved_names = [pin.name for pin in self.pins]
             saved_geometry = {pin.name: (pin.x, pin.y) for pin in self.pins}
 
         _synchronize_special_component(self)
 
-        if (
-            saved_geometry is not None
-            and [pin.name for pin in self.pins] == saved_names
-        ):
-            # Synchronization only nudged geometry (grid-snap / default
-            # respacing) — undo it so loaded pins stay exactly where the
-            # file (and its wires) put them.
+        if saved_geometry is not None:
+            # Loaded from a file: restore the saved position of every pin that
+            # survives synchronization by name, so the symbol never visually
+            # shifts and saved wire endpoints stay attached. Pins that
+            # synchronization *added* (e.g. a motor ``SIG`` bus pin) or
+            # *renamed* (a schema migration) keep their freshly synchronized,
+            # on-grid layout.
             for pin in self.pins:
-                pin.x, pin.y = saved_geometry[pin.name]
+                saved = saved_geometry.get(pin.name)
+                if saved is not None:
+                    pin.x, pin.y = saved
         else:
             _snap_component_pins_to_grid(self)
 
@@ -1915,10 +1966,32 @@ def _synchronize_special_component(component: Component) -> None:
         ComponentType.CURRENT_PROBE,
     ):
         _synchronize_measurement_probe_pins(component)
+    elif supports_motor_signal_bus(component.type):
+        _synchronize_motor_signal_pin(component)
     else:
         _synchronize_thermal_port(component)
 
     _synchronize_control_sample_time(component)
+
+
+def _synchronize_motor_signal_pin(component: Component) -> None:
+    """Ensure a dynamic machine exposes its ``SIG`` signal-bus output pin.
+
+    Motors saved before this feature carry only the electrical terminals;
+    append the signal-bus pin (at its default template position) so the
+    motor's observable traces can be wired to a demux + scope. Idempotent.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return
+    if any(pin.name == MOTOR_SIGNAL_BUS_PIN_NAME for pin in component.pins):
+        return
+    template = DEFAULT_PINS.get(component.type, [])
+    sig = next((p for p in template if p.name == MOTOR_SIGNAL_BUS_PIN_NAME), None)
+    if sig is None:
+        return
+    component.pins.append(
+        Pin(len(component.pins), MOTOR_SIGNAL_BUS_PIN_NAME, sig.x, sig.y)
+    )
 
 
 def _synchronize_subcircuit_port_pin(component: Component) -> None:

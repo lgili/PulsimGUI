@@ -643,6 +643,11 @@ class CircuitConverter:
             return pin_index == 1
         if comp_type == ComponentType.CURRENT_PROBE:
             return pin_index == 2
+        if comp_type == ComponentType.PMSM:
+            # Pin 4 is the SIG signal-bus output (speed/currents/torque) —
+            # not an electrical terminal, so it may be unwired or wired to a
+            # signal-domain demux without tripping electrical connectivity.
+            return pin_index == 4
         return False
 
     def _node_label(self, node_id: str, alias_map: dict[str, str]) -> str:
@@ -743,6 +748,11 @@ class CircuitConverter:
 
         if comp_type == ComponentType.SWITCH:
             return nodes[:3] if len(nodes) >= 3 else nodes[:2]
+
+        if comp_type == ComponentType.PMSM:
+            # A/B/C/Neutral are electrical; the 5th pin (SIG) is a signal-bus
+            # output and must not stamp an MNA node.
+            return nodes[:4]
 
         # Virtual/unknown components keep their full terminal list.
         return nodes

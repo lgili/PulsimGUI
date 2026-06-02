@@ -115,8 +115,10 @@ def test_palette_lists_pmsm_dynamic() -> None:
 
 def test_pmsm_dynamic_pins_and_defaults() -> None:
     pins = DEFAULT_PINS[ComponentType.PMSM]
-    assert len(pins) == 4
-    assert {p.name for p in pins} == {"A", "B", "C", "N"}
+    # 4 electrical terminals (A, B, C, N) + 1 signal-bus output (SIG) carrying
+    # the motor's observable traces (speed / currents / torque) to a demux.
+    assert len(pins) == 5
+    assert {p.name for p in pins} == {"A", "B", "C", "N", "SIG"}
     params = DEFAULT_PARAMETERS[ComponentType.PMSM]
     assert params["Rs"] == pytest.approx(0.5)
     assert params["psi_pm"] == pytest.approx(0.1)

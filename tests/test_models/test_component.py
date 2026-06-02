@@ -422,12 +422,17 @@ class TestLoadedPinPreservation:
             )
         )
         coords = {p.name: (p.x, p.y) for p in comp.pins}
-        assert coords == {
+        # The four saved electrical terminals keep their exact off-grid spots.
+        for name, pos in {
             "A": (-30.0, -25.0),
             "B": (-30.0, 0.0),
             "C": (-30.0, 25.0),
             "N": (30.0, 0.0),
-        }
+        }.items():
+            assert coords[name] == pos
+        # Synchronization appends the signal-bus pin (a new, on-grid pin) —
+        # adding it must NOT re-snap/disturb the saved terminals.
+        assert "SIG" in coords
 
     def test_loaded_scope_channel_positions_are_preserved(self):
         comp = Component.from_dict(
