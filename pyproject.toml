@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pulsimgui"
-version = "1.0.0"
+version = "1.1.0"
 description = "Cross-platform GUI for Pulsim power electronics simulator"
 readme = "README.md"
 license = "MIT"
@@ -29,14 +29,15 @@ dependencies = [
     "pyqtgraph>=0.13.0",
     "numpy>=1.24.0",
     "qtawesome>=1.3.0",
-    # >=1.6.4 for two DSED fixes that matter to the GUI:
-    #   1.6.2 — lazy-import scipy so the native C++ DSED path works on
-    #           the wheel (1.6.1 crashed pulsim.dsed without scipy).
-    #   1.6.4 — DSED no longer freezes a *plain Python* switch_fn at
-    #           the t=0 mask. The GUI's C_BLOCK control loop and the
-    #           multi-frequency switch fallback both build plain Python
-    #           switch_fns, so this is the path our DSED runs hit.
-    "pulsim>=1.6.4",
+    # >=1.6.5 — the motor-drive path needs it:
+    #   1.6.2 — lazy-import scipy so the native C++ DSED works on the wheel.
+    #   1.6.4 — DSED no longer freezes a *plain Python* switch_fn at t=0.
+    #   1.6.5 — dynamic-PMSM FOC: closed_loops + switch_fn + step_observer
+    #           compose; PWL Newton auto-promotes to LM on multi-stage
+    #           switched topologies; PMSM saliency (Ld/Lq); the motor
+    #           observer publishes i_d/i_q/ω/θ. Examples 19/20/21 (FOC
+    #           compressor drives) + the GUI FOC wiring all require it.
+    "pulsim>=1.6.5",
     # scipy is NOT needed for the native C++ DSED engine (the headline
     # ~24× path) — pulsim 1.6.2 reaches that without it. It IS used by
     # the pure-Python BDF2 fallback for the rare circuit the native
@@ -60,7 +61,7 @@ dev = [
 # extra so `pip install pulsimgui[fast]` lights up both layers.
 fast = [
     "numba>=0.58",
-    "pulsim[fast]>=1.6.4",
+    "pulsim[fast]>=1.6.5",
 ]
 build = [
     # PyInstaller for creating standalone executables
@@ -70,7 +71,7 @@ build = [
     # macOS DMG creation
     "dmgbuild>=1.6.0;sys_platform=='darwin'",
     # Ensure pulsim backend is available for bundling
-    "pulsim>=1.6.4",
+    "pulsim>=1.6.5",
 ]
 
 [project.scripts]

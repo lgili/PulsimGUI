@@ -143,6 +143,14 @@ class CircuitConverter:
                 continue
             if self._should_skip_component(comp_type) and comp_id not in control_override_ids:
                 continue
+            # FOC-controller markers (C_BLOCK ``control_kind="foc"``) carry
+            # no electrical connectivity — they are descriptor-only and are
+            # consumed later by ``_infer_foc_loops``. Skip node resolution
+            # so an unwired marker doesn't trip the connectivity check.
+            if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
+                component.get("parameters")
+            ):
+                continue
             nodes = self._resolve_nodes(component, comp_type, node_map, alias_map)
             if comp_id in controlled_target_node_overrides:
                 nodes = list(controlled_target_node_overrides[comp_id])
@@ -239,6 +247,20 @@ class CircuitConverter:
                 components, node_map, alias_map,
             )
             setattr(circuit, "cblock_loop_descriptors", cblock_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
+        # Detect a Field-Oriented-Control marker (a C_BLOCK carrying
+        # ``control_kind="foc"``) co-resident with a native 3φ VSI + a
+        # dynamic PMSM, and attach a ``foc_loop_descriptors`` entry. The
+        # backend (``_build_foc_loops``) closes the FOC loop at simulate
+        # time over the PMSM observer bundle (d-q currents / rotor angle)
+        # and drives the VSI via inverse Park/Clarke. Additive: empty
+        # unless the FOC marker is present, so it never perturbs the
+        # open-loop VSI / averaged-VSI / cblock paths above.
+        try:
+            foc_loops = self._infer_foc_loops(components)
+            setattr(circuit, "foc_loop_descriptors", foc_loops)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -755,6 +777,16 @@ class CircuitConverter:
     ) -> None:
         params = params_override if params_override is not None else (component.get("parameters", {}) or {})
 
+        # FOC-controller marker: a C_BLOCK carrying ``control_kind="foc"``
+        # is NOT a fast_block — it is a pure descriptor the backend reads
+        # from ``circuit.foc_loop_descriptors`` (see ``_infer_foc_loops``)
+        # to close the motor's current/speed loops. It is never wired into
+        # the power stage, so it has no builder presence: skip translation
+        # entirely (otherwise the generic virtual-component path would try
+        # to compile a non-existent control law / demand input channels).
+        if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(params):
+            return
+
         if (
             comp_type == ComponentType.CONSTANT
             and name
@@ -1150,9 +1182,31 @@ class CircuitConverter:
                 vsi_p.mosfet_vth = self._as_float(
                     params.get("mosfet_vth"), default=1.0
                 )
-                add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
-                        n_a_idx, n_b_idx, n_c_idx, vsi_p)
-                return
+                # pulsim 1.6.4 native switched VSI extras. dead_time_s
+                # feeds make_three_phase_spwm_fn's symmetric dead-time;
+                # mosfet_r_off_ohm sizes the switch OFF resistance. Both
+                # default sanely when the GUI/template omits them.
+                vsi_p.dead_time_s = self._as_float(
+                    params.get("dead_time_s"), default=0.0
+                )
+                vsi_p.mosfet_r_off_ohm = self._as_float(
+                    params.get("mosfet_r_off_ohm"), default=1e9
+                )
+                # NATIVE switched path (pulsim 1.6.4): the shim's
+                # ``add_three_phase_vsi`` builds the 6-switch topology and
+                # records the SPWM drive params on ``circuit.vsi_specs``;
+                # the backend assembles the real ``make_three_phase_spwm_fn``
+                # switch_fn at simulate time (true per-cycle switching, not
+                # an averaged fundamental). A genuinely old kernel whose
+                # shim re-raises ``AttributeError`` (no ``add_three_phase_vsi``
+                # free function) drops through to the averaged fallback
+                # below so legacy projects still load.
+                try:
+                    add_vsi(name, n_vdc_pos_idx, n_vdc_neg_idx,
+                            n_a_idx, n_b_idx, n_c_idx, vsi_p)
+                    return
+                except AttributeError:
+                    pass
 
             # Pulsim 1.5+ retired the native VSI builder. Fall back to a
             # BEHAVIORAL averaged model: three ideal sine voltage sources
@@ -2729,6 +2783,13 @@ class CircuitConverter:
             if comp_type != ComponentType.C_BLOCK:
                 continue
 
+            # FOC-controller markers are descriptor-only (read by the
+            # backend's FOC loop), not real C_BLOCK control laws — they
+            # need no input-channel mapping, so skip validation for them.
+            marker_params = component.get("parameters")
+            if self._is_foc_marker(marker_params):
+                continue
+
             component_name = self._component_name(component, comp_type)
             pins = component.get("pins")
             if not isinstance(pins, list) or not pins:
@@ -2937,6 +2998,129 @@ class CircuitConverter:
                 "setpoint_value": _float(params, "setpoint", 0.0),
                 "output_min": _float(params, "output_min", 0.0),
                 "output_max": _float(params, "output_max", 1.0),
+            })
+
+        return descriptors
+
+    @staticmethod
+    def _is_foc_marker(params: Any) -> bool:
+        """True when a C_BLOCK's parameters mark it as a FOC controller
+        (``control_kind="foc"``). Such a C_BLOCK is a descriptor-only
+        marker — not a fast_block — and is exempt from C_BLOCK
+        translation + input-channel validation."""
+        if not isinstance(params, dict):
+            return False
+        return str(params.get("control_kind", "") or "").strip().lower() == "foc"
+
+    def _infer_foc_loops(
+        self,
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Detect a Field-Oriented-Control marker and emit one
+        ``foc_loop_descriptor`` binding it to a native 3φ VSI + a dynamic
+        PMSM.
+
+        The FOC controller is represented (option-b, lowest friction) as a
+        ``C_BLOCK`` whose ``parameters`` carry ``control_kind="foc"`` plus
+        the loop gains / speed-reference ramp / limits. The C_BLOCK is a
+        pure *marker* — it is NOT electrically wired into the power stage,
+        so it never perturbs the MNA. Open-loop V/f makes a PMSM pole-slip;
+        closing i_d/i_q + speed PI loops (this descriptor, executed by the
+        backend's ``_build_foc_loops``) is what lets the motor track a
+        speed reference with rated current.
+
+        Matched topology (by presence, not wiring):
+
+            C_BLOCK[control_kind="foc"]  +  THREE_PHASE_VSI  +  PMSM
+
+        The descriptor carries the controlled VSI name (the FOC drives its
+        six switches via inverse Park/Clarke, *replacing* the VSI's open-
+        loop SPWM) and the PMSM name (the FOC reads its observer bundle's
+        live d-q currents + rotor angle). Gains / ramp / limits default to
+        the validated VLT403U recipe when the marker omits them.
+
+        Standalone + defensive: returns ``[]`` unless a FOC marker is
+        present, so the open-loop VSI, averaged-VSI fallback, and cblock
+        paths are untouched.
+        """
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        cblocks = by_type.get(ComponentType.C_BLOCK, [])
+        vsis = by_type.get(ComponentType.THREE_PHASE_VSI, [])
+        pmsms = by_type.get(ComponentType.PMSM, [])
+
+        # FOC needs a switched VSI to command and a dynamic PMSM to
+        # observe. No marker / no VSI / no PMSM ⇒ nothing to do.
+        if not cblocks or not vsis or not pmsms:
+            return []
+
+        def _float(d: dict[str, Any], key: str, default: float) -> float:
+            val = d.get(key)
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        descriptors: list[dict[str, Any]] = []
+        for cblock in cblocks:
+            params = cblock.get("parameters") if isinstance(
+                cblock.get("parameters"), dict
+            ) else {}
+            kind = str(params.get("control_kind", "") or "").strip().lower()
+            if kind != "foc":
+                continue
+
+            # Bind to a named VSI / PMSM if the marker calls one out;
+            # otherwise default to the first of each (the common single-
+            # drive case). The backend resolves names → specs.
+            vsi_name = str(params.get("vsi_name", "") or "").strip()
+            if not vsi_name:
+                vsi_name = self._component_name(
+                    vsis[0], ComponentType.THREE_PHASE_VSI
+                )
+            pmsm_name = str(params.get("pmsm_name", "") or "").strip()
+            if not pmsm_name:
+                pmsm_name = self._component_name(
+                    pmsms[0], ComponentType.PMSM
+                )
+
+            descriptors.append({
+                "name": self._component_name(cblock, ComponentType.C_BLOCK),
+                "vsi_name": vsi_name,
+                "pmsm_name": pmsm_name,
+                # DC-bus magnitude the backend uses to normalise the
+                # modulation + clamp v_d/v_q (Vbus/2). The kernel can't
+                # infer the live, rippling bus, so the marker carries the
+                # NOMINAL bus of its front-end (e.g. ~360 V doubler,
+                # ~400 V PFC). Defaults to the VLT403U 360 V reference.
+                "v_bus": _float(params, "v_bus", 360.0),
+                # --- speed (outer) PI -> iq_ref ---
+                "speed_kp": _float(params, "speed_kp", 0.17),
+                "speed_ki": _float(params, "speed_ki", 6.0),
+                # --- current (inner) PIs (shared id/iq gains) ---
+                "current_kp": _float(params, "current_kp", 45.0),
+                "current_ki": _float(params, "current_ki", 24000.0),
+                # --- references / limits ---
+                "id_ref": _float(params, "id_ref", 0.0),
+                "iq_limit": _float(params, "iq_limit", 3.0),
+                # voltage clamp as a fraction of the half-bus (Vbus/2).
+                "v_limit_frac": _float(params, "v_limit_frac", 0.92),
+                # Speed-reference ramp: 0 → ``speed_ref_rpm`` linearly over
+                # ``speed_ramp_s`` (mechanical rpm), then hold.
+                "speed_ref_rpm": _float(params, "speed_ref_rpm", 1800.0),
+                "speed_ramp_s": _float(params, "speed_ramp_s", 0.10),
+                # Carrier (switching) frequency for the inverse-Park PWM.
+                "switching_frequency_hz": _float(
+                    params, "switching_frequency_hz", 20000.0
+                ),
             })
 
         return descriptors

@@ -34,6 +34,13 @@ class SimulationSettings:
     max_iterations: int = 50
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
+    # Newton Levenberg-Marquardt damping (pulsim ``simulate`` kwarg).
+    # Off by default to keep pre-existing projects bit-identical; some
+    # ill-conditioned multi-switch topologies (e.g. a boost PFC stage
+    # composed with a switched VSI) only clear the Newton near-miss with
+    # this damping on. Persisted so a project can guarantee it on a
+    # fresh GUI Run instead of relying on app preferences.
+    enable_newton_lm: bool = False
     dc_strategy: str = "auto"
     gmin_initial: float = 1e-3
     gmin_final: float = 1e-12
@@ -91,6 +98,7 @@ class SimulationSettings:
             "max_iterations": self.max_iterations,
             "enable_voltage_limiting": self.enable_voltage_limiting,
             "max_voltage_step": self.max_voltage_step,
+            "enable_newton_lm": self.enable_newton_lm,
             "dc_strategy": self.dc_strategy,
             "gmin_initial": self.gmin_initial,
             "gmin_final": self.gmin_final,
@@ -197,6 +205,7 @@ class SimulationSettings:
             max_iterations=data.get("max_iterations", 50),
             enable_voltage_limiting=bool(data.get("enable_voltage_limiting", False)),
             max_voltage_step=float(data.get("max_voltage_step", 5.0)),
+            enable_newton_lm=bool(data.get("enable_newton_lm", False)),
             dc_strategy=str(data.get("dc_strategy", "auto")),
             gmin_initial=float(data.get("gmin_initial", 1e-3)),
             gmin_final=float(data.get("gmin_final", 1e-12)),

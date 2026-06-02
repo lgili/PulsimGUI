@@ -1396,6 +1396,9 @@ class SimulationService(QObject):
         runtime_settings.enable_voltage_limiting = bool(
             getattr(project_settings, "enable_voltage_limiting", runtime_settings.enable_voltage_limiting)
         )
+        runtime_settings.enable_newton_lm = bool(
+            getattr(project_settings, "enable_newton_lm", runtime_settings.enable_newton_lm)
+        )
         runtime_settings.max_voltage_step = float(
             getattr(project_settings, "max_voltage_step", runtime_settings.max_voltage_step)
         )
