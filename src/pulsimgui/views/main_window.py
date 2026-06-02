@@ -4304,6 +4304,7 @@ class MainWindow(QMainWindow):
                     probe_name,
                     str(component.id),
                     node_label=node_label,
+                    node_id=node_map.get((str(component.id), 0)),
                     kernel_prefix="V",
                 )
                 if backend_series is not None:
@@ -4324,6 +4325,7 @@ class MainWindow(QMainWindow):
                     probe_name,
                     str(component.id),
                     node_label=node_label,
+                    node_id=node_map.get((str(component.id), 0)),
                     kernel_prefix="V",
                 )
                 if backend_series is not None:
@@ -4344,6 +4346,7 @@ class MainWindow(QMainWindow):
                     probe_name,
                     str(component.id),
                     node_label=node_label,
+                    node_id=node_map.get((str(component.id), 0)),
                     kernel_prefix="I",
                 )
                 if backend_series is None:
@@ -4365,6 +4368,7 @@ class MainWindow(QMainWindow):
                     probe_name,
                     str(component.id),
                     node_label=node_label,
+                    node_id=node_map.get((str(component.id), 0)),
                     kernel_prefix="P",
                 )
                 if backend_series is None:
@@ -4402,6 +4406,7 @@ class MainWindow(QMainWindow):
         component_id: str,
         *,
         node_label: str | None = None,
+        node_id: str | None = None,
         kernel_prefix: str = "V",
     ) -> list[float] | None:
         """Resolve backend-native probe channel names to a signal series.
@@ -4414,7 +4419,12 @@ class MainWindow(QMainWindow):
         3. ``node_label`` directly, ``V(node_label)``, plus case
            variants — works when the kernel emits the node's voltage
            under the wire alias (e.g. ``"V(SW)"``).
-        4. Last-resort: a case-insensitive sweep of ``result.signals``
+        4. ``N{node_id}`` / ``V(N{node_id})`` — the backend names every
+           electrical node ``N{netid}`` and emits its voltage as
+           ``V(N{netid})`` regardless of any wire alias, so an aliased
+           node (alias ``BUSP`` but backend name ``N1``) or a bare numeric
+           net id (``4`` vs backend ``N4``) still resolves.
+        5. Last-resort: a case-insensitive sweep of ``result.signals``
            keys whose body inside ``V(…)`` / ``I(…)`` matches
            ``node_label``.
         """
@@ -4426,6 +4436,11 @@ class MainWindow(QMainWindow):
                 node_label.lower(),
             }
             for variant in label_variants:
+                candidates.append(variant)
+                candidates.append(f"{kernel_prefix}({variant})")
+        if node_id:
+            nid = str(node_id)
+            for variant in (f"N{nid}", nid):
                 candidates.append(variant)
                 candidates.append(f"{kernel_prefix}({variant})")
 
