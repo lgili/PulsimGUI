@@ -23,24 +23,42 @@ class SimulationSettings:
     dt: float = 1e-6
     max_step: float = 1e-6
     tstart: float = 0.0
-    abstol: float = 1e-12
+    # User-friendly defaults — tuned so a non-expert user opening the GUI
+    # never hits a Newton-convergence error out of the box on real-world
+    # switched / closed-loop topologies (PFC boosts, FOC drives, LLC,
+    # cascaded converters). Expert users tighten in the dialog.
+    #   abstol:           1e-6 matches pulsim's own default + SPICE-class
+    #                     tolerance; tight enough for accuracy, loose
+    #                     enough to clear the residual chip every PWM
+    #                     edge leaves behind at f_sw ≥ 65 kHz.
+    #   reltol:           1e-3 unchanged — standard SPICE value.
+    #   max_step_retries: 16 (was 8) gives the event-driven scheduler
+    #                     headroom on rapidly-switching circuits.
+    #   max_iterations:   100 (was 50) gives Newton enough budget on
+    #                     ill-conditioned PFC + VSI stacks.
+    #   enable_newton_lm: True (was False) turns on Levenberg-Marquardt
+    #                     damping — the kernel falls back to it ONLY
+    #                     when plain Newton stalls, so accuracy is
+    #                     unchanged when convergence is clean, and the
+    #                     hard cases that previously crashed now resolve.
+    abstol: float = 1e-6
     reltol: float = 1e-3
     solver: str = "auto"
     step_mode: str = "fixed"
     output_points: int = 10000
     enable_events: bool = True
-    max_step_retries: int = 8
+    max_step_retries: int = 16
     enable_losses: bool = True
-    max_iterations: int = 50
+    max_iterations: int = 100
     enable_voltage_limiting: bool = False
     max_voltage_step: float = 5.0
     # Newton Levenberg-Marquardt damping (pulsim ``simulate`` kwarg).
-    # Off by default to keep pre-existing projects bit-identical; some
-    # ill-conditioned multi-switch topologies (e.g. a boost PFC stage
-    # composed with a switched VSI) only clear the Newton near-miss with
-    # this damping on. Persisted so a project can guarantee it on a
-    # fresh GUI Run instead of relying on app preferences.
-    enable_newton_lm: bool = False
+    # On by default — only activates when plain Newton would otherwise
+    # stall (the most common cause of the "failed to converge after N
+    # iterations" GUI error users used to see on closed-loop PFC/FOC
+    # circuits). When Newton converges cleanly the LM step is identical
+    # to plain Newton, so accuracy is unchanged.
+    enable_newton_lm: bool = True
     dc_strategy: str = "auto"
     gmin_initial: float = 1e-3
     gmin_final: float = 1e-12
@@ -194,18 +212,19 @@ class SimulationSettings:
             dt=data.get("dt", 1e-6),
             max_step=float(data.get("max_step", data.get("dt", 1e-6))),
             tstart=data.get("tstart", 0.0),
-            abstol=data.get("abstol", 1e-12),
+            # Friendly defaults — see SimulationSettings dataclass above.
+            abstol=data.get("abstol", 1e-6),
             reltol=data.get("reltol", 1e-3),
             solver=str(data.get("solver", "auto")),
             step_mode=str(data.get("step_mode", "fixed")),
             output_points=int(data.get("output_points", 10000)),
             enable_events=bool(data.get("enable_events", True)),
-            max_step_retries=int(data.get("max_step_retries", 8)),
+            max_step_retries=int(data.get("max_step_retries", 16)),
             enable_losses=bool(data.get("enable_losses", True)),
-            max_iterations=data.get("max_iterations", 50),
+            max_iterations=data.get("max_iterations", 100),
             enable_voltage_limiting=bool(data.get("enable_voltage_limiting", False)),
             max_voltage_step=float(data.get("max_voltage_step", 5.0)),
-            enable_newton_lm=bool(data.get("enable_newton_lm", False)),
+            enable_newton_lm=bool(data.get("enable_newton_lm", True)),
             dc_strategy=str(data.get("dc_strategy", "auto")),
             gmin_initial=float(data.get("gmin_initial", 1e-3)),
             gmin_final=float(data.get("gmin_final", 1e-12)),

@@ -320,13 +320,16 @@ class SimulationSettings:
     t_step: float = 1e-6  # 1us default
 
     # Integration settings
+    # Defaults tuned for non-expert users opening real-world switched
+    # circuits (PFC boost, FOC drive, LLC, cascaded converters). See
+    # models.project.SimulationSettings for the rationale.
     solver: str = "auto"  # auto, trapezoidal, bdf1..bdf5, gear, trbdf2, rosenbrockw, sdirk2
     step_mode: str = "fixed"  # fixed, variable
     max_step: float = 1e-6
-    rel_tol: float = 1e-4
+    rel_tol: float = 1e-3
     abs_tol: float = 1e-6
     enable_events: bool = True
-    max_step_retries: int = 8
+    max_step_retries: int = 16
 
     # ── Engine selector (pulsim >=1.6) ─────────────────────────────
     # "pwl"  → fixed-step trapezoidal + PWL cache (default, bit-exact
@@ -355,7 +358,12 @@ class SimulationSettings:
     # ``tol_newton_res`` — convergence tolerance on the residual norm.
     tol_newton_res: float | None = None
     enable_newton_line_search: bool = True
-    enable_newton_lm: bool = False
+    # Levenberg-Marquardt damping ON by default — the kernel only falls
+    # back to it when plain Newton stalls (the most common cause of the
+    # "failed to converge after N iterations" error users used to hit on
+    # closed-loop PFC/FOC circuits). When Newton converges cleanly the LM
+    # step is identical to plain Newton, so accuracy is unchanged.
+    enable_newton_lm: bool = True
     enable_substep_state_correction: bool = True
     # Auto-detect nonlinear blocks in the circuit (diode, MOSFET, etc.)
     # so the kernel only runs Newton refresh when needed. None ⇒ auto.

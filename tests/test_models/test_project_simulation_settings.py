@@ -46,11 +46,17 @@ def test_project_simulation_settings_roundtrip_enable_newton_lm() -> None:
     assert restored.enable_newton_lm is True
 
 
-def test_project_simulation_settings_enable_newton_lm_defaults_false() -> None:
-    """A legacy file (no ``enable_newton_lm`` key) defaults to False so
-    pre-existing projects keep their bit-identical Newton behavior."""
-    assert SimulationSettings().enable_newton_lm is False
-    assert SimulationSettings.from_dict({"tstop": 1e-3}).enable_newton_lm is False
+def test_project_simulation_settings_enable_newton_lm_defaults_true() -> None:
+    """Friendly default: ``enable_newton_lm`` is True so a non-expert user
+    opening the GUI on a real-world switched / closed-loop circuit (PFC
+    boost, FOC drive, LLC, etc.) does NOT hit the
+    "solve_with_newton: failed to converge after N iterations" stall.
+    Levenberg-Marquardt damping only activates when plain Newton would
+    otherwise diverge — when convergence is clean the LM step is
+    identical to Newton, so accuracy is unchanged. Legacy files without
+    the key auto-upgrade to True."""
+    assert SimulationSettings().enable_newton_lm is True
+    assert SimulationSettings.from_dict({"tstop": 1e-3}).enable_newton_lm is True
 
 
 def test_project_simulation_settings_thermal_policy_defaults_roundtrip() -> None:

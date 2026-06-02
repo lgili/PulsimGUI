@@ -491,7 +491,7 @@ sim_settings = {
     "tol_newton_dx": 1.0e-6,
     "tol_newton_res": 1.0e-6,
     "enable_newton_line_search": True,
-    "enable_newton_lm": False,
+    "enable_newton_lm": True,
     "enable_substep_state_correction": True,
     "enable_nonlinear_refresh": True,
     "start_from_dc_op": False,
