@@ -688,11 +688,11 @@
           ]
         },
         {
-          "id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+          "id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
           "type": "SIGNAL_DEMUX",
           "name": "MotorBus",
           "x": 820.0,
-          "y": 20.0,
+          "y": 80.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -770,11 +770,11 @@
           ]
         },
         {
-          "id": "5a735517-44a5-419d-8e99-76f860386cf0",
+          "id": "cde68b8a-9063-4e82-b0c3-ccfae887616d",
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope_Speed",
-          "x": 1240.0,
-          "y": -280.0,
+          "x": 1080.0,
+          "y": 20.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -797,11 +797,11 @@
           ]
         },
         {
-          "id": "6f3331f5-3dad-4b23-afd1-0b48b9cf4138",
+          "id": "7453c296-3c27-41ea-9257-397d0e64d102",
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope_Currents",
-          "x": 1240.0,
-          "y": 20.0,
+          "x": 1260.0,
+          "y": 60.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -844,11 +844,11 @@
           ]
         },
         {
-          "id": "113bad66-db9b-414a-9a29-aeab67621eb4",
+          "id": "63729143-c2a1-47e7-9233-bcef1594abd2",
           "type": "ELECTRICAL_SCOPE",
           "name": "Scope_dq",
-          "x": 1240.0,
-          "y": 320.0,
+          "x": 1460.0,
+          "y": 120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1541,7 +1541,7 @@
           "alias": ""
         },
         {
-          "id": "510f3083-bb39-4f81-81ba-a9cb6920de89",
+          "id": "3c727b24-f0e1-4e07-b4b9-147955de006b",
           "segments": [
             {
               "x1": 660.0,
@@ -1553,13 +1553,13 @@
               "x1": 730.0,
               "y1": 20.0,
               "x2": 730.0,
-              "y2": 20.0
+              "y2": 80.0
             },
             {
               "x1": 730.0,
-              "y1": 20.0,
+              "y1": 80.0,
               "x2": 800.0,
-              "y2": 20.0
+              "y2": 80.0
             }
           ],
           "start_connection": {
@@ -1567,7 +1567,7 @@
             "pin_index": 4
           },
           "end_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 0
           },
           "junctions": [],
@@ -1575,33 +1575,21 @@
           "alias": ""
         },
         {
-          "id": "55b49870-dab4-43d3-9652-44ba34af1346",
+          "id": "ab9c45b2-d155-4b99-a0dc-0a534cb3fdb0",
           "segments": [
             {
               "x1": 840.0,
-              "y1": -40.0,
-              "x2": 860.0,
-              "y2": -40.0
-            },
-            {
-              "x1": 860.0,
-              "y1": -40.0,
-              "x2": 860.0,
-              "y2": -280.0
-            },
-            {
-              "x1": 860.0,
-              "y1": -280.0,
-              "x2": 1200.0,
-              "y2": -280.0
+              "y1": 20.0,
+              "x2": 1040.0,
+              "y2": 20.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 1
           },
           "end_connection": {
-            "component_id": "5a735517-44a5-419d-8e99-76f860386cf0",
+            "component_id": "cde68b8a-9063-4e82-b0c3-ccfae887616d",
             "pin_index": 0
           },
           "junctions": [],
@@ -1609,33 +1597,21 @@
           "alias": ""
         },
         {
-          "id": "8b4cb007-4a97-4d19-a836-76ff5e593f74",
+          "id": "23549dab-6619-4d91-bd23-e53184774440",
           "segments": [
             {
               "x1": 840.0,
-              "y1": -20.0,
-              "x2": 884.0,
-              "y2": -20.0
-            },
-            {
-              "x1": 884.0,
-              "y1": -20.0,
-              "x2": 884.0,
-              "y2": 0.0
-            },
-            {
-              "x1": 884.0,
-              "y1": 0.0,
-              "x2": 1200.0,
-              "y2": 0.0
+              "y1": 40.0,
+              "x2": 1220.0,
+              "y2": 40.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 2
           },
           "end_connection": {
-            "component_id": "6f3331f5-3dad-4b23-afd1-0b48b9cf4138",
+            "component_id": "7453c296-3c27-41ea-9257-397d0e64d102",
             "pin_index": 0
           },
           "junctions": [],
@@ -1643,33 +1619,21 @@
           "alias": ""
         },
         {
-          "id": "7bf67106-c22c-43ab-8943-118ad6dea181",
+          "id": "eae9ae30-6052-4950-9a9e-d10abe37f4cb",
           "segments": [
             {
               "x1": 840.0,
-              "y1": 0.0,
-              "x2": 908.0,
-              "y2": 0.0
-            },
-            {
-              "x1": 908.0,
-              "y1": 0.0,
-              "x2": 908.0,
-              "y2": 20.0
-            },
-            {
-              "x1": 908.0,
-              "y1": 20.0,
-              "x2": 1200.0,
-              "y2": 20.0
+              "y1": 60.0,
+              "x2": 1220.0,
+              "y2": 60.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 3
           },
           "end_connection": {
-            "component_id": "6f3331f5-3dad-4b23-afd1-0b48b9cf4138",
+            "component_id": "7453c296-3c27-41ea-9257-397d0e64d102",
             "pin_index": 1
           },
           "junctions": [],
@@ -1677,33 +1641,21 @@
           "alias": ""
         },
         {
-          "id": "ac8c62d1-ed5c-424a-bb26-839d4f0fd70a",
+          "id": "4002fabf-1a10-4e3f-b122-185af15a7f89",
           "segments": [
             {
               "x1": 840.0,
-              "y1": 20.0,
-              "x2": 932.0,
-              "y2": 20.0
-            },
-            {
-              "x1": 932.0,
-              "y1": 20.0,
-              "x2": 932.0,
-              "y2": 40.0
-            },
-            {
-              "x1": 932.0,
-              "y1": 40.0,
-              "x2": 1200.0,
-              "y2": 40.0
+              "y1": 80.0,
+              "x2": 1220.0,
+              "y2": 80.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 4
           },
           "end_connection": {
-            "component_id": "6f3331f5-3dad-4b23-afd1-0b48b9cf4138",
+            "component_id": "7453c296-3c27-41ea-9257-397d0e64d102",
             "pin_index": 2
           },
           "junctions": [],
@@ -1711,33 +1663,21 @@
           "alias": ""
         },
         {
-          "id": "cc5ea3f1-59b4-4c93-a8da-2cd87a6fecb5",
+          "id": "c9005815-2463-4f99-8320-c04a662f12ba",
           "segments": [
             {
               "x1": 840.0,
-              "y1": 40.0,
-              "x2": 956.0,
-              "y2": 40.0
-            },
-            {
-              "x1": 956.0,
-              "y1": 40.0,
-              "x2": 956.0,
-              "y2": 300.0
-            },
-            {
-              "x1": 956.0,
-              "y1": 300.0,
-              "x2": 1200.0,
-              "y2": 300.0
+              "y1": 100.0,
+              "x2": 1420.0,
+              "y2": 100.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 5
           },
           "end_connection": {
-            "component_id": "113bad66-db9b-414a-9a29-aeab67621eb4",
+            "component_id": "63729143-c2a1-47e7-9233-bcef1594abd2",
             "pin_index": 0
           },
           "junctions": [],
@@ -1745,33 +1685,21 @@
           "alias": ""
         },
         {
-          "id": "2a35281c-51da-4b1f-98d5-bc572e2f3493",
+          "id": "96e50e86-46a6-4123-8115-5c79aa15c3ef",
           "segments": [
             {
               "x1": 840.0,
-              "y1": 60.0,
-              "x2": 980.0,
-              "y2": 60.0
-            },
-            {
-              "x1": 980.0,
-              "y1": 60.0,
-              "x2": 980.0,
-              "y2": 320.0
-            },
-            {
-              "x1": 980.0,
-              "y1": 320.0,
-              "x2": 1200.0,
-              "y2": 320.0
+              "y1": 120.0,
+              "x2": 1420.0,
+              "y2": 120.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 6
           },
           "end_connection": {
-            "component_id": "113bad66-db9b-414a-9a29-aeab67621eb4",
+            "component_id": "63729143-c2a1-47e7-9233-bcef1594abd2",
             "pin_index": 1
           },
           "junctions": [],
@@ -1779,33 +1707,21 @@
           "alias": ""
         },
         {
-          "id": "2f195084-cbcb-4fa2-b91c-83cc875345ad",
+          "id": "f0233ff0-e94a-4b91-b892-be63057a7806",
           "segments": [
             {
               "x1": 840.0,
-              "y1": 80.0,
-              "x2": 1004.0,
-              "y2": 80.0
-            },
-            {
-              "x1": 1004.0,
-              "y1": 80.0,
-              "x2": 1004.0,
-              "y2": 340.0
-            },
-            {
-              "x1": 1004.0,
-              "y1": 340.0,
-              "x2": 1200.0,
-              "y2": 340.0
+              "y1": 140.0,
+              "x2": 1420.0,
+              "y2": 140.0
             }
           ],
           "start_connection": {
-            "component_id": "60bd74a3-ac7c-453b-aa6a-0849452bf8ce",
+            "component_id": "c6095721-7522-4b9f-9ea2-4e0e93643f24",
             "pin_index": 7
           },
           "end_connection": {
-            "component_id": "113bad66-db9b-414a-9a29-aeab67621eb4",
+            "component_id": "63729143-c2a1-47e7-9233-bcef1594abd2",
             "pin_index": 2
           },
           "junctions": [],
