@@ -1765,7 +1765,20 @@ class Component:
     pins: list[Pin] = field(default_factory=list)
 
     def __post_init__(self):
-        """Initialize default pins and parameters if not provided."""
+        """Initialize default pins/parameters and normalize the layout.
+
+        Pins supplied explicitly — e.g. by :meth:`from_dict` when opening a
+        saved circuit — are authoritative: their exact positions are
+        preserved so saved wire endpoints stay attached and the symbol does
+        not visually stretch. Parameter normalization and structural pin
+        synchronization still run; only the grid-snap / default-respacing
+        *nudge* is reverted, and only when synchronization left the pin set
+        (names + order) unchanged. A genuine structural change (e.g. a
+        probe-schema rename, or a param-driven channel-count change) keeps
+        the freshly synchronized layout. Components created from scratch (no
+        pins provided) get the full default layout plus grid snapping.
+        """
+        pins_were_loaded = bool(self.pins)
         if not self.pins and self.type in DEFAULT_PINS:
             self.pins = [
                 Pin(p.index, p.name, p.x, p.y) for p in DEFAULT_PINS[self.type]
@@ -1773,8 +1786,25 @@ class Component:
         if not self.parameters and self.type in DEFAULT_PARAMETERS:
             self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
 
+        saved_names: list[str] | None = None
+        saved_geometry: dict[str, tuple[float, float]] | None = None
+        if pins_were_loaded:
+            saved_names = [pin.name for pin in self.pins]
+            saved_geometry = {pin.name: (pin.x, pin.y) for pin in self.pins}
+
         _synchronize_special_component(self)
-        _snap_component_pins_to_grid(self)
+
+        if (
+            saved_geometry is not None
+            and [pin.name for pin in self.pins] == saved_names
+        ):
+            # Synchronization only nudged geometry (grid-snap / default
+            # respacing) — undo it so loaded pins stay exactly where the
+            # file (and its wires) put them.
+            for pin in self.pins:
+                pin.x, pin.y = saved_geometry[pin.name]
+        else:
+            _snap_component_pins_to_grid(self)
 
     def get_pin_position(self, pin_index: int) -> tuple[float, float]:
         """Get absolute position of a pin, accounting for rotation and mirroring."""

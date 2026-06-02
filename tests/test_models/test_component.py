@@ -371,3 +371,84 @@ class TestComponent:
         assert can_connect_measurement_pins(v_probe, 2, cblock, 0)
         assert can_connect_measurement_pins(v_probe_gnd, 1, cblock, 0)
         assert can_connect_measurement_pins(i_probe, 2, cblock, 0)
+
+
+class TestLoadedPinPreservation:
+    """Opening a saved circuit must not move pins.
+
+    Regression: a later grid-snap normalization re-canonicalized the
+    default pin offsets (±25/±30/±35 → ±20/±40). Files saved before that
+    change stored the old offsets, and ``__post_init__`` used to re-snap /
+    regenerate them on load — shifting pins 5-10 px so symbols visually
+    stretched and saved wires detached. Loaded pins are now authoritative:
+    their exact positions survive when synchronization only nudged geometry.
+    """
+
+    def _off_grid_dict(
+        self,
+        type_name: str,
+        pins: list[tuple[str, float, float]],
+        parameters: dict | None = None,
+    ) -> dict:
+        return {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "type": type_name,
+            "name": "X1",
+            "x": 100.0,
+            "y": 100.0,
+            "rotation": 0,
+            "mirrored_h": False,
+            "mirrored_v": False,
+            "parameters": parameters or {},
+            "pins": [
+                {"index": i, "name": n, "x": x, "y": y}
+                for i, (n, x, y) in enumerate(pins)
+            ],
+        }
+
+    def test_loaded_offgrid_resistor_pins_are_preserved(self):
+        comp = Component.from_dict(
+            self._off_grid_dict("RESISTOR", [("1", -25.0, 0.0), ("2", 25.0, 0.0)])
+        )
+        coords = [(p.name, p.x, p.y) for p in comp.pins]
+        assert coords == [("1", -25.0, 0.0), ("2", 25.0, 0.0)]
+
+    def test_loaded_offgrid_device_pins_are_preserved(self):
+        # A multi-terminal device (PMSM-style ±25/±30 offsets, off the 20px grid).
+        comp = Component.from_dict(
+            self._off_grid_dict(
+                "PMSM",
+                [("A", -30.0, -25.0), ("B", -30.0, 0.0), ("C", -30.0, 25.0), ("N", 30.0, 0.0)],
+            )
+        )
+        coords = {p.name: (p.x, p.y) for p in comp.pins}
+        assert coords == {
+            "A": (-30.0, -25.0),
+            "B": (-30.0, 0.0),
+            "C": (-30.0, 25.0),
+            "N": (30.0, 0.0),
+        }
+
+    def test_loaded_scope_channel_positions_are_preserved(self):
+        comp = Component.from_dict(
+            self._off_grid_dict(
+                "ELECTRICAL_SCOPE",
+                [("CH1", -40.0, -25.0), ("CH2", -40.0, 0.0), ("CH3", -40.0, 25.0)],
+                parameters={"channel_count": 3},
+            )
+        )
+        coords = {p.name: (p.x, p.y) for p in comp.pins}
+        assert coords["CH1"] == (-40.0, -25.0)
+        assert coords["CH3"] == (-40.0, 25.0)  # not snapped to 20.0
+
+    def test_fresh_component_still_snaps_to_grid(self):
+        # No pins provided => default layout + grid snap (unchanged behavior).
+        comp = Component(type=ComponentType.RESISTOR, name="R1")
+        for pin in comp.pins:
+            assert pin.x % 20.0 == 0.0 and pin.y % 20.0 == 0.0
+
+    def test_structural_migration_still_applies_on_load(self):
+        # Empty saved pins => generate defaults (legit structural change).
+        comp = Component.from_dict(self._off_grid_dict("C_BLOCK", []))
+        names = {p.name for p in comp.pins}
+        assert "IN0" in names and "OUT" in names
