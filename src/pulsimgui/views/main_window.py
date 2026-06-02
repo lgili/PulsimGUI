@@ -46,7 +46,11 @@ from pulsimgui.commands.component_commands import (
     RotateComponentCommand,
     UpdateComponentStateCommand,
 )
-from pulsimgui.commands.wire_commands import AddWireCommand, DeleteWireCommand
+from pulsimgui.commands.wire_commands import (
+    AddWireCommand,
+    DeleteWireCommand,
+    RerouteAllWiresCommand,
+)
 from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     CONNECTION_DOMAIN_CIRCUIT,
@@ -665,6 +669,14 @@ class MainWindow(QMainWindow):
         self.action_select_all = QAction("Select &All", self)
         self.action_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
 
+        self.action_auto_route_wires = QAction("Tidy &Wires", self)
+        self.action_auto_route_wires.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.action_auto_route_wires.setToolTip(
+            "Re-route all wires as clean horizontal/vertical paths "
+            "(components stay put) — Ctrl+Shift+R"
+        )
+        self.action_auto_route_wires.triggered.connect(self._on_auto_route_wires)
+
         self.action_rename_signal = QAction("&Rename Signal...", self)
         self.action_rename_signal.setShortcut(QKeySequence("F2"))
         self.action_rename_signal.triggered.connect(self._on_rename_signal)
@@ -879,6 +891,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_delete)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_select_all)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.action_auto_route_wires)
         edit_menu.addAction(self.action_rename_signal)
         edit_menu.addSeparator()
         edit_menu.addAction(self.action_copy_schematic)
@@ -1894,6 +1908,23 @@ class MainWindow(QMainWindow):
         if self._has_text_input_focus():
             return
         self._schematic_view.select_all_items()
+
+    def _on_auto_route_wires(self) -> None:
+        """Re-route every wire in the active circuit as clean orthogonal
+        paths (obstacle-avoiding). Components are not moved. Undoable."""
+        circuit = self._current_circuit()
+        wire_count = len(circuit.wires)
+        if wire_count == 0:
+            self.statusBar().showMessage("No wires to tidy", 2000)
+            return
+        grid = float(getattr(self._schematic_scene, "grid_size", 20.0) or 20.0)
+        self._execute_schematic_command(
+            RerouteAllWiresCommand(circuit, grid=grid),
+            refresh_scene=True,
+        )
+        self.statusBar().showMessage(
+            f"Tidied {wire_count} wire{'s' if wire_count != 1 else ''}", 3000
+        )
 
     def _on_hierarchy_changed(self, _level) -> None:
         """Refresh scene when hierarchy level changes."""
