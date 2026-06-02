@@ -106,6 +106,7 @@ def resolve_scope_signal_specs(
     """
     bindings = build_scope_channel_bindings(scope_component, circuit)
     builder = _circuit_builder(simulation_service, project)
+    channels = scope_component.parameters.get("channels", []) or []
 
     is_thermal = scope_component.type.name == "THERMAL_SCOPE"
     prefix = "T" if is_thermal else "V"
@@ -114,6 +115,24 @@ def resolve_scope_signal_specs(
     live: list[LiveSignalSpec] = []
     post: list[PostSimSignalSpec] = []
     for i, binding in enumerate(bindings):
+        # A channel may name a result signal directly (``"signal"`` in its
+        # config) instead of being wired to a probe — used to plot device
+        # observer traces (e.g. ``M1.speed_rpm`` / ``M1.i_a``) that aren't
+        # electrical nodes. Post-sim only: they're not in the live state
+        # vector, so they appear when the run finishes.
+        channel_cfg = channels[i] if i < len(channels) else {}
+        direct_signal = ""
+        if isinstance(channel_cfg, dict):
+            direct_signal = str(channel_cfg.get("signal") or "").strip()
+        if direct_signal:
+            display = str(channel_cfg.get("label") or direct_signal)
+            post.append(PostSimSignalSpec(
+                name=display,
+                signal_key=direct_signal,
+                fallback_keys=(),
+            ))
+            continue
+
         # ``signals[0].signal_key`` is the canonical key the kernel emits
         # into ``SimulationResult.signals``. Without a key there's nothing
         # to plot.

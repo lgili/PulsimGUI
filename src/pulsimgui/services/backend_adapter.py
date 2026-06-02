@@ -1055,6 +1055,73 @@ class PulsimBackend(SimulationBackend):
                     channels[str(channel_name)] = comp_type
         return channels
 
+    def _merge_motor_observer_signals(self, circuit: Any, result: BackendRunResult) -> None:
+        """Publish dynamic-machine observer traces as named result signals.
+
+        A PMSM tracked by ``circuit.nonlinear_observer_specs`` carries a live
+        observer bundle with rotor speed + d/q + per-phase current traces.
+        These are NOT in the electrical state vector, so they never reach
+        ``result.signals`` on their own. Resample each onto the output time
+        base and expose them as ``<motor>.speed_rpm`` / ``.i_a`` / ``.i_d`` /
+        ``.torque`` … so a scope channel can plot the motor's mechanical +
+        control state (speed ramp, sinusoidal phase currents, decoupled d-q)
+        directly — the FOC story the electrical node voltages can't tell.
+        """
+        if not result.time:
+            return
+        specs = getattr(circuit, "nonlinear_observer_specs", []) or []
+        if not specs:
+            return
+        try:
+            t_out = np.asarray(result.time, dtype=np.float64)
+        except (TypeError, ValueError):
+            return
+        if t_out.size == 0:
+            return
+
+        published: list[str] = []
+        for spec in specs:
+            if str(spec.get("kind") or "") != "pmsm":
+                continue
+            bundle = spec.get("bundle")
+            if bundle is None:
+                continue
+            name = (str(spec.get("name") or "").strip() or "M1")
+            try:
+                t_b = np.asarray(list(getattr(bundle, "times", []) or []), dtype=np.float64)
+            except (TypeError, ValueError):
+                continue
+            if t_b.size < 2:
+                continue
+            # bundle attr -> (signal-name suffix, scale)
+            traces = (
+                ("omega_rad_s", "speed_rpm", 60.0 / (2.0 * math.pi)),
+                ("i_a", "i_a", 1.0),
+                ("i_b", "i_b", 1.0),
+                ("i_c", "i_c", 1.0),
+                ("i_d", "i_d", 1.0),
+                ("i_q", "i_q", 1.0),
+                ("T_em", "torque", 1.0),
+            )
+            for attr, suffix, scale in traces:
+                raw = getattr(bundle, attr, None)
+                if raw is None:
+                    continue
+                try:
+                    arr = np.asarray(list(raw), dtype=np.float64)
+                except (TypeError, ValueError):
+                    continue
+                n = min(arr.size, t_b.size)
+                if n < 2:
+                    continue
+                values = np.interp(t_out, t_b[:n], arr[:n] * scale)
+                key = f"{name}.{suffix}"
+                result.signals[key] = values.tolist()
+                published.append(key)
+
+        if published:
+            result.statistics["motor_observer_signals"] = sorted(set(published))
+
     def _merge_native_virtual_probe_channels(
         self,
         circuit: Any,
@@ -2449,6 +2516,7 @@ class PulsimBackend(SimulationBackend):
         )
 
         self._merge_native_virtual_probe_channels(circuit, native_result, result)
+        self._merge_motor_observer_signals(circuit, result)
 
         if result.time:
             final_sample = {
@@ -2660,6 +2728,7 @@ class PulsimBackend(SimulationBackend):
             )
             if virtual_channels:
                 self._merge_streaming_virtual_channels(result, virtual_channels)
+            self._merge_motor_observer_signals(circuit, result)
             return result
 
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:

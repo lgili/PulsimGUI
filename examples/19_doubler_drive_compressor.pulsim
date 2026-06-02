@@ -626,6 +626,123 @@
               "y": 25.0
             }
           ]
+        },
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000001",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_Speed",
+          "x": 1160.0,
+          "y": -360.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 1,
+            "channels": [
+              {
+                "label": "Speed (rpm)",
+                "signal": "M1.speed_rpm",
+                "overlay": false
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_Currents",
+          "x": 1160.0,
+          "y": -180.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 3,
+            "channels": [
+              {
+                "label": "i_a",
+                "signal": "M1.i_a",
+                "overlay": false
+              },
+              {
+                "label": "i_b",
+                "signal": "M1.i_b",
+                "overlay": false
+              },
+              {
+                "label": "i_c",
+                "signal": "M1.i_c",
+                "overlay": false
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "CH3",
+              "x": -40.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "bbbbbbbb-0000-4000-8000-000000000003",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_dq",
+          "x": 1160.0,
+          "y": 40.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "i_d (\u22480)",
+                "signal": "M1.i_d",
+                "overlay": false
+              },
+              {
+                "label": "i_q (torque)",
+                "signal": "M1.i_q",
+                "overlay": false
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 20.0
+            }
+          ]
         }
       ],
       "wires": [
