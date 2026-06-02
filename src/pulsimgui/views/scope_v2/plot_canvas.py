@@ -246,11 +246,24 @@ class PlotCanvas(QFrame):
         t, y = state.merged()
         state.curve.setData(t, y)
 
+    def has_signal(self, name: str) -> bool:
+        """Return True when a curve named ``name`` is registered."""
+        return name in self._signals
+
     def replace_signal(self, name: str, t_full: np.ndarray, y_full: np.ndarray) -> None:
-        """Replace a signal's data with the full-resolution array (post-sim)."""
+        """Replace a signal's data with the full-resolution array (post-sim).
+
+        Creates the curve on demand when it does not exist yet — a post-sim-
+        only channel (e.g. a direct-signal motor scope: ``M1.speed_rpm`` /
+        ``M1.i_a``) has no live-stream spec, so nothing registered a curve up
+        front. Without this it would silently render nothing.
+        """
         state = self._signals.get(name)
         if state is None:
-            return
+            self.add_signal(name)
+            state = self._signals.get(name)
+            if state is None:
+                return
         state.replace(t_full, y_full)
         state.curve.setData(t_full, y_full)
 
