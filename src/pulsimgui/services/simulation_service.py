@@ -1969,6 +1969,14 @@ class SimulationService(QObject):
                 by_name[comp_name] = comp_type
 
             if comp_type == "C_BLOCK":
+                # FOC-controller markers (``control_kind="foc"``) are
+                # descriptor-only: the cascaded-PI / inverse-Park control law
+                # is synthesised by the backend (``_build_foc_loops``), not
+                # compiled from a fast_block source. They legitimately carry
+                # no source/lib_path, so they are exempt from the C_BLOCK
+                # runtime contract — mirroring the converter's _is_foc_marker.
+                if str(params.get("control_kind", "") or "").strip().lower() == "foc":
+                    continue
                 try:
                     n_inputs = int(params.get("n_inputs", 0))
                     n_outputs = int(params.get("n_outputs", 0))

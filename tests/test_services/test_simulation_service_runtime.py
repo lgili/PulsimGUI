@@ -255,6 +255,65 @@ def test_prevalidate_uses_payload_control_contract(monkeypatch) -> None:
     assert issue is None
 
 
+def test_prevalidate_exempts_foc_marker_cblock(monkeypatch) -> None:
+    """A FOC-controller marker (C_BLOCK ``control_kind="foc"``) is
+    descriptor-only — its cascaded-PI / inverse-Park law is synthesised by the
+    backend, so it carries no source / lib_path and must NOT trip the C_BLOCK
+    runtime contract (regression: this used to block every FOC drive sim with
+    ``PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED``)."""
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "FOC",
+                    "parameters": {
+                        "control_kind": "foc",
+                        "n_inputs": 1,
+                        "n_outputs": 1,
+                        "implementation": "source",
+                        "source": "",
+                        "lib_path": "",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is None
+
+
+def test_prevalidate_still_blocks_codeless_regular_cblock(monkeypatch) -> None:
+    """The FOC exemption must not weaken the contract for real fast_blocks: a
+    non-FOC C_BLOCK with neither source nor lib_path is still rejected."""
+    monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
+    service = SimulationService()
+
+    issue = service._prevalidate_runtime_contract(
+        {
+            "components": [
+                {
+                    "type": "C_BLOCK",
+                    "name": "CB1",
+                    "parameters": {
+                        "n_inputs": 1,
+                        "n_outputs": 1,
+                        "implementation": "source",
+                        "source": "",
+                        "lib_path": "",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert issue is not None
+    assert "PULSIM_YAML_E_CBLOCK_MISSING_REQUIRED" in issue
+
+
 def test_prevalidate_blocks_invalid_pwm_target_component(monkeypatch) -> None:
     class _ReadyBackend:
         def __init__(self) -> None:
