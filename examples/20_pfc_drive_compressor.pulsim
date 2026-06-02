@@ -588,34 +588,6 @@
           ]
         },
         {
-          "id": "966a05b6-e706-57bc-9e3e-f4d662d49baa",
-          "type": "PWM_GENERATOR",
-          "name": "PWM_BOOST",
-          "x": -700.0,
-          "y": -300.0,
-          "rotation": 0,
-          "mirrored_h": false,
-          "mirrored_v": false,
-          "parameters": {
-            "frequency": 65000.0,
-            "duty_cycle": 0.23,
-            "carrier": "sawtooth",
-            "amplitude": 12.0,
-            "phase": 0.0,
-            "sample_time": 0.0,
-            "enable_duty_input": false,
-            "target_component": "Q_boost"
-          },
-          "pins": [
-            {
-              "index": 0,
-              "name": "OUT",
-              "x": 30.0,
-              "y": 0.0
-            }
-          ]
-        },
-        {
           "id": "f31d11c6-de18-597f-a898-f8e33027b31e",
           "type": "GOTO_LABEL",
           "name": "Xgate_out",
@@ -1097,6 +1069,119 @@
               "y": 0.0
             }
           ]
+        },
+        {
+          "id": "84d15914-0e3c-4be7-8c3b-a68184e8ecd9",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "V_rect",
+          "x": -680.0,
+          "y": -140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "V_rect",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "cdc5e45a-589f-4f98-be57-4cc969d97d7f",
+          "type": "CURRENT_PROBE",
+          "name": "I_L",
+          "x": -510.0,
+          "y": -100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_L",
+            "scale": 1.0,
+            "series_resistance": 0.0001
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "MEAS",
+              "x": 0.0,
+              "y": -20.0
+            }
+          ]
+        },
+        {
+          "id": "4a642d42-205a-414e-a961-d16a11b12171",
+          "type": "PFC_BOOST_CONTROLLER",
+          "name": "PFC",
+          "x": -760.0,
+          "y": -360,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "mode": "CCM",
+            "v_bus_ref": 400.0,
+            "v_bus_min": 0.0,
+            "v_bus_max": 450.0,
+            "voltage_kp": 0.3,
+            "voltage_ki": 6.0,
+            "i_pk_limit": 20.0,
+            "current_kp": 31.4,
+            "current_ki": 3140.0,
+            "duty_max": 0.95,
+            "vac_pk_nom": 325.0,
+            "f_line": 60.0,
+            "f_sw": 65000.0,
+            "boost_mosfet_name": "Q_boost",
+            "v_bus_node_name": "",
+            "v_ac_node_name": "",
+            "i_l_branch_name": "I_L",
+            "sample_time": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "VBUS",
+              "x": -40.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "IL",
+              "x": -40.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "VAC",
+              "x": -40.0,
+              "y": 20.0
+            }
+          ]
         }
       ],
       "wires": [
@@ -1447,28 +1532,6 @@
           "alias": ""
         },
         {
-          "id": "5c796433-ba5c-579f-a8ab-2e6ce01cd36b",
-          "segments": [
-            {
-              "x1": -575.0,
-              "y1": -20.0,
-              "x2": -445.0,
-              "y2": -20.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "0183859e-3265-5c07-8cf7-1856ad4afc94",
-            "pin_index": 1
-          },
-          "end_connection": {
-            "component_id": "9c6b8e9e-e880-5ca4-9144-f09cecad9d5a",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "N_SW_BOOST",
-          "alias": ""
-        },
-        {
           "id": "bb4efac6-3deb-56de-ad1a-65c76af111a2",
           "segments": [
             {
@@ -1807,28 +1870,6 @@
             ]
           ],
           "node_name": "VBUS_NEG",
-          "alias": ""
-        },
-        {
-          "id": "09a05080-916b-5cc4-86e7-e6673e400eec",
-          "segments": [
-            {
-              "x1": -670.0,
-              "y1": -300.0,
-              "x2": -565.0,
-              "y2": -300.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "966a05b6-e706-57bc-9e3e-f4d662d49baa",
-            "pin_index": 0
-          },
-          "end_connection": {
-            "component_id": "f31d11c6-de18-597f-a898-f8e33027b31e",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "Q_BOOST_GATE",
           "alias": ""
         },
         {
@@ -3196,6 +3237,174 @@
           "end_connection": {
             "component_id": "00895775-d8e8-4ae3-9584-bb38a4d2d82f",
             "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "e8e99d6f-0aae-4bca-9c04-5917be655a56",
+          "segments": [
+            {
+              "x1": -700.0,
+              "y1": -140.0,
+              "x2": -700.0,
+              "y2": -20.0
+            },
+            {
+              "x1": -700.0,
+              "y1": -20.0,
+              "x2": -620.0,
+              "y2": -20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "84d15914-0e3c-4be7-8c3b-a68184e8ecd9",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "0183859e-3265-5c07-8cf7-1856ad4afc94",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "5f159e61-96d9-4c80-ba33-b2283d68ae6b",
+          "segments": [
+            {
+              "x1": -580.0,
+              "y1": -20.0,
+              "x2": -520.0,
+              "y2": -20.0
+            },
+            {
+              "x1": -520.0,
+              "y1": -20.0,
+              "x2": -520.0,
+              "y2": -100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "0183859e-3265-5c07-8cf7-1856ad4afc94",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "cdc5e45a-589f-4f98-be57-4cc969d97d7f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "26a183a7-220f-4373-8b7b-6335de976fed",
+          "segments": [
+            {
+              "x1": -480.0,
+              "y1": -100.0,
+              "x2": -440.0,
+              "y2": -100.0
+            },
+            {
+              "x1": -440.0,
+              "y1": -100.0,
+              "x2": -440.0,
+              "y2": -20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "cdc5e45a-589f-4f98-be57-4cc969d97d7f",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "9c6b8e9e-e880-5ca4-9144-f09cecad9d5a",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "dc4b0181-ed03-4646-a758-ae1111ddf853",
+          "segments": [
+            {
+              "x1": 200.0,
+              "y1": 0.0,
+              "x2": 200.0,
+              "y2": -380.0
+            },
+            {
+              "x1": 200.0,
+              "y1": -380.0,
+              "x2": -800.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "ffbba6e6-76ca-583c-ad02-f3e818e5589f",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "4a642d42-205a-414e-a961-d16a11b12171",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "3f23e98a-0757-4ff9-9640-5a3ea6cc5c9f",
+          "segments": [
+            {
+              "x1": -520.0,
+              "y1": -120.0,
+              "x2": -800.0,
+              "y2": -120.0
+            },
+            {
+              "x1": -800.0,
+              "y1": -120.0,
+              "x2": -800.0,
+              "y2": -360.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "cdc5e45a-589f-4f98-be57-4cc969d97d7f",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "4a642d42-205a-414e-a961-d16a11b12171",
+            "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "6fd20516-4731-43fd-97c1-a36f504a30fd",
+          "segments": [
+            {
+              "x1": -660.0,
+              "y1": -140.0,
+              "x2": -660.0,
+              "y2": -340.0
+            },
+            {
+              "x1": -660.0,
+              "y1": -340.0,
+              "x2": -800.0,
+              "y2": -340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "84d15914-0e3c-4be7-8c3b-a68184e8ecd9",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "4a642d42-205a-414e-a961-d16a11b12171",
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "",
