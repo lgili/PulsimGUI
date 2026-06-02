@@ -352,11 +352,23 @@ class SimulationSettings:
 
     # Newton solver settings (pulsim 1.5 simulate() kwargs)
     max_newton_iterations: int = 100
-    # ``tol_newton_dx`` — convergence tolerance on the Newton step
-    # magnitude; default None lets pulsim's SimulationOptions decide.
-    tol_newton_dx: float | None = None
-    # ``tol_newton_res`` — convergence tolerance on the residual norm.
-    tol_newton_res: float | None = None
+    # ``tol_newton_dx`` — Newton step convergence tolerance. Friendly
+    # default 1e-6: in practice dx falls into floating-point noise
+    # (~1e-14) well before this, so the threshold never bites; it is
+    # explicit (not None) so the kernel can't surprise us with a tighter
+    # default in a future bump.
+    tol_newton_dx: float | None = 1e-6
+    # ``tol_newton_res`` — Newton residual convergence tolerance.
+    # FRIENDLY DEFAULT: 1e-6 (was None ≡ pulsim's internal ~1e-9). The
+    # tight ~1e-9 default is the most common cause of the "failed to
+    # converge after N iterations" error on closed-loop / switched
+    # circuits (PFC, FOC, LLC). Each PWM commutation produces a residual
+    # chip ≈ 1e-9 that the solver can't drive below the floating-point
+    # noise floor — so it loops to max_iterations. 1e-6 corresponds to
+    # ~1 µA / µV equivalent precision; entirely adequate for SMPS work,
+    # tight enough for any analog circuit a non-expert opens. Experts
+    # tighten in the dialog when running a paper-grade benchmark.
+    tol_newton_res: float | None = 1e-6
     enable_newton_line_search: bool = True
     # Levenberg-Marquardt damping ON by default — the kernel only falls
     # back to it when plain Newton stalls (the most common cause of the
