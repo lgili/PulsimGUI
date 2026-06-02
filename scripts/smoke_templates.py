@@ -17,12 +17,22 @@ from pulsimgui.models.project import Project
 from pulsimgui.services.backend_adapter import BackendCallbacks
 from pulsimgui.services.simulation_service import SimulationService
 
-TEMPLATE_EXPECTED_SIGNALS: dict[str, set[str]] = {
-    "buck_converter.pulsim": {"Xsw", "Xout"},
-    "boost_converter.pulsim": {"X1", "X2"},
-    "flyback_converter.pulsim": {"Xsw", "Xout"},
-    "buck_converter_closed_loop.pulsim": {"PI1", "PWM1.duty", "Xsw", "Xout"},
-}
+# Built-in templates the pre-release smoke run exercises. Each must
+# convert, pass the front-end contract, and complete a transient that
+# produces real, finite, non-trivial node-voltage waveforms (see
+# ``_run_template``). We deliberately do NOT assert specific signal-key
+# names: the kernel emits node voltages as ``V(<node>)`` (node aliases
+# differ per template — ``V(SW)``/``V(VOUT)`` vs ``V(N1..N5)``), and
+# probe-name / control-signal aliases (``VP(...)``, duty) only exist on
+# the GUI-side *enriched* result, not the raw backend payload this
+# headless smoke run sees. Name matching here was stale and is covered
+# by the unit-test suite instead.
+TEMPLATE_FILES: list[str] = [
+    "buck_converter.pulsim",
+    "boost_converter.pulsim",
+    "flyback_converter.pulsim",
+    "buck_converter_closed_loop.pulsim",
+]
 
 
 def _copy_project_settings(service: SimulationService, project: Project) -> None:
@@ -97,14 +107,29 @@ def _run_template(path: Path) -> tuple[bool, str]:
     if not math.isfinite(tend) or tend < (tstop * 0.999):
         return False, f"simulation ended early (t_end={tend:.9g}, t_stop={tstop:.9g})"
 
-    expected = TEMPLATE_EXPECTED_SIGNALS.get(path.name, set())
-    if expected:
-        available = set(result.signals.keys())
-        missing = sorted(expected - available)
-        if missing:
-            return False, f"missing expected signals: {', '.join(missing)}"
+    # Validate the run produced real, finite, non-trivial waveforms
+    # (catches a frozen / NaN / dead trace that "completes" without an
+    # error). Node voltages are emitted as ``V(<node>)`` keys.
+    voltage_keys = [k for k in result.signals if k.startswith("V(")]
+    if not voltage_keys:
+        return False, "result has no node-voltage V(...) signals"
+    max_span = 0.0
+    for key in voltage_keys:
+        series = result.signals[key]
+        if not all(math.isfinite(v) for v in series):
+            return False, f"non-finite samples in {key}"
+        if series:
+            max_span = max(max_span, max(series) - min(series))
+    if max_span < 1.0:
+        return False, (
+            f"no node voltage varies > 1 V (max span {max_span:.3g} V) — "
+            "circuit appears dead"
+        )
 
-    return True, f"ok (samples={len(result.time)}, t_end={tend:.9g})"
+    return True, (
+        f"ok (samples={len(result.time)}, t_end={tend:.9g}, "
+        f"V-channels={len(voltage_keys)}, max_span={max_span:.1f} V)"
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -118,7 +143,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--templates",
         nargs="*",
-        default=sorted(TEMPLATE_EXPECTED_SIGNALS.keys()),
+        default=list(TEMPLATE_FILES),
         help="Template file names to validate",
     )
     return parser.parse_args()
