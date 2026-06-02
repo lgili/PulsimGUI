@@ -22,13 +22,40 @@ from pulsimgui.models.component import (
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
+    MOTOR_SIGNAL_BUS_CHANNELS,
+    MOTOR_SIGNAL_BUS_PIN_NAME,
     Component,
     ComponentType,
     component_connection_domain,
     pin_connection_domain,
+    supports_motor_signal_bus,
 )
 from pulsimgui.models.component_catalog import get_descriptive_name
 from pulsimgui.views.schematic.items import symbol_style as style
+
+
+def _component_tooltip(component: Component) -> str:
+    """Return a hover tooltip describing the component.
+
+    For dynamic machines the tooltip also lists the SIG signal-bus channel
+    order — the same lane → signal mapping the user needs when wiring a
+    SIGNAL_DEMUX → scope chain. The tooltip stays one short paragraph so
+    Qt's native tooltip renderer doesn't blow up the bubble.
+    """
+    base = get_descriptive_name(component.type)
+    if supports_motor_signal_bus(component.type):
+        motor_name = component.name or "M1"
+        lanes = "\n".join(
+            f"  OUT{i + 1}  →  {label}    ({motor_name}.{suffix})"
+            for i, (suffix, label) in enumerate(MOTOR_SIGNAL_BUS_CHANNELS)
+        )
+        return (
+            f"{base}\n\n"
+            f"{MOTOR_SIGNAL_BUS_PIN_NAME} signal bus — wire to a SIGNAL_DEMUX; "
+            "each output lane (in order) carries:\n"
+            f"{lanes}"
+        )
+    return base
 
 
 class LabelWithBackground(QGraphicsItem):
@@ -182,8 +209,10 @@ class ComponentItem(QGraphicsItem):
 
         # Schematic-canvas hover tooltip surfaces the long-form type
         # name (e.g. ``PMSM (dynamic)``) since the palette card only
-        # has room for a short label.
-        self.setToolTip(get_descriptive_name(component.type))
+        # has room for a short label. For dynamic machines we also list
+        # the SIG signal-bus channel order so the user knows what each
+        # demux output lane carries before even opening the help dialog.
+        self.setToolTip(_component_tooltip(component))
 
         self._update_labels()
 
@@ -1386,6 +1415,7 @@ class SignalDemuxItem(ComponentItem):
     """Item for signal demux blocks - Simulink/PLECS style (vertical bar with outputs)."""
 
     PIN_SPACING = 20.0
+    LANE_LABEL_OFFSET = 6.0  # px right of each output pin
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
@@ -1394,7 +1424,8 @@ class SignalDemuxItem(ComponentItem):
             return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
         top = min(y_values) - 12
         bottom = max(y_values) + 12
-        return self._with_pin_bounds(QRectF(-24, top, 48, bottom - top))
+        # Lane labels (e.g. ``i_a``) extend ~60px to the right of the OUT pin.
+        return self._with_pin_bounds(QRectF(-24, top, 48 + 60, bottom - top))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         output_pins = [pin for pin in self._component.pins if pin.name.startswith("OUT")]
@@ -1413,6 +1444,83 @@ class SignalDemuxItem(ComponentItem):
         painter.drawLine(QPointF(input_pin.x, input_pin.y), QPointF(-4, input_pin.y))
         for pin in output_pins:
             painter.drawLine(QPointF(4, pin.y), QPointF(pin.x, pin.y))
+
+        # Per-lane channel labels when the demux is wired to a motor's SIG bus.
+        # Draws the bus channel name (e.g. ``i_a``) right of each OUT pin, so the
+        # user can read what each output carries without opening any dialog.
+        # The label sits just *above* the wire (offset −9 on Y), out of the wire
+        # line, with a small opaque background so it stays readable even when
+        # something draws underneath.
+        lane_labels = self._motor_bus_lane_labels(output_pins)
+        if not lane_labels:
+            return
+        font = QFont()
+        font.setPointSizeF(7.5)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetricsF(font)
+        bg = self._surface_color()
+        bg.setAlpha(220)
+        for pin, label in lane_labels:
+            text_rect = metrics.boundingRect(label)
+            x = pin.x + self.LANE_LABEL_OFFSET
+            y = pin.y - 4  # baseline above the wire so glyphs aren't crossed
+            pad = 2.0
+            bg_rect = QRectF(
+                x - pad, y - text_rect.height() + 2,
+                text_rect.width() + 2 * pad, text_rect.height(),
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(bg_rect, 2.0, 2.0)
+            painter.setPen(QPen(self._line_color()))
+            painter.drawText(QPointF(x, y), label)
+
+    def _motor_bus_lane_labels(self, output_pins: list) -> list[tuple[object, str]]:
+        """Return ``(pin, channel_label)`` for each output when the demux's IN
+        is wired to a dynamic machine's SIG bus pin. Empty otherwise."""
+        scene = self.scene()
+        # Need scene access to walk the wire graph; degrade gracefully outside.
+        if scene is None or not hasattr(scene, "circuit"):
+            return []
+        circuit = scene.circuit  # type: ignore[attr-defined]
+        if circuit is None:
+            return []
+        # Find a wire connecting this demux's IN pin to a motor's SIG pin.
+        from pulsimgui.models.component import (
+            MOTOR_SIGNAL_BUS_CHANNELS,
+            MOTOR_SIGNAL_BUS_PIN_NAME,
+            supports_motor_signal_bus,
+        )
+        demux_id = self._component.id
+        in_pin_idx = next(
+            (i for i, p in enumerate(self._component.pins) if p.name == "IN"), None
+        )
+        if in_pin_idx is None:
+            return []
+        for wire in circuit.wires.values():
+            ends = (wire.start_connection, wire.end_connection)
+            for end_a, end_b in (ends, ends[::-1]):
+                if end_a is None or end_b is None:
+                    continue
+                if end_a.component_id != demux_id or end_a.pin_index != in_pin_idx:
+                    continue
+                other = circuit.components.get(end_b.component_id)
+                if other is None or not supports_motor_signal_bus(other.type):
+                    continue
+                if end_b.pin_index >= len(other.pins):
+                    continue
+                if other.pins[end_b.pin_index].name != MOTOR_SIGNAL_BUS_PIN_NAME:
+                    continue
+                # Found a motor.SIG → demux.IN wire. Label each OUT lane.
+                pairs: list[tuple[object, str]] = []
+                for lane, pin in enumerate(output_pins):
+                    if lane >= len(MOTOR_SIGNAL_BUS_CHANNELS):
+                        break
+                    _suffix, label = MOTOR_SIGNAL_BUS_CHANNELS[lane]
+                    pairs.append((pin, label))
+                return pairs
+        return []
 
     def _get_value_text(self) -> str:
         count = self._component.parameters.get("output_count", 3)

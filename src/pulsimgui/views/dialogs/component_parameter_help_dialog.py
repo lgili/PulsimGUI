@@ -20,7 +20,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pulsimgui.models.component import Component, ComponentType, DEFAULT_PARAMETERS, HIDDEN_PARAMS
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    DEFAULT_PARAMETERS,
+    HIDDEN_PARAMS,
+    MOTOR_SIGNAL_BUS_CHANNELS,
+    MOTOR_SIGNAL_BUS_PIN_NAME,
+    supports_motor_signal_bus,
+)
 
 
 @dataclass(frozen=True)
@@ -572,18 +580,59 @@ def _help_html_styles(is_dark: bool) -> str:
     """
 
 
+def _motor_signal_bus_section(component: Component) -> str:
+    """Render the SIG signal-bus reference table for a dynamic machine.
+
+    Lists every demux output lane → backend signal key in order, so the user
+    can wire a SIGNAL_DEMUX → scope without guessing what each output carries.
+    Returns empty when the component has no signal bus.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return ""
+    motor_name = html.escape(component.name or "M1")
+    rows_html = "\n".join(
+        "<tr>"
+        f"<td><code>OUT{idx + 1}</code></td>"
+        f"<td>{html.escape(label)}</td>"
+        f"<td><code>{motor_name}.{html.escape(suffix)}</code></td>"
+        "</tr>"
+        for idx, (suffix, label) in enumerate(MOTOR_SIGNAL_BUS_CHANNELS)
+    )
+    return (
+        "<h4 style='margin:12px 0 4px 0;'>"
+        f"{html.escape(MOTOR_SIGNAL_BUS_PIN_NAME)} signal bus"
+        "</h4>"
+        "<p class='subtitle' style='margin-bottom:6px;'>"
+        f"Wire the <code>{html.escape(MOTOR_SIGNAL_BUS_PIN_NAME)}</code> pin to a "
+        "<code>SIGNAL_DEMUX</code> and tap each demux output (in order) into a "
+        "scope channel. The same backend keys are used by post-sim and probe "
+        "lookups, so dropping a curve into a math expression also works."
+        "</p>"
+        "<div class='table-wrap'>"
+        "<table><thead><tr>"
+        "<th>Demux output</th>"
+        "<th>Channel</th>"
+        "<th>Backend signal key</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+        "</div>"
+    )
+
+
 def render_component_help_html(component: Component, *, is_dark: bool = False) -> str:
     """Render parameter-help content as compact HTML."""
     rows = build_component_help_rows(component)
     component_name = component.type.name.replace("_", " ").title()
     title = html.escape(f"{component_name} Parameter Help")
     styles = _help_html_styles(is_dark)
+    bus_section = _motor_signal_bus_section(component)
 
     if not rows:
         return (
             "<html><body>"
             f"{styles}"
             f"<h3>{title}</h3>"
+            f"{bus_section}"
             "<p>No editable parameters were found for this component.</p>"
             "</body></html>"
         )
@@ -610,6 +659,7 @@ def render_component_help_html(component: Component, *, is_dark: bool = False) -
         "<html><body>"
         f"{styles}"
         f"<h3 style='margin:0 0 6px 0;'>{title}</h3>"
+        f"{bus_section}"
         "<p class='subtitle'>"
         "Use this table as a practical guide: what each parameter means, "
         "typical datasheet keys/sources, and the model default used by PulsimGui."
