@@ -83,6 +83,12 @@ class WireItem(QGraphicsPathItem):
         # Set default pen for proper bounding rect calculation
         self.setPen(QPen(self.DOMAIN_LINE_COLORS[CONNECTION_DOMAIN_CIRCUIT], self.LINE_WIDTH))
 
+        # Repair any diagonal segments (from disk or older builds) into
+        # strict H/V L-routes BEFORE first paint, so opening a saved
+        # circuit never shows slanted wires. Endpoint-preserving, so pin
+        # connectivity is untouched.
+        self._wire.normalize_orthogonal()
+
         # Build path from wire segments
         self._rebuild_path()
 
