@@ -1094,8 +1094,16 @@ class BlockComponentItem(ComponentItem):
     PIN_LABEL_PAD = 2.0   # px from the block edge to the label
 
     def boundingRect(self) -> QRectF:
-        """Return the local-space rectangle used for painting and hit-testing."""
-        return self._with_pin_bounds(QRectF(-28, -24, 56, 48))
+        """Return the local-space rectangle used for painting and hit-testing.
+
+        The visible body is a 40-px square by default, **growing
+        vertically** when the block carries extra pins on the top/bottom
+        edges (e.g. a SUM with 4+ inputs). All four edges always land on
+        the 20-px wiring grid. Pins sit at the standard ±40 perimeter
+        (one grid step outside the body), giving a clean 20-px lead
+        between bubble and body edge.
+        """
+        return self._with_pin_bounds(self._body_rect())
 
     def show_pin_labels(self) -> bool:
         """Return True to render pin-name labels inside the block body.
@@ -1130,8 +1138,21 @@ class BlockComponentItem(ComponentItem):
         extension that ``boundingRect`` adds for hit-testing). Pin-name
         labels anchor to the body so they sit *inside* the visible card
         rather than overlapping the pin bubbles which extend further out.
+
+        The card is a 40×40 square at minimum (every edge on the 20-px
+        grid). It grows vertically when the block hosts pins at
+        ``y > ±20`` (e.g. a SUM block with 4+ inputs stacks pins at
+        ±40 / ±20). Pins on the left/right side at ``x = ±40`` keep the
+        body at the standard ``x = ±20`` width — the lead spans the
+        20-px gap between body edge and pin bubble.
         """
-        return QRectF(-28, -24, 56, 48)
+        pins = self._component.pins
+        if not pins:
+            return QRectF(-20, -20, 40, 40)
+        ys = [float(p.y) for p in pins]
+        top = min(min(ys), -20.0)
+        bottom = max(max(ys), 20.0)
+        return QRectF(-20.0, top, 40.0, bottom - top)
 
     def _draw_pin_name_labels(self, painter: QPainter, rect: QRectF) -> None:
         """Draw small pin-name labels just inside the block body, aligned to
@@ -1426,9 +1447,17 @@ class SumBaseItem(BlockComponentItem):
         font.setPointSize(8)
         font.setBold(True)
         painter.setFont(font)
+        # Per-input "+/-" labels sit *inside* the body, just to the right
+        # of the body's left edge so they hug the pin lead. With the new
+        # 40-px-wide body (x ∈ [-20, 20]) the marks land at x ≈ -16.
+        body_left = self._body_rect().left()
         for idx, pin in enumerate(input_pins):
             sign = signs[idx] if idx < len(signs) else "+"
-            painter.drawText(QRectF(-34, pin.y - 7, 8, 14), Qt.AlignmentFlag.AlignCenter, sign)
+            painter.drawText(
+                QRectF(body_left + 2, pin.y - 7, 8, 14),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                sign,
+            )
 
     def _get_value_text(self) -> str:
         count = max(0, len([pin for pin in self._component.pins if pin.name.startswith("IN")]))
