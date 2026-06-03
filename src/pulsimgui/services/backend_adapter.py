@@ -145,6 +145,14 @@ class BackendRunResult:
     signals: dict[str, list[float]] = field(default_factory=dict)
     statistics: dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
+    # The raw pulsim ``SimulationResult`` returned by ``ps.simulate``.
+    # Stashed so post-processing helpers
+    # (e.g. ``_repair_current_probe_channels_from_bypass``) can call
+    # ``raw_kernel_result.i(<branch>)`` to fetch exact branch currents
+    # that the v1.3+ tuple unpack would otherwise discard. Optional —
+    # streaming paths that don't get a Python-side result object
+    # leave it ``None``.
+    raw_kernel_result: Any = None
 
 
 @dataclass
@@ -1358,26 +1366,63 @@ class PulsimBackend(SimulationBackend):
         if sample_count <= 0:
             return
 
-        virtual_components_attr = getattr(circuit, "virtual_components", None)
-        if not callable(virtual_components_attr):
+        # Two conventions for the virtual-component registry:
+        #
+        #   * Real ``pulsim_v0_compat.Circuit`` (the shim the GUI uses):
+        #     ``circuit.virtual_component_records`` — a list of dicts
+        #     ``{"kind", "name", "nodes", "params", "metadata"}``.
+        #   * Legacy pulsim ``Circuit`` + test mocks: a callable
+        #     ``circuit.virtual_components()`` returning entries that
+        #     expose ``.type``/``.name``/``.nodes``/``.numeric_params``
+        #     attributes.
+        #
+        # Normalise both into a list of (kind, name, nodes, numeric_params)
+        # tuples so the rest of this helper is shape-agnostic.
+        components_iter: list[tuple[str, str, list, dict]] = []
+        record_attr = getattr(circuit, "virtual_component_records", None)
+        if isinstance(record_attr, list):
+            for record in record_attr:
+                if not isinstance(record, dict):
+                    continue
+                components_iter.append((
+                    str(record.get("kind") or ""),
+                    str(record.get("name") or ""),
+                    list(record.get("nodes") or []),
+                    dict(record.get("params") or {}),
+                ))
+        else:
+            vcomp_attr = getattr(circuit, "virtual_components", None)
+            if callable(vcomp_attr):
+                try:
+                    raw_components = list(vcomp_attr())
+                except Exception:
+                    raw_components = []
+                for entry in raw_components:
+                    components_iter.append((
+                        str(getattr(entry, "type", "") or ""),
+                        str(getattr(entry, "name", "") or ""),
+                        list(getattr(entry, "nodes", None) or []),
+                        dict(getattr(entry, "numeric_params", None) or {}),
+                    ))
+
+        if not components_iter:
             return
+
         node_name_attr = getattr(circuit, "node_name", None)
 
-        try:
-            virtual_components = virtual_components_attr()
-        except Exception:
-            return
-        try:
-            components_iter = list(virtual_components)
-        except Exception:
-            return
-
-        # Resolve the pulsim Result's ``i(name)`` accessor once. ``None``
-        # means we're on a pre-PR-#82 build and must use the V/R fallback.
-        kernel_result = getattr(result, "raw_result", None) or getattr(
-            result, "_raw_result", None
-        ) or getattr(result, "result", None) or result
-        i_accessor = getattr(kernel_result, "i", None)
+        # Resolve the pulsim Result's ``i(name)`` accessor once. The raw
+        # kernel result is stashed on ``result.raw_kernel_result`` by the
+        # ``_invoke_simulate_v13`` / streaming finalisers — it's the
+        # canonical handle. Older fields are tried for back-compat in
+        # case some path forgot to set it. ``None`` means we're on a
+        # pre-PR-#82 kernel and must fall through to V/R synthesis.
+        kernel_result = (
+            getattr(result, "raw_kernel_result", None)
+            or getattr(result, "raw_result", None)
+            or getattr(result, "_raw_result", None)
+            or getattr(result, "result", None)
+        )
+        i_accessor = getattr(kernel_result, "i", None) if kernel_result is not None else None
         if not callable(i_accessor):
             i_accessor = None
 
@@ -1402,12 +1447,10 @@ class PulsimBackend(SimulationBackend):
                 return None
             return series_list[:sample_count]
 
-        for entry in components_iter:
-            comp_type = str(getattr(entry, "type", "") or "").strip().lower()
-            if comp_type != "current_probe":
+        for comp_type, channel_name, raw_nodes, numeric_params in components_iter:
+            if comp_type.strip().lower() != "current_probe":
                 continue
-
-            channel_name = str(getattr(entry, "name", "") or "").strip()
+            channel_name = channel_name.strip()
             if not channel_name:
                 continue
 
@@ -1435,10 +1478,10 @@ class PulsimBackend(SimulationBackend):
                 continue
 
             # 3. ``result.i("__IP_BYPASS_<probe>")`` — legacy stamping
-            # (bypass resistor branch). Still a state-variable branch
-            # in newer pulsim because we put a tiny resistor there; on
-            # newer pulsim the resistor isn't a state branch so this
-            # call raises NotImplementedError and we drop through.
+            # (bypass resistor branch). On post-PR-#82 builds the
+            # bypass resistor branch raises NotImplementedError, so we
+            # drop through. Kept for any branch where the converter
+            # took the legacy fallback path (no ``add_voltage_source``).
             series_list = _series_from_i(f"__IP_BYPASS_{channel_name}")
             if series_list is not None:
                 result.signals[channel_name] = series_list
@@ -1450,7 +1493,6 @@ class PulsimBackend(SimulationBackend):
             # bypass-resistor parameter to divide by.
             if not callable(node_name_attr):
                 continue
-            raw_nodes = getattr(entry, "nodes", None)
             if not isinstance(raw_nodes, list) or len(raw_nodes) < 2:
                 continue
             try:
@@ -1473,7 +1515,6 @@ class PulsimBackend(SimulationBackend):
             if len(vin) < sample_count or len(vout) < sample_count:
                 continue
 
-            numeric_params = getattr(entry, "numeric_params", None)
             series_r = 1e-4
             if isinstance(numeric_params, dict):
                 try:
@@ -2802,6 +2843,21 @@ class PulsimBackend(SimulationBackend):
             if virtual_channels:
                 self._merge_streaming_virtual_channels(result, virtual_channels)
             self._merge_motor_observer_signals(circuit, result)
+            # Mirror the legacy path's post-processing: ensure
+            # current_probe channels are populated via ``result.i()``
+            # (or the V/R fallback). Without this, the v13 short-
+            # circuit would skip the repair and leave ``I_L`` etc.
+            # invisible to the GUI's probe lookup.
+            self._ensure_virtual_probe_channels(
+                circuit,
+                result,
+                signal_names,
+                callbacks=callbacks,
+                progress_start=92.0,
+                progress_span=7.0,
+            )
+            self._repair_current_probe_channels_from_bypass(circuit, result)
+            callbacks.progress(100.0, "Simulation complete")
             return result
 
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
@@ -3501,11 +3557,19 @@ class PulsimBackend(SimulationBackend):
         if isinstance(rows, list) and rows:
             result.statistics["component_electrothermal"] = rows
 
+        # Special key: raw pulsim ``SimulationResult`` mounted on
+        # ``result.raw_kernel_result`` so post-processing helpers
+        # (e.g. ``_repair_current_probe_channels_from_bypass``) can
+        # reach ``result.i(<branch>)`` for state-variable currents.
+        kernel_result = virtual_channels.get("__kernel_result__")
+        if kernel_result is not None:
+            result.raw_kernel_result = kernel_result
+
         sample_count = len(result.time)
         merged_names: set[str] = set()
         for raw_name, raw_series in virtual_channels.items():
-            if raw_name == "__electrothermal_rows__":
-                continue  # handled above as statistics, not a signal
+            if raw_name in ("__electrothermal_rows__", "__kernel_result__"):
+                continue  # handled above as statistics / raw_kernel_result
             channel_name = str(raw_name or "").strip()
             if not channel_name or raw_series is None:
                 continue
@@ -6436,7 +6500,7 @@ class PulsimBackend(SimulationBackend):
         # traces + the electrothermal summary dict — those get merged
         # into ``result.signals`` / ``result.statistics`` by the
         # caller.
-        virtual_payload = None
+        virtual_payload: dict[str, Any] | None = None
         if electrothermal_rows:
             virtual_payload = {
                 "__electrothermal_rows__": electrothermal_rows,
@@ -6449,15 +6513,23 @@ class PulsimBackend(SimulationBackend):
                     if row.get("temperature_trace")
                 },
             }
+        # Stash the raw pulsim ``SimulationResult`` on the virtual_payload
+        # so the caller can mount it on ``BackendRunResult.raw_kernel_result``.
+        # Without this, post-processing helpers lose access to
+        # ``result.i(<branch>)`` for state-variable currents (PR #82 / 1.6.5).
+        if virtual_payload is None:
+            virtual_payload = {}
+        virtual_payload["__kernel_result__"] = res
         return (
             list(res.times),
             [list(s) for s in res.states],
             True,
             "",
             virtual_payload,  # may carry T(<device>) traces +
-                              # ``__electrothermal_rows__`` for the
+                              # ``__electrothermal_rows__`` + the raw
+                              # kernel ``__kernel_result__`` for the
                               # caller to merge into result.signals /
-                              # statistics.
+                              # statistics / raw_kernel_result.
         )
 
     # Default Foster network: single-stage TO-220 ballpark
