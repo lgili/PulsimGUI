@@ -1474,10 +1474,14 @@ class ScopeItemBase(ComponentItem):
     SCOPE_GRID_COLOR = QColor(49, 67, 64)
     SCOPE_SIGNAL_COLOR = QColor(72, 218, 131)
     SCOPE_BEZEL_COLOR = QColor(24, 31, 40)
-    BODY_LEFT = -24.0
-    BODY_WIDTH = 74.0
-    BODY_MIN_HEIGHT = 70.0
-    BODY_PIN_MARGIN = 15.0
+    # Body geometry rounded to the 20-px wiring grid so the body's
+    # outer edges land on visible grid lines — otherwise the rounded
+    # corners sit *between* grid dots and the user reads the pins as
+    # "off-grid" even though they aren't.
+    BODY_LEFT = -20.0
+    BODY_WIDTH = 80.0
+    BODY_MIN_HEIGHT = 80.0
+    BODY_PIN_MARGIN = 20.0
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
@@ -1590,13 +1594,18 @@ class SignalMuxItem(ComponentItem):
     PIN_SPACING = 20.0
 
     def boundingRect(self) -> QRectF:
-        """Return the local-space rectangle used for painting and hit-testing."""
+        """Return the local-space rectangle used for painting and hit-testing.
+
+        The pin extent is padded by one grid step (20 px) so the outer
+        bound lands on a visible grid line — otherwise the rounded body
+        sits between dots and looks "off-grid".
+        """
         y_values = [pin.y for pin in self._component.pins if pin.name.startswith("IN")]
         if not y_values:
-            return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
-        top = min(y_values) - 12
-        bottom = max(y_values) + 12
-        return self._with_pin_bounds(QRectF(-24, top, 48, bottom - top))
+            return self._with_pin_bounds(QRectF(-20, -20, 40, 40))
+        top = min(y_values) - 20
+        bottom = max(y_values) + 20
+        return self._with_pin_bounds(QRectF(-20, top, 40, bottom - top))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         input_pins = [pin for pin in self._component.pins if pin.name.startswith("IN")]
@@ -1628,14 +1637,18 @@ class SignalDemuxItem(ComponentItem):
     LANE_LABEL_OFFSET = 6.0  # px right of each output pin
 
     def boundingRect(self) -> QRectF:
-        """Return the local-space rectangle used for painting and hit-testing."""
+        """Return the local-space rectangle used for painting and hit-testing.
+
+        Pin extent padded by one grid step (20 px) so the rounded body
+        edge lands on a visible grid line.
+        """
         y_values = [pin.y for pin in self._component.pins if pin.name.startswith("OUT")]
         if not y_values:
-            return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
-        top = min(y_values) - 12
-        bottom = max(y_values) + 12
+            return self._with_pin_bounds(QRectF(-20, -20, 40, 40))
+        top = min(y_values) - 20
+        bottom = max(y_values) + 20
         # Lane labels (e.g. ``i_a``) extend ~60px to the right of the OUT pin.
-        return self._with_pin_bounds(QRectF(-24, top, 48 + 60, bottom - top))
+        return self._with_pin_bounds(QRectF(-20, top, 40 + 60, bottom - top))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         output_pins = [pin for pin in self._component.pins if pin.name.startswith("OUT")]
