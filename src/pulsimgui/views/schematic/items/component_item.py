@@ -3182,11 +3182,13 @@ class ThreePhaseVSIItem(ComponentItem):
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing.
 
-        Body is a 40 × 40 square — all four edges land on the 20-px
-        wiring grid (corners on grid dots). The pin bubbles extend the
-        bound by 6 px halo each side.
+        Body is 40 × 80 — wide enough to land on the 20-px wiring grid
+        (corners on grid dots) and **tall enough that the pin bubbles
+        sit clearly inside the body's vertical range** rather than at
+        the corners. The pin bubbles extend the hit-test rect by 6 px
+        halo each side horizontally.
         """
-        return self._with_pin_bounds(QRectF(-20, -20, 40, 40))
+        return self._with_pin_bounds(QRectF(-20, -40, 40, 80))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         # Post-snap pin layout: VDC+/VDC- on the left (y=±20), A/B/C on
@@ -3197,10 +3199,11 @@ class ThreePhaseVSIItem(ComponentItem):
         b_pin = self._pin_position_by_name("B", QPointF(40, 0))
         c_pin = self._pin_position_by_name("C", QPointF(40, 20))
 
-        # Visible body — every edge on the 20-px grid (corners at
-        # ±20 / ±20). The "=" / "∼" half-marks and the diagonal divider
-        # are scaled down to fit the compact 40 × 40 card.
-        body = QRectF(-20, -20, 40, 40)
+        # Visible body — every edge on the 20-px grid; tall enough that
+        # the ±20 pins enter the body's left/right edges well inside its
+        # vertical range, with the "=" mark in the upper half and the
+        # "∼" / "3φ" mark in the lower half.
+        body = QRectF(-20, -40, 40, 80)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
         painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)

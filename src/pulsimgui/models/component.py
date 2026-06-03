@@ -1991,16 +1991,22 @@ class Component:
         _synchronize_special_component(self)
 
         if saved_geometry is not None:
-            # Loaded from a file: restore the saved position of every pin that
-            # survives synchronization by name, so the symbol never visually
-            # shifts and saved wire endpoints stay attached. Pins that
-            # synchronization *added* (e.g. a motor ``SIG`` bus pin) or
-            # *renamed* (a schema migration) keep their freshly synchronized,
-            # on-grid layout.
+            # Loaded from a file: restore the saved position of every pin
+            # that survives synchronization by name, **snapped to the
+            # current wiring grid**. The snap is a no-op for files saved
+            # since the grid-alignment pass and migrates older files
+            # where pins were authored at off-grid values like
+            # ``(-30, ±25)`` or ``(-35, ±15)`` — those land at
+            # ``(-40, ±20)`` after snapping, which is exactly where the
+            # body art now draws the pin bubble. Wire endpoints attached
+            # to the saved coordinates get the same snap in
+            # ``SchematicScene._normalize_circuit_geometry`` so the wire
+            # still meets the migrated pin.
             for pin in self.pins:
                 saved = saved_geometry.get(pin.name)
                 if saved is not None:
-                    pin.x, pin.y = saved
+                    pin.x = _snap_to_pin_grid(saved[0])
+                    pin.y = _snap_to_pin_grid(saved[1])
         else:
             _snap_component_pins_to_grid(self)
 
