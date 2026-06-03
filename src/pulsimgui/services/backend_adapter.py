@@ -3557,6 +3557,15 @@ class PulsimBackend(SimulationBackend):
         if isinstance(rows, list) and rows:
             result.statistics["component_electrothermal"] = rows
 
+        # Special key: coupled-heatsink steady-state results from
+        # ``_compute_shared_heatsink_steady_state``. Goes into
+        # ``result.statistics["shared_heatsink_steady_state"]`` so the
+        # thermal viewer / losses dashboard can show the coupled T_j
+        # per device alongside the legacy per-device-isolated values.
+        sh_results = virtual_channels.get("__shared_heatsink_results__")
+        if isinstance(sh_results, list) and sh_results:
+            result.statistics["shared_heatsink_steady_state"] = sh_results
+
         # Special key: raw pulsim ``SimulationResult`` mounted on
         # ``result.raw_kernel_result`` so post-processing helpers
         # (e.g. ``_repair_current_probe_channels_from_bypass``) can
@@ -3568,7 +3577,11 @@ class PulsimBackend(SimulationBackend):
         sample_count = len(result.time)
         merged_names: set[str] = set()
         for raw_name, raw_series in virtual_channels.items():
-            if raw_name in ("__electrothermal_rows__", "__kernel_result__"):
+            if raw_name in (
+                "__electrothermal_rows__",
+                "__kernel_result__",
+                "__shared_heatsink_results__",
+            ):
                 continue  # handled above as statistics / raw_kernel_result
             channel_name = str(raw_name or "").strip()
             if not channel_name or raw_series is None:
@@ -6493,6 +6506,22 @@ class PulsimBackend(SimulationBackend):
             t_amb_celsius=25.0,
         )
 
+        # Coupled shared-heatsink steady-state (pulsim 1.7). When the
+        # converter detected one or more HEATSINK blocks, take the
+        # per-device average powers we just computed and feed them
+        # through ``pulsim.thermal.shared_heatsink_steady_state`` to
+        # get the COUPLED junction temperatures (each device's T_j
+        # picks up the ``Σ Pᵢ · R_th_sa`` term from its peers — the
+        # whole point of modelling shared heatsinks at all). The
+        # result is stashed on ``result.statistics`` and ALSO merged
+        # into ``electrothermal_rows`` so the downstream thermal
+        # viewer / losses dashboard pick the better numbers up
+        # without changes.
+        shared_heatsink_results = self._compute_shared_heatsink_steady_state(
+            circuit=circuit,
+            electrothermal_rows=electrothermal_rows,
+        )
+
         # Pull arrays in the same layout the legacy streaming API
         # produced. ``SimulationResult.states`` is a list of NumPy
         # vectors (one per timestep); ``times`` is a 1-D array.
@@ -6501,9 +6530,14 @@ class PulsimBackend(SimulationBackend):
         # into ``result.signals`` / ``result.statistics`` by the
         # caller.
         virtual_payload: dict[str, Any] | None = None
-        if electrothermal_rows:
+        if electrothermal_rows or shared_heatsink_results:
             virtual_payload = {
                 "__electrothermal_rows__": electrothermal_rows,
+                # New: per-sink coupled steady-state — list of dicts
+                # ``{"name", "R_th_sink_to_amb", "T_sink_C", "devices":
+                # {device_name: T_j_C}}``. Merged into
+                # ``result.statistics["shared_heatsink_steady_state"]``.
+                "__shared_heatsink_results__": shared_heatsink_results,
                 # Temperature traces keyed as ``T(<device>)`` so the
                 # thermal_service's ``_collect_transient_thermal_traces``
                 # finds them via its existing T(…)/T_<…> heuristics.
@@ -6544,6 +6578,210 @@ class PulsimBackend(SimulationBackend):
     _LOSS_CARRYING_KINDS = frozenset(
         {"resistor", "inductor", "switch", "diode"}
     )
+
+    def _compute_shared_heatsink_steady_state(
+        self,
+        *,
+        circuit: Any,
+        electrothermal_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Coupled steady-state T_j for every HEATSINK descriptor.
+
+        Reads ``circuit.shared_heatsink_descriptors`` (populated by
+        :meth:`CircuitConverter._infer_shared_heatsink_loops`) and the
+        per-device average powers we just computed in
+        ``_compute_per_device_electrothermal``, then hands them to
+        :func:`pulsim.thermal.shared_heatsink_steady_state` to solve
+        the coupled network::
+
+            T_sink   = T_amb + R_th_sa · Σ_i P_i
+            T_case_i = T_sink + R_th_cs_i · P_i
+            T_j_i    = T_case_i + R_th_jc_i · P_i
+
+        That ``Σ P_i`` cross-coupling is the whole point of the
+        SharedHeatsink model — a per-device-isolated calculation
+        would miss it.
+
+        Returns a list of result dicts ``{"name", "T_amb_C",
+        "R_th_sink_to_amb_K_per_W", "T_sink_C", "devices":
+        {device_name: T_j_C}}``, one per descriptor. Empty when:
+
+          * no HEATSINK was detected (no descriptors);
+          * pulsim 1.7 isn't importable (defensive — the GUI keeps
+            running on older kernels with the legacy isolated path);
+          * none of a descriptor's devices have an average-power
+            entry in ``electrothermal_rows`` (nothing to feed the
+            solver).
+        """
+        descriptors = list(
+            getattr(circuit, "shared_heatsink_descriptors", []) or []
+        )
+        if not descriptors:
+            return []
+
+        try:
+            import pulsim.thermal as pt
+        except Exception:  # noqa: BLE001 — pulsim < 1.7 / import error
+            return []
+
+        # Build a name → average-power dict from ``electrothermal_rows``.
+        # The conduction rows are keyed by component name; switching +
+        # core losses are summed in. ``P_avg`` is the canonical key.
+        power_by_device: dict[str, float] = {}
+        for row in electrothermal_rows or []:
+            name = str(row.get("component_name") or "").strip()
+            if not name:
+                continue
+            p_total = 0.0
+            for key in ("conduction", "turn_on", "turn_off"):
+                stage = row.get(key)
+                if isinstance(stage, dict):
+                    p_total += float(stage.get("P_avg_W", 0.0) or 0.0)
+            power_by_device[name] = p_total
+
+        results: list[dict[str, Any]] = []
+        for desc in descriptors:
+            sink_name = str(desc.get("name") or "")
+            T_amb_C = float(desc.get("T_amb_C", 25.0) or 25.0)
+            R_th_sa = float(
+                desc.get("R_th_sink_to_amb_K_per_W", 5.0) or 5.0
+            )
+            device_specs = list(desc.get("devices") or [])
+            if not device_specs:
+                continue
+
+            # Build the HeatsinkDevice list + powers vector (skip any
+            # device with no recorded power — including it as 0 W
+            # would silently bias the coupling).
+            heatsink_devices: list[Any] = []
+            powers: dict[str, float] = {}
+            for dev in device_specs:
+                dname = str(dev.get("device_name") or "").strip()
+                if not dname:
+                    continue
+                p_avg = power_by_device.get(dname)
+                if p_avg is None:
+                    continue
+                # Translate the Foster CSVs into ``FosterStage`` list.
+                # ``thermal_rth_stages`` + ``thermal_cth_stages`` use
+                # paired values; fall back to the single-RC ``thermal_rth``
+                # / ``thermal_cth`` when both CSVs are blank.
+                stages = self._foster_stages_from_csv(
+                    dev.get("thermal_rth_stages", ""),
+                    dev.get("thermal_cth_stages", ""),
+                ) or self._foster_stages_from_single_rc(
+                    float(dev.get("thermal_rth_K_per_W", 1.0) or 1.0),
+                    float(dev.get("thermal_cth_J_per_K", 0.1) or 0.1),
+                )
+                try:
+                    hsd = pt.HeatsinkDevice(
+                        name=dname,
+                        junction_to_case=stages,
+                        R_th_case_to_sink_K_per_W=float(
+                            dev.get("R_th_case_to_sink_K_per_W", 0.0) or 0.0
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - skip a broken spec
+                    continue
+                heatsink_devices.append(hsd)
+                powers[dname] = float(p_avg)
+
+            if not heatsink_devices:
+                continue
+
+            try:
+                solved = pt.shared_heatsink_steady_state(
+                    heatsink_devices,
+                    powers,
+                    R_th_sink_to_amb_K_per_W=R_th_sa,
+                    T_amb_C=T_amb_C,
+                )
+            except Exception:  # noqa: BLE001 - solver rejected the inputs
+                continue
+
+            # ``solved`` is shaped {"T_sink_C", "devices": {name: {...}}}
+            # per pulsim 1.7. We normalise to a flatter shape the GUI
+            # downstreams want.
+            t_sink = float(solved.get("T_sink_C", T_amb_C))
+            device_tj: dict[str, float] = {}
+            dev_results = solved.get("devices") or {}
+            if isinstance(dev_results, dict):
+                for dname, payload in dev_results.items():
+                    if isinstance(payload, dict):
+                        device_tj[str(dname)] = float(
+                            payload.get("T_j_C", t_sink)
+                        )
+                    else:
+                        device_tj[str(dname)] = float(payload)
+            results.append({
+                "name": sink_name,
+                "T_amb_C": T_amb_C,
+                "R_th_sink_to_amb_K_per_W": R_th_sa,
+                "T_sink_C": t_sink,
+                "devices": device_tj,
+                "powers_W": dict(powers),
+            })
+        return results
+
+    @staticmethod
+    def _foster_stages_from_csv(
+        rth_csv: str | Any,
+        cth_csv: str | Any,
+    ) -> list[Any]:
+        """Translate the GUI's CSV pair into ``pulsim.thermal.FosterStage``.
+
+        Returns an empty list when either CSV is blank or the parsed
+        lengths don't match (let the caller fall back to the single-RC
+        path). Conversion: ``tau = R · C`` for each stage.
+        """
+        rth_str = str(rth_csv or "").strip()
+        cth_str = str(cth_csv or "").strip()
+        if not rth_str or not cth_str:
+            return []
+        try:
+            import pulsim.thermal as pt
+        except Exception:  # noqa: BLE001
+            return []
+
+        def _parse(s: str) -> list[float]:
+            out: list[float] = []
+            for tok in s.replace(";", ",").split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    out.append(float(tok))
+                except ValueError:
+                    return []
+            return out
+
+        rs = _parse(rth_str)
+        cs = _parse(cth_str)
+        if not rs or len(rs) != len(cs):
+            return []
+        stages: list[Any] = []
+        for r, c in zip(rs, cs):
+            if r <= 0 or c <= 0:
+                return []
+            try:
+                stages.append(pt.FosterStage(R_th_K_per_W=r, tau_s=r * c))
+            except Exception:  # noqa: BLE001
+                return []
+        return stages
+
+    @staticmethod
+    def _foster_stages_from_single_rc(rth: float, cth: float) -> list[Any]:
+        """One-stage Foster from the single-RC fallback fields."""
+        try:
+            import pulsim.thermal as pt
+        except Exception:  # noqa: BLE001
+            return []
+        if rth <= 0 or cth <= 0:
+            return []
+        try:
+            return [pt.FosterStage(R_th_K_per_W=float(rth), tau_s=float(rth * cth))]
+        except Exception:  # noqa: BLE001
+            return []
 
     def _compute_per_device_electrothermal(
         self,
