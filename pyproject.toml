@@ -37,7 +37,24 @@ dependencies = [
     #           switched topologies; PMSM saliency (Ld/Lq); the motor
     #           observer publishes i_d/i_q/ω/θ. Examples 19/20/21 (FOC
     #           compressor drives) + the GUI FOC wiring all require it.
-    "pulsim>=1.6.5",
+    #   1.7.0 — thermal modernisation: ``pulsim.thermal`` gains Cauer
+    #           networks alongside Foster (``CauerStage``,
+    #           ``add_cauer_thermal_network``), shared-heatsink model
+    #           (``SharedHeatsink``, ``HeatsinkDevice``,
+    #           ``add_shared_heatsink``), temperature-dependent loss
+    #           (``TempCoLoss``), datasheet Z_th(t) → Foster fitter
+    #           (``fit_foster_from_zth``), TIM + convection helpers
+    #           (``TIM_CATALOG``, ``tim_resistance``,
+    #           ``convection_coefficient``,
+    #           ``convection_resistance``), junction-temp limit
+    #           monitor (``ThermalLimitMonitor``), and coupled
+    #           steady-state solvers (``electrothermal_steady_state``,
+    #           ``shared_heatsink_steady_state``). The existing GUI
+    #           thermal pipeline (``device_thermal_summary`` →
+    #           per-device Foster ``compute_temperature``) is
+    #           untouched (back-compat preserved); the new features
+    #           are upgrade opportunities for later GUI exposure.
+    "pulsim>=1.7.0",
     # scipy is NOT needed for the native C++ DSED engine (the headline
     # ~24× path) — pulsim 1.6.2 reaches that without it. It IS used by
     # the pure-Python BDF2 fallback for the rare circuit the native
@@ -61,7 +78,7 @@ dev = [
 # extra so `pip install pulsimgui[fast]` lights up both layers.
 fast = [
     "numba>=0.58",
-    "pulsim[fast]>=1.6.5",
+    "pulsim[fast]>=1.7.0",
 ]
 build = [
     # PyInstaller for creating standalone executables
@@ -71,7 +88,7 @@ build = [
     # macOS DMG creation
     "dmgbuild>=1.6.0;sys_platform=='darwin'",
     # Ensure pulsim backend is available for bundling
-    "pulsim>=1.6.5",
+    "pulsim>=1.7.0",
 ]
 
 [project.scripts]
