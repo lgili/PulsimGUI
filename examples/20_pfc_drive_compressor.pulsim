@@ -888,9 +888,9 @@
             "v_bus_max": 450.0,
             "voltage_kp": 0.3,
             "voltage_ki": 6.0,
-            "i_pk_limit": 20.0,
-            "current_kp": 31.4,
-            "current_ki": 3140.0,
+            "i_pk_limit": 10.0,
+            "current_kp": 0.4,
+            "current_ki": 1200.0,
             "duty_max": 0.95,
             "vac_pk_nom": 325.0,
             "f_line": 60.0,
@@ -899,7 +899,9 @@
             "v_bus_node_name": "",
             "v_ac_node_name": "",
             "i_l_branch_name": "I_L",
-            "sample_time": 0.0
+            "sample_time": 0.0,
+            "soft_start_time": 0.05,
+            "v_bus_initial": 310.0
           },
           "pins": [
             {

@@ -1509,13 +1509,23 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "voltage_ki": 6.0,
         # Output of the voltage loop is the peak input-current amplitude.
         # Clamp to a safe per-unit of the inverter rating.
-        "i_pk_limit": 20.0,
+        "i_pk_limit": 10.0,
         # --- Inner current loop (fast, ~5 kHz BW) ---
-        # Tune from L_boost / R_dcr and the target loop crossover:
-        # Kp ≈ L · ω_c ; Ki ≈ R_dcr · ω_c. The defaults below match a
-        # 1 mH boost inductor with R_dcr ≈ 0.1 Ω at ω_c ≈ 2π·5 kHz.
-        "current_kp": 31.4,
-        "current_ki": 3140.0,
+        # The PI output is the DUTY cycle (0..duty_max). Tune for the
+        # plant ``ΔI_L / Δduty ≈ V_bus / (s·L)`` so the closed loop
+        # crosses over at ω_c without saturating duty on every cycle:
+        #
+        #   Kp ≈ ω_c · L / V_bus
+        #   Ki ≈ Kp · ω_zero   (ω_zero typically ω_c / 5..10)
+        #
+        # Defaults below target L=5 mH, V_bus=400 V, ω_c = 2π·5 kHz —
+        # the recipe used by the bundled examples. **Older Pulsim builds
+        # shipped Kp=31.4 / Ki=3140 here; those values are 80× too high
+        # — a ~30 mA current error saturated duty to ``duty_max`` and
+        # the inductor current built giant per-cycle spikes**. Adjust
+        # ``current_kp ∝ L`` if your boost choke is different.
+        "current_kp": 0.4,
+        "current_ki": 1200.0,
         # Duty clamp (0..duty_max). Leave a small margin so the bus
         # capacitor never charges through the body diode.
         "duty_max": 0.95,
