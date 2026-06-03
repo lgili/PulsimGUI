@@ -1326,6 +1326,18 @@ DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
     "thermal_cth": 0.1,
     "thermal_rth_stages": "",
     "thermal_cth_stages": "",
+    # Topology of the multi-stage thermal ladder (pulsim 1.7). The two
+    # parametrisations populate the SAME R + C CSVs but build different
+    # pulsim stage objects:
+    #   * "foster" (default) — fit from a datasheet Z_th(t) curve, no
+    #     physical interpretation per stage. Built as ``FosterStage(R,
+    #     τ = R·C)``. Matches the legacy GUI behaviour byte-for-byte
+    #     when this flag is left at its default.
+    #   * "cauer" — direct per-layer values from a finite-element
+    #     thermal sim of the device's material stack, or from a Cauer
+    #     fit of measured Z_th. Built as ``CauerStage(R, C)``.
+    # Either way ``HeatsinkDevice.junction_to_case`` accepts a mix.
+    "thermal_stage_kind": "foster",
     "thermal_temp_init": 25.0,
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,

@@ -6727,16 +6727,21 @@ class PulsimBackend(SimulationBackend):
                 p_avg = power_by_device.get(dname)
                 if p_avg is None:
                     continue
-                # Translate the Foster CSVs into ``FosterStage`` list.
-                # ``thermal_rth_stages`` + ``thermal_cth_stages`` use
-                # paired values; fall back to the single-RC ``thermal_rth``
-                # / ``thermal_cth`` when both CSVs are blank.
+                # Translate the R + C CSVs into stage objects. Foster
+                # vs Cauer is selected per-device via the converter-
+                # supplied ``thermal_stage_kind`` (default "foster").
+                # Fall back to a single-stage build from the
+                # ``thermal_rth`` / ``thermal_cth`` legacy fields when
+                # both CSVs are blank.
+                kind = str(dev.get("thermal_stage_kind", "foster"))
                 stages = self._foster_stages_from_csv(
                     dev.get("thermal_rth_stages", ""),
                     dev.get("thermal_cth_stages", ""),
+                    kind=kind,
                 ) or self._foster_stages_from_single_rc(
                     float(dev.get("thermal_rth_K_per_W", 1.0) or 1.0),
                     float(dev.get("thermal_cth_J_per_K", 0.1) or 0.1),
+                    kind=kind,
                 )
                 try:
                     hsd = pt.HeatsinkDevice(
@@ -6931,14 +6936,19 @@ class PulsimBackend(SimulationBackend):
                 if a_cond != 0.0 or a_sw != 0.0:
                     saw_nonzero_tempco = True
 
-                # Build the HeatsinkDevice using the same Foster math
-                # as the shared-heatsink solver — no point diverging.
+                # Build the HeatsinkDevice using the same Foster /
+                # Cauer math as the shared-heatsink solver — no point
+                # diverging. ``thermal_stage_kind`` defaults to
+                # "foster" so existing schematics behave identically.
+                kind = str(dev.get("thermal_stage_kind", "foster"))
                 stages = self._foster_stages_from_csv(
                     dev.get("thermal_rth_stages", ""),
                     dev.get("thermal_cth_stages", ""),
+                    kind=kind,
                 ) or self._foster_stages_from_single_rc(
                     float(dev.get("thermal_rth_K_per_W", 1.0) or 1.0),
                     float(dev.get("thermal_cth_J_per_K", 0.1) or 0.1),
+                    kind=kind,
                 )
                 try:
                     hsd = pt.HeatsinkDevice(
@@ -7043,12 +7053,23 @@ class PulsimBackend(SimulationBackend):
     def _foster_stages_from_csv(
         rth_csv: str | Any,
         cth_csv: str | Any,
+        kind: str = "foster",
     ) -> list[Any]:
-        """Translate the GUI's CSV pair into ``pulsim.thermal.FosterStage``.
+        """Translate the GUI's R + C CSV pair into ``pulsim.thermal``
+        stage objects (Foster or Cauer).
+
+        Both parametrisations consume the SAME pair of CSVs — they
+        just build different pulsim classes from each (R, C):
+
+          * ``"foster"`` → ``FosterStage(R, τ = R·C)``. This is the
+            historical GUI default and what the Foster-fit dialog
+            emits.
+          * ``"cauer"`` → ``CauerStage(R, C)``. Direct per-layer
+            values from FEA / Cauer measurements.
 
         Returns an empty list when either CSV is blank or the parsed
-        lengths don't match (let the caller fall back to the single-RC
-        path). Conversion: ``tau = R · C`` for each stage.
+        lengths don't match (let the caller fall back to the
+        single-RC path). Bad ``kind`` falls back to ``"foster"``.
         """
         rth_str = str(rth_csv or "").strip()
         cth_str = str(cth_csv or "").strip()
@@ -7075,27 +7096,47 @@ class PulsimBackend(SimulationBackend):
         cs = _parse(cth_str)
         if not rs or len(rs) != len(cs):
             return []
+
+        kind_norm = (str(kind) or "foster").strip().lower()
+        use_cauer = kind_norm == "cauer" and hasattr(pt, "CauerStage")
         stages: list[Any] = []
         for r, c in zip(rs, cs):
             if r <= 0 or c <= 0:
                 return []
             try:
-                stages.append(pt.FosterStage(R_th_K_per_W=r, tau_s=r * c))
+                if use_cauer:
+                    stages.append(pt.CauerStage(
+                        R_th_K_per_W=r, C_th_J_per_K=c,
+                    ))
+                else:
+                    stages.append(pt.FosterStage(
+                        R_th_K_per_W=r, tau_s=r * c,
+                    ))
             except Exception:  # noqa: BLE001
                 return []
         return stages
 
     @staticmethod
-    def _foster_stages_from_single_rc(rth: float, cth: float) -> list[Any]:
-        """One-stage Foster from the single-RC fallback fields."""
+    def _foster_stages_from_single_rc(
+        rth: float, cth: float, kind: str = "foster",
+    ) -> list[Any]:
+        """One-stage Foster or Cauer from the single-RC fallback fields."""
         try:
             import pulsim.thermal as pt
         except Exception:  # noqa: BLE001
             return []
         if rth <= 0 or cth <= 0:
             return []
+        kind_norm = (str(kind) or "foster").strip().lower()
+        use_cauer = kind_norm == "cauer" and hasattr(pt, "CauerStage")
         try:
-            return [pt.FosterStage(R_th_K_per_W=float(rth), tau_s=float(rth * cth))]
+            if use_cauer:
+                return [pt.CauerStage(
+                    R_th_K_per_W=float(rth), C_th_J_per_K=float(cth),
+                )]
+            return [pt.FosterStage(
+                R_th_K_per_W=float(rth), tau_s=float(rth * cth),
+            )]
         except Exception:  # noqa: BLE001
             return []
 
