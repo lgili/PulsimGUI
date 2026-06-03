@@ -36,6 +36,7 @@ dialog's input/output conversion.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
@@ -390,6 +391,44 @@ class FosterFitDialog(QDialog):
 
         results_layout.addLayout(copy_layout)
 
+        # "Apply to selected device" — writes both CSVs into the
+        # selected schematic component in one click (+ flips
+        # thermal_network to "foster" since the fit produces Foster
+        # stages). Only renders when the dialog has a MainWindow-shaped
+        # parent — standalone / test instances see just the Copy
+        # buttons. Same pattern as the Thermal Sizing dialog.
+        parent_looks_like_main_window = (
+            parent is not None
+            and hasattr(parent, "_schematic_scene")
+            and hasattr(parent, "_execute_schematic_command")
+            and hasattr(parent, "_current_circuit")
+        )
+        if parent_looks_like_main_window:
+            apply_row = QHBoxLayout()
+            self._apply_button = QPushButton("Apply to selected device")
+            self._apply_button.setMinimumHeight(32)
+            self._apply_button.setToolTip(
+                "Write thermal_rth_stages + thermal_cth_stages into the "
+                "selected schematic component's parameters in one click "
+                "(also flips thermal_network to 'foster' since this is "
+                "a Foster fit). The component must have its thermal "
+                "port enabled. Goes through the normal undo stack."
+            )
+            self._apply_button.setEnabled(False)  # enabled after a fit
+            self._apply_button.clicked.connect(self._on_apply_clicked)
+            apply_row.addWidget(self._apply_button)
+            apply_row.addStretch(1)
+            results_layout.addLayout(apply_row)
+            self._apply_status = QLabel("")
+            self._apply_status.setWordWrap(True)
+            self._apply_status.setStyleSheet(
+                "color: #4a5568; font-size: 11px; padding-top: 2px;"
+            )
+            results_layout.addWidget(self._apply_status)
+        else:
+            self._apply_button = None
+            self._apply_status = None
+
         self._residual_label = QLabel("Residual: —")
         results_layout.addWidget(self._residual_label)
 
@@ -472,6 +511,11 @@ class FosterFitDialog(QDialog):
         self._c_csv_label.setText(f"<tt>{result.c_csv()}</tt>")
         self._copy_r_button.setEnabled(True)
         self._copy_c_button.setEnabled(True)
+        # Apply button only renders for MainWindow-shaped parents — gate
+        # the enable on its existence so standalone / test runs are
+        # unaffected.
+        if self._apply_button is not None:
+            self._apply_button.setEnabled(True)
 
     def _draw_plot(
         self, t: np.ndarray, zth: np.ndarray, result: FosterFitResult,
@@ -515,3 +559,119 @@ class FosterFitDialog(QDialog):
         if self._fit_result is None:
             return
         QGuiApplication.clipboard().setText(self._fit_result.c_csv())
+
+    # -- Apply to selected device --------------------------------------------
+
+    def _on_apply_clicked(self) -> None:
+        """Write the fitted CSVs to the selected schematic device.
+
+        Routes through ``UpdateComponentStateCommand`` so the write
+        participates in undo/redo + marks the document dirty. Sets
+        ``thermal_network`` to "foster" along with the two CSV fields
+        — the fit ALWAYS produces Foster-form stages, so this is the
+        correct topology flag whether the user previously had it set
+        to "single_rc" or "cauer".
+        """
+        if self._apply_button is None or self._apply_status is None:
+            return
+        if self._fit_result is None:
+            return
+        target = self._find_selected_thermal_device()
+        if target is None:
+            self._set_apply_status(
+                "Select a device with its thermal port enabled on the "
+                "schematic first.",
+                ok=False,
+            )
+            return
+        main_window, component, device_name = target
+        try:
+            from copy import deepcopy
+
+            from pulsimgui.commands.component_commands import (
+                UpdateComponentStateCommand,
+            )
+
+            circuit = main_window._current_circuit()
+            old_state = UpdateComponentStateCommand.snapshot(component)
+            new_state = deepcopy(old_state)
+            params = new_state.setdefault("parameters", {})
+            params["thermal_rth_stages"] = self._fit_result.r_csv()
+            params["thermal_cth_stages"] = self._fit_result.c_csv()
+            # Foster fit ⇒ Foster topology. Flip the toggle so the
+            # backend builds FosterStage from these CSVs (the Cauer
+            # path would re-interpret R / C as physical layer values,
+            # which they aren't for a Z_th fit).
+            params["thermal_network"] = "foster"
+            command = UpdateComponentStateCommand(
+                circuit, component.id, new_state, old_state=old_state,
+            )
+            main_window._execute_schematic_command(
+                command, refresh_scene=True, merge=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface, don't crash
+            self._set_apply_status(f"Error: {exc}", ok=False)
+            return
+        self._set_apply_status(
+            f"Applied {self._fit_result.n_stages}-stage Foster fit to "
+            f"{device_name} (thermal_rth_stages + thermal_cth_stages, "
+            f"thermal_network = foster).",
+            ok=True,
+        )
+
+    def _set_apply_status(self, text: str, *, ok: bool) -> None:
+        """Update the status label below the Apply button. Green for
+        success, red for "select a device first" / "error". Defensive
+        no-op when the label isn't present (standalone construction)."""
+        if self._apply_status is None:
+            return
+        self._apply_status.setText(text)
+        color = "#2f855a" if ok else "#c53030"
+        self._apply_status.setStyleSheet(
+            f"color: {color}; font-size: 11px; padding-top: 2px;"
+        )
+
+    def _find_selected_thermal_device(self) -> tuple[Any, Any, str] | None:
+        """Return ``(main_window, component, display_name)`` for the
+        currently-selected schematic component that has its thermal
+        port enabled.
+
+        Acceptance: any component with ``enable_thermal_port=True`` —
+        not just MOSFETs/diodes — because the Foster Fit dialog
+        produces a junction-to-case ladder, which any loss-carrying
+        device with a thermal port can consume. We also accept
+        ``thermal_enabled=True`` as a fallback (legacy / SharedHeatsink
+        path doesn't always set ``enable_thermal_port``).
+
+        ``None`` when:
+          * no parent / no scene available;
+          * nothing selected;
+          * selection has no ``.component``;
+          * selected component is a HEATSINK (it has its own R + C
+            sink-side fields — Foster fit doesn't belong there);
+          * selected component has neither thermal flag set.
+        """
+        main_window = self.parent()
+        if main_window is None:
+            return None
+        scene = getattr(main_window, "_schematic_scene", None)
+        if scene is None:
+            return None
+        for item in scene.selectedItems():
+            comp = getattr(item, "component", None)
+            if comp is None:
+                continue
+            type_name = getattr(comp.type, "name", str(comp.type))
+            if type_name == "HEATSINK":
+                # HEATSINK has its own sink-side R + C fields — refuse
+                # so the user doesn't accidentally write the device's
+                # junction-to-case ladder there.
+                continue
+            params = getattr(comp, "parameters", None) or {}
+            has_port = bool(
+                params.get("enable_thermal_port", False)
+            ) or bool(params.get("thermal_enabled", False))
+            if not has_port:
+                continue
+            return main_window, comp, getattr(comp, "name", "device")
+        return None

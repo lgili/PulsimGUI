@@ -183,3 +183,211 @@ def test_dialog_constructs_and_responds_to_fit_button(qtbot) -> None:
     # CSV labels should now hold tt-wrapped numbers, not "—".
     assert "—" not in dialog._r_csv_label.text()
     assert "—" not in dialog._c_csv_label.text()
+
+
+# ---------------------------------------------------------------------------
+# Apply-to-selected-device button
+# ---------------------------------------------------------------------------
+
+
+def _fake_main_window(*, selected_items: list, captured_commands: list):
+    """A QWidget that quacks like a MainWindow for the dialog's Apply
+    button + duck-typed selection walk. See the Thermal Sizing
+    dialog's analogous test helper — same shape, different attributes
+    don't matter for this dialog."""
+    from PySide6.QtWidgets import QWidget
+
+    class _FakeMainWindow(QWidget):
+        def __init__(self):
+            super().__init__()
+            self._schematic_scene = type(
+                "Scene", (), {"selectedItems": staticmethod(
+                    lambda: list(selected_items),
+                )},
+            )()
+            self._current_circuit = lambda: None
+
+        def _execute_schematic_command(self, cmd, **kwargs):
+            captured_commands.append(cmd)
+
+    return _FakeMainWindow()
+
+
+def _fake_item(component):
+    import types
+    return types.SimpleNamespace(component=component)
+
+
+def test_apply_button_absent_when_no_main_window_parent(qtbot) -> None:
+    """Standalone construction (no MainWindow-shaped parent) renders
+    just the Copy buttons — no Apply, no status label. Avoids a
+    button that would crash on click without the plumbing."""
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    dialog = FosterFitDialog()
+    qtbot.addWidget(dialog)
+    assert dialog._apply_button is None
+    assert dialog._apply_status is None
+
+
+def test_apply_button_present_when_parent_quacks_like_main_window(qtbot) -> None:
+    """A MainWindow-shaped parent enables the Apply button — but it
+    starts DISABLED until a fit runs (clicking before a fit would
+    have no payload)."""
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    fake_mw = _fake_main_window(selected_items=[], captured_commands=[])
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    assert dialog._apply_button is not None
+    assert dialog._apply_button.isEnabled() is False  # no fit yet
+    # After a fit, the button enables.
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+    assert dialog._apply_button.isEnabled() is True
+
+
+def test_apply_with_no_selection_returns_friendly_status(qtbot) -> None:
+    """Click Apply when nothing is selected → status label asks the
+    user to select a thermal-port device first; no command dispatched."""
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    captured: list = []
+    fake_mw = _fake_main_window(selected_items=[], captured_commands=captured)
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+
+    dialog._on_apply_clicked()
+    assert dialog._apply_status is not None
+    assert "thermal port" in dialog._apply_status.text().lower()
+    assert captured == []
+
+
+def test_apply_writes_both_csvs_and_sets_thermal_network_to_foster(qtbot) -> None:
+    """The Apply button is the whole point of this slice — it writes
+    BOTH CSVs into the selected device AND flips thermal_network to
+    "foster" (the topology the fitter produces). Pin every parameter
+    that lands in the dispatched command."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    mosfet = Component(type=ComponentType.MOSFET_N, name="Q_drive")
+    mosfet.parameters["enable_thermal_port"] = True
+    # Seed the legacy topology to ensure Apply flips it.
+    mosfet.parameters["thermal_network"] = "cauer"
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(mosfet)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+    fit = dialog._fit_result
+    assert fit is not None
+
+    dialog._on_apply_clicked()
+    assert len(captured) == 1
+    cmd = captured[0]
+    new_state = getattr(cmd, "new_state", None) or getattr(cmd, "_new_state", None)
+    assert new_state is not None
+    params = new_state["parameters"]
+    # Both CSVs land verbatim from the fit result.
+    assert params["thermal_rth_stages"] == fit.r_csv()
+    assert params["thermal_cth_stages"] == fit.c_csv()
+    # Topology was forcibly flipped to "foster" — the Cauer interpretation
+    # would silently miscompute T_j(t) from these τ-based stages.
+    assert params["thermal_network"] == "foster"
+    # Status text is success-shaped.
+    assert dialog._apply_status is not None
+    assert "Q_drive" in dialog._apply_status.text()
+
+
+def test_apply_refuses_on_device_without_thermal_port(qtbot) -> None:
+    """A MOSFET with ``enable_thermal_port=False`` should be REJECTED
+    — writing thermal_rth_stages into a device that won't even
+    instantiate a Foster network would silently produce stale-data
+    bugs later."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    mosfet = Component(type=ComponentType.MOSFET_N, name="Q_no_port")
+    mosfet.parameters["enable_thermal_port"] = False
+    mosfet.parameters["thermal_enabled"] = False
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(mosfet)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+
+    dialog._on_apply_clicked()
+    assert captured == []
+    assert dialog._apply_status is not None
+    assert "thermal port" in dialog._apply_status.text().lower()
+
+
+def test_apply_refuses_on_heatsink_selection(qtbot) -> None:
+    """A HEATSINK has its own sink-side R + C fields — the Foster fit
+    is for a DEVICE's junction-to-case ladder, not the sink-to-ambient
+    path. Writing thermal_rth_stages to a HEATSINK would be silently
+    nonsense, so refuse."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    hs = Component(type=ComponentType.HEATSINK, name="HS1")
+    # HEATSINK doesn't have enable_thermal_port — irrelevant here, the
+    # type check should refuse before even looking at flags.
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(hs)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+
+    dialog._on_apply_clicked()
+    assert captured == []
+
+
+def test_apply_accepts_diode_with_thermal_enabled_legacy_flag(qtbot) -> None:
+    """The dialog also accepts ``thermal_enabled=True`` (legacy /
+    SharedHeatsink path), not just ``enable_thermal_port=True`` —
+    they're synonyms in different places of the model layer."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.foster_fit_dialog import FosterFitDialog
+
+    diode = Component(type=ComponentType.DIODE, name="D_freewheel")
+    diode.parameters["thermal_enabled"] = True
+    diode.parameters["enable_thermal_port"] = False
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(diode)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = FosterFitDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._on_insert_example()
+    dialog._on_fit_clicked()
+
+    dialog._on_apply_clicked()
+    assert len(captured) == 1
+    # CSVs landed, thermal_network forced to foster.
+    new_state = getattr(captured[0], "new_state", None) or getattr(
+        captured[0], "_new_state", None,
+    )
+    assert new_state["parameters"]["thermal_network"] == "foster"
