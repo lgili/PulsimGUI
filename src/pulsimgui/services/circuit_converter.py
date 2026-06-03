@@ -158,6 +158,13 @@ class CircuitConverter:
             # ``_infer_sixstep_loops``.
             if comp_type == ComponentType.SIXSTEP_CONTROLLER:
                 continue
+            # HEATSINK — pure thermal-domain block (no electrical
+            # branches). Consumed later by
+            # ``_infer_shared_heatsink_loops`` which translates its
+            # pin-to-device wiring into a
+            # ``shared_heatsink_descriptor``.
+            if comp_type == ComponentType.HEATSINK:
+                continue
             if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
                 component.get("parameters")
             ):
@@ -306,6 +313,22 @@ class CircuitConverter:
         try:
             pfc_loops = self._infer_pfc_loops(components, node_map, alias_map)
             setattr(circuit, "pfc_loop_descriptors", pfc_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
+        # Coupled-thermal heatsink (pulsim 1.7): collect every HEATSINK
+        # block + the devices wired to its DEV pins, package the per-
+        # device thermal stack + R_th_sa + ambient into a descriptor
+        # the backend's ``_build_shared_heatsink_loops`` (next slice)
+        # hands to ``pulsim.thermal.add_shared_heatsink`` +
+        # ``make_heatsink_observer``. Additive — empty descriptor list
+        # leaves the existing per-device-isolated thermal path
+        # untouched.
+        try:
+            heatsink_descriptors = self._infer_shared_heatsink_loops(
+                components, node_map,
+            )
+            setattr(circuit, "shared_heatsink_descriptors", heatsink_descriptors)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -3835,6 +3858,201 @@ class CircuitConverter:
             })
 
         return descriptors
+
+    def _infer_shared_heatsink_loops(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+    ) -> list[dict[str, Any]]:
+        """Detect ``HEATSINK`` blocks and emit a descriptor per sink
+        binding it to the devices wired into its DEV pins.
+
+        The match is pure wiring (no parameter-name overrides):
+
+          * pin 0 = AMB — ambient reference (no device).
+          * pins 1..N = DEV_i — each wires to ONE device's existing
+            ``TH`` thermal-port pin. Devices not on the heatsink are
+            ignored.
+
+        Returned descriptor (one per HEATSINK) carries everything the
+        backend's ``_build_shared_heatsink_loops`` needs to call
+        ``pulsim.thermal.add_shared_heatsink`` + ``make_heatsink_observer``:
+
+            {
+              "name": "<HEATSINK component name>",
+              "R_th_sink_to_amb_K_per_W": float,
+              "C_th_sink_J_per_K":        float,
+              "T_amb_C":                  float,
+              "devices": [
+                {
+                  "device_name": "<MOSFET/diode/resistor name>",
+                  "device_type": "<MOSFET_N | DIODE | ...>",
+                  "R_th_case_to_sink_K_per_W": float,
+                  "thermal_rth_stages": str,  # CSV from the device
+                  "thermal_cth_stages": str,
+                },
+                ...
+              ],
+            }
+
+        Defensive: returns ``[]`` when no HEATSINK is present, or
+        skips a heatsink with zero wired devices (descriptor-only
+        sinks are noise — the legacy per-device-isolated path stays
+        the default).
+        """
+        # Quick exit if nothing to do.
+        any_sink = any(
+            self._safe_component_type(c.get("type")) == ComponentType.HEATSINK
+            for c in components
+        )
+        if not any_sink:
+            return []
+
+        # Pin-nodes helper that prefers an on-dict cache (subcircuit
+        # flattening + synthetic tests stash it there) and falls back
+        # to the converter-side ``node_map``.
+        nm = node_map or {}
+
+        def _pin_nodes_of(comp: dict[str, Any]) -> list:
+            local = comp.get("pin_nodes")
+            if isinstance(local, list) and local:
+                return list(local)
+            return list(nm.get(comp.get("id") or "", []) or [])
+
+        # Index every device that owns a TH pin (i.e. a loss-carrying
+        # component whose ``enable_thermal_port`` we don't even need
+        # to check — the wiring decides). The thermal port lives at
+        # whichever pin's name is ``TH`` per ``THERMAL_PORT_PIN_NAME``.
+        # For each candidate, we record its (component, TH-net) tuple.
+        device_th_nets: list[tuple[dict[str, Any], str]] = []
+        for comp in components:
+            try:
+                ct = self._component_type(comp.get("type"))
+            except CircuitConversionError:
+                continue
+            if ct == ComponentType.HEATSINK:
+                continue  # don't recurse the sink onto itself
+            pins = comp.get("pins") or []
+            for pin_idx, pin in enumerate(pins):
+                pin_name = (pin.get("name") if isinstance(pin, dict) else None)
+                if str(pin_name or "").strip().upper() != "TH":
+                    continue
+                nodes = _pin_nodes_of(comp)
+                if pin_idx >= len(nodes):
+                    continue
+                net = str(nodes[pin_idx] or "").strip()
+                if net:
+                    device_th_nets.append((comp, net))
+                break  # TH is unique per device
+
+        descriptors: list[dict[str, Any]] = []
+        # Per-sink scan.
+        for sink in components:
+            try:
+                if self._component_type(sink.get("type")) != ComponentType.HEATSINK:
+                    continue
+            except CircuitConversionError:
+                continue
+            params = sink.get("parameters")
+            params = params if isinstance(params, dict) else {}
+            sink_nodes = _pin_nodes_of(sink)
+            sink_name = self._component_name(sink, ComponentType.HEATSINK)
+            # Parse the optional case-to-sink CSV once; pad / truncate
+            # to the actual wired-device count later.
+            case_csv = str(params.get("case_to_sink_R_th_csv") or "").strip()
+            case_values: list[float] = []
+            if case_csv:
+                for tok in case_csv.replace(";", ",").split(","):
+                    tok = tok.strip()
+                    if not tok:
+                        continue
+                    try:
+                        case_values.append(float(tok))
+                    except ValueError:
+                        # A bad token is a soft error — fall back to 0
+                        # for that slot rather than rejecting the sink.
+                        case_values.append(0.0)
+
+            wired_devices: list[dict[str, Any]] = []
+            # Walk DEV pins (skip pin 0 = AMB). Position-in-the-block
+            # determines slot ordering for the case-to-sink CSV.
+            for slot_idx, net in enumerate(sink_nodes[1:], start=1):
+                net = str(net or "").strip()
+                if not net:
+                    continue
+                # Find a device whose TH net matches this slot's net.
+                matched: dict[str, Any] | None = None
+                for dev, dev_net in device_th_nets:
+                    if dev_net == net:
+                        matched = dev
+                        break
+                if matched is None:
+                    continue
+                dev_params = matched.get("parameters")
+                dev_params = dev_params if isinstance(dev_params, dict) else {}
+                try:
+                    dev_type = self._component_type(matched.get("type"))
+                except CircuitConversionError:
+                    continue
+                device_name = self._component_name(matched, dev_type)
+                # Per-device case-to-sink R_th: prefer the CSV slot,
+                # else 0 (case bonded straight to sink).
+                csv_idx = slot_idx - 1
+                r_cs = (
+                    case_values[csv_idx]
+                    if csv_idx < len(case_values)
+                    else 0.0
+                )
+                wired_devices.append({
+                    "device_name": device_name,
+                    "device_type": dev_type.name,
+                    "R_th_case_to_sink_K_per_W": float(r_cs),
+                    "thermal_rth_stages": str(
+                        dev_params.get("thermal_rth_stages") or ""
+                    ),
+                    "thermal_cth_stages": str(
+                        dev_params.get("thermal_cth_stages") or ""
+                    ),
+                    # Single-RC fallback values the backend uses when
+                    # the device skipped the multi-stage CSV.
+                    "thermal_rth_K_per_W": float(
+                        dev_params.get("thermal_rth", 1.0) or 1.0
+                    ),
+                    "thermal_cth_J_per_K": float(
+                        dev_params.get("thermal_cth", 0.1) or 0.1
+                    ),
+                })
+
+            if not wired_devices:
+                # A sink with no devices is noise — skip it so the
+                # backend doesn't try to embed a 0-device network.
+                continue
+
+            descriptors.append({
+                "name": sink_name,
+                "R_th_sink_to_amb_K_per_W": float(
+                    params.get("R_th_sink_to_amb_K_per_W", 5.0) or 5.0
+                ),
+                "C_th_sink_J_per_K": float(
+                    params.get("C_th_sink_J_per_K", 0.0) or 0.0
+                ),
+                "T_amb_C": float(params.get("T_amb_C", 25.0) or 25.0),
+                "devices": wired_devices,
+            })
+
+        return descriptors
+
+    def _safe_component_type(self, raw: Any) -> ComponentType | None:
+        """Like ``_component_type`` but returns ``None`` for unknowns.
+
+        ``_infer_shared_heatsink_loops`` uses it for the "any HEATSINK
+        present?" pre-check — propagating the exception there would
+        skip the whole inference on a single mis-typed component.
+        """
+        try:
+            return self._component_type(raw)
+        except CircuitConversionError:
+            return None
 
     def _constant_names_used_as_cblock_inputs(
         self,
