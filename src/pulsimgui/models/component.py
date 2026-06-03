@@ -822,14 +822,14 @@ def pin_connection_domain(component: "Component", pin_index: int) -> str:
 # Default pin configurations for each component type
 DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Basic passive
-    ComponentType.RESISTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
+    ComponentType.RESISTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
     ComponentType.CAPACITOR: [Pin(0, "+", -20, 0), Pin(1, "-", 20, 0)],
-    ComponentType.INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
+    ComponentType.INDUCTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
 
     # Sources
-    ComponentType.VOLTAGE_SOURCE: [Pin(0, "+", 0, -25), Pin(1, "-", 0, 25)],
-    ComponentType.CURRENT_SOURCE: [Pin(0, "+", 0, -25), Pin(1, "-", 0, 25)],
-    ComponentType.GROUND: [Pin(0, "gnd", 0, -10)],
+    ComponentType.VOLTAGE_SOURCE: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
+    ComponentType.CURRENT_SOURCE: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
+    ComponentType.GROUND: [Pin(0, "gnd", 0, -20)],
 
     # Diodes
     ComponentType.DIODE: [Pin(0, "A", -20, 0), Pin(1, "K", 20, 0)],
@@ -842,65 +842,65 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.IGBT: [Pin(0, "C", 20, -20), Pin(1, "G", -20, 0), Pin(2, "E", 20, 20)],
     ComponentType.BJT_NPN: [Pin(0, "C", 20, -20), Pin(1, "B", -20, 0), Pin(2, "E", 20, 20)],
     ComponentType.BJT_PNP: [Pin(0, "C", 20, 20), Pin(1, "B", -20, 0), Pin(2, "E", 20, -20)],
-    ComponentType.THYRISTOR: [Pin(0, "A", 0, -20), Pin(1, "K", 0, 20), Pin(2, "G", -20, 10)],
-    ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 10)],
+    ComponentType.THYRISTOR: [Pin(0, "A", 0, -20), Pin(1, "K", 0, 20), Pin(2, "G", -20, 20)],
+    ComponentType.TRIAC: [Pin(0, "MT1", 0, -20), Pin(1, "MT2", 0, 20), Pin(2, "G", -20, 20)],
 
     # Switching
     ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0), Pin(2, "CTL", 0, -20)],
 
     # Transformer
     ComponentType.TRANSFORMER: [
-        Pin(0, "P1", -30, -15),
-        Pin(1, "P2", -30, 15),
-        Pin(2, "S1", 30, -15),
-        Pin(3, "S2", 30, 15),
+        Pin(0, "P1", -40, -20),
+        Pin(1, "P2", -40, 20),
+        Pin(2, "S1", 40, -20),
+        Pin(3, "S2", 40, 20),
     ],
 
     # Analog
     ComponentType.OP_AMP: [
-        Pin(0, "IN+", -35, -12),
-        Pin(1, "IN-", -35, 12),
-        Pin(2, "OUT", 35, 0),
-        Pin(3, "V+", 0, -25),
-        Pin(4, "V-", 0, 25),
+        Pin(0, "IN+", -40, -20),
+        Pin(1, "IN-", -40, 20),
+        Pin(2, "OUT", 40, 0),
+        Pin(3, "V+", 0, -20),
+        Pin(4, "V-", 0, 20),
     ],
     ComponentType.COMPARATOR: [
-        Pin(0, "IN+", -35, -12),
-        Pin(1, "IN-", -35, 12),
-        Pin(2, "OUT", 35, 0),
-        Pin(3, "V+", 0, -25),
-        Pin(4, "V-", 0, 25),
+        Pin(0, "IN+", -40, -20),
+        Pin(1, "IN-", -40, 20),
+        Pin(2, "OUT", 40, 0),
+        Pin(3, "V+", 0, -20),
+        Pin(4, "V-", 0, 20),
     ],
 
     # Protection
     ComponentType.RELAY: [
-        Pin(0, "COIL+", -35, -15),
-        Pin(1, "COIL-", -35, 15),
-        Pin(2, "COM", 35, 0),
-        Pin(3, "NO", 35, -15),
-        Pin(4, "NC", 35, 15),
+        Pin(0, "COIL+", -40, -20),
+        Pin(1, "COIL-", -40, 20),
+        Pin(2, "COM", 40, 0),
+        Pin(3, "NO", 40, -20),
+        Pin(4, "NC", 40, 20),
     ],
     ComponentType.FUSE: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
     ComponentType.CIRCUIT_BREAKER: [Pin(0, "LINE", -20, 0), Pin(1, "LOAD", 20, 0)],
 
     # Control blocks - basic
     ComponentType.PI_CONTROLLER: [
-        Pin(0, "IN", -35, 0),
-        Pin(1, "OUT", 35, 0),
+        Pin(0, "IN", -40, 0),
+        Pin(1, "OUT", 40, 0),
     ],
     ComponentType.PID_CONTROLLER: [
-        Pin(0, "IN", -35, -12),
-        Pin(1, "FB", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "IN", -40, -20),
+        Pin(1, "FB", -40, 20),
+        Pin(2, "OUT", 40, 0),
     ],
     ComponentType.MATH_BLOCK: [
-        Pin(0, "A", -35, -12),
-        Pin(1, "B", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 20),
+        Pin(2, "OUT", 40, 0),
     ],
     ComponentType.PWM_GENERATOR: [
-        Pin(0, "OUT", 35, 0),
-        Pin(1, "DUTY_IN", -35, 20),
+        Pin(0, "OUT", 40, 0),
+        Pin(1, "DUTY_IN", -40, 20),
     ],
     ComponentType.GAIN: _default_unary_block_pins(),
     ComponentType.SUM: _default_sum_pins(2),
@@ -908,25 +908,25 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.CONSTANT: [Pin(0, "OUT", 40, 0)],
 
     # Control blocks - signal processing
-    ComponentType.INTEGRATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.DIFFERENTIATOR: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.LIMITER: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.RATE_LIMITER: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.HYSTERESIS: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.INTEGRATOR: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.DIFFERENTIATOR: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.LIMITER: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.RATE_LIMITER: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.HYSTERESIS: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
 
     # Control blocks - advanced
-    ComponentType.LOOKUP_TABLE: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.TRANSFER_FUNCTION: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
-    ComponentType.DELAY_BLOCK: [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)],
+    ComponentType.LOOKUP_TABLE: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.TRANSFER_FUNCTION: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
+    ComponentType.DELAY_BLOCK: [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)],
     ComponentType.SAMPLE_HOLD: [
-        Pin(0, "IN", -35, -10),
-        Pin(1, "TRIG", -35, 10),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "IN", -40, -20),
+        Pin(1, "TRIG", -40, 20),
+        Pin(2, "OUT", 40, 0),
     ],
     ComponentType.STATE_MACHINE: [
-        Pin(0, "IN1", -35, -12),
-        Pin(1, "IN2", -35, 12),
-        Pin(2, "OUT", 35, 0),
+        Pin(0, "IN1", -40, -20),
+        Pin(1, "IN2", -40, 20),
+        Pin(2, "OUT", 40, 0),
     ],
     ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
 
@@ -973,10 +973,10 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, CURRENT_PROBE_OUTPUT_PIN_NAME, 0, -20),
     ],
     ComponentType.POWER_PROBE: [
-        Pin(0, "V+", -25, -15),
-        Pin(1, "V-", -25, 15),
-        Pin(2, "I+", 25, -15),
-        Pin(3, "I-", 25, 15),
+        Pin(0, "V+", -20, -20),
+        Pin(1, "V-", -20, 20),
+        Pin(2, "I+", 20, -20),
+        Pin(3, "I-", 20, 20),
     ],
 
     # Scopes
@@ -994,40 +994,40 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.SUBCIRCUIT_PORT: [Pin(0, "P", -40, 0)],
 
     # Magnetic
-    ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -30, 0), Pin(1, "2", 30, 0)],
+    ComponentType.SATURABLE_INDUCTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
     ComponentType.COUPLED_INDUCTOR: [
-        Pin(0, "L1_1", -30, -15),
-        Pin(1, "L1_2", -30, 15),
-        Pin(2, "L2_1", 30, -15),
-        Pin(3, "L2_2", 30, 15),
+        Pin(0, "L1_1", -40, -20),
+        Pin(1, "L1_2", -40, 20),
+        Pin(2, "L2_1", 40, -20),
+        Pin(3, "L2_2", 40, 20),
     ],
     # Jiles-Atherton hysteretic inductor — 2-terminal like an
     # ordinary inductor (the L0 + V_M internal split is invisible).
     ComponentType.HYSTERETIC_INDUCTOR: [Pin(0, "1", -40, 0), Pin(1, "2", 40, 0)],
 
     # Pre-configured networks
-    ComponentType.SNUBBER_RC: [Pin(0, "1", -25, 0), Pin(1, "2", 25, 0)],
+    ComponentType.SNUBBER_RC: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0)],
 
     # Single-phase diode bridge (Graetz). 4 external pins: 2 AC, 2 DC.
     # Internal topology when converted:
     #   D1: AC+ → DC+,  D2: AC- → DC+
     #   D3: DC- → AC+,  D4: DC- → AC-
     ComponentType.SINGLE_PHASE_DIODE_BRIDGE: [
-        Pin(0, "AC+", -35, -20),
-        Pin(1, "AC-", -35, 20),
-        Pin(2, "DC+", 35, -20),
-        Pin(3, "DC-", 35, 20),
+        Pin(0, "AC+", -40, -20),
+        Pin(1, "AC-", -40, 20),
+        Pin(2, "DC+", 40, -20),
+        Pin(3, "DC-", 40, 20),
     ],
 
     # Three-phase diode bridge (6-pulse rectifier). 5 pins: A, B, C, DC+, DC-.
     # Upper diodes: A/B/C → DC+
     # Lower diodes: DC- → A/B/C
     ComponentType.THREE_PHASE_DIODE_BRIDGE: [
-        Pin(0, "A",   -35, -25),
-        Pin(1, "B",   -35, 0),
-        Pin(2, "C",   -35, 25),
-        Pin(3, "DC+",  35, -20),
-        Pin(4, "DC-",  35, 20),
+        Pin(0, "A",   -40, -20),
+        Pin(1, "B",   -40, 0),
+        Pin(2, "C",   -40, 20),
+        Pin(3, "DC+",  40, -20),
+        Pin(4, "DC-",  40, 20),
     ],
 
     # MMC sub-module cell. The pin count is dynamic: half-bridge uses
@@ -1036,10 +1036,10 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # ``_synchronize_mmc_cell`` hook rewrites the layout when the
     # ``cell_topology`` parameter changes.
     ComponentType.MMC_CELL: [
-        Pin(0, "TOP",  -30, -25),
-        Pin(1, "BOT",  -30, 25),
-        Pin(2, "S1_G",  30, -15),
-        Pin(3, "S2_G",  30, 15),
+        Pin(0, "TOP",  -40, -20),
+        Pin(1, "BOT",  -40, 20),
+        Pin(2, "S1_G",  40, -20),
+        Pin(3, "S2_G",  40, 20),
     ],
 
     # MMC arm. 3 pins:
@@ -1048,93 +1048,93 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     #             signal block); pulsim's add_mmc_arm_* takes this
     #             value to drive the per-step arm voltage.
     ComponentType.MMC_ARM: [
-        Pin(0, "TOP",  -35, -40),
-        Pin(1, "BOT",  -35, 40),
-        Pin(2, "M_REF", 35, 0),
+        Pin(0, "TOP",  -40, -40),
+        Pin(1, "BOT",  -40, 40),
+        Pin(2, "M_REF", 40, 0),
     ],
 
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke (abc → αβγ): 3 inputs + 3 channel outputs (channels via metadata)
     ComponentType.CLARKE_TRANSFORM: [
-        Pin(0, "A", -35, -20),
-        Pin(1, "B", -35, 0),
-        Pin(2, "C", -35, 20),
-        Pin(3, "ALPHA", 35, -20),
-        Pin(4, "BETA", 35, 0),
-        Pin(5, "GAMMA", 35, 20),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 0),
+        Pin(2, "C", -40, 20),
+        Pin(3, "ALPHA", 40, -20),
+        Pin(4, "BETA", 40, 0),
+        Pin(5, "GAMMA", 40, 20),
     ],
     ComponentType.INVERSE_CLARKE_TRANSFORM: [
-        Pin(0, "ALPHA", -35, -20),
-        Pin(1, "BETA", -35, 0),
-        Pin(2, "GAMMA", -35, 20),
-        Pin(3, "A", 35, -20),
-        Pin(4, "B", 35, 0),
-        Pin(5, "C", 35, 20),
+        Pin(0, "ALPHA", -40, -20),
+        Pin(1, "BETA", -40, 0),
+        Pin(2, "GAMMA", -40, 20),
+        Pin(3, "A", 40, -20),
+        Pin(4, "B", 40, 0),
+        Pin(5, "C", 40, 20),
     ],
     # Park (αβ + θ → dq): nodes [alpha, beta], θ via metadata
     ComponentType.PARK_TRANSFORM: [
-        Pin(0, "ALPHA", -35, -15),
-        Pin(1, "BETA", -35, 15),
-        Pin(2, "D", 35, -15),
-        Pin(3, "Q", 35, 15),
+        Pin(0, "ALPHA", -40, -20),
+        Pin(1, "BETA", -40, 20),
+        Pin(2, "D", 40, -20),
+        Pin(3, "Q", 40, 20),
     ],
     ComponentType.INVERSE_PARK_TRANSFORM: [
-        Pin(0, "D", -35, -15),
-        Pin(1, "Q", -35, 15),
-        Pin(2, "ALPHA", 35, -15),
-        Pin(3, "BETA", 35, 15),
+        Pin(0, "D", -40, -20),
+        Pin(1, "Q", -40, 20),
+        Pin(2, "ALPHA", 40, -20),
+        Pin(3, "BETA", 40, 20),
     ],
     # Single-phase PLL: 1 input → θ, ω, lock_error channels
     ComponentType.PLL: [
-        Pin(0, "IN", -35, 0),
-        Pin(1, "THETA", 35, -15),
-        Pin(2, "OMEGA", 35, 0),
-        Pin(3, "ERR", 35, 15),
+        Pin(0, "IN", -40, 0),
+        Pin(1, "THETA", 40, -20),
+        Pin(2, "OMEGA", 40, 0),
+        Pin(3, "ERR", 40, 20),
     ],
     # SVM (αβ → 3 duties)
     ComponentType.SVM: [
-        Pin(0, "ALPHA", -35, -15),
-        Pin(1, "BETA", -35, 15),
-        Pin(2, "DA", 35, -20),
-        Pin(3, "DB", 35, 0),
-        Pin(4, "DC", 35, 20),
+        Pin(0, "ALPHA", -40, -20),
+        Pin(1, "BETA", -40, 20),
+        Pin(2, "DA", 40, -20),
+        Pin(3, "DB", 40, 0),
+        Pin(4, "DC", 40, 20),
     ],
     # Three-phase grid source (pulsim>=0.10.0a1).
     # 4 pins: A, B, C, Neutral. The runtime decomposes this into 3 internal
     # SineVoltageSource branches sharing the neutral.
     ComponentType.THREE_PHASE_SOURCE: [
-        Pin(0, "A", 30, -25),
-        Pin(1, "B", 30, 0),
-        Pin(2, "C", 30, 25),
-        Pin(3, "N", -30, 0),
+        Pin(0, "A", 40, -20),
+        Pin(1, "B", 40, 0),
+        Pin(2, "C", 40, 20),
+        Pin(3, "N", -40, 0),
     ],
 
     # Three-phase 2-level VSI (pulsim>=0.10.0a5).
     # 5 pins: VDC+, VDC-, A, B, C. The runtime decomposes into 6 MOSFETs +
     # 6 PWM gate drivers in 3 half-bridge legs.
     ComponentType.THREE_PHASE_VSI: [
-        Pin(0, "VDC+", -35, -25),
-        Pin(1, "VDC-", -35, 25),
-        Pin(2, "A", 35, -25),
-        Pin(3, "B", 35, 0),
-        Pin(4, "C", 35, 25),
+        Pin(0, "VDC+", -40, -20),
+        Pin(1, "VDC-", -40, 20),
+        Pin(2, "A", 40, -20),
+        Pin(3, "B", 40, 0),
+        Pin(4, "C", 40, 20),
     ],
 
     # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
     # mechanical state (ω, θ). Pulsim's runtime reserves one branch row for
     # the armature current and advances ω, θ each accepted timestep.
     ComponentType.DC_MOTOR: [
-        Pin(0, "A+", -30, 0),
-        Pin(1, "A-", 30, 0),
+        Pin(0, "A+", -40, 0),
+        Pin(1, "A-", 40, 0),
     ],
 
     # 3-phase RL load (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral.
     # The runtime decomposes into R+L series branches (Y or Δ topology).
     ComponentType.THREE_PHASE_RL_LOAD: [
-        Pin(0, "A", -30, -25),
-        Pin(1, "B", -30, 0),
-        Pin(2, "C", -30, 25),
-        Pin(3, "N", 30, 0),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 0),
+        Pin(2, "C", -40, 20),
+        Pin(3, "N", 40, 0),
     ],
 
     # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into

@@ -1888,25 +1888,37 @@ class OpAmpItem(ComponentItem):
         return QRectF(-40, -30, 80, 60)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        triangle = QPolygonF([QPointF(-25, -25), QPointF(-25, 25), QPointF(25, 0)])
+        # Triangle body — sized so its left edge straddles the IN+/IN-
+        # pins at y=±20 (the post-snap pin positions). Apex points right
+        # at the OUT pin.
+        in_plus = self._pin_position_by_name("IN+", QPointF(-40, -20))
+        in_minus = self._pin_position_by_name("IN-", QPointF(-40, 20))
+        out_pin = self._pin_position_by_name("OUT", QPointF(40, 0))
+        v_plus = self._pin_position_by_name("V+", QPointF(0, -20))
+        v_minus = self._pin_position_by_name("V-", QPointF(0, 20))
 
+        triangle = QPolygonF([QPointF(-25, -25), QPointF(-25, 25), QPointF(25, 0)])
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
         painter.drawPolygon(triangle)
 
+        # Leads run from each pin straight to the triangle edge so the
+        # bubble and the body actually touch.
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-40, -12), QPointF(-25, -12))  # IN+
-        painter.drawLine(QPointF(-40, 12), QPointF(-25, 12))   # IN-
-        painter.drawLine(QPointF(25, 0), QPointF(40, 0))
-        painter.drawLine(QPointF(0, -30), QPointF(0, -18))  # V+
-        painter.drawLine(QPointF(0, 18), QPointF(0, 30))    # V-
+        painter.drawLine(in_plus, QPointF(-25, in_plus.y()))
+        painter.drawLine(in_minus, QPointF(-25, in_minus.y()))
+        painter.drawLine(QPointF(25, 0), out_pin)
+        # V+/V- enter the diagonal top/bottom edge of the triangle at
+        # x=0 → y=±12.5 by similar triangles.
+        painter.drawLine(v_plus, QPointF(0, -12.5))
+        painter.drawLine(v_minus, QPointF(0, 12.5))
 
+        # Polarity marks beside the input leads (just inside the body).
+        mark_y = 18.0  # close to the lead-y but safely inside the triangle
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._line_color()))
-        painter.drawLine(QPointF(-22, -12), QPointF(-16, -12))
-        painter.drawLine(QPointF(-19, -15), QPointF(-19, -9))
-
-        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._line_color()))
-        painter.drawLine(QPointF(-22, 12), QPointF(-16, 12))
+        painter.drawLine(QPointF(-22, -mark_y), QPointF(-16, -mark_y))
+        painter.drawLine(QPointF(-19, -mark_y - 3), QPointF(-19, -mark_y + 3))
+        painter.drawLine(QPointF(-22, mark_y), QPointF(-16, mark_y))
 
 
 class ComparatorItem(OpAmpItem):
@@ -1926,34 +1938,55 @@ class RelayItem(ComponentItem):
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
-        return QRectF(-40, -25, 80, 50)
+        return QRectF(-40, -28, 80, 56)
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-40, -15), QPointF(-25, -15))
-        painter.drawLine(QPointF(-40, 15), QPointF(-25, 15))
-        coil_rect = QRectF(-25, -12, 20, 24)
+        # Coil terminal pins (left) and switch contact pins (right) — all
+        # derived from the actual model pin so leads reach the bubbles.
+        coil_p = self._pin_position_by_name("COIL+", QPointF(-40, -20))
+        coil_n = self._pin_position_by_name("COIL-", QPointF(-40, 20))
+        com = self._pin_position_by_name("COM", QPointF(40, 0))
+        no = self._pin_position_by_name("NO", QPointF(40, -20))
+        nc = self._pin_position_by_name("NC", QPointF(40, 20))
+
+        # Coil body: rectangle that *encloses* the two coil leads, so the
+        # leads cleanly enter the box at their pin y.
+        top_y = min(coil_p.y(), coil_n.y())
+        bot_y = max(coil_p.y(), coil_n.y())
+        coil_rect = QRectF(-25, top_y - 2, 20, (bot_y - top_y) + 4)
         coil_fill = QColor(205, 170, 128) if not self._dark_mode else QColor(151, 124, 95)
+
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(coil_p, QPointF(-25, coil_p.y()))
+        painter.drawLine(coil_n, QPointF(-25, coil_n.y()))
+
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(coil_fill)
         painter.drawRoundedRect(coil_rect, 2, 2)
 
+        # Coil winding arcs spread evenly across the inner height.
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
-        for y in range(-8, 12, 4):
+        inner_top = int(top_y + 4)
+        inner_bot = int(bot_y - 4)
+        for y in range(inner_top, inner_bot + 1, 4):
             painter.drawArc(QRectF(-20, y - 2, 10, 4), 90 * 16, 180 * 16)
 
+        # Magnetic-coupling dashed line spans coil → switch contacts.
         painter.setPen(QPen(self._muted_color(), style.STROKE_DETAIL, Qt.PenStyle.DashLine))
-        painter.drawLine(QPointF(0, -20), QPointF(0, 20))
+        painter.drawLine(QPointF(0, top_y), QPointF(0, bot_y))
 
+        # Switch contacts (right): COM goes to a pivot point; NO/NC are the
+        # two throws. Lead direction follows each pin's actual y.
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(40, 0), QPointF(20, 0))
-        painter.drawLine(QPointF(40, -15), QPointF(25, -15))
+        painter.drawLine(com, QPointF(20, com.y()))
+        painter.drawLine(no, QPointF(25, no.y()))
+        painter.drawLine(nc, QPointF(25, nc.y()))
+
+        # Throw arms — draw from the pivot toward the closed contact (NO).
         painter.setPen(self._symbol_pen(style.STROKE_BODY, self._muted_color()))
-        painter.drawLine(QPointF(25, -15), QPointF(18, -5))
-        painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(40, 15), QPointF(25, 15))
-        painter.setPen(self._symbol_pen(style.STROKE_BODY, self._muted_color()))
-        painter.drawLine(QPointF(25, 15), QPointF(20, 5))
+        pivot = QPointF(20, com.y())
+        painter.drawLine(QPointF(25, no.y()), pivot)
+        painter.drawLine(QPointF(25, nc.y()), QPointF(20, nc.y() * 0.25))
 
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._accent_orange().darker(120)))
         painter.setBrush(self._accent_orange())
