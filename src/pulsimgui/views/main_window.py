@@ -810,6 +810,17 @@ class MainWindow(QMainWindow):
         self.action_thermal_viewer = QAction("&Thermal Viewer...", self)
         self.action_thermal_viewer.triggered.connect(self._on_show_thermal_viewer)
 
+        # pulsim 1.7 — datasheet Z_th(t) → Foster RC stages.
+        self.action_foster_fit = QAction("&Fit Foster from Datasheet Z_th…", self)
+        self.action_foster_fit.setToolTip(
+            "Paste a transient thermal impedance curve from a power-"
+            "device datasheet (t, Z_th columns) and have pulsim solve "
+            "the Foster RC stack that reproduces it. The resulting "
+            "thermal_rth_stages / thermal_cth_stages strings paste "
+            "straight into the component's thermal-port fields."
+        )
+        self.action_foster_fit.triggered.connect(self._on_show_foster_fit)
+
         # Wave-4 sub-A 1.4 — loss & efficiency dashboard.
         self.action_losses_dashboard = QAction("&Losses && Efficiency…", self)
         self.action_losses_dashboard.setToolTip(
@@ -932,6 +943,7 @@ class MainWindow(QMainWindow):
         sim_menu.addSeparator()
         sim_menu.addAction(self.action_parameter_sweep)
         sim_menu.addAction(self.action_thermal_viewer)
+        sim_menu.addAction(self.action_foster_fit)
         sim_menu.addAction(self.action_losses_dashboard)
         sim_menu.addSeparator()
         # Wave-4 sub-B — new analysis modes.
@@ -4002,6 +4014,22 @@ class MainWindow(QMainWindow):
             "available via the SimulationService API today; a built-in "
             "GUI runner ships in the next minor update.",
         )
+
+    def _on_show_foster_fit(self) -> None:
+        """Open the standalone Foster-fit dialog (pulsim 1.7+).
+
+        The dialog is a pure datasheet → RC-stage converter; it has no
+        dependency on the current schematic or simulation result, so
+        it's safe to open at any time. The output is two
+        comma-separated strings the user pastes into the selected
+        component's ``thermal_rth_stages`` / ``thermal_cth_stages``
+        fields.
+        """
+        from pulsimgui.views.dialogs.foster_fit_dialog import (
+            FosterFitDialog,
+        )
+        dialog = FosterFitDialog(self)
+        dialog.show()
 
     def _on_show_thermal_viewer(self) -> None:
         """Run backend thermal analysis and open the viewer dialog."""
