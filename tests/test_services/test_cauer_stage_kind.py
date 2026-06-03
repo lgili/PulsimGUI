@@ -132,17 +132,20 @@ def _mosfet_dict(
     comp_id: str,
     *,
     name: str = "Q1",
-    kind: str = "foster",
+    network: str = "foster",
 ) -> dict:
+    """Build a MOSFET with the canonical ``thermal_network`` field
+    (single_rc / foster / cauer). The converter reads this — there is
+    NO separate ``thermal_stage_kind`` slot in the schema."""
     return {
         "id": comp_id, "type": "MOSFET_N", "name": name,
         "parameters": {
             "is_nmos": True, "R_on": 0.05, "v_th": 3.0,
             "enable_thermal_port": True,
+            "thermal_network": network,
             "thermal_rth": 1.5, "thermal_cth": 0.075,
             "thermal_rth_stages": "0.5, 1.0",
             "thermal_cth_stages": "0.1, 0.2",
-            "thermal_stage_kind": kind,
         },
         "pins": [
             {"index": 0, "name": "D"}, {"index": 1, "name": "G"},
@@ -168,13 +171,16 @@ def _heatsink_dict(comp_id: str, *, n_devices: int = 1) -> dict:
     }
 
 
-def test_converter_forwards_thermal_stage_kind_to_descriptor() -> None:
-    """A MOSFET with ``thermal_stage_kind="cauer"`` flows through
-    ``_infer_shared_heatsink_loops`` and ends up on the device row in
-    the descriptor so the backend can read it."""
+def test_converter_forwards_cauer_when_thermal_network_is_cauer() -> None:
+    """A MOSFET with ``thermal_network="cauer"`` flows through
+    ``_infer_shared_heatsink_loops`` and ends up on the device row of
+    the descriptor as ``thermal_stage_kind="cauer"``. The backend
+    reads the latter — the converter is the consolidation point so
+    downstream doesn't have to know about the 3-way ``thermal_network``
+    legacy field."""
     conv = CircuitConverter(make_compat_module(p))
     descriptors = conv._infer_shared_heatsink_loops(
-        [_heatsink_dict("h"), _mosfet_dict("q", name="Q_cauer", kind="cauer")],
+        [_heatsink_dict("h"), _mosfet_dict("q", name="Q_cauer", network="cauer")],
         node_map={
             "h": ["amb_net", "th"],
             "q": ["a", "g", "s", "th"],
@@ -187,14 +193,32 @@ def test_converter_forwards_thermal_stage_kind_to_descriptor() -> None:
     assert devices[0]["thermal_stage_kind"] == "cauer"
 
 
-def test_converter_default_thermal_stage_kind_is_foster_when_absent() -> None:
-    """Legacy schematics (saved before this field existed) don't carry
-    ``thermal_stage_kind`` in their params. The converter must default
-    them to "foster" so the backend keeps its existing behaviour."""
+def test_converter_maps_foster_and_single_rc_to_foster_kind() -> None:
+    """Per-device ``thermal_network`` can be "single_rc" / "foster" /
+    "cauer". Only "cauer" should propagate to the backend as Cauer —
+    "foster" and "single_rc" both map to Foster (single_rc uses the
+    one-stage fallback, which is built as Foster too)."""
     conv = CircuitConverter(make_compat_module(p))
-    legacy_mosfet = _mosfet_dict("q", name="Q_legacy", kind="")
-    # Drop the field entirely to simulate "saved before this commit".
-    legacy_mosfet["parameters"].pop("thermal_stage_kind", None)
+    for network in ("foster", "single_rc"):
+        descriptors = conv._infer_shared_heatsink_loops(
+            [_heatsink_dict("h"), _mosfet_dict("q", name="Q1", network=network)],
+            node_map={
+                "h": ["amb_net", "th"],
+                "q": ["a", "g", "s", "th"],
+            },
+        )
+        assert descriptors[0]["devices"][0]["thermal_stage_kind"] == "foster", (
+            f"expected foster for thermal_network={network!r}"
+        )
+
+
+def test_converter_default_thermal_stage_kind_is_foster_when_absent() -> None:
+    """Legacy schematics (saved before pulsim 1.7) may not carry
+    ``thermal_network`` at all. The converter must default them to
+    foster so the backend keeps its existing behaviour bit-for-bit."""
+    conv = CircuitConverter(make_compat_module(p))
+    legacy_mosfet = _mosfet_dict("q", name="Q_legacy", network="")
+    legacy_mosfet["parameters"].pop("thermal_network", None)
     descriptors = conv._infer_shared_heatsink_loops(
         [_heatsink_dict("h"), legacy_mosfet],
         node_map={
@@ -216,7 +240,12 @@ def test_foster_and_cauer_give_same_steady_state_temperatures() -> None:
     """At DC the Foster ladder and the Cauer ladder with the same R, C
     pairs both reduce to ``Σ R_i`` — so the coupled steady-state T_j
     must match between the two topologies. If this test ever fails,
-    the kind toggle is leaking a numerical bias that doesn't belong."""
+    the kind toggle is leaking a numerical bias that doesn't belong.
+
+    Note: the descriptor here is the BACKEND'S view of a device, which
+    still carries ``thermal_stage_kind`` directly — the converter
+    normalises ``thermal_network`` → ``thermal_stage_kind`` upstream.
+    """
     def desc(kind: str) -> dict:
         return {
             "name": "HS",

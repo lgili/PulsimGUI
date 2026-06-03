@@ -4037,12 +4037,18 @@ class CircuitConverter:
                     "thermal_cth_J_per_K": float(
                         dev_params.get("thermal_cth", 0.1) or 0.1
                     ),
-                    # Stage topology — defaults to "foster" to preserve
-                    # the legacy behaviour bit-for-bit. The backend
-                    # builds ``CauerStage`` from the same R + C CSVs
-                    # when this is set to "cauer".
-                    "thermal_stage_kind": str(
-                        dev_params.get("thermal_stage_kind") or "foster"
+                    # Stage topology — reuse the existing per-device
+                    # ``thermal_network`` (3-way: single_rc / foster /
+                    # cauer). The backend builds ``CauerStage`` only
+                    # when this is "cauer"; everything else
+                    # (single_rc, foster, missing) maps to Foster so
+                    # legacy saves load bit-for-bit.
+                    "thermal_stage_kind": (
+                        "cauer"
+                        if str(
+                            dev_params.get("thermal_network") or ""
+                        ).strip().lower() == "cauer"
+                        else "foster"
                     ),
                 })
 
