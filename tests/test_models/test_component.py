@@ -374,14 +374,21 @@ class TestComponent:
 
 
 class TestLoadedPinPreservation:
-    """Opening a saved circuit must not move pins.
+    """Opening a saved circuit must snap pins to the current wiring grid.
 
-    Regression: a later grid-snap normalization re-canonicalized the
-    default pin offsets (±25/±30/±35 → ±20/±40). Files saved before that
-    change stored the old offsets, and ``__post_init__`` used to re-snap /
-    regenerate them on load — shifting pins 5-10 px so symbols visually
-    stretched and saved wires detached. Loaded pins are now authoritative:
-    their exact positions survive when synchronization only nudged geometry.
+    History: an earlier iteration preserved saved pin coordinates verbatim
+    so wires would stay attached after a default-layout migration. That
+    preservation pinned components to their *pre-snap* coordinates
+    forever, which produced the user-visible "old blocks look off-grid,
+    new blocks look correct" symptom. The current rule is the opposite:
+    every restored coordinate is snapped to the 20-px wiring grid.
+
+    On already-aligned files the snap is a no-op. On files saved before
+    the grid-alignment pass it auto-migrates ±25 / ±30 / ±35 to
+    ±20 / ±40 — the same positions a freshly-placed component would get.
+    Wires get the same snap via
+    ``SchematicScene._normalize_circuit_geometry`` so the endpoint still
+    meets the migrated pin.
     """
 
     def _off_grid_dict(
@@ -406,15 +413,20 @@ class TestLoadedPinPreservation:
             ],
         }
 
-    def test_loaded_offgrid_resistor_pins_are_preserved(self):
+    def test_loaded_offgrid_resistor_pins_snap_to_grid(self):
+        # ±25 saved → ±20 after load (half-rounded toward zero).
         comp = Component.from_dict(
             self._off_grid_dict("RESISTOR", [("1", -25.0, 0.0), ("2", 25.0, 0.0)])
         )
         coords = [(p.name, p.x, p.y) for p in comp.pins]
-        assert coords == [("1", -25.0, 0.0), ("2", 25.0, 0.0)]
+        assert coords == [("1", -20.0, 0.0), ("2", 20.0, 0.0)]
 
-    def test_loaded_offgrid_device_pins_are_preserved(self):
-        # A multi-terminal device (PMSM-style ±25/±30 offsets, off the 20px grid).
+    def test_loaded_offgrid_device_pins_snap_to_grid(self):
+        # PMSM-style ±25 / ±30 offsets (the pre-grid layout the user was
+        # complaining about) → migrated to the current ±20 / ±40 layout
+        # on load. Wire endpoints that were saved at the old positions
+        # get the same snap via SchematicScene normalisation, so the
+        # connection survives.
         comp = Component.from_dict(
             self._off_grid_dict(
                 "PMSM",
@@ -422,19 +434,18 @@ class TestLoadedPinPreservation:
             )
         )
         coords = {p.name: (p.x, p.y) for p in comp.pins}
-        # The four saved electrical terminals keep their exact off-grid spots.
         for name, pos in {
-            "A": (-30.0, -25.0),
-            "B": (-30.0, 0.0),
-            "C": (-30.0, 25.0),
-            "N": (30.0, 0.0),
+            "A": (-40.0, -20.0),
+            "B": (-40.0, 0.0),
+            "C": (-40.0, 20.0),
+            "N": (40.0, 0.0),
         }.items():
             assert coords[name] == pos
         # Synchronization appends the signal-bus pin (a new, on-grid pin) —
-        # adding it must NOT re-snap/disturb the saved terminals.
+        # the migration must NOT skip it.
         assert "SIG" in coords
 
-    def test_loaded_scope_channel_positions_are_preserved(self):
+    def test_loaded_scope_channel_positions_snap_to_grid(self):
         comp = Component.from_dict(
             self._off_grid_dict(
                 "ELECTRICAL_SCOPE",
@@ -443,8 +454,19 @@ class TestLoadedPinPreservation:
             )
         )
         coords = {p.name: (p.x, p.y) for p in comp.pins}
-        assert coords["CH1"] == (-40.0, -25.0)
-        assert coords["CH3"] == (-40.0, 25.0)  # not snapped to 20.0
+        assert coords["CH1"] == (-40.0, -20.0)
+        assert coords["CH3"] == (-40.0, 20.0)
+
+    def test_already_aligned_positions_remain_unchanged(self):
+        # A file saved after the grid-alignment pass: saved coords are
+        # already snapped, so the migration is a no-op.
+        comp = Component.from_dict(
+            self._off_grid_dict(
+                "RESISTOR", [("1", -40.0, 0.0), ("2", 40.0, 0.0)],
+            )
+        )
+        coords = [(p.name, p.x, p.y) for p in comp.pins]
+        assert coords == [("1", -40.0, 0.0), ("2", 40.0, 0.0)]
 
     def test_fresh_component_still_snaps_to_grid(self):
         # No pins provided => default layout + grid snap (unchanged behavior).

@@ -54,8 +54,13 @@ def test_electrical_terminals_stay_circuit_domain() -> None:
 
 
 def test_legacy_four_pin_pmsm_gains_signal_bus_on_load() -> None:
-    """A motor saved with the old 4-pin layout (no SIG) gets the pin on load,
-    keeping the existing terminals at their saved positions (no drift)."""
+    """A motor saved with the old 4-pin layout (no SIG) gets the SIG pin
+    on load, AND its four original electrical terminals get migrated
+    from the old ±25 / ±30 offsets to the current ±20 / ±40 grid layout
+    — wires connected to the saved coordinates pick up the same snap
+    via ``SchematicScene._normalize_circuit_geometry`` so the
+    connection survives.
+    """
     data = {
         "id": "11111111-1111-1111-1111-111111111111",
         "type": "PMSM",
@@ -75,11 +80,12 @@ def test_legacy_four_pin_pmsm_gains_signal_bus_on_load() -> None:
     }
     motor = Component.from_dict(data)
     coords = {p.name: (p.x, p.y) for p in motor.pins}
-    # All four original electrical pins preserved exactly (no re-snap).
-    assert coords["A"] == (-30.0, -25.0)
-    assert coords["B"] == (-30.0, 0.0)
-    assert coords["C"] == (-30.0, 25.0)
-    assert coords["N"] == (30.0, 0.0)
+    # All four electrical terminals migrated to the current grid-aligned
+    # layout (±25 → ±20, ±30 → ±40).
+    assert coords["A"] == (-40.0, -20.0)
+    assert coords["B"] == (-40.0, 0.0)
+    assert coords["C"] == (-40.0, 20.0)
+    assert coords["N"] == (40.0, 0.0)
     # SIG pin added at its template position.
     assert MOTOR_SIGNAL_BUS_PIN_NAME in coords
 

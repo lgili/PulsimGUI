@@ -145,7 +145,9 @@ class TestDoubleRotationHeal:
 
     def test_double_rotated_resistor_is_healed(self):
         # Pins stored vertical (0,±25) + rotation=90 → terminals compute to
-        # (±25,0); wires are on the vertical axis at (0,±25).
+        # (±25,0); wires are on the vertical axis at (0,±25). Component
+        # post-init snaps every saved coord to the 20-px grid, so the
+        # ±25 inputs land at ±20 in the rest of the assertions.
         data = self._dict(
             rotation=90,
             pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
@@ -153,13 +155,15 @@ class TestDoubleRotationHeal:
         )
         circuit = Circuit.from_dict(data)
         r = next(iter(circuit.components.values()))
-        # Stored pins un-rotated to canonical horizontal.
-        assert self._coords(r) == [(-25.0, 0.0), (25.0, 0.0)]
-        # Terminals now sit on the wires.
-        assert self._terminals(r) == [(0.0, -25.0), (0.0, 25.0)]
+        # Pins un-rotated to canonical horizontal AND snapped to grid.
+        assert self._coords(r) == [(-20.0, 0.0), (20.0, 0.0)]
+        # Terminals now sit on the wires (also snapped).
+        assert self._terminals(r) == [(0.0, -20.0), (0.0, 20.0)]
 
     def test_legit_rotated_component_is_untouched(self):
-        # Canonical pins (±25,0) + rotation=90 → terminals (0,±25) already on wires.
+        # Canonical pins (±25,0) + rotation=90 → terminals (0,±25) already
+        # on wires. The post-init snap moves ±25 to ±20 — rotation logic
+        # leaves the pin axes alone.
         data = self._dict(
             rotation=90,
             pins=[("1", -25.0, 0.0), ("2", 25.0, 0.0)],
@@ -167,10 +171,12 @@ class TestDoubleRotationHeal:
         )
         circuit = Circuit.from_dict(data)
         r = next(iter(circuit.components.values()))
-        assert self._coords(r) == [(-25.0, 0.0), (25.0, 0.0)]  # unchanged
+        assert self._coords(r) == [(-20.0, 0.0), (20.0, 0.0)]
 
     def test_unwired_component_is_not_healed(self):
         # Same suspicious geometry but no wire near either orientation.
+        # The rotation heal stays put (no wire evidence); the only
+        # change is the post-init grid snap on the pin coordinates.
         data = self._dict(
             rotation=90,
             pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
@@ -178,7 +184,7 @@ class TestDoubleRotationHeal:
         )
         circuit = Circuit.from_dict(data)
         r = next(iter(circuit.components.values()))
-        assert self._coords(r) == [(0.0, -25.0), (0.0, 25.0)]  # no evidence → unchanged
+        assert self._coords(r) == [(0.0, -20.0), (0.0, 20.0)]
 
     def test_heal_is_idempotent(self):
         data = self._dict(

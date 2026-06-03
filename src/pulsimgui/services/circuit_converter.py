@@ -233,6 +233,19 @@ class CircuitConverter:
             if name and (component.get("x") is not None or component.get("y") is not None):
                 positions_to_apply.append((name, component))
 
+        # Inject invisible convergence helpers (PSIM/PLECS-style). The user
+        # doesn't have to know about floating-node tricks: this pass walks
+        # the netlist, finds any subnet that can't see ground through a
+        # DC-conductive path, and drops a high-resistance ghost resistor
+        # to ground from one of its nets so the MNA matrix never goes
+        # singular. The ghost components live only inside the backend
+        # ``Circuit`` — the GUI never shows them, the GUI dict is not
+        # modified, and the simulation behaviour for "normal" circuits is
+        # not perturbed (1 GΩ to ground = 1 nA leakage at 1 V).
+        self._inject_floating_node_helpers(
+            circuit, resolved_components, node_cache,
+        )
+
         self._apply_positions_from_list(circuit, positions_to_apply)
 
         # Attach detected closed-loop descriptors to the shim circuit so
@@ -1693,6 +1706,199 @@ class CircuitConverter:
         raise CircuitConversionError(
             f"Backend converter does not yet support component '{comp_type.name}'"
         )
+
+    # ------------------------------------------------------------------
+    # Convergence helpers (invisible PSIM/PLECS-style topology fix-up)
+    # ------------------------------------------------------------------
+    #
+    # Net types that DO NOT carry DC current (so their net is unreachable
+    # from ground through that pin) — used by the floating-node detector
+    # to decide which subnets need a ghost shunt resistor to ground.
+    #
+    # * CAPACITOR is the canonical floating-pin offender: at DC it is an
+    #   open and contributes no path to the MNA matrix.
+    # * Galvanic isolators (TRANSFORMER, COUPLED_INDUCTOR) deliberately
+    #   keep their two sides separated — we model that by treating their
+    #   pins as independent subnets even though the component owns all
+    #   of them.
+    # * Signal-domain pins (FOC SP/FB, scope channels, demux outputs,
+    #   PMSM SIG bus) carry information not current — they're already
+    #   excluded from the MNA pass upstream.
+    _DC_OPEN_TYPES = frozenset({
+        ComponentType.CAPACITOR,
+    })
+
+    # Components whose pins span multiple galvanically-isolated sides.
+    # ``_iter_dc_edges`` emits intra-side edges only (e.g. primary P1/P2
+    # are connected, but P1–S1 is not).
+    _ISOLATED_SIDE_PIN_GROUPS: dict[ComponentType, tuple[tuple[int, ...], ...]] = {
+        ComponentType.TRANSFORMER:        ((0, 1), (2, 3)),
+        ComponentType.COUPLED_INDUCTOR:   ((0, 1), (2, 3)),
+        ComponentType.HYSTERETIC_INDUCTOR: ((0, 1),),  # 2 pins, single side
+    }
+
+    def _inject_floating_node_helpers(
+        self,
+        circuit: Any,
+        resolved_components: list[tuple[dict, ComponentType, str, list[str]]],
+        node_cache: dict[str, int],
+    ) -> int:
+        """Add an invisible high-value resistor from every floating subnet to
+        ground so the MNA matrix is never singular at the first timestep.
+
+        PSIM and PLECS do this transparently — the user draws the
+        topology they care about (e.g. a capacitor bridging two nodes
+        with no DC return path, or a transformer secondary feeding only
+        a capacitor) and the simulator silently shunts each
+        otherwise-floating subnet to ground at ~1 GΩ so the operating
+        point converges. We replicate that behaviour here:
+
+        1. Build a union-find over every net the converter declared.
+        2. Union every pair of pins on each DC-conductive component
+           (resistor, inductor, source, switch, diode, motor stator,
+           probe, etc — anything that is NOT a capacitor and is NOT
+           a galvanic isolator's cross-side pair).
+        3. Find subnets that do not contain net ``"0"`` (ground).
+        4. For each such subnet, add a single ``__gmin_<net>`` 1 GΩ
+           resistor from one of its nets to ground.
+
+        The ghost resistors leak ≈ 1 nA at 1 V — invisible at the
+        timescales of power-electronics simulation. They are added
+        directly to the backend ``Circuit`` (never to the GUI dict),
+        so the schematic stays clean.
+
+        Returns the number of ghost resistors that were injected. The
+        count is also attached to ``circuit.ghost_resistors_injected``
+        for downstream logging / banner display.
+        """
+        # Ground is implicit — it is never declared in ``node_cache``
+        # because the converter delegates to ``Circuit.ground()`` for its
+        # canonical index (commonly -1 or 0 depending on the backend
+        # shim). Resolve it here so we use whatever sentinel the backend
+        # actually picked.
+        ground_attr = getattr(circuit, "ground", None)
+        if callable(ground_attr):
+            try:
+                GROUND_IDX = int(ground_attr())
+            except Exception:
+                GROUND_IDX = 0
+        elif isinstance(ground_attr, int):
+            GROUND_IDX = ground_attr
+        else:
+            GROUND_IDX = 0
+
+        if not node_cache:
+            try:
+                setattr(circuit, "ghost_resistors_injected", 0)
+                setattr(circuit, "ghost_resistor_records", [])
+            except Exception:
+                pass
+            return 0
+
+        # 1. union-find init: ground + every declared net is its own root.
+        parent: dict[int, int] = {GROUND_IDX: GROUND_IDX}
+        for idx in node_cache.values():
+            parent[idx] = idx
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # 2. union nets through every DC-conductive edge. Ground pins
+        # ("0") resolve to the canonical ``GROUND_IDX`` so the subnet
+        # carrying them gets merged into the ground root.
+        def _pin_index(node: str) -> int | None:
+            name = self._node_name(node)
+            if name == "0":
+                return GROUND_IDX
+            return node_cache.get(name)
+
+        for component, comp_type, _name, nodes in resolved_components:
+            if comp_type == ComponentType.GROUND:
+                # A literal GROUND component on a net ties that net to
+                # the canonical ground index.
+                for node in nodes:
+                    idx = _pin_index(node)
+                    if idx is not None and idx != GROUND_IDX:
+                        union(idx, GROUND_IDX)
+                continue
+            if comp_type in self._DC_OPEN_TYPES:
+                continue
+
+            indices = [_pin_index(node) for node in nodes]
+            indices = [idx for idx in indices if idx is not None]
+            if len(indices) < 2:
+                continue
+
+            groups = self._ISOLATED_SIDE_PIN_GROUPS.get(comp_type)
+            if groups is None:
+                # Single connected device — every pin reaches every other.
+                first = indices[0]
+                for other in indices[1:]:
+                    union(first, other)
+            else:
+                # Galvanic isolator — only pins on the same side are
+                # connected.
+                for group in groups:
+                    side_indices = [
+                        indices[pin_idx]
+                        for pin_idx in group
+                        if pin_idx < len(indices)
+                    ]
+                    if len(side_indices) < 2:
+                        continue
+                    first = side_indices[0]
+                    for other in side_indices[1:]:
+                        union(first, other)
+
+        # 3. Group nets by root; ground root is the "safe" group.
+        ground_root = find(GROUND_IDX)
+
+        subnets: dict[int, list[tuple[str, int]]] = {}
+        for net_name, net_idx in node_cache.items():
+            root = find(net_idx)
+            if root == ground_root:
+                continue
+            subnets.setdefault(root, []).append((net_name, net_idx))
+
+        # 4. Drop one ghost R per floating subnet. Pick the
+        # smallest-named net for determinism (so re-runs produce the
+        # same ghost-resistor names and the backend's name registry
+        # stays stable).
+        R_GHOST = 1.0e9
+        injected = 0
+        ghost_records: list[dict[str, Any]] = []
+        for _root, members in subnets.items():
+            net_name, net_idx = min(members, key=lambda kv: kv[0])
+            ghost_name = f"__gmin_{net_name}"
+            try:
+                circuit.add_resistor(ghost_name, net_idx, GROUND_IDX, R_GHOST)
+            except Exception:
+                # Backend rejected the addition (name collision, slot
+                # limits, etc.) — log and continue; the simulation may
+                # still converge without this particular helper.
+                continue
+            injected += 1
+            ghost_records.append({
+                "name": ghost_name,
+                "net": net_name,
+                "resistance": R_GHOST,
+                "reason": "floating-subnet-to-ground",
+            })
+
+        try:
+            setattr(circuit, "ghost_resistors_injected", injected)
+            setattr(circuit, "ghost_resistor_records", list(ghost_records))
+        except Exception:
+            pass
+        return injected
 
     def _add_constant_as_probe_channel(
         self,
