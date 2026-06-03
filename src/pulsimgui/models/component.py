@@ -300,15 +300,15 @@ def _default_demux_pins(output_count: int) -> list[Pin]:
 def _default_c_block_pins(input_count: int, output_count: int) -> list[Pin]:
     """Create IN/OUT pins for C-Block with canonical ABI naming."""
     pins: list[Pin] = []
-    for index, pin in enumerate(_generate_stacked_pins(input_count, -35, "IN", start_index=0)):
+    for index, pin in enumerate(_generate_stacked_pins(input_count, -40, "IN", start_index=0)):
         pin.index = index
         pin.name = f"IN{index}"
         pins.append(pin)
 
     if output_count == 1:
-        pins.append(Pin(len(pins), "OUT", 35, 0))
+        pins.append(Pin(len(pins), "OUT", 40, 0))
     else:
-        out_pins = _generate_stacked_pins(output_count, 35, "OUT", start_index=len(pins))
+        out_pins = _generate_stacked_pins(output_count, 40, "OUT", start_index=len(pins))
         for out_index, pin in enumerate(out_pins):
             pin.name = f"OUT{out_index}"
             pins.append(pin)
@@ -318,13 +318,13 @@ def _default_c_block_pins(input_count: int, output_count: int) -> list[Pin]:
 
 def _default_unary_block_pins() -> list[Pin]:
     """Create IN/OUT pin pair for unary signal blocks."""
-    return [Pin(0, "IN", -35, 0), Pin(1, "OUT", 35, 0)]
+    return [Pin(0, "IN", -40, 0), Pin(1, "OUT", 40, 0)]
 
 
 def _default_sum_pins(input_count: int) -> list[Pin]:
     """Create stacked input pins plus single output pin for sum/sub blocks."""
-    pins = _generate_stacked_pins(input_count, -35, "IN")
-    pins.append(Pin(len(pins), "OUT", 35, 0))
+    pins = _generate_stacked_pins(input_count, -40, "IN")
+    pins.append(Pin(len(pins), "OUT", 40, 0))
     return pins
 
 
@@ -938,8 +938,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # The converter auto-detects the controlled VSI and drives its 6 switches
     # via inverse Park/Clarke, so no output pin is needed.
     ComponentType.FOC_CONTROLLER: [
-        Pin(0, "SP", -40, -15),
-        Pin(1, "FB", -40, 15),
+        Pin(0, "SP", -40, -20),
+        Pin(1, "FB", -40, 20),
     ],
 
     # PFC boost controller: 3 signal-domain inputs.
@@ -961,11 +961,11 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ComponentType.VOLTAGE_PROBE: [
         Pin(0, "+", 0, -20),
         Pin(1, "-", 0, 20),
-        Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+        Pin(2, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 20, 0),
     ],
     ComponentType.VOLTAGE_PROBE_GND: [
-        Pin(0, "IN", -25, 0),
-        Pin(1, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 25, 0),
+        Pin(0, "IN", -20, 0),
+        Pin(1, VOLTAGE_PROBE_OUTPUT_PIN_NAME, 20, 0),
     ],
     ComponentType.CURRENT_PROBE: [
         Pin(0, "IN", -20, 0),
@@ -1139,11 +1139,14 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # PMSM (pulsim>=0.10.0a3). 4 pins: A, B, C, Neutral. Decomposes into
     # 3 phases of R_s + L_s + sinusoidal back-EMF source.
+    # Stator phase pins land on the 20-px wiring grid directly — keeping
+    # the authoring aligned with the runtime snap so wires connect right
+    # at the rendered pin bubble (no silent ±5 / ±10 drift).
     ComponentType.PMSM_STEADY_STATE: [
-        Pin(0, "A", -30, -25),
-        Pin(1, "B", -30, 0),
-        Pin(2, "C", -30, 25),
-        Pin(3, "N", 30, 0),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 0),
+        Pin(2, "C", -40, 20),
+        Pin(3, "N", 40, 0),
     ],
 
     # PMSM dynamic (pulsim>=0.10.0a4). 4 power pins (A, B, C, Neutral) +
@@ -1152,19 +1155,19 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Full device-variant: rotor inertia + electromagnetic torque feedback,
     # 4 internal states tracked by the runtime.
     ComponentType.PMSM: [
-        Pin(0, "A", -30, -25),
-        Pin(1, "B", -30, 0),
-        Pin(2, "C", -30, 25),
-        Pin(3, "N", 30, 0),
-        Pin(4, MOTOR_SIGNAL_BUS_PIN_NAME, 30, 25),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 0),
+        Pin(2, "C", -40, 20),
+        Pin(3, "N", 40, 0),
+        Pin(4, MOTOR_SIGNAL_BUS_PIN_NAME, 40, 20),
     ],
     # Induction motor: 3 stator phase terminals + star-point neutral,
     # same terminal layout convention as PMSM.
     ComponentType.INDUCTION_MOTOR: [
-        Pin(0, "A", -30, -25),
-        Pin(1, "B", -30, 0),
-        Pin(2, "C", -30, 25),
-        Pin(3, "N", 30, 0),
+        Pin(0, "A", -40, -20),
+        Pin(1, "B", -40, 0),
+        Pin(2, "C", -40, 20),
+        Pin(3, "N", 40, 0),
     ],
 }
 

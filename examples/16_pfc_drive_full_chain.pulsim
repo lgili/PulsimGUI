@@ -1032,7 +1032,7 @@
           "type": "FROM_LABEL",
           "name": "Xscope_vdc",
           "x": 1200.0,
-          "y": -245.0,
+          "y": -240.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
