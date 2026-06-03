@@ -404,77 +404,95 @@ class WireItem(QGraphicsPathItem):
         super().mousePressEvent(event)
 
     def _insert_drag_jog(self, seg_idx: int, click_pos: QPointF) -> bool:
-        """Insert a Z-shaped jog at ``click_pos`` so a pin-locked segment
-        becomes draggable while keeping both endpoints anchored.
+        """Insert a Z-shaped jog so a pin-locked segment becomes draggable
+        while keeping both endpoints anchored.
 
-        For a horizontal segment ``[(x1, y) → (x2, y)]`` the jog replaces it
-        with 5 segments:
-            H stub  (x1, y) → (cx-w, y)
-            V stub  (cx-w, y) → (cx-w, y)       (zero-length, will stretch)
-            H mid   (cx-w, y) → (cx+w, y)       (DRAGGABLE — user pulls it)
-            V stub  (cx+w, y) → (cx+w, y)       (zero-length, will stretch)
-            H stub  (cx+w, y) → (x2, y)
-        Vertical segments are handled symmetrically. The middle horizontal
-        (or vertical) segment is the only one not anchored to a pin, so the
-        existing ``_move_segment_fluid`` logic drags it freely and the
-        zero-length V stubs grow with the displacement. When the user
-        releases without dragging, ``_cleanup_segments`` collapses the
-        zero-length stubs and merges the collinear H pieces back into one —
-        no permanent change from an accidental click.
+        The jog is placed at the *segment endpoints* (tiny stubs near each
+        pin), with the long middle covering most of the wire — so when the
+        user drags, the visual result reads as "the wire moved", not "a
+        rectangular tab appeared while the original wire stayed put". The
+        earlier centred-jog produced two large H stubs flanking a small
+        middle, which looked like a glitch.
 
-        Returns True on success. Refuses (returns False) when the segment is
-        too short to fit the jog or is non-orthogonal (legacy diagonal).
+        For a horizontal segment ``[(x1, y) → (x2, y)]`` the jog replaces
+        it with 5 segments::
+
+            seg 0   H stub   (x1, y) → (x1 ± gap, y)            ← stays
+            seg 1   V stub   (x1 ± gap, y) → (x1 ± gap, y)      ← stretches
+            seg 2   H mid    (x1 ± gap, y) → (x2 ∓ gap, y)      ← DRAGGABLE
+            seg 3   V stub   (x2 ∓ gap, y) → (x2 ∓ gap, y)      ← stretches
+            seg 4   H stub   (x2 ∓ gap, y) → (x2, y)            ← stays
+
+        Vertical segments are handled symmetrically. The middle covers
+        ~95 % of the wire, so dragging it perpendicular shifts the whole
+        run with two tight bends at the pins. ``_cleanup_segments``
+        collapses the zero-length stubs on release without a drag — an
+        accidental click restores the original geometry.
+
+        Returns ``True`` on success. Refuses (``False``) when the segment
+        is too short to fit the jog (``< 2·gap + minimum middle``) or is
+        non-orthogonal (legacy diagonals — already normalised on load by
+        ``WireItem.__init__``).
         """
         seg = self._wire.segments[seg_idx]
         x1, y1, x2, y2 = seg.x1, seg.y1, seg.x2, seg.y2
-        cx, cy = click_pos.x(), click_pos.y()
-        jog_half = 20.0    # half-width of the jog in scene units
-        margin = 4.0       # minimum distance from segment endpoints
+        # Tiny stubs near each pin so the wire's entry/exit angle stays
+        # clean (matches the pin lead direction) without creating a wide
+        # "leftover" H/V chunk that looks like a duplicate wire.
+        stub_gap = 8.0
+        # Minimum middle-segment length so the user actually has something
+        # to grab after the jog is inserted (avoids "invisible" middles on
+        # marginal-width segments).
+        min_middle = 20.0
 
         is_horizontal = abs(x2 - x1) > abs(y2 - y1)
-        # Orthogonal-only: bail out on legacy diagonals.
         if is_horizontal and abs(y2 - y1) > 1.0:
             return False
         if (not is_horizontal) and abs(x2 - x1) > 1.0:
             return False
 
         if is_horizontal:
-            lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
-            min_x = lo + jog_half + margin
-            max_x = hi - jog_half - margin
-            if min_x >= max_x:
+            length = abs(x2 - x1)
+            if length < 2.0 * stub_gap + min_middle:
                 return False
-            cx_clamped = max(min_x, min(max_x, cx))
+            # Stubs at each pin, signed so they point inward regardless of
+            # whether the segment runs left-to-right or right-to-left.
+            sign = 1.0 if x2 > x1 else -1.0
+            left_end = x1 + sign * stub_gap          # near start pin
+            right_start = x2 - sign * stub_gap       # near end pin
             y = y1
             new_segs = [
-                WireSegment(x1, y, cx_clamped - jog_half, y),
-                WireSegment(cx_clamped - jog_half, y, cx_clamped - jog_half, y),
-                WireSegment(cx_clamped - jog_half, y, cx_clamped + jog_half, y),
-                WireSegment(cx_clamped + jog_half, y, cx_clamped + jog_half, y),
-                WireSegment(cx_clamped + jog_half, y, x2, y),
+                WireSegment(x1, y, left_end, y),
+                WireSegment(left_end, y, left_end, y),
+                WireSegment(left_end, y, right_start, y),
+                WireSegment(right_start, y, right_start, y),
+                WireSegment(right_start, y, x2, y),
             ]
         else:
-            lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
-            min_y = lo + jog_half + margin
-            max_y = hi - jog_half - margin
-            if min_y >= max_y:
+            length = abs(y2 - y1)
+            if length < 2.0 * stub_gap + min_middle:
                 return False
-            cy_clamped = max(min_y, min(max_y, cy))
+            sign = 1.0 if y2 > y1 else -1.0
+            top_end = y1 + sign * stub_gap
+            bot_start = y2 - sign * stub_gap
             x = x1
             new_segs = [
-                WireSegment(x, y1, x, cy_clamped - jog_half),
-                WireSegment(x, cy_clamped - jog_half, x, cy_clamped - jog_half),
-                WireSegment(x, cy_clamped - jog_half, x, cy_clamped + jog_half),
-                WireSegment(x, cy_clamped + jog_half, x, cy_clamped + jog_half),
-                WireSegment(x, cy_clamped + jog_half, x, y2),
+                WireSegment(x, y1, x, top_end),
+                WireSegment(x, top_end, x, top_end),
+                WireSegment(x, top_end, x, bot_start),
+                WireSegment(x, bot_start, x, bot_start),
+                WireSegment(x, bot_start, x, y2),
             ]
 
-        # Replace the original segment with the 5-segment Z.
         self._wire.segments = (
             self._wire.segments[:seg_idx]
             + new_segs
             + self._wire.segments[seg_idx + 1:]
         )
+        # ``click_pos`` no longer determines the jog location (the jog now
+        # always anchors at the pins). Kept on the signature so the caller
+        # can still pass it without an API break.
+        _ = click_pos
         return True
 
     def mouseMoveEvent(self, event) -> None:

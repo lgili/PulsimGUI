@@ -2,10 +2,17 @@
 
 When the user clicks a *pin-locked* wire segment (first/last segment of a
 wire whose endpoint is anchored to a component pin), the WireItem inserts a
-Z-shaped jog at the click point so the segment becomes draggable while
-keeping both endpoints attached to their pins. Before this, wires that
-ran straight between two pins (very common) had no draggable segment and
-felt "stuck".
+Z-shaped jog so the segment becomes draggable while keeping both endpoints
+attached to their pins. Before this, wires that ran straight between two
+pins (very common) had no draggable segment and felt "stuck".
+
+Evolution notes (v1.1.1 → v1.1.2):
+* The jog used to be a small ``±20 px`` band centred on the click point,
+  which left two big H/V stubs at the original y/x — the user reported
+  "looks like a square / leftover wire". The jog now anchors at the
+  segment *endpoints* with tiny ``8 px`` stubs near each pin, so dragging
+  the long middle reads as "the whole wire moved" rather than "a small
+  rectangle popped out".
 """
 from __future__ import annotations
 
@@ -40,9 +47,11 @@ def test_jog_inserts_5_segments_into_horizontal_pin_wire(qapp) -> None:
     # Endpoints unchanged (pins must remain anchored).
     assert (s[0].x1, s[0].y1) == (0.0, 0.0)
     assert (s[4].x2, s[4].y2) == (200.0, 0.0)
-    # Middle segment is horizontal at y=0 (zero-displacement) and sits
-    # between cx-20 and cx+20.
-    assert (s[2].x1, s[2].y1, s[2].x2, s[2].y2) == (80.0, 0.0, 120.0, 0.0)
+    # Tiny 8-px stubs flank the wide middle — middle spans (8, 0)→(192, 0)
+    # for a 200-px wire so it covers ~95 % of the run, not a small tab.
+    assert (s[0].x1, s[0].x2) == (0.0, 8.0)
+    assert (s[4].x1, s[4].x2) == (192.0, 200.0)
+    assert (s[2].x1, s[2].y1, s[2].x2, s[2].y2) == (8.0, 0.0, 192.0, 0.0)
 
 
 def test_jog_inserts_into_vertical_pin_wire(qapp) -> None:
@@ -51,32 +60,33 @@ def test_jog_inserts_into_vertical_pin_wire(qapp) -> None:
 
     assert item._insert_drag_jog(0, QPointF(0.0, 100.0)) is True
     assert len(wire.segments) == 5
-    # Middle segment is the vertical jog spanning cy-20 to cy+20.
+    # Middle vertical spans the wire minus 8 px stubs at each pin.
     mid = wire.segments[2]
-    assert (mid.x1, mid.y1, mid.x2, mid.y2) == (0.0, 80.0, 0.0, 120.0)
+    assert (mid.x1, mid.y1, mid.x2, mid.y2) == (0.0, 8.0, 0.0, 192.0)
 
 
-def test_jog_clamps_click_near_endpoint(qapp) -> None:
-    """A click near the start pin (e.g. x=2 on a 200-px wire) is clamped
-    so the jog fits inside the segment without crossing the endpoint."""
-    wire = _make_pin_to_pin_wire(horizontal=True, length=200)
-    item = WireItem(wire)
+def test_jog_placement_is_click_position_independent(qapp) -> None:
+    """Clicking near the start pin and clicking dead-centre yield the same
+    geometry — the jog now always anchors at the endpoints, so where the
+    user clicks only determines *whether* the jog is inserted, not where."""
+    wire_left = _make_pin_to_pin_wire(horizontal=True, length=200)
+    wire_centre = _make_pin_to_pin_wire(horizontal=True, length=200)
+    WireItem(wire_left)._insert_drag_jog(0, QPointF(10.0, 0.0))
+    WireItem(wire_centre)._insert_drag_jog(0, QPointF(100.0, 0.0))
 
-    assert item._insert_drag_jog(0, QPointF(2.0, 0.0)) is True
-    mid = wire.segments[2]
-    # Middle ends are well inside (0, 200), no overshoot.
-    assert mid.x1 >= 4.0
-    assert mid.x2 <= 196.0
-    assert (mid.y1, mid.y2) == (0.0, 0.0)
+    geom_left = [(s.x1, s.y1, s.x2, s.y2) for s in wire_left.segments]
+    geom_centre = [(s.x1, s.y1, s.x2, s.y2) for s in wire_centre.segments]
+    assert geom_left == geom_centre
 
 
 def test_jog_refused_when_segment_too_short(qapp) -> None:
-    """30-px wire can't fit a 40-px-wide jog with margin → refuse."""
+    """Short wire (< 2·gap + min_middle = 2·8 + 20 = 36) cannot host a
+    jog. The click is ignored — wire stays as the original 1 segment."""
     wire = _make_pin_to_pin_wire(horizontal=True, length=30)
     item = WireItem(wire)
 
     assert item._insert_drag_jog(0, QPointF(15.0, 0.0)) is False
-    assert len(wire.segments) == 1  # unchanged
+    assert len(wire.segments) == 1
 
 
 def test_legacy_diagonal_is_normalised_then_remains_draggable(qapp) -> None:
@@ -99,7 +109,8 @@ def test_legacy_diagonal_is_normalised_then_remains_draggable(qapp) -> None:
 
 def test_jog_with_drag_simulates_z_shape(qapp) -> None:
     """Insert jog + drag the middle vertically — the wire forms a Z,
-    endpoints stay anchored, and all segments are still orthogonal."""
+    endpoints stay anchored, and the middle covers most of the wire so the
+    drag visually reads as "the wire moved" rather than a small tab."""
     wire = _make_pin_to_pin_wire(horizontal=True, length=200)
     item = WireItem(wire)
     item._insert_drag_jog(0, QPointF(100.0, 0.0))
@@ -111,11 +122,8 @@ def test_jog_with_drag_simulates_z_shape(qapp) -> None:
     # Endpoints unchanged.
     assert (s[0].x1, s[0].y1) == (0.0, 0.0)
     assert (s[4].x2, s[4].y2) == (200.0, 0.0)
-    # Middle is now horizontal at y=40, V stubs span 0 → 40 on each side.
-    assert (s[2].y1, s[2].y2) == (40.0, 40.0)
-    # First V stub: from (80, 0) (prev end) to (80, 40) (middle start).
-    assert (s[1].x1, s[1].x2) == (80.0, 80.0)
-    assert (s[1].y1, s[1].y2) == (0.0, 40.0)
-    # Second V stub: from (120, 40) to (120, 0).
-    assert (s[3].x1, s[3].x2) == (120.0, 120.0)
-    assert (s[3].y1, s[3].y2) == (40.0, 0.0)
+    # Middle now at y=40, spanning the wide range (8, 40)→(192, 40).
+    assert (s[2].x1, s[2].y1, s[2].x2, s[2].y2) == (8.0, 40.0, 192.0, 40.0)
+    # V stubs now span 0 → 40 at x=8 and x=192 (the new bend points).
+    assert (s[1].x1, s[1].x2, s[1].y1, s[1].y2) == (8.0, 8.0, 0.0, 40.0)
+    assert (s[3].x1, s[3].x2, s[3].y1, s[3].y2) == (192.0, 192.0, 40.0, 0.0)
