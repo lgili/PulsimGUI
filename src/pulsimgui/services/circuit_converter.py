@@ -3571,6 +3571,15 @@ class CircuitConverter:
                 "f_line": _float(params, "f_line", 60.0),
                 # --- Switching ---
                 "f_sw": _float(params, "f_sw", 65000.0),
+                # --- Soft-start ---
+                # Ramp v_bus_ref from v_bus_initial up to v_bus_ref over
+                # this many seconds so the outer PI never sees the huge
+                # cold-start error that would saturate i_pk_ref to its
+                # limit (producing the noisy / unphysical inductor
+                # current users hit when running an example with bus
+                # cap charged below v_bus_ref).
+                "soft_start_time": _float(params, "soft_start_time", 0.05),
+                "v_bus_initial": _float(params, "v_bus_initial", 310.0),
             })
 
         return descriptors

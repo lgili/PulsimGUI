@@ -7205,6 +7205,8 @@ class PulsimBackend(SimulationBackend):
             current_ki = float(desc.get("current_ki", 3140.0))
             vac_pk_nom = max(1.0, float(desc.get("vac_pk_nom", 325.0)))
             f_sw = max(1.0, float(desc.get("f_sw", 65_000.0)))
+            soft_start_time = max(0.0, float(desc.get("soft_start_time", 0.05)))
+            v_bus_initial = float(desc.get("v_bus_initial", 310.0))
 
             # Outer PI cadence: target ~1 kHz update. Coerce to a whole
             # number of PWM ticks so the throttle math is exact.
@@ -7225,11 +7227,34 @@ class PulsimBackend(SimulationBackend):
             # ``i_pk_ref``: latest output of the outer voltage PI.
             # ``v_rect_latest``: latest |V_rect(x)| sample (read on every
             #   inner-loop measurement call).
+            # ``elapsed``: outer-PI ticks × outer_dt, used by the
+            #   soft-start ramp.
             state: dict[str, Any] = {
                 "i_pk_ref": 0.0,
                 "v_rect_latest": 0.0,
                 "tick": 0,
+                "elapsed": 0.0,
             }
+
+            def _ramped_v_bus_ref(
+                elapsed: float,
+                _v0=v_bus_initial,
+                _v1=v_bus_ref,
+                _T=soft_start_time,
+            ) -> float:
+                """Linear soft-start ramp on the outer voltage setpoint.
+
+                Returns ``v_bus_initial`` at ``elapsed=0`` and grows to
+                ``v_bus_ref`` at ``elapsed >= soft_start_time``. With the
+                ramp in place the outer PI never sees the cold-start
+                400 V − 0 V step that would otherwise saturate the
+                integrator to ``i_pk_limit`` on the first millisecond.
+                ``_T <= 0`` disables the ramp and matches the pre-1.1.2
+                behaviour.
+                """
+                if _T <= 0.0 or elapsed >= _T:
+                    return _v1
+                return _v0 + (_v1 - _v0) * (elapsed / _T)
 
             def _measured_and_cascade(
                 x,
@@ -7237,28 +7262,24 @@ class PulsimBackend(SimulationBackend):
                 _state=state,
                 _v_bus_idx=v_bus_idx,
                 _v_ac_idx=v_ac_idx,
-                _v_bus_ref=v_bus_ref,
                 _outer_dt=outer_dt,
                 _period=outer_period_ticks,
+                _ramp=_ramped_v_bus_ref,
             ) -> float:
-                # Read the latest rectified-input voltage so the inner-loop
-                # setpoint callable can shape the current reference.
                 _state["v_rect_latest"] = abs(float(x[_v_ac_idx]))
-                # Throttle the outer PI to its 1 kHz cadence.
                 _state["tick"] += 1
                 if _state["tick"] >= _period:
                     _state["tick"] = 0
+                    _state["elapsed"] += _outer_dt
                     v_bus_meas = float(x[_v_bus_idx])
                     _state["i_pk_ref"] = float(_outer_pi.update(
-                        setpoint=_v_bus_ref,
+                        setpoint=_ramp(_state["elapsed"]),
                         measured=v_bus_meas,
                         dt=_outer_dt,
                     ))
-                # The inner loop measures i_L — without a tracked branch
-                # current we fall back to ZERO (so the inner PI integrates
-                # toward its limit and the outer voltage loop dominates).
-                # When the converter resolves an inductor-current branch
-                # index, this gets replaced below.
+                # See comment below; without a current-probe branch we
+                # return 0 so the inner PI integrates toward the duty
+                # ceiling and the outer voltage loop dominates.
                 return 0.0
 
             # If the converter resolved a current-probe BRANCH name, prefer
@@ -7279,17 +7300,18 @@ class PulsimBackend(SimulationBackend):
                     _state=state,
                     _v_bus_idx=v_bus_idx,
                     _v_ac_idx=v_ac_idx,
-                    _v_bus_ref=v_bus_ref,
                     _outer_dt=outer_dt,
                     _period=outer_period_ticks,
                     _il_idx=il_idx,
+                    _ramp=_ramped_v_bus_ref,
                 ) -> float:
                     _state["v_rect_latest"] = abs(float(x[_v_ac_idx]))
                     _state["tick"] += 1
                     if _state["tick"] >= _period:
                         _state["tick"] = 0
+                        _state["elapsed"] += _outer_dt
                         _state["i_pk_ref"] = float(_outer_pi.update(
-                            setpoint=_v_bus_ref,
+                            setpoint=_ramp(_state["elapsed"]),
                             measured=float(x[_v_bus_idx]),
                             dt=_outer_dt,
                         ))

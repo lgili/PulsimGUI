@@ -1528,6 +1528,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # --- Switching ---
         # Standard high-power PFC carrier (65 kHz is the modern default).
         "f_sw": 65000.0,
+        # --- Startup ---
+        # Soft-start ramp time (seconds). The outer voltage reference is
+        # ramped linearly from ``v_bus_initial`` (defaults to the peak
+        # rectified AC, ≈ ``vac_pk_nom``) up to ``v_bus_ref`` over this
+        # interval, so the outer PI never sees a huge initial error and
+        # the integrator does NOT wind up to ``i_pk_limit``. Without the
+        # ramp, the current loop saturates immediately and the inductor
+        # current shows giant switching transients during the entire
+        # bus-cap charge interval — exactly the "noisy/unphysical I_L"
+        # symptom users hit when running ex 20 from a cold start.
+        # Set to 0 to disable (matches the pre-1.1.2 behaviour).
+        "soft_start_time": 0.05,
+        # Initial bus-voltage assumption used to seed the soft-start
+        # ramp. Defaults to the peak rectified mains (≈ vac_pk_nom);
+        # set explicitly when the bus has a different precharge level.
+        "v_bus_initial": 310.0,
         # --- Optional explicit binding overrides — leave blank for
         # auto-detect by topology / single-instance fallback.
         "boost_mosfet_name": "",
