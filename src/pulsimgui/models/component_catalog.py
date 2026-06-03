@@ -59,12 +59,20 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.PMSM, "name": "PMSM dyn", "shortcut": ""},
         {"type": ComponentType.INDUCTION_MOTOR, "name": "Induction", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_RL_LOAD, "name": "3φ RL", "shortcut": ""},
+        # Drop-in field-oriented-control block. Wire SP ← speed reference,
+        # FB ← PMSM SIG bus, and the converter auto-binds the 3φ VSI.
+        {"type": ComponentType.FOC_CONTROLLER, "name": "FOC Drive", "shortcut": ""},
     ],
     "Power Conversion": [
         {"type": ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "name": "1φ Bridge", "shortcut": ""},
         {"type": ComponentType.THREE_PHASE_DIODE_BRIDGE, "name": "3φ Bridge", "shortcut": ""},
         {"type": ComponentType.MMC_CELL, "name": "MMC Cell", "shortcut": ""},
         {"type": ComponentType.MMC_ARM, "name": "MMC Arm", "shortcut": ""},
+        # Closed-loop boost PFC controller (CCM, 240–1000 W defaults).
+        # Wire VBUS ← bus voltage probe, IL ← inductor current probe,
+        # VAC ← rectified-line voltage probe. Converter auto-detects the
+        # boost MOSFET by topology.
+        {"type": ComponentType.PFC_BOOST_CONTROLLER, "name": "PFC Boost", "shortcut": ""},
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
@@ -145,6 +153,18 @@ QUICK_ADD_COMPONENTS = [
          "averaged", "average value", "multilevel", "equivalent",
          "detailed", "l0", "l1", "l2", "l3", "thevenin",
          "n submodules", "cadeia"]),
+    # Dedicated control blocks (wired alternatives to the legacy C_BLOCK
+    # markers — visible pins, editable parameters, auto-detected bindings).
+    (ComponentType.FOC_CONTROLLER, "FOC Drive Controller",
+        ["foc", "field oriented", "vector control", "motor control",
+         "pmsm drive", "speed loop", "current loop", "id iq", "park",
+         "controle vetorial", "acionamento", "controle de motor",
+         "drive pmsm", "ipd"]),
+    (ComponentType.PFC_BOOST_CONTROLLER, "PFC Boost Controller",
+        ["pfc", "power factor correction", "boost pfc", "boost",
+         "ccm", "dcm", "fator de potencia", "correção fator potencia",
+         "elevador", "input current shaping", "sine reference",
+         "voltage loop", "current loop", "cascaded pi"]),
 ]
 
 
