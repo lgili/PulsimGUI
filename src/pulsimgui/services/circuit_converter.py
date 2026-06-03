@@ -143,10 +143,17 @@ class CircuitConverter:
                 continue
             if self._should_skip_component(comp_type) and comp_id not in control_override_ids:
                 continue
-            # FOC-controller markers (C_BLOCK ``control_kind="foc"``) carry
-            # no electrical connectivity — they are descriptor-only and are
-            # consumed later by ``_infer_foc_loops``. Skip node resolution
-            # so an unwired marker doesn't trip the connectivity check.
+            # FOC-controller markers (C_BLOCK ``control_kind="foc"`` legacy, or
+            # the dedicated ``FOC_CONTROLLER`` component) carry no electrical
+            # connectivity — they are descriptor-only and are consumed later by
+            # ``_infer_foc_loops``. Skip node resolution so an unwired controller
+            # doesn't trip the connectivity check.
+            if comp_type == ComponentType.FOC_CONTROLLER:
+                continue
+            # PFC boost controller — same pattern: descriptor-only,
+            # consumed later by ``_infer_pfc_loops``.
+            if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
+                continue
             if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
                 component.get("parameters")
             ):
@@ -261,6 +268,17 @@ class CircuitConverter:
         try:
             foc_loops = self._infer_foc_loops(components)
             setattr(circuit, "foc_loop_descriptors", foc_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
+        # Closed-loop PFC boost: detect any PFC_BOOST_CONTROLLER and emit a
+        # descriptor with the auto-detected boost-MOSFET name + the user-
+        # facing tuning parameters. The backend (``_build_pfc_loops``)
+        # composes the inner current loop via ``bind_pi_to_switch`` + an
+        # outer voltage loop as a step_observer.
+        try:
+            pfc_loops = self._infer_pfc_loops(components, node_map, alias_map)
+            setattr(circuit, "pfc_loop_descriptors", pfc_loops)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -643,6 +661,20 @@ class CircuitConverter:
             return pin_index == 1
         if comp_type == ComponentType.CURRENT_PROBE:
             return pin_index == 2
+        if comp_type == ComponentType.PMSM:
+            # Pin 4 is the SIG signal-bus output (speed/currents/torque) —
+            # not an electrical terminal, so it may be unwired or wired to a
+            # signal-domain demux without tripping electrical connectivity.
+            return pin_index == 4
+        if comp_type == ComponentType.FOC_CONTROLLER:
+            # SP (speed setpoint) and FB (motor feedback bus) are control-
+            # domain inputs; they can be left unwired (parameters provide
+            # fallbacks) without breaking the electrical netlist.
+            return True
+        if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
+            # VBUS / IL / VAC are signal-domain inputs that the parameter
+            # overrides also let the user bind by name without a wire.
+            return True
         return False
 
     def _node_label(self, node_id: str, alias_map: dict[str, str]) -> str:
@@ -743,6 +775,11 @@ class CircuitConverter:
 
         if comp_type == ComponentType.SWITCH:
             return nodes[:3] if len(nodes) >= 3 else nodes[:2]
+
+        if comp_type == ComponentType.PMSM:
+            # A/B/C/Neutral are electrical; the 5th pin (SIG) is a signal-bus
+            # output and must not stamp an MNA node.
+            return nodes[:4]
 
         # Virtual/unknown components keep their full terminal list.
         return nodes
@@ -3052,12 +3089,13 @@ class CircuitConverter:
             by_type.setdefault(ct, []).append(component)
 
         cblocks = by_type.get(ComponentType.C_BLOCK, [])
+        foc_blocks = by_type.get(ComponentType.FOC_CONTROLLER, [])
         vsis = by_type.get(ComponentType.THREE_PHASE_VSI, [])
         pmsms = by_type.get(ComponentType.PMSM, [])
 
         # FOC needs a switched VSI to command and a dynamic PMSM to
         # observe. No marker / no VSI / no PMSM ⇒ nothing to do.
-        if not cblocks or not vsis or not pmsms:
+        if (not cblocks and not foc_blocks) or not vsis or not pmsms:
             return []
 
         def _float(d: dict[str, Any], key: str, default: float) -> float:
@@ -3069,31 +3107,43 @@ class CircuitConverter:
             except (TypeError, ValueError):
                 return default
 
-        descriptors: list[dict[str, Any]] = []
-        for cblock in cblocks:
-            params = cblock.get("parameters") if isinstance(
-                cblock.get("parameters"), dict
-            ) else {}
-            kind = str(params.get("control_kind", "") or "").strip().lower()
-            if kind != "foc":
-                continue
+        def _params_of(comp: dict[str, Any]) -> dict[str, Any]:
+            raw = comp.get("parameters")
+            return raw if isinstance(raw, dict) else {}
 
-            # Bind to a named VSI / PMSM if the marker calls one out;
-            # otherwise default to the first of each (the common single-
-            # drive case). The backend resolves names → specs.
+        # Resolve the FB-pin wire of a FOC_CONTROLLER back to the PMSM that
+        # owns the bus, so wiring (not the parameter alone) drives the binding.
+        def _trace_pmsm_via_fb(foc_comp: dict[str, Any]) -> str:
+            pin_nodes = foc_comp.get("pin_nodes") or []
+            if len(pin_nodes) < 2:
+                return ""
+            fb_net = str(pin_nodes[1] or "").strip()
+            if not fb_net:
+                return ""
+            for motor in pmsms:
+                motor_pin_nodes = motor.get("pin_nodes") or []
+                # PMSM pin 4 is SIG (signal-bus output).
+                if len(motor_pin_nodes) >= 5 and str(motor_pin_nodes[4] or "").strip() == fb_net:
+                    return self._component_name(motor, ComponentType.PMSM)
+            return ""
+
+        def _make_descriptor(comp: dict[str, Any], owner_type: ComponentType) -> dict[str, Any]:
+            params = _params_of(comp)
+            # Wire-traced PMSM (FOC_CONTROLLER FB pin) wins over the explicit
+            # parameter; falls back to the explicit name, then to the single
+            # PMSM in the circuit.
+            pmsm_name = ""
+            if owner_type == ComponentType.FOC_CONTROLLER:
+                pmsm_name = _trace_pmsm_via_fb(comp)
+            if not pmsm_name:
+                pmsm_name = str(params.get("pmsm_name", "") or "").strip()
+            if not pmsm_name:
+                pmsm_name = self._component_name(pmsms[0], ComponentType.PMSM)
             vsi_name = str(params.get("vsi_name", "") or "").strip()
             if not vsi_name:
-                vsi_name = self._component_name(
-                    vsis[0], ComponentType.THREE_PHASE_VSI
-                )
-            pmsm_name = str(params.get("pmsm_name", "") or "").strip()
-            if not pmsm_name:
-                pmsm_name = self._component_name(
-                    pmsms[0], ComponentType.PMSM
-                )
-
-            descriptors.append({
-                "name": self._component_name(cblock, ComponentType.C_BLOCK),
+                vsi_name = self._component_name(vsis[0], ComponentType.THREE_PHASE_VSI)
+            return {
+                "name": self._component_name(comp, owner_type),
                 "vsi_name": vsi_name,
                 "pmsm_name": pmsm_name,
                 # DC-bus magnitude the backend uses to normalise the
@@ -3121,6 +3171,200 @@ class CircuitConverter:
                 "switching_frequency_hz": _float(
                     params, "switching_frequency_hz", 20000.0
                 ),
+            }
+
+        descriptors: list[dict[str, Any]] = []
+        # Legacy: C_BLOCK with ``control_kind="foc"`` marker.
+        for cblock in cblocks:
+            cb_params = _params_of(cblock)
+            if str(cb_params.get("control_kind", "") or "").strip().lower() == "foc":
+                descriptors.append(_make_descriptor(cblock, ComponentType.C_BLOCK))
+        # New: dedicated ``FOC_CONTROLLER`` component (visible, wireable).
+        for foc_comp in foc_blocks:
+            descriptors.append(
+                _make_descriptor(foc_comp, ComponentType.FOC_CONTROLLER)
+            )
+        return descriptors
+
+    def _infer_pfc_loops(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Emit one ``pfc_loop_descriptor`` per ``PFC_BOOST_CONTROLLER``.
+
+        The descriptor packages the user-tunable parameters plus the auto-
+        detected references the backend needs:
+
+          - ``mosfet_name``: the boost MOSFET. Auto-detected as the single
+            MOSFET in the circuit (or by explicit parameter override).
+          - ``v_bus_node``: node alias for V_bus. From the VBUS pin's wire
+            (traced through a voltage probe) or explicit parameter.
+          - ``v_ac_node``: node alias for the rectified-input voltage |V_rect|.
+            From the VAC pin's wire (likewise).
+          - ``i_l_branch_name``: the current-probe name on the boost inductor.
+            From the IL pin's wire trace.
+
+        Defensive: returns ``[]`` unless a PFC controller is present, so
+        non-PFC circuits are unaffected.
+        """
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        pfc_blocks = by_type.get(ComponentType.PFC_BOOST_CONTROLLER, [])
+        if not pfc_blocks:
+            return []
+
+        mosfets = (
+            by_type.get(ComponentType.MOSFET_N, [])
+            + by_type.get(ComponentType.MOSFET_P, [])
+        )
+        probes_v = (
+            by_type.get(ComponentType.VOLTAGE_PROBE, [])
+            + by_type.get(ComponentType.VOLTAGE_PROBE_GND, [])
+        )
+        probes_i = by_type.get(ComponentType.CURRENT_PROBE, [])
+
+        def _float(d: dict[str, Any], key: str, default: float) -> float:
+            val = d.get(key)
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        def _params_of(comp: dict[str, Any]) -> dict[str, Any]:
+            raw = comp.get("parameters")
+            return raw if isinstance(raw, dict) else {}
+
+        # Resolve a node-alias for the net on a given controller pin.
+        def _trace_node_via_pin(
+            pfc_comp: dict[str, Any], pin_index: int,
+        ) -> str:
+            comp_id = pfc_comp.get("id") or ""
+            pin_nodes = (
+                pfc_comp.get("pin_nodes")
+                or node_map.get(comp_id, [])
+            )
+            if pin_index >= len(pin_nodes):
+                return ""
+            raw = str(pin_nodes[pin_index] or "").strip()
+            if not raw:
+                return ""
+            # The voltage probe's INPUT pin is what the user actually wired
+            # to V_bus / V_rect; the probe's OUTPUT net is what reaches the
+            # controller. Find the probe whose OUTPUT is on this net, then
+            # return the node alias of its INPUT.
+            for probe in probes_v:
+                p_id = probe.get("id") or ""
+                p_nodes = (
+                    probe.get("pin_nodes")
+                    or node_map.get(p_id, [])
+                )
+                if not p_nodes:
+                    continue
+                # VOLTAGE_PROBE: pin 0=+, pin 1=-, pin 2=OUT.
+                # VOLTAGE_PROBE_GND: pin 0=IN, pin 1=OUT.
+                probe_type = self._component_type(probe.get("type"))
+                if probe_type == ComponentType.VOLTAGE_PROBE:
+                    out_idx, sense_idx = 2, 0
+                elif probe_type == ComponentType.VOLTAGE_PROBE_GND:
+                    out_idx, sense_idx = 1, 0
+                else:
+                    continue
+                if out_idx >= len(p_nodes) or sense_idx >= len(p_nodes):
+                    continue
+                if str(p_nodes[out_idx] or "").strip() == raw:
+                    sense_raw = str(p_nodes[sense_idx] or "").strip()
+                    if sense_raw:
+                        return self._node_label(sense_raw, alias_map)
+            # No probe found — return the raw label (still useful when the
+            # backend can resolve aliases by best-effort match).
+            return self._node_label(raw, alias_map)
+
+        # Resolve the current-probe NAME (not net) on the IL pin.
+        def _trace_current_probe_name(pfc_comp: dict[str, Any]) -> str:
+            comp_id = pfc_comp.get("id") or ""
+            pin_nodes = (
+                pfc_comp.get("pin_nodes")
+                or node_map.get(comp_id, [])
+            )
+            if len(pin_nodes) <= 1:
+                return ""
+            il_net = str(pin_nodes[1] or "").strip()
+            if not il_net:
+                return ""
+            for probe in probes_i:
+                p_id = probe.get("id") or ""
+                p_nodes = (
+                    probe.get("pin_nodes") or node_map.get(p_id, [])
+                )
+                # CURRENT_PROBE: pin 0=IN, pin 1=OUT (series), pin 2=MEAS.
+                if len(p_nodes) < 3:
+                    continue
+                if str(p_nodes[2] or "").strip() == il_net:
+                    return self._component_name(probe, ComponentType.CURRENT_PROBE)
+            return ""
+
+        descriptors: list[dict[str, Any]] = []
+        for pfc_comp in pfc_blocks:
+            params = _params_of(pfc_comp)
+
+            # MOSFET binding (explicit override → single MOSFET fallback).
+            mosfet_name = str(params.get("boost_mosfet_name", "") or "").strip()
+            if not mosfet_name and mosfets:
+                mosfet_name = self._component_name(mosfets[0], ComponentType.MOSFET_N)
+            if not mosfet_name:
+                # No MOSFET available — can't close the loop. Skip silently.
+                continue
+
+            # V_bus + V_ac node aliases.
+            v_bus_node = str(params.get("v_bus_node_name", "") or "").strip()
+            if not v_bus_node:
+                v_bus_node = _trace_node_via_pin(pfc_comp, 0)
+            v_ac_node = str(params.get("v_ac_node_name", "") or "").strip()
+            if not v_ac_node:
+                v_ac_node = _trace_node_via_pin(pfc_comp, 2)
+
+            # Current-probe name on i_L.
+            i_l_branch = str(params.get("i_l_branch_name", "") or "").strip()
+            if not i_l_branch:
+                i_l_branch = _trace_current_probe_name(pfc_comp)
+
+            descriptors.append({
+                "name": self._component_name(
+                    pfc_comp, ComponentType.PFC_BOOST_CONTROLLER
+                ),
+                "mosfet_name": mosfet_name,
+                "v_bus_node": v_bus_node,
+                "v_ac_node": v_ac_node,
+                "i_l_branch_name": i_l_branch,
+                # --- Operating mode ---
+                "mode": str(params.get("mode", "CCM") or "CCM").upper(),
+                # --- Targets / limits ---
+                "v_bus_ref": _float(params, "v_bus_ref", 400.0),
+                "v_bus_min": _float(params, "v_bus_min", 0.0),
+                "v_bus_max": _float(params, "v_bus_max", 450.0),
+                "i_pk_limit": _float(params, "i_pk_limit", 20.0),
+                "duty_max": _float(params, "duty_max", 0.95),
+                # --- Outer voltage PI ---
+                "voltage_kp": _float(params, "voltage_kp", 0.30),
+                "voltage_ki": _float(params, "voltage_ki", 6.0),
+                # --- Inner current PI ---
+                "current_kp": _float(params, "current_kp", 31.4),
+                "current_ki": _float(params, "current_ki", 3140.0),
+                # --- Source / line ---
+                "vac_pk_nom": _float(params, "vac_pk_nom", 325.0),
+                "f_line": _float(params, "f_line", 60.0),
+                # --- Switching ---
+                "f_sw": _float(params, "f_sw", 65000.0),
             })
 
         return descriptors

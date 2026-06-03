@@ -20,7 +20,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pulsimgui.models.component import Component, ComponentType, DEFAULT_PARAMETERS, HIDDEN_PARAMS
+from pulsimgui.models.component import (
+    Component,
+    ComponentType,
+    DEFAULT_PARAMETERS,
+    HIDDEN_PARAMS,
+    MOTOR_SIGNAL_BUS_CHANNELS,
+    MOTOR_SIGNAL_BUS_PIN_NAME,
+    supports_motor_signal_bus,
+)
 
 
 @dataclass(frozen=True)
@@ -310,6 +318,162 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "Controller tuning from damping target and noise sensitivity limits.",
         ),
     },
+    ComponentType.PFC_BOOST_CONTROLLER: {
+        "mode": ParameterHelp(
+            "Operating mode. CCM (continuous conduction, recommended for "
+            "240–1000 W) keeps i_L > 0 every switching cycle; DCM lets i_L "
+            "drop to zero (only worthwhile below ~150 W).",
+            "Application power band. CCM for >300 W is standard practice.",
+        ),
+        "v_bus_ref": ParameterHelp(
+            "Target DC-bus voltage (V) regulated by the outer loop. The "
+            "universal-input PFC standard is 400 V (high enough for 264 Vrms "
+            "input without saturation).",
+            "Downstream-converter datasheet (DC-link voltage rating).",
+        ),
+        "v_bus_max": ParameterHelp(
+            "Hard upper bound on V_bus (over-voltage trip / clamp).",
+            "Bus capacitor rating minus margin.",
+        ),
+        "v_bus_min": ParameterHelp(
+            "Lower bound used during startup so the outer loop doesn't "
+            "saturate before the bridge has charged the bus.",
+            "Front-end peak (Vac_pk · √2) — bus can't go below it.",
+        ),
+        "voltage_kp": ParameterHelp(
+            "Outer voltage loop proportional gain (V_bus error → I_pk_ref).",
+            "Tune for ~10 Hz crossover — well below 2·f_line so the 120 Hz "
+            "bus ripple is NOT amplified into the current reference.",
+        ),
+        "voltage_ki": ParameterHelp(
+            "Outer voltage loop integral gain.",
+            "Sets the DC bus regulation accuracy. Ki ≈ Kp · ω_c / 5 is a "
+            "safe starting point.",
+        ),
+        "i_pk_limit": ParameterHelp(
+            "Saturation on the outer-loop output (max peak input current). "
+            "Prevents inductor saturation and inrush during a load step.",
+            "Inductor saturation current and MOSFET pulsed-current rating.",
+        ),
+        "current_kp": ParameterHelp(
+            "Inner current loop proportional gain (i_L error → duty).",
+            "Tune from L_boost / R_dcr: Kp ≈ L · ω_c (rad/s). For L = 1 mH "
+            "and ω_c = 2π·5 kHz → Kp ≈ 31.4.",
+        ),
+        "current_ki": ParameterHelp(
+            "Inner current loop integral gain.",
+            "Cancels the inductor pole: Ki ≈ R_dcr · ω_c. For R_dcr = 0.1 Ω "
+            "and ω_c = 2π·5 kHz → Ki ≈ 3140.",
+        ),
+        "duty_max": ParameterHelp(
+            "Upper duty clamp (0..1). Leave a small margin (≤ 0.95) so the "
+            "bus capacitor never charges through the body diode.",
+            "MOSFET datasheet (gate-drive timing) and dead-time budget.",
+        ),
+        "vac_pk_nom": ParameterHelp(
+            "Nominal Vac peak (V) used as the sine-reference scale. For "
+            "230 Vrms line: 230·√2 ≈ 325 V; for 110 Vrms low-line: 156 V.",
+            "Worst-case input line voltage at nominal.",
+        ),
+        "f_line": ParameterHelp(
+            "Mains frequency (Hz). 50 Hz (EU/SA) or 60 Hz (NA). Used by the "
+            "outer loop's low-pass to track the line cycle.",
+            "Local grid standard.",
+        ),
+        "f_sw": ParameterHelp(
+            "Inner-loop PWM carrier frequency (Hz). 65 kHz is the modern "
+            "high-power PFC default — high enough for a small inductor, "
+            "low enough to keep MOSFET losses manageable.",
+            "Inverter MOSFET / driver datasheet (max f_sw, dead-time).",
+        ),
+        "boost_mosfet_name": ParameterHelp(
+            "Optional explicit boost MOSFET name override. Leave blank to "
+            "auto-detect by topology (a MOSFET whose drain is the boost "
+            "inductor / diode anode junction).",
+            "Component name of the boost MOSFET in the schematic.",
+        ),
+        "v_bus_node_name": ParameterHelp(
+            "Optional explicit V_bus node-alias override. Leave blank to "
+            "auto-detect via the VBUS pin's wire trace.",
+            "Wire alias attached to the bus-capacitor positive terminal.",
+        ),
+        "v_ac_node_name": ParameterHelp(
+            "Optional explicit V_rect node-alias override. Leave blank to "
+            "auto-detect via the VAC pin's wire trace.",
+            "Wire alias attached to the diode-bridge DC+ rail.",
+        ),
+        "i_l_branch_name": ParameterHelp(
+            "Optional explicit i_L branch label override. Leave blank to "
+            "auto-detect via the IL pin's wire trace.",
+            "Current probe name on the boost inductor.",
+        ),
+    },
+    ComponentType.FOC_CONTROLLER: {
+        "speed_kp": ParameterHelp(
+            "Outer speed loop proportional gain (Δω → iq_ref).",
+            "Tune for the desired speed bandwidth. Start small and double until "
+            "rise time is acceptable; back off if overshoot exceeds ~10%.",
+        ),
+        "speed_ki": ParameterHelp(
+            "Outer speed loop integral gain (∫Δω → iq_ref).",
+            "Sets the steady-state speed error. Set so the integral takes "
+            "10×–20× the rise time to wind up the current reference fully.",
+        ),
+        "current_kp": ParameterHelp(
+            "Inner d/q current loops proportional gain (shared across axes).",
+            "Tune from R_s and L_s and the desired current-loop bandwidth: "
+            "Kp ≈ L_s · ω_c, where ω_c is the target loop crossover (rad/s).",
+        ),
+        "current_ki": ParameterHelp(
+            "Inner d/q current loops integral gain (shared across axes).",
+            "Sets the closed-loop pole at the motor stator pole: Ki ≈ R_s · ω_c.",
+        ),
+        "id_ref": ParameterHelp(
+            "d-axis current reference (A). Zero for non-salient PMSM (MTPA at "
+            "low speed); use a negative value for field-weakening above base speed.",
+            "Motor + drive datasheet (Ld/Lq, base speed, max DC bus).",
+        ),
+        "iq_limit": ParameterHelp(
+            "q-axis current saturation (A) — clamps torque-producing current "
+            "to a safe per-unit value of the rated stator current.",
+            "Motor datasheet (rated stator current) and inverter rating.",
+        ),
+        "v_limit_frac": ParameterHelp(
+            "Voltage clamp on the inverse-Park outputs, as a fraction of Vdc/2.",
+            "Modulation ceiling. 0.92 is a safe linear margin; 1.0 hits over-"
+            "modulation (3rd-harmonic injection); >1 enters 6-step territory.",
+        ),
+        "speed_ramp_s": ParameterHelp(
+            "Speed-reference ramp time (s) — softens step changes in SP so the "
+            "outer PI doesn't saturate or trip the q-current limit at startup.",
+            "Application requirement (e.g. compressor soft-start, traction).",
+        ),
+        "switching_frequency_hz": ParameterHelp(
+            "PWM carrier frequency for the inverse-Park modulator that drives "
+            "the VSI switches.",
+            "Inverter datasheet (max f_sw) and motor audible-noise / loss budget.",
+        ),
+        "speed_ref_rpm": ParameterHelp(
+            "Fallback speed reference (rpm) used when the SP pin is unwired.",
+            "Use as a constant baseline; for runtime control, wire a CONSTANT "
+            "(or any signal source) into the SP pin instead.",
+        ),
+        "pmsm_name": ParameterHelp(
+            "Optional explicit PMSM name override. Leave blank for auto-detect "
+            "by tracing the FB-pin wire back to the motor's SIG bus.",
+            "Component name of the PMSM in this schematic.",
+        ),
+        "vsi_name": ParameterHelp(
+            "Optional explicit VSI name override. Leave blank when there is "
+            "only one 3φ VSI in the schematic (auto-detected).",
+            "Component name of the THREE_PHASE_VSI to drive.",
+        ),
+        "v_bus": ParameterHelp(
+            "Optional explicit DC-bus magnitude (V). Leave 0 to read from the "
+            "VSI's vdc setting at simulate time. Used to normalise modulation.",
+            "Front-end nominal DC bus (e.g. 320 V doubler, 400 V PFC).",
+        ),
+    },
 }
 
 _DATASHEET_SEARCH_TERMS: dict[str, str] = {
@@ -572,18 +736,59 @@ def _help_html_styles(is_dark: bool) -> str:
     """
 
 
+def _motor_signal_bus_section(component: Component) -> str:
+    """Render the SIG signal-bus reference table for a dynamic machine.
+
+    Lists every demux output lane → backend signal key in order, so the user
+    can wire a SIGNAL_DEMUX → scope without guessing what each output carries.
+    Returns empty when the component has no signal bus.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return ""
+    motor_name = html.escape(component.name or "M1")
+    rows_html = "\n".join(
+        "<tr>"
+        f"<td><code>OUT{idx + 1}</code></td>"
+        f"<td>{html.escape(label)}</td>"
+        f"<td><code>{motor_name}.{html.escape(suffix)}</code></td>"
+        "</tr>"
+        for idx, (suffix, label) in enumerate(MOTOR_SIGNAL_BUS_CHANNELS)
+    )
+    return (
+        "<h4 style='margin:12px 0 4px 0;'>"
+        f"{html.escape(MOTOR_SIGNAL_BUS_PIN_NAME)} signal bus"
+        "</h4>"
+        "<p class='subtitle' style='margin-bottom:6px;'>"
+        f"Wire the <code>{html.escape(MOTOR_SIGNAL_BUS_PIN_NAME)}</code> pin to a "
+        "<code>SIGNAL_DEMUX</code> and tap each demux output (in order) into a "
+        "scope channel. The same backend keys are used by post-sim and probe "
+        "lookups, so dropping a curve into a math expression also works."
+        "</p>"
+        "<div class='table-wrap'>"
+        "<table><thead><tr>"
+        "<th>Demux output</th>"
+        "<th>Channel</th>"
+        "<th>Backend signal key</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+        "</div>"
+    )
+
+
 def render_component_help_html(component: Component, *, is_dark: bool = False) -> str:
     """Render parameter-help content as compact HTML."""
     rows = build_component_help_rows(component)
     component_name = component.type.name.replace("_", " ").title()
     title = html.escape(f"{component_name} Parameter Help")
     styles = _help_html_styles(is_dark)
+    bus_section = _motor_signal_bus_section(component)
 
     if not rows:
         return (
             "<html><body>"
             f"{styles}"
             f"<h3>{title}</h3>"
+            f"{bus_section}"
             "<p>No editable parameters were found for this component.</p>"
             "</body></html>"
         )
@@ -610,6 +815,7 @@ def render_component_help_html(component: Component, *, is_dark: bool = False) -
         "<html><body>"
         f"{styles}"
         f"<h3 style='margin:0 0 6px 0;'>{title}</h3>"
+        f"{bus_section}"
         "<p class='subtitle'>"
         "Use this table as a practical guide: what each parameter means, "
         "typical datasheet keys/sources, and the model default used by PulsimGui."

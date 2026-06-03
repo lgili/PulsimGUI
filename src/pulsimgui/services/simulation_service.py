@@ -320,13 +320,16 @@ class SimulationSettings:
     t_step: float = 1e-6  # 1us default
 
     # Integration settings
+    # Defaults tuned for non-expert users opening real-world switched
+    # circuits (PFC boost, FOC drive, LLC, cascaded converters). See
+    # models.project.SimulationSettings for the rationale.
     solver: str = "auto"  # auto, trapezoidal, bdf1..bdf5, gear, trbdf2, rosenbrockw, sdirk2
     step_mode: str = "fixed"  # fixed, variable
     max_step: float = 1e-6
-    rel_tol: float = 1e-4
+    rel_tol: float = 1e-3
     abs_tol: float = 1e-6
     enable_events: bool = True
-    max_step_retries: int = 8
+    max_step_retries: int = 16
 
     # ── Engine selector (pulsim >=1.6) ─────────────────────────────
     # "pwl"  → fixed-step trapezoidal + PWL cache (default, bit-exact
@@ -349,13 +352,30 @@ class SimulationSettings:
 
     # Newton solver settings (pulsim 1.5 simulate() kwargs)
     max_newton_iterations: int = 100
-    # ``tol_newton_dx`` — convergence tolerance on the Newton step
-    # magnitude; default None lets pulsim's SimulationOptions decide.
-    tol_newton_dx: float | None = None
-    # ``tol_newton_res`` — convergence tolerance on the residual norm.
-    tol_newton_res: float | None = None
+    # ``tol_newton_dx`` — Newton step convergence tolerance. Friendly
+    # default 1e-6: in practice dx falls into floating-point noise
+    # (~1e-14) well before this, so the threshold never bites; it is
+    # explicit (not None) so the kernel can't surprise us with a tighter
+    # default in a future bump.
+    tol_newton_dx: float | None = 1e-6
+    # ``tol_newton_res`` — Newton residual convergence tolerance.
+    # FRIENDLY DEFAULT: 1e-6 (was None ≡ pulsim's internal ~1e-9). The
+    # tight ~1e-9 default is the most common cause of the "failed to
+    # converge after N iterations" error on closed-loop / switched
+    # circuits (PFC, FOC, LLC). Each PWM commutation produces a residual
+    # chip ≈ 1e-9 that the solver can't drive below the floating-point
+    # noise floor — so it loops to max_iterations. 1e-6 corresponds to
+    # ~1 µA / µV equivalent precision; entirely adequate for SMPS work,
+    # tight enough for any analog circuit a non-expert opens. Experts
+    # tighten in the dialog when running a paper-grade benchmark.
+    tol_newton_res: float | None = 1e-6
     enable_newton_line_search: bool = True
-    enable_newton_lm: bool = False
+    # Levenberg-Marquardt damping ON by default — the kernel only falls
+    # back to it when plain Newton stalls (the most common cause of the
+    # "failed to converge after N iterations" error users used to hit on
+    # closed-loop PFC/FOC circuits). When Newton converges cleanly the LM
+    # step is identical to plain Newton, so accuracy is unchanged.
+    enable_newton_lm: bool = True
     enable_substep_state_correction: bool = True
     # Auto-detect nonlinear blocks in the circuit (diode, MOSFET, etc.)
     # so the kernel only runs Newton refresh when needed. None ⇒ auto.
@@ -1969,6 +1989,14 @@ class SimulationService(QObject):
                 by_name[comp_name] = comp_type
 
             if comp_type == "C_BLOCK":
+                # FOC-controller markers (``control_kind="foc"``) are
+                # descriptor-only: the cascaded-PI / inverse-Park control law
+                # is synthesised by the backend (``_build_foc_loops``), not
+                # compiled from a fast_block source. They legitimately carry
+                # no source/lib_path, so they are exempt from the C_BLOCK
+                # runtime contract — mirroring the converter's _is_foc_marker.
+                if str(params.get("control_kind", "") or "").strip().lower() == "foc":
+                    continue
                 try:
                     n_inputs = int(params.get("n_inputs", 0))
                     n_outputs = int(params.get("n_outputs", 0))

@@ -103,3 +103,103 @@ class TestCircuit:
         names = [c.name for c in circuit.iter_components()]
         assert "R1" in names
         assert "C1" in names
+
+
+class TestDoubleRotationHeal:
+    """Loading self-heals components whose 90°/270° rotation was double-applied.
+
+    Such a part has its pins stored *already rotated* AND a non-zero
+    ``rotation``; it renders with diagonal leads and its computed terminals
+    land 90° away from the wires. ``Circuit.from_dict`` repairs it using the
+    wires as ground truth — but only when un-rotating fully reconnects it.
+    """
+
+    from pulsimgui.models.component import Pin
+    from pulsimgui.models.wire import WireSegment
+
+    def _dict(self, *, rotation, pins, wire_endpoints):
+        from pulsimgui.models.component import Component, ComponentType, Pin
+        from pulsimgui.models.wire import Wire, WireSegment
+
+        r = Component(
+            type=ComponentType.RESISTOR, name="R1", x=0.0, y=0.0, rotation=rotation,
+            pins=[Pin(i, n, x, y) for i, (n, x, y) in enumerate(pins)],
+        )
+        wires = [
+            Wire(segments=[WireSegment(ex, ey, ex, ey - 60)]) for (ex, ey) in wire_endpoints
+        ]
+        return {
+            "name": "t",
+            "components": [r.to_dict()],
+            "wires": [w.to_dict() for w in wires],
+        }
+
+    def _coords(self, comp):
+        return sorted((round(p.x, 1), round(p.y, 1)) for p in comp.pins)
+
+    def _terminals(self, comp):
+        return sorted(
+            tuple(round(v, 1) for v in comp.get_pin_position(i))
+            for i in range(len(comp.pins))
+        )
+
+    def test_double_rotated_resistor_is_healed(self):
+        # Pins stored vertical (0,±25) + rotation=90 → terminals compute to
+        # (±25,0); wires are on the vertical axis at (0,±25).
+        data = self._dict(
+            rotation=90,
+            pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
+            wire_endpoints=[(0.0, -25.0), (0.0, 25.0)],
+        )
+        circuit = Circuit.from_dict(data)
+        r = next(iter(circuit.components.values()))
+        # Stored pins un-rotated to canonical horizontal.
+        assert self._coords(r) == [(-25.0, 0.0), (25.0, 0.0)]
+        # Terminals now sit on the wires.
+        assert self._terminals(r) == [(0.0, -25.0), (0.0, 25.0)]
+
+    def test_legit_rotated_component_is_untouched(self):
+        # Canonical pins (±25,0) + rotation=90 → terminals (0,±25) already on wires.
+        data = self._dict(
+            rotation=90,
+            pins=[("1", -25.0, 0.0), ("2", 25.0, 0.0)],
+            wire_endpoints=[(0.0, -25.0), (0.0, 25.0)],
+        )
+        circuit = Circuit.from_dict(data)
+        r = next(iter(circuit.components.values()))
+        assert self._coords(r) == [(-25.0, 0.0), (25.0, 0.0)]  # unchanged
+
+    def test_unwired_component_is_not_healed(self):
+        # Same suspicious geometry but no wire near either orientation.
+        data = self._dict(
+            rotation=90,
+            pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
+            wire_endpoints=[(500.0, 500.0)],
+        )
+        circuit = Circuit.from_dict(data)
+        r = next(iter(circuit.components.values()))
+        assert self._coords(r) == [(0.0, -25.0), (0.0, 25.0)]  # no evidence → unchanged
+
+    def test_heal_is_idempotent(self):
+        data = self._dict(
+            rotation=90,
+            pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
+            wire_endpoints=[(0.0, -25.0), (0.0, 25.0)],
+        )
+        once = Circuit.from_dict(data)
+        twice = Circuit.from_dict(once.to_dict())
+        c1 = next(iter(once.components.values()))
+        c2 = next(iter(twice.components.values()))
+        assert self._coords(c1) == self._coords(c2)
+
+    def test_count_returned(self):
+        from pulsimgui.models.circuit import _heal_double_rotated_components
+
+        # An already-healed circuit reports zero repairs (no-op).
+        data = self._dict(
+            rotation=90,
+            pins=[("1", 0.0, -25.0), ("2", 0.0, 25.0)],
+            wire_endpoints=[(0.0, -25.0), (0.0, 25.0)],
+        )
+        healed = Circuit.from_dict(data)
+        assert _heal_double_rotated_components(healed) == 0

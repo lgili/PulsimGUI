@@ -7,6 +7,81 @@ from uuid import UUID
 from pulsimgui.models.component import Component
 from pulsimgui.models.wire import Wire
 
+# Tolerance (px) for matching a component terminal to a wire endpoint when
+# healing double-rotated components. Sized to absorb the historical 5px
+# pin/grid offset without admitting unrelated wires.
+_HEAL_WIRE_TOL = 6.0
+
+
+def _heal_double_rotated_components(circuit: "Circuit") -> int:
+    """Repair components whose 90°/270° rotation was double-applied.
+
+    A latent authoring bug (seen in some builder-generated files) stored a
+    component's pins *already rotated* while ALSO setting ``rotation`` to the
+    same quarter-turn. The symbol body is drawn on its canonical axis and then
+    rotated by the view transform, so the leads to the pre-rotated pins come
+    out diagonal ("deformed"); worse, :meth:`Component.get_pin_position`
+    rotates the pins a *second* time, landing the computed terminals 90° away
+    from the wires (the parts only simulate because connectivity is by
+    node-map, not geometry).
+
+    The wires are the ground truth for the *intended* orientation, so a
+    component is healed only when (a) its terminals currently miss every wire
+    endpoint and (b) un-rotating its stored pins by ``rotation`` makes ALL of
+    them land on wire endpoints. That strict, evidence-based test never
+    touches a legitimately-rotated part (whose pins already meet their wires)
+    and is idempotent (a healed circuit re-loads as a no-op).
+
+    Returns the number of components repaired.
+    """
+    if not circuit.components or not circuit.wires:
+        return 0
+
+    wire_pts: list[tuple[float, float]] = []
+    for wire in circuit.wires.values():
+        for endpoint in (wire.start_point, wire.end_point):
+            if endpoint is not None:
+                wire_pts.append((float(endpoint[0]), float(endpoint[1])))
+    if not wire_pts:
+        return 0
+
+    def on_wire(point: tuple[float, float]) -> bool:
+        px, py = point
+        return any(
+            abs(px - wx) <= _HEAL_WIRE_TOL and abs(py - wy) <= _HEAL_WIRE_TOL
+            for wx, wy in wire_pts
+        )
+
+    def unrotate(x: float, y: float, steps: int) -> tuple[float, float]:
+        # Inverse of get_pin_position's per-step rotation (px, py) -> (-py, px).
+        for _ in range(steps % 4):
+            x, y = y, -x
+        return x, y
+
+    healed = 0
+    for comp in circuit.components.values():
+        steps = (int(getattr(comp, "rotation", 0) or 0) // 90) % 4
+        if steps not in (1, 3):  # only odd quarter-turns flip the pin axis
+            continue
+        pins = getattr(comp, "pins", None) or []
+        if len(pins) < 2:
+            continue
+        n = len(pins)
+        cur_match = sum(1 for i in range(n) if on_wire(comp.get_pin_position(i)))
+        if cur_match == n:
+            continue  # already connected — never touch a healthy part
+
+        original = [(p.x, p.y) for p in pins]
+        for p in pins:
+            p.x, p.y = unrotate(p.x, p.y, steps)
+        fix_match = sum(1 for i in range(n) if on_wire(comp.get_pin_position(i)))
+        if fix_match == n and fix_match > cur_match:
+            healed += 1  # un-rotation fully reconnects -> keep the repair
+        else:
+            for p, (x, y) in zip(pins, original):
+                p.x, p.y = x, y  # not a double rotation -> revert
+    return healed
+
 
 @dataclass
 class Circuit:
@@ -101,4 +176,9 @@ class Circuit:
         for wire_data in data.get("wires", []):
             wire = Wire.from_dict(wire_data)
             circuit.wires[wire.id] = wire
+        # Self-heal a latent authoring bug: components saved with their pins
+        # already rotated AND a non-zero ``rotation`` (a double rotation) render
+        # deformed and geometrically disconnected. Repair them using the wires
+        # as ground truth. No-op for well-formed circuits.
+        _heal_double_rotated_components(circuit)
         return circuit

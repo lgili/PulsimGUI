@@ -42,14 +42,14 @@ class TestUIValueChanges:
         assert dialog._gmin_final_spin.value() == 1e-12
         assert dialog._source_steps_spin.value() == 10
 
-        # Check tolerances
-        assert dialog._rel_tol_spin.value() == 1e-4
+        # Check tolerances (friendly defaults — see SimulationSettings docs)
+        assert dialog._rel_tol_spin.value() == 1e-3
         assert dialog._abs_tol_spin.value() == 1e-6
 
         # Check output
         assert dialog._output_points_spin.value() == 10000
         assert dialog._enable_events_check.isChecked()
-        assert dialog._max_step_retries_spin.value() == 8
+        assert dialog._max_step_retries_spin.value() == 16
         assert dialog._enable_losses_check.isChecked()
         assert dialog._thermal_ambient_spin.value() == 25.0
         assert dialog._thermal_network_combo.currentData() == "foster"

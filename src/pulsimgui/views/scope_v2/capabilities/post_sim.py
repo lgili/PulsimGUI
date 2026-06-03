@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
+from pulsimgui.views.scope_v2._auto_palette import next_palette_color
+
 if TYPE_CHECKING:
     from pulsimgui.views.scope_v2.shell import BaseScopeWindow
 
@@ -225,7 +227,21 @@ class PostSimCapability:
             # Some backends return per-step values; trim to ``t`` length
             # to be safe if a stray sample slipped in.
             n = min(t.size, y.size)
-            self._shell.plot_canvas.replace_signal(spec.name, t[:n], y[:n])
+            canvas = self._shell.plot_canvas
+            # Post-sim-only channels (e.g. a direct-signal motor scope:
+            # ``M1.speed_rpm`` / ``M1.i_a``) have no live spec, so no curve or
+            # sidebar row was created up front. Make them now so the trace
+            # both renders and shows in the legend.
+            if not canvas.has_signal(spec.name):
+                color = next_palette_color(matched)
+                canvas.add_signal(spec.name, color=color, panel="Main")
+                sidebar = getattr(self._shell, "sidebar", None)
+                if sidebar is not None:
+                    try:
+                        sidebar.add_signal_row(spec.name, color)
+                    except Exception:  # noqa: BLE001 — legend row is best-effort
+                        pass
+            canvas.replace_signal(spec.name, t[:n], y[:n])
             matched += 1
             if hit_key is not None and hit_key != spec.signal_key:
                 _LOG.debug(

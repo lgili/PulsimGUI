@@ -75,6 +75,30 @@ class ComponentType(Enum):
     STATE_MACHINE = auto()
     C_BLOCK = auto()
 
+    # Field-Oriented Control (FOC) drive controller for a 3-phase PMSM +
+    # native VSI. Two visible signal-domain inputs (SP = speed-setpoint
+    # reference, FB = motor feedback bus), with all the loop tuning knobs
+    # (cascaded speed / d-q current PI gains, id reference, q-axis current
+    # limit, voltage clamp, speed ramp) exposed as editable parameters.
+    # The converter auto-detects the controlled VSI + observed PMSM by
+    # tracing wires; the backend ``_build_foc_loops`` then closes the loops
+    # over the PMSM observer bundle and drives the VSI switches via inverse
+    # Park/Clarke, replacing the open-loop SPWM.
+    FOC_CONTROLLER = auto()
+
+    # Closed-loop PFC boost controller — cascaded outer voltage / inner
+    # current PI loops with sine-modulated inner setpoint (CCM operation,
+    # 240–1000 W range). Three signal-domain inputs:
+    #   VBUS  — wire to a voltage probe on the bus capacitor (V_bus)
+    #   IL    — wire to a current probe on the boost inductor (i_L)
+    #   VAC   — wire to a voltage probe on the rectified AC line (|V_rect|)
+    # Tunable parameters: voltage/current PI gains, V_bus target, V_rect
+    # peak normalization, line and switching frequencies, duty clamp. The
+    # converter auto-detects the boost MOSFET by topology, and the backend
+    # ``_build_pfc_loops`` closes the loops via pulsim's ``bind_pi_to_switch``
+    # (inner current loop) plus a step-observer (outer voltage loop).
+    PFC_BOOST_CONTROLLER = auto()
+
     # Measurement
     VOLTAGE_PROBE = auto()
     VOLTAGE_PROBE_GND = auto()
@@ -316,6 +340,33 @@ DUTY_INPUT_PARAMETER = "enable_duty_input"
 DUTY_INPUT_PIN_NAME = "DUTY_IN"
 VOLTAGE_PROBE_OUTPUT_PIN_NAME = "OUT"
 CURRENT_PROBE_OUTPUT_PIN_NAME = "MEAS"
+
+# Dynamic-machine signal bus. A single signal-domain output pin that carries
+# all of the motor's observable traces (rotor speed, per-phase + d/q currents,
+# torque). The user wires it to a SIGNAL_DEMUX to split the bus into the
+# individual channels and connect those to a scope. The CHANNEL ORDER below is
+# the demux lane order, and each suffix matches the key the backend publishes
+# in ``_merge_motor_observer_signals`` (``<motor>.speed_rpm`` etc.).
+MOTOR_SIGNAL_BUS_PIN_NAME = "SIG"
+MOTOR_SIGNAL_BUS_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("speed_rpm", "Speed (rpm)"),
+    ("i_a", "i_a"),
+    ("i_b", "i_b"),
+    ("i_c", "i_c"),
+    ("i_d", "i_d"),
+    ("i_q", "i_q"),
+    ("torque", "Torque (N·m)"),
+)
+MOTOR_SIGNAL_BUS_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.PMSM,
+}
+
+
+def supports_motor_signal_bus(component_type: ComponentType) -> bool:
+    """Return True when a component exposes a dynamic-machine signal bus pin."""
+    return component_type in MOTOR_SIGNAL_BUS_SUPPORTED_TYPES
+
+
 MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SATURABLE_INDUCTOR,
 }
@@ -499,6 +550,8 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.SAMPLE_HOLD,
     ComponentType.STATE_MACHINE,
     ComponentType.C_BLOCK,
+    ComponentType.FOC_CONTROLLER,
+    ComponentType.PFC_BOOST_CONTROLLER,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
     # Three-phase / vector control
@@ -555,6 +608,8 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.SAMPLE_HOLD,
         ComponentType.STATE_MACHINE,
         ComponentType.C_BLOCK,
+        ComponentType.FOC_CONTROLLER,
+        ComponentType.PFC_BOOST_CONTROLLER,
         # Three-phase / vector control
         ComponentType.CLARKE_TRANSFORM,
         ComponentType.INVERSE_CLARKE_TRANSFORM,
@@ -671,6 +726,18 @@ def component_connection_domain(component_type: ComponentType) -> str:
     return CONNECTION_DOMAIN_CIRCUIT
 
 
+def is_motor_signal_bus_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for a dynamic machine's signal-bus output pin (``SIG``).
+
+    The pin carries the motor's full observable bus (speed / currents /
+    torque). A SIGNAL_DEMUX wired to it splits the bus into the individual
+    channels for scoping.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return False
+    return _pin_name(component, pin_index).strip().upper() == MOTOR_SIGNAL_BUS_PIN_NAME
+
+
 def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
     """Return True when the pin can feed an electrical scope with control-domain data."""
     if pin_index < 0 or pin_index >= len(component.pins):
@@ -689,6 +756,10 @@ def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
     if component.type == ComponentType.C_BLOCK:
         # C-Block control outputs follow OUT / OUTn ABI pin naming.
         return pin_name == "OUT" or pin_name.startswith("OUT")
+
+    # Dynamic-machine signal bus (PMSM ``SIG``) feeds a demux/scope.
+    if is_motor_signal_bus_pin(component, pin_index):
+        return True
 
     if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
         return False
@@ -738,6 +809,11 @@ def pin_connection_domain(component: "Component", pin_index: int) -> str:
 
     # Gate / base / control pins of switching devices accept signal-domain drives.
     if pin_index in _CONTROL_PIN_INDICES.get(component.type, set()):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    # A dynamic machine's signal-bus output (PMSM ``SIG``) is signal-domain
+    # even though the device itself is a circuit component.
+    if is_motor_signal_bus_pin(component, pin_index):
         return CONNECTION_DOMAIN_SIGNAL
 
     return component_connection_domain(component.type)
@@ -853,6 +929,33 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "OUT", 35, 0),
     ],
     ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
+
+    # FOC controller: 2 signal-domain inputs.
+    # SP = speed-setpoint reference (rpm, signal). Typically driven by a
+    #      CONSTANT carrying the target speed.
+    # FB = motor feedback bus (signal). Wire to the PMSM's SIG pin (or to a
+    #      demux of it) so the converter can identify which PMSM to observe.
+    # The converter auto-detects the controlled VSI and drives its 6 switches
+    # via inverse Park/Clarke, so no output pin is needed.
+    ComponentType.FOC_CONTROLLER: [
+        Pin(0, "SP", -40, -15),
+        Pin(1, "FB", -40, 15),
+    ],
+
+    # PFC boost controller: 3 signal-domain inputs.
+    # VBUS = bus-voltage feedback (V). Wire to a voltage probe on the bus
+    #        capacitor.
+    # IL   = inductor-current feedback (A). Wire to a current probe on the
+    #        boost inductor.
+    # VAC  = rectified-input voltage (V). Wire to a voltage probe on the
+    #        diode-bridge DC+ rail (between bridge and L_boost).
+    # The converter auto-detects the boost MOSFET by topology (the switch
+    # whose drain is the inductor/diode junction); no output pin is needed.
+    ComponentType.PFC_BOOST_CONTROLLER: [
+        Pin(0, "VBUS", -40, -20),
+        Pin(1, "IL",   -40,   0),
+        Pin(2, "VAC",  -40,  20),
+    ],
 
     # Measurement
     ComponentType.VOLTAGE_PROBE: [
@@ -1043,14 +1146,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(3, "N", 30, 0),
     ],
 
-    # PMSM dynamic (pulsim>=0.10.0a4). 4 pins: A, B, C, Neutral. Full
-    # device-variant: rotor inertia + electromagnetic torque feedback,
+    # PMSM dynamic (pulsim>=0.10.0a4). 4 power pins (A, B, C, Neutral) +
+    # a signal-bus output (SIG) carrying the motor's observable traces
+    # (speed / currents / torque) for wiring to a SIGNAL_DEMUX → scope.
+    # Full device-variant: rotor inertia + electromagnetic torque feedback,
     # 4 internal states tracked by the runtime.
     ComponentType.PMSM: [
         Pin(0, "A", -30, -25),
         Pin(1, "B", -30, 0),
         Pin(2, "C", -30, 25),
         Pin(3, "N", 30, 0),
+        Pin(4, MOTOR_SIGNAL_BUS_PIN_NAME, 30, 25),
     ],
     # Induction motor: 3 stator phase terminals + star-point neutral,
     # same terminal layout convention as PMSM.
@@ -1369,6 +1475,95 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # properties editor seeds a PI template on first switch.
         "python_source": "",
         "n_states": 1,
+    },
+
+    # PFC boost controller — cascaded outer voltage / inner current PI
+    # loops with sine-modulated inner setpoint. Defaults target a 240–
+    # 1000 W universal-input PFC stage operating in CCM (continuous-
+    # conduction mode) — the standard choice in this power range because:
+    #   - I_peak is ~2× I_avg vs ~4× in DCM, so MOSFET / inductor stress
+    #     is much lower and a smaller EMI filter is sufficient.
+    #   - Fixed switching frequency simplifies EMI compliance.
+    #   - Loop bandwidth is higher than DCM voltage-mode, giving better
+    #     transient response on load steps.
+    # DCM may be preferable below ~150 W (single voltage loop, no inner
+    # current loop), but for this range CCM wins.
+    ComponentType.PFC_BOOST_CONTROLLER: {
+        # CCM is the default mode (recommended for 240–1000 W). Switch to
+        # "DCM" only for lighter loads where DCM's simpler single-loop
+        # control is acceptable.
+        "mode": "CCM",
+        # --- Target / safety ---
+        # Universal-input PFC standard target (400 V) — high enough to
+        # accept up to 264 Vrms input without saturating.
+        "v_bus_ref": 400.0,
+        "v_bus_min": 0.0,
+        "v_bus_max": 450.0,
+        # --- Outer voltage loop (slow, ~10 Hz BW) ---
+        # Set well below 2·f_line so the 120 Hz bus ripple is NOT
+        # amplified into the current reference (the classic PFC trap).
+        "voltage_kp": 0.30,
+        "voltage_ki": 6.0,
+        # Output of the voltage loop is the peak input-current amplitude.
+        # Clamp to a safe per-unit of the inverter rating.
+        "i_pk_limit": 20.0,
+        # --- Inner current loop (fast, ~5 kHz BW) ---
+        # Tune from L_boost / R_dcr and the target loop crossover:
+        # Kp ≈ L · ω_c ; Ki ≈ R_dcr · ω_c. The defaults below match a
+        # 1 mH boost inductor with R_dcr ≈ 0.1 Ω at ω_c ≈ 2π·5 kHz.
+        "current_kp": 31.4,
+        "current_ki": 3140.0,
+        # Duty clamp (0..duty_max). Leave a small margin so the bus
+        # capacitor never charges through the body diode.
+        "duty_max": 0.95,
+        # --- Source / line ---
+        # Vac peak normalization (used as the sine-reference scale). For
+        # 230 Vrms line: 230·√2 ≈ 325 V. For 110 Vrms low-line: 156 V.
+        "vac_pk_nom": 325.0,
+        # Mains frequency (Hz). 50 (EU/SA) or 60 (NA).
+        "f_line": 60.0,
+        # --- Switching ---
+        # Standard high-power PFC carrier (65 kHz is the modern default).
+        "f_sw": 65000.0,
+        # --- Optional explicit binding overrides — leave blank for
+        # auto-detect by topology / single-instance fallback.
+        "boost_mosfet_name": "",
+        "v_bus_node_name": "",
+        "v_ac_node_name": "",
+        "i_l_branch_name": "",
+    },
+
+    # FOC drive controller — cascaded speed → d/q current PI loops over a
+    # PMSM observer bundle, with inverse Park/Clarke driving a native 3φ
+    # VSI. The defaults below are the validated VLT403U recipe; tune them
+    # in the properties dialog if your motor has different parameters.
+    ComponentType.FOC_CONTROLLER: {
+        # Outer speed loop (rpm error → q-axis current reference).
+        "speed_kp": 0.17,
+        "speed_ki": 6.0,
+        # Inner current loops (d/q current error → d/q voltage references).
+        "current_kp": 45.0,
+        "current_ki": 24000.0,
+        # d-axis current reference (0 for non-salient PMSM; flux-weakening
+        # uses a negative value at high speed).
+        "id_ref": 0.0,
+        # q-axis current saturation — clamps torque-producing current to
+        # a safe per-unit value.
+        "iq_limit": 3.0,
+        # Voltage clamp as fraction of Vdc/2 (modulation-index ceiling).
+        "v_limit_frac": 0.92,
+        # Speed-reference ramp time (s) — softens step changes in SP so the
+        # outer PI doesn't saturate or trip the q-current limit.
+        "speed_ramp_s": 0.1,
+        # Fallback PWM carrier when no VSI is configured upstream.
+        "switching_frequency_hz": 20000.0,
+        # Fallback speed reference (rpm) when the SP pin is left unwired.
+        "speed_ref_rpm": 1800.0,
+        # Optional explicit binding overrides — leave empty for auto-detect.
+        "pmsm_name": "",
+        "vsi_name": "",
+        # Optional explicit DC-bus magnitude — read from the VSI when blank.
+        "v_bus": 0.0,
     },
 
     # Measurement
@@ -1765,7 +1960,20 @@ class Component:
     pins: list[Pin] = field(default_factory=list)
 
     def __post_init__(self):
-        """Initialize default pins and parameters if not provided."""
+        """Initialize default pins/parameters and normalize the layout.
+
+        Pins supplied explicitly — e.g. by :meth:`from_dict` when opening a
+        saved circuit — are authoritative: their exact positions are
+        preserved so saved wire endpoints stay attached and the symbol does
+        not visually stretch. Parameter normalization and structural pin
+        synchronization still run; only the grid-snap / default-respacing
+        *nudge* is reverted, and only when synchronization left the pin set
+        (names + order) unchanged. A genuine structural change (e.g. a
+        probe-schema rename, or a param-driven channel-count change) keeps
+        the freshly synchronized layout. Components created from scratch (no
+        pins provided) get the full default layout plus grid snapping.
+        """
+        pins_were_loaded = bool(self.pins)
         if not self.pins and self.type in DEFAULT_PINS:
             self.pins = [
                 Pin(p.index, p.name, p.x, p.y) for p in DEFAULT_PINS[self.type]
@@ -1773,8 +1981,25 @@ class Component:
         if not self.parameters and self.type in DEFAULT_PARAMETERS:
             self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
 
+        saved_geometry: dict[str, tuple[float, float]] | None = None
+        if pins_were_loaded:
+            saved_geometry = {pin.name: (pin.x, pin.y) for pin in self.pins}
+
         _synchronize_special_component(self)
-        _snap_component_pins_to_grid(self)
+
+        if saved_geometry is not None:
+            # Loaded from a file: restore the saved position of every pin that
+            # survives synchronization by name, so the symbol never visually
+            # shifts and saved wire endpoints stay attached. Pins that
+            # synchronization *added* (e.g. a motor ``SIG`` bus pin) or
+            # *renamed* (a schema migration) keep their freshly synchronized,
+            # on-grid layout.
+            for pin in self.pins:
+                saved = saved_geometry.get(pin.name)
+                if saved is not None:
+                    pin.x, pin.y = saved
+        else:
+            _snap_component_pins_to_grid(self)
 
     def get_pin_position(self, pin_index: int) -> tuple[float, float]:
         """Get absolute position of a pin, accounting for rotation and mirroring."""
@@ -1885,10 +2110,32 @@ def _synchronize_special_component(component: Component) -> None:
         ComponentType.CURRENT_PROBE,
     ):
         _synchronize_measurement_probe_pins(component)
+    elif supports_motor_signal_bus(component.type):
+        _synchronize_motor_signal_pin(component)
     else:
         _synchronize_thermal_port(component)
 
     _synchronize_control_sample_time(component)
+
+
+def _synchronize_motor_signal_pin(component: Component) -> None:
+    """Ensure a dynamic machine exposes its ``SIG`` signal-bus output pin.
+
+    Motors saved before this feature carry only the electrical terminals;
+    append the signal-bus pin (at its default template position) so the
+    motor's observable traces can be wired to a demux + scope. Idempotent.
+    """
+    if not supports_motor_signal_bus(component.type):
+        return
+    if any(pin.name == MOTOR_SIGNAL_BUS_PIN_NAME for pin in component.pins):
+        return
+    template = DEFAULT_PINS.get(component.type, [])
+    sig = next((p for p in template if p.name == MOTOR_SIGNAL_BUS_PIN_NAME), None)
+    if sig is None:
+        return
+    component.pins.append(
+        Pin(len(component.pins), MOTOR_SIGNAL_BUS_PIN_NAME, sig.x, sig.y)
+    )
 
 
 def _synchronize_subcircuit_port_pin(component: Component) -> None:

@@ -1,0 +1,132 @@
+"""Tests for the dedicated PFC_BOOST_CONTROLLER component.
+
+Covers the model layer (pin/domain/defaults) and the converter's
+descriptor inference (`_infer_pfc_loops`): MOSFET auto-detect, wire
+tracing for V_bus / V_rect / i_L, and the parameter recipe.
+"""
+from __future__ import annotations
+
+import pulsim as p
+import pytest
+
+from pulsimgui.models.component import (
+    CONNECTION_DOMAIN_SIGNAL,
+    DEFAULT_PARAMETERS,
+    Component,
+    ComponentType,
+    pin_connection_domain,
+)
+from pulsimgui.services.circuit_converter import CircuitConverter
+from pulsimgui.services.pulsim_v0_compat import make_compat_module
+
+
+def _converter() -> CircuitConverter:
+    return CircuitConverter(make_compat_module(p))
+
+
+def _pfc_comp(comp_id: str = "pfc", params: dict | None = None,
+              pin_nodes: list | None = None) -> dict:
+    base = dict(DEFAULT_PARAMETERS[ComponentType.PFC_BOOST_CONTROLLER])
+    if params:
+        base.update(params)
+    out: dict = {"id": comp_id, "type": "PFC_BOOST_CONTROLLER",
+                 "name": "PFC1", "parameters": base}
+    if pin_nodes is not None:
+        out["pin_nodes"] = pin_nodes
+    return out
+
+
+def test_pfc_controller_has_three_signal_input_pins() -> None:
+    pfc = Component(type=ComponentType.PFC_BOOST_CONTROLLER, name="PFC1")
+    assert [p.name for p in pfc.pins] == ["VBUS", "IL", "VAC"]
+    for i in range(3):
+        assert pin_connection_domain(pfc, i) == CONNECTION_DOMAIN_SIGNAL
+
+
+def test_pfc_controller_defaults_target_ccm_240_to_1000w() -> None:
+    defaults = DEFAULT_PARAMETERS[ComponentType.PFC_BOOST_CONTROLLER]
+    # CCM is the recommended operating mode for this power range.
+    assert defaults["mode"] == "CCM"
+    # Universal-input PFC standard target: 400 V.
+    assert defaults["v_bus_ref"] == pytest.approx(400.0)
+    # Outer loop tuned below 2·f_line so 120 Hz ripple is not amplified.
+    assert defaults["voltage_kp"] == pytest.approx(0.30)
+    assert defaults["voltage_ki"] == pytest.approx(6.0)
+    # Inner loop targets ~5 kHz BW with 1 mH inductor.
+    assert defaults["current_kp"] == pytest.approx(31.4)
+    assert defaults["current_ki"] == pytest.approx(3140.0)
+    # 65 kHz is the modern high-power PFC carrier default.
+    assert defaults["f_sw"] == pytest.approx(65_000.0)
+
+
+def test_infer_pfc_loops_emits_descriptor_with_auto_detected_mosfet() -> None:
+    conv = _converter()
+    comps = [
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+        _pfc_comp(),
+    ]
+    descs = conv._infer_pfc_loops(comps, {}, {})
+    assert len(descs) == 1
+    assert descs[0]["mosfet_name"] == "Q_boost"
+    assert descs[0]["mode"] == "CCM"
+    assert descs[0]["v_bus_ref"] == pytest.approx(400.0)
+    assert descs[0]["f_sw"] == pytest.approx(65_000.0)
+
+
+def test_infer_pfc_loops_traces_v_bus_node_via_voltage_probe() -> None:
+    """When VBUS pin is wired to a voltage probe's OUTPUT, the descriptor
+    receives the probe's INPUT node alias — that's the node the backend
+    must read for V_bus feedback."""
+    conv = _converter()
+    comps = [
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+        {"id": "vbus_probe", "type": "VOLTAGE_PROBE_GND", "name": "V_bus",
+         "pin_nodes": ["bus_net", "vbus_out_net"]},
+        _pfc_comp(pin_nodes=["vbus_out_net", "", ""]),
+    ]
+    descs = conv._infer_pfc_loops(comps, {}, {})
+    assert len(descs) == 1
+    # Should resolve to the probe's INPUT net, not the output.
+    assert "bus_net" in descs[0]["v_bus_node"].lower() or descs[0]["v_bus_node"] == "Nbus_net"
+
+
+def test_infer_pfc_loops_captures_current_probe_name() -> None:
+    """IL pin wired to a current probe's MEAS output captures the probe's
+    component name (the backend uses it via builder.branch_index_of)."""
+    conv = _converter()
+    comps = [
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+        {"id": "il_probe", "type": "CURRENT_PROBE", "name": "I_L",
+         "pin_nodes": ["a", "b", "il_meas_net"]},
+        _pfc_comp(pin_nodes=["", "il_meas_net", ""]),
+    ]
+    descs = conv._infer_pfc_loops(comps, {}, {})
+    assert len(descs) == 1
+    assert descs[0]["i_l_branch_name"] == "I_L"
+
+
+def test_no_descriptor_without_mosfet() -> None:
+    conv = _converter()
+    descs = conv._infer_pfc_loops([_pfc_comp()], {}, {})
+    assert descs == []
+
+
+def test_no_descriptor_without_pfc_controller() -> None:
+    conv = _converter()
+    descs = conv._infer_pfc_loops([
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+    ], {}, {})
+    assert descs == []
+
+
+def test_explicit_parameter_override_wins_over_auto_detect() -> None:
+    """When the user sets boost_mosfet_name explicitly, it beats the
+    auto-detect even when multiple MOSFETs are present."""
+    conv = _converter()
+    comps = [
+        {"id": "q1", "type": "MOSFET_N", "name": "Q_other"},
+        {"id": "q2", "type": "MOSFET_N", "name": "Q_chosen"},
+        _pfc_comp(params={"boost_mosfet_name": "Q_chosen"}),
+    ]
+    descs = conv._infer_pfc_loops(comps, {}, {})
+    assert descs[0]["mosfet_name"] == "Q_chosen"

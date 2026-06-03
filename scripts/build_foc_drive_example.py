@@ -121,7 +121,7 @@ components: list[dict] = []
 v_pos = comp(
     type="VOLTAGE_SOURCE", name="V_pos", x=-360, y=-80,
     parameters={"waveform": {"type": "dc", "value": VBUS / 2.0}},
-    pins=[pin(0, "+", 0, -25), pin(1, "-", 0, 25)],
+    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
     rotation=90,
 )
 components.append(v_pos)
@@ -129,7 +129,7 @@ components.append(v_pos)
 v_neg = comp(
     type="VOLTAGE_SOURCE", name="V_neg", x=-360, y=120,
     parameters={"waveform": {"type": "dc", "value": VBUS / 2.0}},
-    pins=[pin(0, "+", 0, -25), pin(1, "-", 0, 25)],
+    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
     rotation=90,
 )
 components.append(v_neg)
@@ -337,7 +337,7 @@ sim_settings = {
     "tol_newton_dx": 1.0e-6,
     "tol_newton_res": 1.0e-6,
     "enable_newton_line_search": True,
-    "enable_newton_lm": False,
+    "enable_newton_lm": True,
     "enable_substep_state_correction": True,
     "enable_nonlinear_refresh": True,
     "start_from_dc_op": False,

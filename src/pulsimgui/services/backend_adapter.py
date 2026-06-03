@@ -1055,6 +1055,73 @@ class PulsimBackend(SimulationBackend):
                     channels[str(channel_name)] = comp_type
         return channels
 
+    def _merge_motor_observer_signals(self, circuit: Any, result: BackendRunResult) -> None:
+        """Publish dynamic-machine observer traces as named result signals.
+
+        A PMSM tracked by ``circuit.nonlinear_observer_specs`` carries a live
+        observer bundle with rotor speed + d/q + per-phase current traces.
+        These are NOT in the electrical state vector, so they never reach
+        ``result.signals`` on their own. Resample each onto the output time
+        base and expose them as ``<motor>.speed_rpm`` / ``.i_a`` / ``.i_d`` /
+        ``.torque`` … so a scope channel can plot the motor's mechanical +
+        control state (speed ramp, sinusoidal phase currents, decoupled d-q)
+        directly — the FOC story the electrical node voltages can't tell.
+        """
+        if not result.time:
+            return
+        specs = getattr(circuit, "nonlinear_observer_specs", []) or []
+        if not specs:
+            return
+        try:
+            t_out = np.asarray(result.time, dtype=np.float64)
+        except (TypeError, ValueError):
+            return
+        if t_out.size == 0:
+            return
+
+        published: list[str] = []
+        for spec in specs:
+            if str(spec.get("kind") or "") != "pmsm":
+                continue
+            bundle = spec.get("bundle")
+            if bundle is None:
+                continue
+            name = (str(spec.get("name") or "").strip() or "M1")
+            try:
+                t_b = np.asarray(list(getattr(bundle, "times", []) or []), dtype=np.float64)
+            except (TypeError, ValueError):
+                continue
+            if t_b.size < 2:
+                continue
+            # bundle attr -> (signal-name suffix, scale)
+            traces = (
+                ("omega_rad_s", "speed_rpm", 60.0 / (2.0 * math.pi)),
+                ("i_a", "i_a", 1.0),
+                ("i_b", "i_b", 1.0),
+                ("i_c", "i_c", 1.0),
+                ("i_d", "i_d", 1.0),
+                ("i_q", "i_q", 1.0),
+                ("T_em", "torque", 1.0),
+            )
+            for attr, suffix, scale in traces:
+                raw = getattr(bundle, attr, None)
+                if raw is None:
+                    continue
+                try:
+                    arr = np.asarray(list(raw), dtype=np.float64)
+                except (TypeError, ValueError):
+                    continue
+                n = min(arr.size, t_b.size)
+                if n < 2:
+                    continue
+                values = np.interp(t_out, t_b[:n], arr[:n] * scale)
+                key = f"{name}.{suffix}"
+                result.signals[key] = values.tolist()
+                published.append(key)
+
+        if published:
+            result.statistics["motor_observer_signals"] = sorted(set(published))
+
     def _merge_native_virtual_probe_channels(
         self,
         circuit: Any,
@@ -2449,6 +2516,7 @@ class PulsimBackend(SimulationBackend):
         )
 
         self._merge_native_virtual_probe_channels(circuit, native_result, result)
+        self._merge_motor_observer_signals(circuit, result)
 
         if result.time:
             final_sample = {
@@ -2660,6 +2728,7 @@ class PulsimBackend(SimulationBackend):
             )
             if virtual_channels:
                 self._merge_streaming_virtual_channels(result, virtual_channels)
+            self._merge_motor_observer_signals(circuit, result)
             return result
 
         def _finalize_attempt(run_result: BackendRunResult) -> BackendRunResult:
@@ -6112,6 +6181,7 @@ class PulsimBackend(SimulationBackend):
 
         composed_loop = self._build_closed_loops(
             circuit, builder, step_observer, t_start,
+            external_switch_fn=switch_fn,
         )
         simulate_kwargs: dict[str, Any] = {"t_start": t_start}
         if composed_loop is not None:
@@ -7079,12 +7149,181 @@ class PulsimBackend(SimulationBackend):
 
         return loops
 
+    def _build_pfc_loops(
+        self,
+        descriptors: list[dict[str, Any]],
+        builder: Any,
+        t_start: float,
+    ) -> list[Any]:
+        """Build one ``ClosedLoop`` per PFC boost controller descriptor.
+
+        Each loop runs the cascaded outer-voltage / inner-current PI cascade
+        with sine-modulated inner setpoint:
+
+            outer_pi(V_bus_ref − V_bus, dt_outer) → I_pk_ref
+            i_L_ref(t) = I_pk_ref · |V_rect(t)|/Vac_pk_nom
+            duty(t)   = inner_pi(i_L_ref − i_L, dt_inner)
+            switch_state(t) = (carrier(t) < duty)
+
+        The outer PI ticks at ~1 kHz (slow enough that the 120 Hz bus ripple
+        doesn't feed back into the current reference, fast enough to track
+        load steps). The inner PI runs at the PWM rate (f_sw, default 65 kHz)
+        via ``pulsim.bind_pi_to_switch``, with a closure that updates the
+        shared ``I_pk_ref`` and reads the latest ``|V_rect|`` from the solver
+        state on every inner-loop measurement call.
+
+        Composes with the same machinery as the buck closed-loop and the
+        C_BLOCK closed loops — returns ``[]`` when the pulsim kernel is too
+        old to support ``bind_pi_to_switch`` or no descriptors are present.
+        """
+        if not descriptors:
+            return []
+        ps = self._module
+        if not hasattr(ps, "bind_pi_to_switch") or not hasattr(ps, "PIController"):
+            return []
+
+        loops: list[Any] = []
+        for desc in descriptors:
+            try:
+                v_bus_node = str(desc.get("v_bus_node") or "").strip()
+                v_ac_node = str(desc.get("v_ac_node") or "").strip()
+                mosfet_name = str(desc.get("mosfet_name") or "").strip()
+                if not v_bus_node or not v_ac_node or not mosfet_name:
+                    continue
+                v_bus_idx = int(builder.node_id_of(v_bus_node))
+                v_ac_idx = int(builder.node_id_of(v_ac_node))
+            except Exception:  # noqa: BLE001 — bad descriptor → skip
+                continue
+
+            # Tuning + targets.
+            v_bus_ref = float(desc.get("v_bus_ref", 400.0))
+            i_pk_limit = float(desc.get("i_pk_limit", 20.0))
+            duty_max = max(0.05, min(0.99, float(desc.get("duty_max", 0.95))))
+            voltage_kp = float(desc.get("voltage_kp", 0.30))
+            voltage_ki = float(desc.get("voltage_ki", 6.0))
+            current_kp = float(desc.get("current_kp", 31.4))
+            current_ki = float(desc.get("current_ki", 3140.0))
+            vac_pk_nom = max(1.0, float(desc.get("vac_pk_nom", 325.0)))
+            f_sw = max(1.0, float(desc.get("f_sw", 65_000.0)))
+
+            # Outer PI cadence: target ~1 kHz update. Coerce to a whole
+            # number of PWM ticks so the throttle math is exact.
+            T_pwm = 1.0 / f_sw
+            outer_dt = 1.0e-3  # 1 ms = 1 kHz, well below 2·f_line
+            outer_period_ticks = max(1, int(round(outer_dt / T_pwm)))
+
+            outer_pi = ps.PIController(
+                Kp=voltage_kp, Ki=voltage_ki,
+                output_min=0.0, output_max=i_pk_limit,
+            )
+            inner_pi = ps.PIController(
+                Kp=current_kp, Ki=current_ki,
+                output_min=0.0, output_max=duty_max,
+            )
+
+            # Shared state between the outer cadence and the inner loop.
+            # ``i_pk_ref``: latest output of the outer voltage PI.
+            # ``v_rect_latest``: latest |V_rect(x)| sample (read on every
+            #   inner-loop measurement call).
+            state: dict[str, Any] = {
+                "i_pk_ref": 0.0,
+                "v_rect_latest": 0.0,
+                "tick": 0,
+            }
+
+            def _measured_and_cascade(
+                x,
+                _outer_pi=outer_pi,
+                _state=state,
+                _v_bus_idx=v_bus_idx,
+                _v_ac_idx=v_ac_idx,
+                _v_bus_ref=v_bus_ref,
+                _outer_dt=outer_dt,
+                _period=outer_period_ticks,
+            ) -> float:
+                # Read the latest rectified-input voltage so the inner-loop
+                # setpoint callable can shape the current reference.
+                _state["v_rect_latest"] = abs(float(x[_v_ac_idx]))
+                # Throttle the outer PI to its 1 kHz cadence.
+                _state["tick"] += 1
+                if _state["tick"] >= _period:
+                    _state["tick"] = 0
+                    v_bus_meas = float(x[_v_bus_idx])
+                    _state["i_pk_ref"] = float(_outer_pi.update(
+                        setpoint=_v_bus_ref,
+                        measured=v_bus_meas,
+                        dt=_outer_dt,
+                    ))
+                # The inner loop measures i_L — without a tracked branch
+                # current we fall back to ZERO (so the inner PI integrates
+                # toward its limit and the outer voltage loop dominates).
+                # When the converter resolves an inductor-current branch
+                # index, this gets replaced below.
+                return 0.0
+
+            # If the converter resolved a current-probe BRANCH name, prefer
+            # it: the inner loop's measurement is the inductor current i_L.
+            il_branch_name = str(desc.get("i_l_branch_name") or "").strip()
+            if il_branch_name and hasattr(builder, "branch_index_of"):
+                try:
+                    il_idx = int(builder.branch_index_of(il_branch_name))
+                except Exception:  # noqa: BLE001
+                    il_idx = -1
+            else:
+                il_idx = -1
+
+            if il_idx >= 0:
+                def _measured_and_cascade(  # noqa: F811 — shadowed by design
+                    x,
+                    _outer_pi=outer_pi,
+                    _state=state,
+                    _v_bus_idx=v_bus_idx,
+                    _v_ac_idx=v_ac_idx,
+                    _v_bus_ref=v_bus_ref,
+                    _outer_dt=outer_dt,
+                    _period=outer_period_ticks,
+                    _il_idx=il_idx,
+                ) -> float:
+                    _state["v_rect_latest"] = abs(float(x[_v_ac_idx]))
+                    _state["tick"] += 1
+                    if _state["tick"] >= _period:
+                        _state["tick"] = 0
+                        _state["i_pk_ref"] = float(_outer_pi.update(
+                            setpoint=_v_bus_ref,
+                            measured=float(x[_v_bus_idx]),
+                            dt=_outer_dt,
+                        ))
+                    return float(x[_il_idx])
+
+            # Sine-modulated inner setpoint: i_L_ref = I_pk_ref · |V_rect|/Vac_pk
+            def _inner_setpoint(
+                _t, _state=state, _vac_pk=vac_pk_nom,
+            ) -> float:
+                return _state["i_pk_ref"] * _state["v_rect_latest"] / _vac_pk
+
+            try:
+                loop = ps.bind_pi_to_switch(
+                    builder,
+                    pi=inner_pi,
+                    measured=_measured_and_cascade,
+                    setpoint=_inner_setpoint,
+                    switch=mosfet_name,
+                    freq=f_sw,
+                    t_start=float(t_start),
+                )
+            except Exception:  # noqa: BLE001 — kernel rejected binding
+                continue
+            loops.append(loop)
+        return loops
+
     def _build_closed_loops(
         self,
         circuit: Any,
         builder: Any,
         progress_observer: Callable[[float, Any], None],
         t_start: float,
+        *,
+        external_switch_fn: Callable[..., Any] | None = None,
     ) -> Any:
         """Wire ``pulsim.bind_pi_to_switch`` for every closed-loop the
         converter detected on ``circuit``.
@@ -7106,7 +7345,10 @@ class PulsimBackend(SimulationBackend):
         cblock_descriptors = list(
             getattr(circuit, "cblock_loop_descriptors", []) or []
         )
-        if not descriptors and not cblock_descriptors:
+        pfc_descriptors = list(
+            getattr(circuit, "pfc_loop_descriptors", []) or []
+        )
+        if not descriptors and not cblock_descriptors and not pfc_descriptors:
             return None
 
         ps = self._module
@@ -7260,6 +7502,16 @@ class PulsimBackend(SimulationBackend):
         real_loops.extend(
             self._build_cblock_closed_loops(cblock_descriptors, builder, t_start)
         )
+        # Closed-loop PFC boost (cascaded outer voltage / inner current
+        # PI with sine-modulated inner setpoint). Drops in as additional
+        # ClosedLoop entries that the composition code handles the same
+        # way as the other PI loops.
+        real_loops.extend(
+            self._build_pfc_loops(
+                getattr(circuit, "pfc_loop_descriptors", []) or [],
+                builder, t_start,
+            )
+        )
 
         if not real_loops:
             return None
@@ -7271,19 +7523,28 @@ class PulsimBackend(SimulationBackend):
         except Exception:  # noqa: BLE001
             num_sw = max(getattr(circuit, "num_switches", 0), 1)
 
+        loop_switch_fns: list[Any] = [loop.switch_fn for loop in real_loops]
+        # When the host wires additional switch_fns (e.g. the FOC inverse-
+        # Park/Clarke driver + open-loop SPWM for non-FOC VSIs), include
+        # them in the OR so the PFC closed_loops path doesn't accidentally
+        # drop the inverter drive. Tested via the FOC + PFC compressor
+        # example: motor was stuck at 0 A before this composition.
+        if external_switch_fn is not None:
+            loop_switch_fns.append(external_switch_fn)
+
         if hasattr(ps, "make_combined_switch_fn"):
             combined_sw = ps.make_combined_switch_fn(
-                num_sw, [loop.switch_fn for loop in real_loops],
+                num_sw, loop_switch_fns,
             )
         else:
             # Older kernel: chain by hand using SwitchStateMask OR.
             mask_cls = ps.SwitchStateMask
 
-            def combined_sw(t: float, _loops=tuple(real_loops),
+            def combined_sw(t: float, _fns=tuple(loop_switch_fns),
                              _n=num_sw, _mask=mask_cls) -> Any:
                 out = _mask(int(_n))
-                for loop in _loops:
-                    sub = loop.switch_fn(t)
+                for fn in _fns:
+                    sub = fn(t)
                     for bit in range(int(_n)):
                         if sub.is_on(bit):
                             out.turn_on(bit)

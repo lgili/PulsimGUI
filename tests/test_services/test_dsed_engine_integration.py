@@ -167,14 +167,18 @@ def test_apply_project_settings_mirrors_enable_newton_lm(qapp) -> None:
     from pulsimgui.services.simulation_service import SimulationService
 
     svc = SimulationService()
-    assert svc.settings.enable_newton_lm is False  # default
+    # Friendly default: LM damping is ON so first-time users don't hit the
+    # Newton stall on switched / closed-loop circuits.
+    assert svc.settings.enable_newton_lm is True
 
     class _ProjectStub:
         def __init__(self):
-            self.simulation_settings = ProjectSettings(enable_newton_lm=True)
+            self.simulation_settings = ProjectSettings(enable_newton_lm=False)
 
     svc.apply_project_simulation_settings(_ProjectStub())
-    assert svc.settings.enable_newton_lm is True
+    # A project that explicitly disables LM must propagate (expert
+    # circuits where Newton dynamics is known to converge cleanly).
+    assert svc.settings.enable_newton_lm is False
 
 
 def test_apply_project_settings_normalises_aliases(qapp) -> None:

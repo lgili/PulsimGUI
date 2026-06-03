@@ -219,7 +219,7 @@ components.append(br1)
 r_esr_c1 = comp(
     type="RESISTOR", name="R_ESR_C1", x=-280, y=-40,
     parameters={"resistance": 20e-3},
-    pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)],
+    pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)],
     rotation=90,
 )
 components.append(r_esr_c1)
@@ -227,7 +227,7 @@ components.append(r_esr_c1)
 c1 = comp(
     type="CAPACITOR", name="C1", x=-280, y=80,
     parameters={"capacitance": 470e-6, "initial_voltage": 175.0},
-    pins=[pin(0, "+", 0, -25), pin(1, "-", 0, 25)],
+    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
     rotation=90,
 )
 components.append(c1)
@@ -235,7 +235,7 @@ components.append(c1)
 r_esr_c2 = comp(
     type="RESISTOR", name="R_ESR_C2", x=-280, y=200,
     parameters={"resistance": 20e-3},
-    pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)],
+    pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)],
     rotation=90,
 )
 components.append(r_esr_c2)
@@ -243,7 +243,7 @@ components.append(r_esr_c2)
 c2 = comp(
     type="CAPACITOR", name="C2", x=-280, y=320,
     parameters={"capacitance": 470e-6, "initial_voltage": 175.0},
-    pins=[pin(0, "+", 0, -25), pin(1, "-", 0, 25)],
+    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
     rotation=90,
 )
 components.append(c2)
@@ -491,7 +491,7 @@ sim_settings = {
     "tol_newton_dx": 1.0e-6,
     "tol_newton_res": 1.0e-6,
     "enable_newton_line_search": True,
-    "enable_newton_lm": False,
+    "enable_newton_lm": True,
     "enable_substep_state_correction": True,
     "enable_nonlinear_refresh": True,
     "start_from_dc_op": False,

@@ -22,13 +22,82 @@ from pulsimgui.models.component import (
     CONNECTION_DOMAIN_CIRCUIT,
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
+    MOTOR_SIGNAL_BUS_CHANNELS,
+    MOTOR_SIGNAL_BUS_PIN_NAME,
     Component,
     ComponentType,
     component_connection_domain,
     pin_connection_domain,
+    supports_motor_signal_bus,
 )
 from pulsimgui.models.component_catalog import get_descriptive_name
 from pulsimgui.views.schematic.items import symbol_style as style
+
+
+def _component_tooltip(component: Component) -> str:
+    """Return a hover tooltip describing the component.
+
+    For dynamic machines the tooltip also lists the SIG signal-bus channel
+    order — the same lane → signal mapping the user needs when wiring a
+    SIGNAL_DEMUX → scope chain. The tooltip stays one short paragraph so
+    Qt's native tooltip renderer doesn't blow up the bubble.
+    """
+    base = get_descriptive_name(component.type)
+    if supports_motor_signal_bus(component.type):
+        motor_name = component.name or "M1"
+        lanes = "\n".join(
+            f"  OUT{i + 1}  →  {label}    ({motor_name}.{suffix})"
+            for i, (suffix, label) in enumerate(MOTOR_SIGNAL_BUS_CHANNELS)
+        )
+        return (
+            f"{base}\n\n"
+            f"{MOTOR_SIGNAL_BUS_PIN_NAME} signal bus — wire to a SIGNAL_DEMUX; "
+            "each output lane (in order) carries:\n"
+            f"{lanes}"
+        )
+    if component.type == ComponentType.FOC_CONTROLLER:
+        params = component.parameters or {}
+        ref = params.get("speed_ref_rpm", 1800.0) or 1800.0
+        try:
+            ref_text = f"{float(ref):g} rpm"
+        except (TypeError, ValueError):
+            ref_text = "1800 rpm"
+        return (
+            f"{base}\n\n"
+            "Cascaded speed → d/q current PI loops with inverse Park/Clarke\n"
+            "driving a native 3φ VSI. Auto-detects the controlled VSI + the\n"
+            "PMSM observed via the FB wire.\n\n"
+            "Pins:\n"
+            f"  SP  ←  speed-setpoint reference (rpm). Wire a CONSTANT to override\n"
+            f"          the parameter default ({ref_text}).\n"
+            "  FB  ←  motor feedback bus. Wire the PMSM's SIG pin so the\n"
+            "          converter knows which motor to observe.\n\n"
+            "Tune the loop gains in the properties dialog (Help)."
+        )
+    if component.type == ComponentType.PFC_BOOST_CONTROLLER:
+        params = component.parameters or {}
+        mode = str(params.get("mode", "CCM") or "CCM").upper()
+        v_ref = params.get("v_bus_ref", 400.0) or 400.0
+        try:
+            v_text = f"{float(v_ref):g} V"
+        except (TypeError, ValueError):
+            v_text = "400 V"
+        return (
+            f"{base}\n\n"
+            f"Cascaded outer voltage / inner current PI loops ({mode} mode).\n"
+            "Outer loop regulates V_bus to its target; inner loop shapes i_L\n"
+            "to a sine reference (i_L_ref = I_pk_ref · |V_rect|/Vac_pk) so the\n"
+            "input current tracks the line voltage. The converter auto-detects\n"
+            "the boost MOSFET by topology (L/D junction) and drives its gate\n"
+            "at f_sw (default 65 kHz).\n\n"
+            "Pins (all signal-domain, wire to voltage/current probes):\n"
+            f"  VBUS ←  bus-voltage feedback (target: {v_text}).\n"
+            "  IL   ←  boost-inductor current feedback (i_L).\n"
+            "  VAC  ←  rectified-input voltage (|V_rect|) for shape ref.\n\n"
+            "CCM is the recommended mode for 240–1000 W (lower I_peak / EMI\n"
+            "vs. DCM). Tune loop gains in the properties dialog (Help)."
+        )
+    return base
 
 
 class LabelWithBackground(QGraphicsItem):
@@ -182,8 +251,10 @@ class ComponentItem(QGraphicsItem):
 
         # Schematic-canvas hover tooltip surfaces the long-form type
         # name (e.g. ``PMSM (dynamic)``) since the palette card only
-        # has room for a short label.
-        self.setToolTip(get_descriptive_name(component.type))
+        # has room for a short label. For dynamic machines we also list
+        # the SIG signal-bus channel order so the user knows what each
+        # demux output lane carries before even opening the help dialog.
+        self.setToolTip(_component_tooltip(component))
 
         self._update_labels()
 
@@ -1014,10 +1085,31 @@ class BlockComponentItem(ComponentItem):
     """Base class for rectangular control blocks with modern CAD styling."""
 
     ACCENT_COLOR = QColor(60, 132, 225)
+    # Visible pin-name labels — small text drawn just inside the block body
+    # next to each pin. Helps the user identify e.g. PFC.VBUS vs PFC.IL vs
+    # PFC.VAC, or FOC.SP vs FOC.FB, without opening the Help dialog. Each
+    # subclass can disable via ``show_pin_labels()`` if its symbol already
+    # makes the pin role obvious (e.g. a single-input GAIN).
+    PIN_LABEL_FONT_PT = 7.5
+    PIN_LABEL_PAD = 2.0   # px from the block edge to the label
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-28, -24, 56, 48))
+
+    def show_pin_labels(self) -> bool:
+        """Return True to render pin-name labels inside the block body.
+
+        Default: True for any block with ≥ 3 pins OR with a non-trivial pin
+        name (anything other than the bare ``"IN"``/``"OUT"`` pair). A plain
+        IN→OUT block (GAIN, INTEGRATOR, etc.) skips the labels — the symbol
+        already says "signal in left, signal out right".
+        """
+        pins = self._component.pins
+        if len(pins) >= 3:
+            return True
+        names = {p.name.strip().upper() for p in pins}
+        return not names.issubset({"IN", "OUT", ""})
 
     def _draw_block_pin_leads(self, painter: QPainter, rect: QRectF) -> None:
         """Draw short leads from every pin to the nearest block edge."""
@@ -1032,6 +1124,78 @@ class BlockComponentItem(ComponentItem):
                 painter.drawLine(QPointF(px, py), QPointF(px, rect.top()))
             elif py >= rect.bottom():
                 painter.drawLine(QPointF(px, rect.bottom()), QPointF(px, py))
+
+    def _body_rect(self) -> QRectF:
+        """Return the rounded-rectangle BODY of the block (without the pin
+        extension that ``boundingRect`` adds for hit-testing). Pin-name
+        labels anchor to the body so they sit *inside* the visible card
+        rather than overlapping the pin bubbles which extend further out.
+        """
+        return QRectF(-28, -24, 56, 48)
+
+    def _draw_pin_name_labels(self, painter: QPainter, rect: QRectF) -> None:
+        """Draw small pin-name labels just inside the block body, aligned to
+        each pin.
+
+        Left-side pins → label sits inside the body, right of the accent
+        stripe (which occupies the leftmost band). Right-side pins → mirror.
+        Top/bottom pins anchor against the matching edge. Skips empty /
+        single-char generic names so the decoration is informative rather
+        than noisy. Pin names are bold + accent-coloured so they stand out
+        from the centred block glyph without competing visually.
+
+        Anchored to ``_body_rect`` (NOT the passed-in ``rect``, which is the
+        extended ``boundingRect``) so labels sit *inside* the rounded body
+        and don't paint over the pin bubbles outside it.
+        """
+        if not self.show_pin_labels():
+            return
+        body = self._body_rect()
+        font = QFont()
+        font.setPointSizeF(self.PIN_LABEL_FONT_PT)
+        font.setBold(True)
+        painter.setFont(font)
+        # Use the block's accent so labels read as "part of the block"
+        # rather than as floating text — and ensure they pop on top of
+        # the surface tint underneath them.
+        accent = QColor(self.ACCENT_COLOR)
+        if self._dark_mode:
+            accent = accent.lighter(135)
+        painter.setPen(QPen(accent))
+        metrics = QFontMetricsF(font)
+        # Left-edge offset = stripe inset + stripe width + small gap so the
+        # text starts after (not under) the coloured accent stripe.
+        left_text_x = (
+            body.left() + style.BLOCK_STRIPE_INSET
+            + style.BLOCK_STRIPE_WIDTH + self.PIN_LABEL_PAD
+        )
+        right_text_pad = self.PIN_LABEL_PAD
+        for pin in self._component.pins:
+            name = (pin.name or "").strip()
+            if not name or len(name) <= 1:
+                continue
+            px, py = float(pin.x), float(pin.y)
+            text_w = metrics.horizontalAdvance(name)
+            text_h = metrics.height()
+            if px <= body.left():
+                # Left-side input — label inside, right of the accent stripe.
+                y = py + text_h * 0.32
+                painter.drawText(QPointF(left_text_x, y), name)
+            elif px >= body.right():
+                # Right-side output — label inside, left of the body edge.
+                x = body.right() - right_text_pad - text_w
+                y = py + text_h * 0.32
+                painter.drawText(QPointF(x, y), name)
+            elif py <= body.top():
+                # Top — label inside body, below the edge, centred on pin x.
+                x = px - text_w * 0.5
+                y = body.top() + self.PIN_LABEL_PAD + text_h * 0.8
+                painter.drawText(QPointF(x, y), name)
+            elif py >= body.bottom():
+                # Bottom — label inside body, above the edge, centred on pin x.
+                x = px - text_w * 0.5
+                y = body.bottom() - self.PIN_LABEL_PAD
+                painter.drawText(QPointF(x, y), name)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         rect = self.boundingRect()
@@ -1056,15 +1220,41 @@ class BlockComponentItem(ComponentItem):
         )
         painter.drawRoundedRect(stripe_rect, style.BLOCK_STRIPE_RADIUS, style.BLOCK_STRIPE_RADIUS)
 
-        # Centred glyph (uses the bold block-label font from tokens).
+        # Centred glyph (bold block-label font). Omitted when pin labels
+        # are shown AND the block has a pin sitting on the centred-glyph
+        # row (y ≈ 0) — otherwise the type label collides with the pin
+        # name (e.g. PFC.IL or MATH.OUT at y=0). The component's name
+        # tag rendered above the block ("PFC1") already conveys the type,
+        # so removing the inner glyph in those cases keeps the body clean.
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setFont(style.block_label_font(painter.font()))
-        label_rect = rect.adjusted(
-            style.BLOCK_STRIPE_INSET + style.BLOCK_STRIPE_WIDTH + 2, 0, -2, 0,
-        )
-        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, self.block_label())
+        if self._should_draw_centred_glyph():
+            label_rect = rect.adjusted(
+                style.BLOCK_STRIPE_INSET + style.BLOCK_STRIPE_WIDTH + 2, 0, -2, 0,
+            )
+            painter.drawText(
+                label_rect, Qt.AlignmentFlag.AlignCenter, self.block_label(),
+            )
 
         self._draw_block_pin_leads(painter, rect)
+        self._draw_pin_name_labels(painter, rect)
+
+    def _should_draw_centred_glyph(self) -> bool:
+        """True when the bold centred type glyph (``PFC`` / ``FOC`` / …) can
+        be drawn without colliding with a pin-name label on the middle row.
+
+        Skips the glyph when:
+          - Pin labels are shown (``show_pin_labels()`` True) AND
+          - At least one pin sits on the centred glyph's row (|y| ≤ 6 px).
+        That row hosts the centred type text, so a label there (e.g.
+        ``IL`` on PFC, ``OUT`` on a 3-pin MATH block) would overlap.
+        """
+        if not self.show_pin_labels():
+            return True
+        for pin in self._component.pins:
+            if abs(float(pin.y)) <= 6.0:
+                return False
+        return True
 
     def block_label(self) -> str:
         """Return the short label shown in the block body."""
@@ -1169,6 +1359,55 @@ class CBlockItem(BlockComponentItem):
         except (TypeError, ValueError):
             n_outputs = 1
         return f"{n_inputs}->{n_outputs}"
+
+
+class FOCControllerItem(BlockComponentItem):
+    """Item for the Field-Oriented Control drive controller block.
+
+    Two visible inputs (SP = speed-setpoint reference, FB = motor feedback
+    bus), with all loop gains exposed as editable parameters. The converter
+    auto-detects the controlled VSI + observed PMSM by tracing the FB wire
+    and the single VSI in the circuit.
+    """
+
+    ACCENT_COLOR = QColor(210, 86, 168)  # Magenta — distinct from PI/PID/C
+
+    def block_label(self) -> str:
+        """Return the short label shown in the block body."""
+        return "FOC"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        ref = params.get("speed_ref_rpm", 0.0) or 0.0
+        ramp = params.get("speed_ramp_s", 0.0) or 0.0
+        try:
+            return f"{float(ref):g} rpm · ramp {float(ramp):g}s"
+        except (TypeError, ValueError):
+            return "FOC"
+
+
+class PFCBoostControllerItem(BlockComponentItem):
+    """Item for the closed-loop PFC boost controller block.
+
+    Three visible inputs (VBUS, IL, VAC), with cascaded voltage/current PI
+    gains exposed as editable parameters. The converter auto-detects the
+    boost MOSFET by topology (single MOSFET whose drain is the L/D junction).
+    """
+
+    ACCENT_COLOR = QColor(220, 130, 50)  # Orange — distinct from FOC magenta
+
+    def block_label(self) -> str:
+        """Return the short label shown in the block body."""
+        return "PFC"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        mode = str(params.get("mode", "CCM") or "CCM").upper()
+        v_ref = params.get("v_bus_ref", 400.0) or 400.0
+        try:
+            return f"{mode} · Vbus {float(v_ref):g}V"
+        except (TypeError, ValueError):
+            return f"{mode} · PFC"
 
 
 class SumBaseItem(BlockComponentItem):
@@ -1386,6 +1625,7 @@ class SignalDemuxItem(ComponentItem):
     """Item for signal demux blocks - Simulink/PLECS style (vertical bar with outputs)."""
 
     PIN_SPACING = 20.0
+    LANE_LABEL_OFFSET = 6.0  # px right of each output pin
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
@@ -1394,7 +1634,8 @@ class SignalDemuxItem(ComponentItem):
             return self._with_pin_bounds(QRectF(-24, -25, 48, 50))
         top = min(y_values) - 12
         bottom = max(y_values) + 12
-        return self._with_pin_bounds(QRectF(-24, top, 48, bottom - top))
+        # Lane labels (e.g. ``i_a``) extend ~60px to the right of the OUT pin.
+        return self._with_pin_bounds(QRectF(-24, top, 48 + 60, bottom - top))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         output_pins = [pin for pin in self._component.pins if pin.name.startswith("OUT")]
@@ -1413,6 +1654,83 @@ class SignalDemuxItem(ComponentItem):
         painter.drawLine(QPointF(input_pin.x, input_pin.y), QPointF(-4, input_pin.y))
         for pin in output_pins:
             painter.drawLine(QPointF(4, pin.y), QPointF(pin.x, pin.y))
+
+        # Per-lane channel labels when the demux is wired to a motor's SIG bus.
+        # Draws the bus channel name (e.g. ``i_a``) right of each OUT pin, so the
+        # user can read what each output carries without opening any dialog.
+        # The label sits just *above* the wire (offset −9 on Y), out of the wire
+        # line, with a small opaque background so it stays readable even when
+        # something draws underneath.
+        lane_labels = self._motor_bus_lane_labels(output_pins)
+        if not lane_labels:
+            return
+        font = QFont()
+        font.setPointSizeF(7.5)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetricsF(font)
+        bg = self._surface_color()
+        bg.setAlpha(220)
+        for pin, label in lane_labels:
+            text_rect = metrics.boundingRect(label)
+            x = pin.x + self.LANE_LABEL_OFFSET
+            y = pin.y - 4  # baseline above the wire so glyphs aren't crossed
+            pad = 2.0
+            bg_rect = QRectF(
+                x - pad, y - text_rect.height() + 2,
+                text_rect.width() + 2 * pad, text_rect.height(),
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(bg_rect, 2.0, 2.0)
+            painter.setPen(QPen(self._line_color()))
+            painter.drawText(QPointF(x, y), label)
+
+    def _motor_bus_lane_labels(self, output_pins: list) -> list[tuple[object, str]]:
+        """Return ``(pin, channel_label)`` for each output when the demux's IN
+        is wired to a dynamic machine's SIG bus pin. Empty otherwise."""
+        scene = self.scene()
+        # Need scene access to walk the wire graph; degrade gracefully outside.
+        if scene is None or not hasattr(scene, "circuit"):
+            return []
+        circuit = scene.circuit  # type: ignore[attr-defined]
+        if circuit is None:
+            return []
+        # Find a wire connecting this demux's IN pin to a motor's SIG pin.
+        from pulsimgui.models.component import (
+            MOTOR_SIGNAL_BUS_CHANNELS,
+            MOTOR_SIGNAL_BUS_PIN_NAME,
+            supports_motor_signal_bus,
+        )
+        demux_id = self._component.id
+        in_pin_idx = next(
+            (i for i, p in enumerate(self._component.pins) if p.name == "IN"), None
+        )
+        if in_pin_idx is None:
+            return []
+        for wire in circuit.wires.values():
+            ends = (wire.start_connection, wire.end_connection)
+            for end_a, end_b in (ends, ends[::-1]):
+                if end_a is None or end_b is None:
+                    continue
+                if end_a.component_id != demux_id or end_a.pin_index != in_pin_idx:
+                    continue
+                other = circuit.components.get(end_b.component_id)
+                if other is None or not supports_motor_signal_bus(other.type):
+                    continue
+                if end_b.pin_index >= len(other.pins):
+                    continue
+                if other.pins[end_b.pin_index].name != MOTOR_SIGNAL_BUS_PIN_NAME:
+                    continue
+                # Found a motor.SIG → demux.IN wire. Label each OUT lane.
+                pairs: list[tuple[object, str]] = []
+                for lane, pin in enumerate(output_pins):
+                    if lane >= len(MOTOR_SIGNAL_BUS_CHANNELS):
+                        break
+                    _suffix, label = MOTOR_SIGNAL_BUS_CHANNELS[lane]
+                    pairs.append((pin, label))
+                return pairs
+        return []
 
     def _get_value_text(self) -> str:
         count = self._component.parameters.get("output_count", 3)
@@ -3750,6 +4068,8 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.MATH_BLOCK: MathBlockItem,
         ComponentType.PWM_GENERATOR: PWMGeneratorItem,
         ComponentType.C_BLOCK: CBlockItem,
+        ComponentType.FOC_CONTROLLER: FOCControllerItem,
+        ComponentType.PFC_BOOST_CONTROLLER: PFCBoostControllerItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

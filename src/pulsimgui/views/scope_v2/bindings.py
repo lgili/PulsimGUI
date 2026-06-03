@@ -10,10 +10,12 @@ from pulsimgui.models.component import (
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
     CURRENT_PROBE_OUTPUT_PIN_NAME,
+    MOTOR_SIGNAL_BUS_CHANNELS,
     THERMAL_PORT_PIN_NAME,
     VOLTAGE_PROBE_OUTPUT_PIN_NAME,
     Component,
     ComponentType,
+    is_motor_signal_bus_pin,
     pin_connection_domain,
 )
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
@@ -256,6 +258,23 @@ def _resolve_node_signals(
                     node_label=probe_name,
                 )
             )
+        elif is_motor_signal_bus_pin(component, pin_index):
+            # Dynamic-machine signal bus (PMSM ``SIG``): expand to the ordered
+            # list of observable channels. Wired straight to a scope channel
+            # the first lane (speed) shows; via a SIGNAL_DEMUX each output
+            # lane k selects channel k (i_a, i_b, …). Keys match the backend's
+            # ``<motor>.<suffix>`` signals.
+            expanded = True
+            motor_name = component.name or "M1"
+            for suffix, channel_label in MOTOR_SIGNAL_BUS_CHANNELS:
+                signals.append(
+                    ScopeSignal(
+                        label=f"{motor_name} {channel_label}",
+                        signal_key=f"{motor_name}.{suffix}",
+                        node_id=node_id,
+                        node_label=motor_name,
+                    )
+                )
         else:
             control_signal = _resolve_control_signal(component, pin_index, node_id)
             if control_signal is not None:

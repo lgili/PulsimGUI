@@ -73,6 +73,36 @@ class Wire:
         """Add a segment to the wire."""
         self.segments.append(WireSegment(x1, y1, x2, y2))
 
+    def normalize_orthogonal(self, tol: float = 0.5) -> bool:
+        """Rewrite the wire so every segment is strictly horizontal or
+        vertical, **preserving the polyline endpoints** (and thus the pin
+        connections at each end).
+
+        A wire saved — or drawn in an older build — as a single diagonal
+        segment ``(x1,y1)->(x2,y2)`` is split into an L:
+        ``(x1,y1)->(x2,y1)->(x2,y2)``. This is the load-time fix for
+        wires that render as slanted lines; unlike a flatten-to-axis
+        snap, the L-split keeps both endpoints where the kernel/schematic
+        expect them, so connectivity is never broken.
+
+        Returns ``True`` if any segment was diagonal and got rewritten.
+        """
+        if not self.segments:
+            return False
+        out: list[WireSegment] = []
+        changed = False
+        for seg in self.segments:
+            if abs(seg.x2 - seg.x1) > tol and abs(seg.y2 - seg.y1) > tol:
+                # Diagonal → horizontal-then-vertical L, endpoints intact.
+                out.append(WireSegment(seg.x1, seg.y1, seg.x2, seg.y1))
+                out.append(WireSegment(seg.x2, seg.y1, seg.x2, seg.y2))
+                changed = True
+            else:
+                out.append(seg)
+        if changed:
+            self.segments = out
+        return changed
+
     def get_all_points(self) -> list[tuple[float, float]]:
         """Get all unique points in the wire path."""
         points = []

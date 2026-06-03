@@ -83,6 +83,12 @@ class WireItem(QGraphicsPathItem):
         # Set default pen for proper bounding rect calculation
         self.setPen(QPen(self.DOMAIN_LINE_COLORS[CONNECTION_DOMAIN_CIRCUIT], self.LINE_WIDTH))
 
+        # Repair any diagonal segments (from disk or older builds) into
+        # strict H/V L-routes BEFORE first paint, so opening a saved
+        # circuit never shows slanted wires. Endpoint-preserving, so pin
+        # connectivity is untouched.
+        self._wire.normalize_orthogonal()
+
         # Build path from wire segments
         self._rebuild_path()
 
@@ -346,7 +352,15 @@ class WireItem(QGraphicsPathItem):
         self.update()
 
     def mousePressEvent(self, event) -> None:
-        """Start dragging a wire segment."""
+        """Start dragging a wire segment.
+
+        When the clicked segment is *pin-locked* (first or last segment of a
+        wire whose endpoint is anchored to a component pin), auto-insert a
+        Z-jog at the click point so the wire becomes draggable while keeping
+        both endpoints anchored. This makes the typical "1 segment between two
+        pins" wire and the "2-segment L between two pins" wire draggable —
+        the user just clicks and pulls; the wire reshapes into a Z.
+        """
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.pos()
             # Find which segment was clicked
@@ -361,9 +375,17 @@ class WireItem(QGraphicsPathItem):
                     seg_idx == last_idx and self._wire.end_connection is not None
                 )
                 if is_first_locked or is_last_locked:
-                    # Let Qt handle selection but do not start a drag
-                    super().mousePressEvent(event)
-                    return
+                    # Try to insert a Z-jog at the click point. If successful,
+                    # the wire now has 4 extra segments; the new middle
+                    # (at seg_idx + 2) is unanchored and drags freely.
+                    if self._insert_drag_jog(seg_idx, pos):
+                        seg_idx += 2  # middle of the Z is the draggable one
+                        self._rebuild_path()
+                    else:
+                        # Couldn't fit the jog (segment too short or non-
+                        # orthogonal). Let Qt handle selection only.
+                        super().mousePressEvent(event)
+                        return
 
                 self._drag_snapshot = [
                     (seg.x1, seg.y1, seg.x2, seg.y2)
@@ -380,6 +402,80 @@ class WireItem(QGraphicsPathItem):
                     self._drag_orientation = 'vertical'
                     self.setCursor(Qt.CursorShape.SizeHorCursor)
         super().mousePressEvent(event)
+
+    def _insert_drag_jog(self, seg_idx: int, click_pos: QPointF) -> bool:
+        """Insert a Z-shaped jog at ``click_pos`` so a pin-locked segment
+        becomes draggable while keeping both endpoints anchored.
+
+        For a horizontal segment ``[(x1, y) → (x2, y)]`` the jog replaces it
+        with 5 segments:
+            H stub  (x1, y) → (cx-w, y)
+            V stub  (cx-w, y) → (cx-w, y)       (zero-length, will stretch)
+            H mid   (cx-w, y) → (cx+w, y)       (DRAGGABLE — user pulls it)
+            V stub  (cx+w, y) → (cx+w, y)       (zero-length, will stretch)
+            H stub  (cx+w, y) → (x2, y)
+        Vertical segments are handled symmetrically. The middle horizontal
+        (or vertical) segment is the only one not anchored to a pin, so the
+        existing ``_move_segment_fluid`` logic drags it freely and the
+        zero-length V stubs grow with the displacement. When the user
+        releases without dragging, ``_cleanup_segments`` collapses the
+        zero-length stubs and merges the collinear H pieces back into one —
+        no permanent change from an accidental click.
+
+        Returns True on success. Refuses (returns False) when the segment is
+        too short to fit the jog or is non-orthogonal (legacy diagonal).
+        """
+        seg = self._wire.segments[seg_idx]
+        x1, y1, x2, y2 = seg.x1, seg.y1, seg.x2, seg.y2
+        cx, cy = click_pos.x(), click_pos.y()
+        jog_half = 20.0    # half-width of the jog in scene units
+        margin = 4.0       # minimum distance from segment endpoints
+
+        is_horizontal = abs(x2 - x1) > abs(y2 - y1)
+        # Orthogonal-only: bail out on legacy diagonals.
+        if is_horizontal and abs(y2 - y1) > 1.0:
+            return False
+        if (not is_horizontal) and abs(x2 - x1) > 1.0:
+            return False
+
+        if is_horizontal:
+            lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
+            min_x = lo + jog_half + margin
+            max_x = hi - jog_half - margin
+            if min_x >= max_x:
+                return False
+            cx_clamped = max(min_x, min(max_x, cx))
+            y = y1
+            new_segs = [
+                WireSegment(x1, y, cx_clamped - jog_half, y),
+                WireSegment(cx_clamped - jog_half, y, cx_clamped - jog_half, y),
+                WireSegment(cx_clamped - jog_half, y, cx_clamped + jog_half, y),
+                WireSegment(cx_clamped + jog_half, y, cx_clamped + jog_half, y),
+                WireSegment(cx_clamped + jog_half, y, x2, y),
+            ]
+        else:
+            lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
+            min_y = lo + jog_half + margin
+            max_y = hi - jog_half - margin
+            if min_y >= max_y:
+                return False
+            cy_clamped = max(min_y, min(max_y, cy))
+            x = x1
+            new_segs = [
+                WireSegment(x, y1, x, cy_clamped - jog_half),
+                WireSegment(x, cy_clamped - jog_half, x, cy_clamped - jog_half),
+                WireSegment(x, cy_clamped - jog_half, x, cy_clamped + jog_half),
+                WireSegment(x, cy_clamped + jog_half, x, cy_clamped + jog_half),
+                WireSegment(x, cy_clamped + jog_half, x, y2),
+            ]
+
+        # Replace the original segment with the 5-segment Z.
+        self._wire.segments = (
+            self._wire.segments[:seg_idx]
+            + new_segs
+            + self._wire.segments[seg_idx + 1:]
+        )
+        return True
 
     def mouseMoveEvent(self, event) -> None:
         """Drag the wire segment - fluid movement without grid snapping."""
@@ -430,8 +526,13 @@ class WireItem(QGraphicsPathItem):
         ]
 
     def _find_segment_at(self, pos: QPointF) -> int | None:
-        """Find which segment index is at the given position."""
-        tolerance = 8.0
+        """Find which segment index is at the given position.
+
+        Tolerance bumped from 8 → 12 px so wires are easier to grab — the
+        old 8 px window meant the user had to click almost on the centre
+        line, which was particularly painful at low zoom levels.
+        """
+        tolerance = 12.0
         for i, seg in enumerate(self._wire.segments):
             if self._point_near_segment(pos, seg, tolerance):
                 return i
@@ -462,23 +563,17 @@ class WireItem(QGraphicsPathItem):
         return dist <= tolerance
 
     def hoverMoveEvent(self, event) -> None:
-        """Update cursor shape based on which segment is hovered."""
+        """Update cursor shape based on which segment is hovered.
+
+        Every orthogonal segment is now draggable — pin-locked first / last
+        segments use the auto-jog (Z insertion at click point) so the user
+        still gets a drag cursor signalling "you can pull this".
+        """
         seg_idx = self._find_segment_at(event.pos())
         if seg_idx is not None:
             seg = self._wire.segments[seg_idx]
             is_h = abs(seg.x2 - seg.x1) >= abs(seg.y2 - seg.y1)
-
-            # Pin-locked segments cannot be dragged – show plain arrow
-            is_first_locked = (
-                seg_idx == 0 and self._wire.start_connection is not None
-            )
-            is_last_locked = (
-                seg_idx == len(self._wire.segments) - 1
-                and self._wire.end_connection is not None
-            )
-            if is_first_locked or is_last_locked:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            elif is_h:
+            if is_h:
                 # Horizontal segment → user slides it up/down
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             else:
