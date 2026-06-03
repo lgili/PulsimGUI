@@ -1456,6 +1456,34 @@ class PFCBoostControllerItem(BlockComponentItem):
             return f"{mode} · PFC"
 
 
+class HeatsinkItem(BlockComponentItem):
+    """Block item for the SharedHeatsink component (pulsim 1.7).
+
+    Pin set is dynamic: ``AMB`` on the left plus N ``DEV_i`` pins on
+    the right (1 ≤ N ≤ 8 via the ``n_devices`` parameter). The block
+    label hints at the sink-to-ambient resistance so the schematic
+    surfaces the sizing-critical number without needing the
+    properties panel.
+    """
+
+    ACCENT_COLOR = QColor(255, 99, 71)  # Tomato — readable thermal cue
+
+    def block_label(self) -> str:
+        return "HEATSINK"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        try:
+            r_sa = float(params.get("R_th_sink_to_amb_K_per_W", 5.0) or 5.0)
+        except (TypeError, ValueError):
+            r_sa = 5.0
+        try:
+            n = int(params.get("n_devices", 4) or 4)
+        except (TypeError, ValueError):
+            n = 4
+        return f"{n} dev · {r_sa:g} K/W"
+
+
 class SumBaseItem(BlockComponentItem):
     """Base item for SUM/SUBTRACTOR blocks with per-input signs."""
 
@@ -4251,6 +4279,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.FOC_CONTROLLER: FOCControllerItem,
         ComponentType.PFC_BOOST_CONTROLLER: PFCBoostControllerItem,
         ComponentType.SIXSTEP_CONTROLLER: SixStepControllerItem,
+        ComponentType.HEATSINK: HeatsinkItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

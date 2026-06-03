@@ -80,6 +80,12 @@ COMPONENT_LIBRARY = {
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
+        # Shared heatsink (pulsim 1.7). Wire each device's TH pin to
+        # one of the DEV_i pins to enrol it in the coupled steady
+        # state — independent per-device thermal models miss the
+        # ``Σ Pᵢ · R_th_sa`` cross-coupling term and systematically
+        # under-predict T_j for crowded assemblies.
+        {"type": ComponentType.HEATSINK, "name": "Heatsink", "shortcut": ""},
     ],
     "Hierarchy": [
         # Port marker for subcircuit editing. Only meaningful when
@@ -174,6 +180,12 @@ QUICK_ADD_COMPONENTS = [
          "bldc", "trap drive", "block commutation", "comutacao",
          "comutação", "production drive", "compressor drive",
          "fridge drive", "low cost drive", "controle 6 passos"]),
+    (ComponentType.HEATSINK, "Shared Heatsink",
+        ["heatsink", "heat sink", "dissipador", "dissipador de calor",
+         "shared sink", "sink", "thermal coupling", "junction temperature",
+         "tj", "rth", "rthsa", "rth_sa", "termico", "térmico",
+         "casa do calor", "natural convection", "forced convection",
+         "compartilhado", "coupled", "coupling"]),
 ]
 
 

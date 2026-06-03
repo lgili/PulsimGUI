@@ -116,6 +116,18 @@ class ComponentType(Enum):
     # BEMF-zero-crossing ZCD with a Kalman observer is a follow-up).
     SIXSTEP_CONTROLLER = auto()
 
+    # Coupled-thermal model (pulsim 1.7): a single heatsink shared by N
+    # devices. Each device's TH (thermal port) pin wires to one of this
+    # component's device slots; the converter emits a descriptor that
+    # the backend hands to ``pulsim.thermal.add_shared_heatsink`` +
+    # ``make_heatsink_observer``. Per-device junction temperature
+    # ``T_j(t)`` then reflects the COUPLED steady state — adding a
+    # hotter device next to a cooler one raises both, exactly as in a
+    # real assembly. Without this, each device's thermal port goes to
+    # its own isolated ambient and the steady state under-predicts by
+    # the missing ``Σ Pᵢ · R_th_sa`` term.
+    HEATSINK = auto()
+
     # Measurement
     VOLTAGE_PROBE = auto()
     VOLTAGE_PROBE_GND = auto()
@@ -616,6 +628,10 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
 
 THERMAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.THERMAL_SCOPE,
+    # SharedHeatsink — every pin (AMB + DEV1..N) is thermal-domain so
+    # the connectivity rules allow ``TH`` ↔ ``DEV_i`` wires and reject
+    # accidental electrical wires onto the heatsink.
+    ComponentType.HEATSINK,
 }
 
 ANY_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
@@ -1032,6 +1048,24 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(0, "SP", -40, -20),
         Pin(1, "FB", -40, 20),
         Pin(2, INVERTER_PWM_BUS_PIN_NAME, 40, 0),
+    ],
+
+    # Shared heatsink (pulsim 1.7). Default layout has 4 device slots
+    # (covers a typical PFC: Q_boost + D_boost + bridge diodes) plus an
+    # ambient reference pin. Slot count can grow via ``n_devices`` in
+    # the parameters; ``_synchronize_special_component`` rebuilds the
+    # pin layout to match.
+    #   AMB    = ambient temperature reference (thermal-domain). Wires
+    #            to a GROUND-like THERMAL_REFERENCE pin or just floats
+    #            (uses ``T_amb_C`` parameter).
+    #   DEV1..N = thermal-domain ports. Each wires to ONE device's
+    #             ``TH`` pin to enrol that device in the shared sink.
+    ComponentType.HEATSINK: [
+        Pin(0, "AMB", -40, 0),
+        Pin(1, "DEV1", 40, -30),
+        Pin(2, "DEV2", 40, -10),
+        Pin(3, "DEV3", 40, 10),
+        Pin(4, "DEV4", 40, 30),
     ],
 
     # PFC boost controller: 3 signal-domain inputs.
@@ -1706,6 +1740,36 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # A missing wire is a hard converter error.
     },
 
+    ComponentType.HEATSINK: {
+        # Number of device slots (also drives the pin layout —
+        # ``_synchronize_special_component`` regenerates pins to match).
+        # 2-6 is the practical range; default 4 covers a typical PFC
+        # front-end (Q_boost + D_boost + 2 of the 4 bridge diodes).
+        "n_devices": 4,
+        # Sink-to-ambient thermal resistance [K/W]. The ONE field that
+        # dominates the steady-state shared-sink temperature rise — set
+        # it to whatever the heatsink datasheet reports (or use the
+        # ``convection_resistance`` helper for a first-cut estimate).
+        # 5 K/W is a small TO-220 clip-on default.
+        "R_th_sink_to_amb_K_per_W": 5.0,
+        # Optional sink thermal mass [J/K]. ``0`` = massless (steady-
+        # state-only sizing). Non-zero gives the transient response a
+        # tau ≈ R_sa · C_sink before the sink temperature catches up to
+        # the steady state — important on intermittent / pulsed loads.
+        "C_th_sink_J_per_K": 0.0,
+        # Ambient temperature [°C]. The whole network is anchored here
+        # — every junction temperature reads as
+        # T_j_i = T_amb + R_th_sa·Σ_P + R_th_cs_i·P_i + R_th_jc_i·P_i.
+        "T_amb_C": 25.0,
+        # OPTIONAL per-device case-to-sink resistance [K/W], one CSV
+        # entry per attached device. Empty defaults every device to
+        # ``0`` (case bonded directly to sink). Use the
+        # ``tim_resistance`` helper or the datasheet ``R_th_ch`` to
+        # populate. Example: "0.5, 0.5, 0.3, 0.3" for 4 devices on
+        # thermal grease + electrical insulator pads.
+        "case_to_sink_R_th_csv": "",
+    },
+
     ComponentType.SIXSTEP_CONTROLLER: {
         # Outer speed loop (rpm error → duty). PI tuned for the same
         # Embraco VLT403U recipe the FOC default targets, scaled so the
@@ -2279,6 +2343,8 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_c_block(component)
     elif component.type == ComponentType.PWM_GENERATOR:
         _synchronize_pwm_duty_pin(component)
+    elif component.type == ComponentType.HEATSINK:
+        _synchronize_heatsink(component)
     elif component.type in (
         ComponentType.PI_CONTROLLER,
         ComponentType.GAIN,
@@ -2471,6 +2537,56 @@ def _synchronize_c_block(
         params["extra_cflags"] = []
 
     component.pins = _snap_pin_layout(_default_c_block_pins(n_inputs, n_outputs))
+
+
+def _synchronize_heatsink(component: Component) -> None:
+    """Rebuild the HEATSINK pin layout based on the ``n_devices`` param.
+
+    Default layout has 4 device slots (DEV1..DEV4) plus the ambient
+    reference (AMB). The user can bump ``n_devices`` up to 8 (covers a
+    3-phase VSI: 6 switches + body diodes) or down to 1 (single device
+    on a clip-on TO-220 sink). Pins are regenerated as
+    ``[AMB, DEV1, DEV2, ..., DEVn]`` with the device pins evenly
+    distributed along the right edge so they stay clickable. Idempotent:
+    re-syncing without a parameter change leaves the layout untouched.
+
+    Old pin geometry (user-customised positions) is dropped because the
+    spacing rule applies once n_devices changes; if the user manually
+    re-spaces pins after the sync, that survives the next save/load.
+    """
+    if component.type != ComponentType.HEATSINK:
+        return
+    raw = component.parameters.get("n_devices", 4)
+    # ``raw or 4`` doesn't work — 0 is a legitimate int the user might
+    # type while editing and we want to clamp it to 1, not jump up to
+    # the default 4. So treat only None / non-coercible inputs as
+    # "missing → default".
+    if raw is None:
+        n = 4
+    else:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            n = 4
+    n = max(1, min(8, n))
+    component.parameters["n_devices"] = n
+
+    pins: list[Pin] = [Pin(0, "AMB", -40, 0)]
+    # Device pins span the right edge in grid-aligned steps of 20 (the
+    # snap grid) so distinct slots never collide after the post-init
+    # snap pass — picking a continuous span would round adjacent pins
+    # onto the same coordinate at higher n.
+    step = 20.0
+    # Symmetric layout around y=0. For even n, pins land at
+    # ±step/2 ± step·k (so 4 pins → [-30, -10, +10, +30] → snap to
+    # [-40, -20, +20, +40]). For odd n, the middle pin sits at y=0.
+    offset = (n - 1) * step / 2.0
+    ys = [-offset + i * step for i in range(n)]
+    for idx, y in enumerate(ys, start=1):
+        pins.append(Pin(idx, f"DEV{idx}", 40, int(round(y))))
+
+    template = _snap_pin_layout(pins)
+    component.pins = template
 
 
 def _synchronize_pwm_duty_pin(component: Component) -> None:
