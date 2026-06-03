@@ -36,10 +36,13 @@ def _pfc_comp(comp_id: str = "pfc", params: dict | None = None,
     return out
 
 
-def test_pfc_controller_has_three_signal_input_pins() -> None:
+def test_pfc_controller_has_four_signal_pins() -> None:
+    # VBUS / IL / VAC are inputs (feedback). PWM is the output that drives
+    # the boost MOSFET's gate — making the controller's role visible in
+    # the schematic (instead of the converter inferring it silently).
     pfc = Component(type=ComponentType.PFC_BOOST_CONTROLLER, name="PFC1")
-    assert [p.name for p in pfc.pins] == ["VBUS", "IL", "VAC"]
-    for i in range(3):
+    assert [p.name for p in pfc.pins] == ["VBUS", "IL", "VAC", "PWM"]
+    for i in range(4):
         assert pin_connection_domain(pfc, i) == CONNECTION_DOMAIN_SIGNAL
 
 

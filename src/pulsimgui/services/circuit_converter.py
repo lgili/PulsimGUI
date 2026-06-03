@@ -3519,12 +3519,60 @@ class CircuitConverter:
                     return self._component_name(probe, ComponentType.CURRENT_PROBE)
             return ""
 
+        def _trace_switch_via_pwm_pin(pfc_comp: dict[str, Any]) -> str:
+            """Return the name of the MOSFET (or IGBT/SWITCH) whose gate is
+            wired to the PFC's PWM output pin (index 3).
+
+            Looks up the net the PWM pin is on and finds a switch device
+            on that same net. Returns '' if the PWM pin is unwired —
+            callers then fall back to the single-MOSFET / parameter-
+            override paths.
+            """
+            comp_id = pfc_comp.get("id") or ""
+            pin_nodes = (
+                pfc_comp.get("pin_nodes")
+                or node_map.get(comp_id, [])
+            )
+            if len(pin_nodes) < 4:
+                return ""
+            pwm_net = str(pin_nodes[3] or "").strip()
+            if not pwm_net:
+                return ""
+            switch_types = (
+                ComponentType.MOSFET_N, ComponentType.MOSFET_P,
+                ComponentType.IGBT, ComponentType.SWITCH,
+            )
+            for swt in switch_types:
+                for cand in by_type.get(swt, []):
+                    cand_id = cand.get("id") or ""
+                    cand_nodes = (
+                        cand.get("pin_nodes") or node_map.get(cand_id, [])
+                    )
+                    # Gate is typically pin 0 for MOSFET/IGBT; for SWITCH
+                    # the control pin sits at index 2 ('CTL'). Check any
+                    # match — the simulator only needs the component
+                    # name, not the specific pin.
+                    if pwm_net in [str(n or "").strip() for n in cand_nodes]:
+                        return self._component_name(cand, swt)
+            return ""
+
         descriptors: list[dict[str, Any]] = []
         for pfc_comp in pfc_blocks:
             params = _params_of(pfc_comp)
 
-            # MOSFET binding (explicit override → single MOSFET fallback).
+            # MOSFET binding — priority order:
+            # 1. ``boost_mosfet_name`` parameter (explicit user override).
+            # 2. Wired PWM pin: trace from PFC.PWM (pin 3) to the gate
+            #    of the MOSFET / IGBT it drives. This is the preferred
+            #    path now that ``PFC_BOOST_CONTROLLER`` exposes a
+            #    visible output pin — the schematic shows the wire so
+            #    the user knows exactly which switch the loop controls.
+            # 3. Single-MOSFET fallback for older schematics that don't
+            #    wire the PWM pin (back-compat with the auto-detect-by-
+            #    topology path that used to be the only option).
             mosfet_name = str(params.get("boost_mosfet_name", "") or "").strip()
+            if not mosfet_name:
+                mosfet_name = _trace_switch_via_pwm_pin(pfc_comp) or ""
             if not mosfet_name and mosfets:
                 mosfet_name = self._component_name(mosfets[0], ComponentType.MOSFET_N)
             if not mosfet_name:

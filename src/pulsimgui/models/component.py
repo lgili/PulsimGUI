@@ -949,12 +949,18 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     #        boost inductor.
     # VAC  = rectified-input voltage (V). Wire to a voltage probe on the
     #        diode-bridge DC+ rail (between bridge and L_boost).
-    # The converter auto-detects the boost MOSFET by topology (the switch
-    # whose drain is the inductor/diode junction); no output pin is needed.
+    # PWM  = drive signal for the boost MOSFET's gate. Wiring this pin
+    #        to a MOSFET tells the converter which switch this controller
+    #        drives (preferred over the auto-detect path, which was the
+    #        only option before — that was confusing because there was
+    #        no visible wire showing which switch the PFC controlled).
+    #        Auto-detect still runs as a fallback when the pin is
+    #        unwired, so older schematics keep working.
     ComponentType.PFC_BOOST_CONTROLLER: [
         Pin(0, "VBUS", -40, -20),
         Pin(1, "IL",   -40,   0),
         Pin(2, "VAC",  -40,  20),
+        Pin(3, "PWM",   40,   0),
     ],
 
     # Measurement
