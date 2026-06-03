@@ -20,7 +20,8 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QFileDialog, QMenu
 
 if TYPE_CHECKING:
@@ -28,6 +29,65 @@ if TYPE_CHECKING:
 
 
 _LOG = logging.getLogger(__name__)
+
+
+def _grab_plot_pixmap(plot_canvas) -> QPixmap | None:
+    """Render the active plot canvas to a fresh :class:`QPixmap`.
+
+    ``QWidget.grab()`` reads the on-screen framebuffer. When the
+    underlying ``pg.GraphicsLayoutWidget`` runs in OpenGL mode (default
+    on Qt 6 + macOS / Windows) the framebuffer is opaque to the Qt
+    raster pipeline and ``grab()`` returns a blank white pixmap — the
+    exact symptom users hit when "Copy plot to clipboard" produced an
+    empty image. Render the graphics-view scene directly through a
+    QPainter instead; this works regardless of the GL state.
+
+    Returns ``None`` if the canvas isn't paintable (no scene, no
+    visible area), so the caller can show a friendly status.
+    """
+    if plot_canvas is None:
+        return None
+    # Pick the currently visible page (time-domain vs. FFT view).
+    active = getattr(plot_canvas, "_stack", None)
+    target = active.currentWidget() if active is not None else None
+    if target is None:
+        target = plot_canvas
+    scene = getattr(target, "scene", None)
+    scene = scene() if callable(scene) else scene
+    if scene is None:
+        return None
+    rect: QRectF = scene.sceneRect()
+    if rect.isEmpty():
+        rect = QRectF(target.rect())
+    # Use the widget's device-pixel ratio so the export matches what
+    # the user sees on hi-DPI displays.
+    dpr = float(target.devicePixelRatioF() or 1.0)
+    image = QImage(
+        int(rect.width() * dpr),
+        int(rect.height() * dpr),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.setDevicePixelRatio(dpr)
+    # White-ish background matches the on-screen panel surface; the
+    # scene paints opaque tiles on top so this only shows around the
+    # rounded corners.
+    image.fill(Qt.GlobalColor.white)
+    painter = QPainter(image)
+    try:
+        painter.setRenderHints(
+            QPainter.RenderHint.Antialiasing
+            | QPainter.RenderHint.TextAntialiasing
+            | QPainter.RenderHint.SmoothPixmapTransform
+        )
+        # pyqtgraph's GraphicsScene.render() doesn't accept the same
+        # keyword args as QGraphicsScene — use positional form, which
+        # both implementations support: (painter, target_rect, source_rect).
+        scene.render(painter, QRectF(0, 0, image.width() / dpr, image.height() / dpr), rect)
+    finally:
+        painter.end()
+    if image.isNull():
+        return None
+    return QPixmap.fromImage(image)
 
 
 class ExportCapability:
@@ -123,7 +183,10 @@ class ExportCapability:
         )
         if not path:
             return
-        pix = self._shell.plot_canvas.grab()
+        pix = _grab_plot_pixmap(self._shell.plot_canvas)
+        if pix is None:
+            self._shell.drawer.summary.setText("PNG export failed: no plot to render.")
+            return
         if pix.save(path, "PNG"):
             self._shell.drawer.summary.setText(f"Saved plot to {path}.")
         else:
@@ -134,9 +197,16 @@ class ExportCapability:
     def _copy_to_clipboard(self) -> None:
         if self._shell is None:
             return
-        pix = self._shell.plot_canvas.grab()
+        pix = _grab_plot_pixmap(self._shell.plot_canvas)
+        if pix is None:
+            self._shell.drawer.summary.setText("Copy failed: no plot to render.")
+            return
         clip = QGuiApplication.clipboard()
+        # Both forms — setPixmap is convenient on macOS / Linux; setImage
+        # is the form some Windows clipboard targets prefer. Setting both
+        # is harmless and improves paste compatibility.
         clip.setPixmap(pix)
+        clip.setImage(pix.toImage())
         self._shell.drawer.summary.setText("Plot copied to clipboard.")
 
 
