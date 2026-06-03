@@ -7674,16 +7674,40 @@ class PulsimBackend(SimulationBackend):
                 # ceiling and the outer voltage loop dominates.
                 return 0.0
 
-            # If the converter resolved a current-probe BRANCH name, prefer
-            # it: the inner loop's measurement is the inductor current i_L.
+            # If the converter resolved a current-probe BRANCH name,
+            # prefer it: the inner loop's measurement is the inductor
+            # current i_L. ``builder.branch_index_of`` returns an
+            # all-branches integer that is NOT directly the state-
+            # vector offset — its docstring promises
+            # ``state_idx == num_nodes + branch_index_of(name)`` but
+            # that formula only holds for voltage sources, not for the
+            # I_L probe (now stamped as a 0 V voltage source) on a
+            # graph whose all-branches list is dense with resistors.
+            # The reliable lookup is to walk ``state_var_names()``
+            # (which is the actual ``x`` vector order) and find the
+            # entry for the probe current — typically ``Is(<probe>)``
+            # for the 0 V-source path or ``I(<probe>)`` for an
+            # inductor name. Previous code skipped this and read a
+            # node voltage in place of i_L → inner PI integrated
+            # against garbage → PFC current diverged to ~100 A peak.
             il_branch_name = str(desc.get("i_l_branch_name") or "").strip()
-            if il_branch_name and hasattr(builder, "branch_index_of"):
+            il_idx = -1
+            if il_branch_name and hasattr(builder, "state_var_names"):
                 try:
-                    il_idx = int(builder.branch_index_of(il_branch_name))
+                    state_names = list(builder.state_var_names())
                 except Exception:  # noqa: BLE001
-                    il_idx = -1
-            else:
-                il_idx = -1
+                    state_names = []
+                # Try, in order: ``Is(<probe>)`` (modern 0 V source),
+                # ``I(<probe>)`` (inductor-named branch), and the bare
+                # name (defensive). First hit wins.
+                for candidate in (
+                    f"Is({il_branch_name})",
+                    f"I({il_branch_name})",
+                    il_branch_name,
+                ):
+                    if candidate in state_names:
+                        il_idx = state_names.index(candidate)
+                        break
 
             if il_idx >= 0:
                 def _measured_and_cascade(  # noqa: F811 — shadowed by design
