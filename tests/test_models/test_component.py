@@ -479,3 +479,68 @@ class TestLoadedPinPreservation:
         comp = Component.from_dict(self._off_grid_dict("C_BLOCK", []))
         names = {p.name for p in comp.pins}
         assert "IN0" in names and "OUT" in names
+
+
+class TestParameterBackfillOnLoad:
+    """A saved component must auto-pick-up parameter defaults added in a
+    newer release.
+
+    Regression: an older save of a ``PFC_BOOST_CONTROLLER`` did not have
+    ``soft_start_time`` / ``v_bus_initial`` because the keys didn't exist
+    yet. When the user opened the file, the properties dialog only listed
+    the saved keys, and the backend ``_build_pfc_loops`` had to fall back
+    to hard-coded defaults the controller author couldn't override from
+    the GUI. The post-init now ``setdefault``-merges every missing key
+    from ``DEFAULT_PARAMETERS`` so the saved parameter set always
+    matches a freshly-instantiated component of the same type, while
+    every user-customised value survives untouched.
+    """
+
+    def test_pfc_controller_gets_new_soft_start_keys_on_load(self):
+        data = {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "type": "PFC_BOOST_CONTROLLER",
+            "name": "PFC",
+            "x": 0.0, "y": 0.0,
+            "rotation": 0, "mirrored_h": False, "mirrored_v": False,
+            "pins": [],
+            "parameters": {
+                # The keys the user picked when they saved the file —
+                # ``soft_start_time`` / ``v_bus_initial`` are absent.
+                "v_bus_ref": 400.0,
+                "voltage_kp": 0.30,
+                "voltage_ki": 6.0,
+                "current_kp": 31.4,
+                "current_ki": 3140.0,
+                "i_pk_limit": 20.0,
+            },
+        }
+        comp = Component.from_dict(data)
+        # The user's saved values survived.
+        assert comp.parameters["v_bus_ref"] == 400.0
+        assert comp.parameters["voltage_kp"] == 0.30
+        # The new keys came in from DEFAULT_PARAMETERS.
+        assert "soft_start_time" in comp.parameters
+        assert "v_bus_initial" in comp.parameters
+        assert comp.parameters["soft_start_time"] > 0.0
+
+    def test_user_customised_value_is_not_overwritten(self):
+        # If the saved file already has a key, the default never wins.
+        data = {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "type": "PFC_BOOST_CONTROLLER",
+            "name": "PFC",
+            "x": 0.0, "y": 0.0,
+            "rotation": 0, "mirrored_h": False, "mirrored_v": False,
+            "pins": [],
+            "parameters": {
+                "v_bus_ref": 380.0,           # not the 400 V default
+                "soft_start_time": 0.20,      # user tuned to slow ramp
+            },
+        }
+        comp = Component.from_dict(data)
+        assert comp.parameters["v_bus_ref"] == 380.0
+        assert comp.parameters["soft_start_time"] == 0.20
+        # Other defaults still fill in.
+        assert "current_kp" in comp.parameters
+        assert "vac_pk_nom" in comp.parameters

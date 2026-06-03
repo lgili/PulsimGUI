@@ -1997,8 +1997,21 @@ class Component:
             self.pins = [
                 Pin(p.index, p.name, p.x, p.y) for p in DEFAULT_PINS[self.type]
             ]
-        if not self.parameters and self.type in DEFAULT_PARAMETERS:
-            self.parameters = deepcopy(DEFAULT_PARAMETERS[self.type])
+        # Parameter backfill: a saved file may be missing keys that were
+        # added in a later release (e.g. ``soft_start_time`` /
+        # ``v_bus_initial`` on PFC_BOOST_CONTROLLER). Without this pass
+        # the new properties dialog wouldn't list them, the backend
+        # converter would fall back to its hard-coded defaults, and the
+        # behaviour would silently drift from a freshly-placed component
+        # of the same type. ``setdefault`` keeps every user-customised
+        # value intact and only fills the gaps.
+        if self.type in DEFAULT_PARAMETERS:
+            defaults = DEFAULT_PARAMETERS[self.type]
+            if not self.parameters:
+                self.parameters = deepcopy(defaults)
+            else:
+                for key, value in defaults.items():
+                    self.parameters.setdefault(key, deepcopy(value))
 
         saved_geometry: dict[str, tuple[float, float]] | None = None
         if pins_were_loaded:
