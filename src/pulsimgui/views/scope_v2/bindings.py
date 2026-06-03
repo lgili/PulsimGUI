@@ -69,7 +69,25 @@ class ScopeChannelBinding:
 
     @property
     def display_name(self) -> str:
-        """Human-readable label (channel label + node)."""
+        """Human-readable label (channel label + signal/node).
+
+        Prefers the first resolved signal's semantic label (e.g.
+        ``I_L`` for a CURRENT_PROBE, ``X1`` for a VOLTAGE_PROBE,
+        ``M1 Speed`` for a motor SIG-bus channel) over the raw
+        electrical-node name (``N25``). Without this, a scope wired
+        to a current probe would still read ``CH2 (N25)`` even
+        though the signal *was* correctly resolved to ``IP(I_L)``
+        — semantically misleading and the cause of the "I don't
+        know if this is the current or some node voltage" bug
+        users hit on ex 20. Falls through to the channel-level
+        ``node_label`` only when no signal resolved (raw node tap).
+        """
+        signal_label = ""
+        if self.signals:
+            primary = self.signals[0]
+            signal_label = (primary.node_label or primary.label or "").strip()
+        if signal_label:
+            return f"{self.channel_label} ({signal_label})"
         if self.node_label:
             return f"{self.channel_label} ({self.node_label})"
         return self.channel_label
