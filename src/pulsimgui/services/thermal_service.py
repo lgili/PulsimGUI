@@ -90,6 +90,17 @@ class ThermalResult:
     ambient_temperature: float = 25.0
     is_synthetic: bool = False
     error_message: str = ""
+    # pulsim 1.7 — coupled steady-state breakdowns. Both are lists of
+    # dicts, one per HEATSINK descriptor. ``shared_heatsink_results``
+    # carries the T-independent coupled solve;
+    # ``electrothermal_results`` carries the self-consistent solve
+    # (present only when any device has a non-zero tempco) with the
+    # critical ``runaway`` / ``feedback_gain`` fields.
+    shared_heatsink_results: list[dict] = field(default_factory=list)
+    electrothermal_results: list[dict] = field(default_factory=list)
+    # pulsim 1.7 — per-device T_j limit-trip records (from
+    # ``ThermalLimitMonitor``). Empty means "nobody opted in".
+    thermal_limit_trips: list[dict] = field(default_factory=list)
 
     def device_names(self) -> list[str]:
         """Return ordered list of component names."""
@@ -333,15 +344,43 @@ class ThermalAnalysisService(QObject):
             if ambient_value is not None:
                 ambient = ambient_value
 
+        # pulsim 1.7 — pull the coupled steady-state breakdowns the
+        # backend stashes on ``result.statistics``. ``thermal_service``
+        # is the consolidation point so the ThermalViewer + downstream
+        # don't have to know the key names. Use a defensive read — older
+        # backends or fast paths may not populate these.
+        shared_heatsink_results = self._normalize_stat_list(
+            electrical_result.statistics.get("shared_heatsink_steady_state"),
+        )
+        electrothermal_results = self._normalize_stat_list(
+            electrical_result.statistics.get("electrothermal_steady_state"),
+        )
+        thermal_limit_trips = self._normalize_stat_list(
+            electrical_result.statistics.get("thermal_limit_trips"),
+        )
+
         result = ThermalResult(
             time=list(electrical_result.time),
             devices=devices,
             ambient_temperature=ambient,
             is_synthetic=False,
             error_message="",
+            shared_heatsink_results=shared_heatsink_results,
+            electrothermal_results=electrothermal_results,
+            thermal_limit_trips=thermal_limit_trips,
         )
         self._normalize_thermal_timelines(result, electrical_result)
         return result
+
+    @staticmethod
+    def _normalize_stat_list(value: object) -> list[dict]:
+        """Defensive: convert a result.statistics payload into a list
+        of dicts. Returns [] for None / wrong type / list-with-non-dict
+        elements. Avoids a TypeError at the call site if the backend
+        ever emits a malformed value."""
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
     def _collect_transient_thermal_traces(
         self,

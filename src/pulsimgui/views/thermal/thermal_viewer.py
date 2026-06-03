@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from pulsimgui.services.theme_service import Theme, ThemeService
 from pulsimgui.services.thermal_service import ThermalResult
+from pulsimgui.views.widgets.status_widgets import StatusBanner
 
 
 class ThermalViewerWidget(QWidget):
@@ -86,6 +87,30 @@ class ThermalViewerWidget(QWidget):
         self._loss_caption = QLabel()
         self._loss_caption.setAlignment(Qt.AlignmentFlag.AlignRight)
 
+        # pulsim 1.7 — Coupled-Solve tab. Shows the SharedHeatsink +
+        # electrothermal steady-state results from result.statistics so
+        # the user can see the *coupled* answer (Σ Pᵢ · R_sa)
+        # alongside the per-device-isolated legacy temperatures.
+        self._coupled_table = QTableWidget(0, 6)
+        self._coupled_table.setHorizontalHeaderLabels([
+            "Heatsink", "T_amb (°C)", "T_sink (°C)",
+            "Device", "T_j (°C)", "Power (W)",
+        ])
+        self._coupled_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents,
+        )
+        for column in range(1, 6):
+            self._coupled_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeToContents,
+            )
+        self._coupled_table.verticalHeader().setVisible(False)
+        self._coupled_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding,
+        )
+        self._coupled_caption = QLabel()
+        self._coupled_caption.setWordWrap(True)
+        self._coupled_caption.setStyleSheet("color: #888; font-size: 11px;")
+
         self._tabs.addTab(self._network_tree, "Thermal Network")
         temp_tab = QWidget()
         temp_layout = QVBoxLayout(temp_tab)
@@ -101,8 +126,39 @@ class ThermalViewerWidget(QWidget):
         loss_layout.addWidget(self._loss_caption)
         self._tabs.addTab(loss_tab, "Loss Breakdown")
 
+        coupled_tab = QWidget()
+        coupled_layout = QVBoxLayout(coupled_tab)
+        coupled_layout.setContentsMargins(0, 0, 0, 0)
+        coupled_layout.addWidget(self._coupled_table, stretch=1)
+        coupled_layout.addWidget(self._coupled_caption)
+        self._coupled_tab_index = self._tabs.addTab(
+            coupled_tab, "Coupled Solve",
+        )
+
+        # pulsim 1.7 — runaway warning banner. Hidden until set_result
+        # picks up an electrothermal record with runaway=True. Placed
+        # ABOVE the tabs so it's impossible to miss — the user can be
+        # on any tab and still see the warning.
+        self._runaway_banner = StatusBanner.warning(
+            "Thermal runaway predicted — review Coupled Solve tab.",
+            parent=self,
+        )
+        self._runaway_banner.hide()
+
+        # pulsim 1.7 — T_j limit-trip banner. Separate from runaway so
+        # both can show at once. T_max trips are an existing-device
+        # safety report; runaway is a "this design will never reach
+        # equilibrium" sizing answer.
+        self._limit_banner = StatusBanner.warning(
+            "Junction-temperature limit exceeded — review Loss Breakdown tab.",
+            parent=self,
+        )
+        self._limit_banner.hide()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._runaway_banner)
+        layout.addWidget(self._limit_banner)
         layout.addWidget(self._tabs)
 
         if self._theme_service is not None:
@@ -197,6 +253,181 @@ class ThermalViewerWidget(QWidget):
         self._populate_network(result)
         self._plot_temperatures(result)
         self._update_loss_summary(result)
+        self._update_coupled_solve(result)
+        self._update_warning_banners(result)
+
+    def _update_warning_banners(self, result: ThermalResult) -> None:
+        """Show / hide the runaway + T_j limit-trip banners based on
+        what landed in ``result.statistics``.
+
+        Both banners can show simultaneously — they answer different
+        questions ("did the design ever reach equilibrium?" vs "did
+        any device exceed its rated T_max during the run?")."""
+        # Runaway: any sink whose electrothermal solve diverged.
+        runaway_sinks = [
+            rec for rec in (result.electrothermal_results or [])
+            if rec.get("runaway") is True
+        ]
+        if runaway_sinks:
+            names = ", ".join(
+                str(rec.get("name") or "unnamed") for rec in runaway_sinks
+            )
+            gains = ", ".join(
+                f"ρ={float(rec.get('feedback_gain') or 0.0):.2f}"
+                for rec in runaway_sinks
+            )
+            self._runaway_banner.setText(
+                f"Thermal runaway predicted on heatsink(s): {names}.  "
+                f"Feedback gain {gains} (≥1 means no stable T_j). "
+                f"Review the Coupled Solve tab and consider a bigger "
+                f"heatsink, lower R_jc, or derating."
+            )
+            self._runaway_banner.show()
+        else:
+            self._runaway_banner.hide()
+
+        # Limit trip: any device whose T_max threshold was crossed.
+        trips = [
+            rec for rec in (result.thermal_limit_trips or [])
+            if rec.get("tripped") is True
+        ]
+        if trips:
+            names = ", ".join(
+                f"{rec.get('device_name', '?')} "
+                f"({float(rec.get('peak_temperature_C') or 0.0):.0f}°C "
+                f">{float(rec.get('T_limit_C') or 0.0):.0f}°C)"
+                for rec in trips
+            )
+            self._limit_banner.setText(
+                f"Junction-temperature limit exceeded — {names}.  "
+                f"Review the Loss Breakdown tab."
+            )
+            self._limit_banner.show()
+        else:
+            self._limit_banner.hide()
+
+    def _update_coupled_solve(self, result: ThermalResult) -> None:
+        """Fill the Coupled Solve tab with the SharedHeatsink and (if
+        present) electrothermal steady-state breakdowns. Prefers the
+        electrothermal record when available — its converged powers
+        include the temperature-dependent loss correction; the
+        shared_heatsink record uses the reference loss directly.
+
+        Empty tab + caption "no heatsink modeled" when neither result
+        list has anything (the legacy isolated thermal path owns the
+        T_j answer)."""
+        self._coupled_table.setRowCount(0)
+
+        # If electrothermal solved cleanly for any sink, prefer that
+        # record (it carries final_powers_W and ρ); fall back to the
+        # T-independent shared_heatsink answer per sink that didn't.
+        eth_by_name = {
+            str(rec.get("name") or ""): rec
+            for rec in (result.electrothermal_results or [])
+            if rec.get("converged") is True
+        }
+
+        had_any_sink = False
+        for sh_rec in result.shared_heatsink_results or []:
+            sink_name = str(sh_rec.get("name") or "")
+            had_any_sink = True
+            # Pick the better record per sink.
+            eth_rec = eth_by_name.get(sink_name)
+            source = eth_rec if eth_rec is not None else sh_rec
+            T_amb = float(source.get("T_amb_C") or 0.0)
+            T_sink = float(source.get("T_sink_C") or T_amb)
+            devices = source.get("devices") or {}
+            powers = source.get(
+                "final_powers_W",
+                source.get("powers_W") or {},
+            )
+            if not isinstance(devices, dict):
+                continue
+            if not devices:
+                continue
+
+            # One row per device under this sink.
+            for device_name, T_j in devices.items():
+                row = self._coupled_table.rowCount()
+                self._coupled_table.insertRow(row)
+                cells = [
+                    sink_name if row == 0 else "",  # sink name only on first row
+                    f"{T_amb:.1f}" if row == 0 else "",
+                    f"{T_sink:.1f}" if row == 0 else "",
+                    str(device_name),
+                    f"{float(T_j):.1f}",
+                    f"{float((powers or {}).get(device_name, 0.0) or 0.0):.2f}",
+                ]
+                for col, text in enumerate(cells):
+                    item = QTableWidgetItem(text)
+                    if col >= 1 and col != 3:
+                        item.setTextAlignment(
+                            Qt.AlignmentFlag.AlignRight
+                            | Qt.AlignmentFlag.AlignVCenter,
+                        )
+                    self._coupled_table.setItem(row, col, item)
+
+        # Mark sinks that ran the electrothermal solve but weren't
+        # also in the shared_heatsink list (defensive — descriptor
+        # parity is normally enforced by the converter).
+        for sink_name, eth_rec in eth_by_name.items():
+            if any(
+                str(rec.get("name") or "") == sink_name
+                for rec in result.shared_heatsink_results or []
+            ):
+                continue
+            had_any_sink = True
+            devices = eth_rec.get("devices") or {}
+            if not isinstance(devices, dict):
+                continue
+            T_amb = float(eth_rec.get("T_amb_C") or 0.0)
+            T_sink = float(eth_rec.get("T_sink_C") or T_amb)
+            powers = eth_rec.get("final_powers_W") or {}
+            for device_name, T_j in devices.items():
+                row = self._coupled_table.rowCount()
+                self._coupled_table.insertRow(row)
+                self._coupled_table.setItem(
+                    row, 0, QTableWidgetItem(sink_name if row == 0 else ""),
+                )
+                self._coupled_table.setItem(
+                    row, 1, QTableWidgetItem(f"{T_amb:.1f}" if row == 0 else ""),
+                )
+                self._coupled_table.setItem(
+                    row, 2, QTableWidgetItem(f"{T_sink:.1f}" if row == 0 else ""),
+                )
+                self._coupled_table.setItem(
+                    row, 3, QTableWidgetItem(str(device_name)),
+                )
+                self._coupled_table.setItem(
+                    row, 4, QTableWidgetItem(f"{float(T_j):.1f}"),
+                )
+                self._coupled_table.setItem(
+                    row, 5, QTableWidgetItem(
+                        f"{float((powers or {}).get(device_name, 0.0) or 0.0):.2f}",
+                    ),
+                )
+
+        if not had_any_sink:
+            self._coupled_caption.setText(
+                "No HEATSINK component on the schematic — junction "
+                "temperatures shown on the other tabs come from the "
+                "per-device-isolated thermal pipeline (legacy path)."
+            )
+            self._tabs.setTabEnabled(self._coupled_tab_index, False)
+        else:
+            using_eth = bool(eth_by_name)
+            self._coupled_caption.setText(
+                "Coupled shared-heatsink steady state. "
+                + (
+                    "Powers reflect temperature-dependent loss "
+                    "(electrothermal solve)."
+                    if using_eth
+                    else "Powers are reference (T-independent) losses; "
+                    "set loss_a_cond_per_C / loss_a_sw_per_C on the "
+                    "devices to enable the self-consistent solve."
+                )
+            )
+            self._tabs.setTabEnabled(self._coupled_tab_index, True)
 
     # ------------------------------------------------------------------
     # Network view helpers
@@ -375,6 +606,13 @@ class ThermalViewerWidget(QWidget):
         self._loss_table.setRowCount(0)
         self._loss_plot.clear()
         self._loss_caption.setText("No thermal data available.")
+        # pulsim 1.7 — reset coupled-solve view + hide banners so a
+        # cleared widget doesn't show stale runaway warnings.
+        self._coupled_table.setRowCount(0)
+        self._coupled_caption.setText("")
+        self._tabs.setTabEnabled(self._coupled_tab_index, False)
+        self._runaway_banner.hide()
+        self._limit_banner.hide()
 
     def _color_palette(self) -> list[str]:
         return self._series_palette
