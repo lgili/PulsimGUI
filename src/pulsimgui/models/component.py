@@ -99,6 +99,23 @@ class ComponentType(Enum):
     # (inner current loop) plus a step-observer (outer voltage loop).
     PFC_BOOST_CONTROLLER = auto()
 
+    # Closed-loop 6-step (trapezoidal / 120°) BLDC drive. Two signal-
+    # domain inputs (same shape as FOC_CONTROLLER) so the user can drop
+    # this in place of the FOC block on the same PMSM + VSI topology and
+    # see the difference in current shape / torque ripple / acoustic
+    # noise that 6-step produces vs. FOC:
+    #   SP — speed setpoint in rpm (typically wired to a CONSTANT)
+    #   FB — feedback from the PMSM signal bus (auto-detects the
+    #        observer/VSI pair via the SIG net trace)
+    # The backend ``_build_sixstep_loops`` runs an outer rpm PI to
+    # produce a duty cycle, sectorises the rotor electrical angle into
+    # 6 commutation states, and drives the matching pair of VSI
+    # switches via a complementary mask — modulating only the high-side
+    # of the active phase pair with the PI's duty. Sensorless emulation
+    # is approximated from the observer-bundle's electrical angle (full
+    # BEMF-zero-crossing ZCD with a Kalman observer is a follow-up).
+    SIXSTEP_CONTROLLER = auto()
+
     # Measurement
     VOLTAGE_PROBE = auto()
     VOLTAGE_PROBE_GND = auto()
@@ -552,6 +569,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.C_BLOCK,
     ComponentType.FOC_CONTROLLER,
     ComponentType.PFC_BOOST_CONTROLLER,
+    ComponentType.SIXSTEP_CONTROLLER,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
     # Three-phase / vector control
@@ -610,6 +628,7 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.C_BLOCK,
         ComponentType.FOC_CONTROLLER,
         ComponentType.PFC_BOOST_CONTROLLER,
+        ComponentType.SIXSTEP_CONTROLLER,
         # Three-phase / vector control
         ComponentType.CLARKE_TRANSFORM,
         ComponentType.INVERSE_CLARKE_TRANSFORM,
@@ -938,6 +957,15 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # The converter auto-detects the controlled VSI and drives its 6 switches
     # via inverse Park/Clarke, so no output pin is needed.
     ComponentType.FOC_CONTROLLER: [
+        Pin(0, "SP", -40, -20),
+        Pin(1, "FB", -40, 20),
+    ],
+
+    # 6-step BLDC controller — same SP / FB convention as the FOC block
+    # so the user can swap one for the other on the same schematic and
+    # see the difference. The converter routes through the PMSM ``SIG``
+    # bus the FB pin reaches to bind both the VSI and the PMSM.
+    ComponentType.SIXSTEP_CONTROLLER: [
         Pin(0, "SP", -40, -20),
         Pin(1, "FB", -40, 20),
     ],
@@ -1601,6 +1629,31 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "v_bus": 0.0,
     },
 
+    ComponentType.SIXSTEP_CONTROLLER: {
+        # Outer speed loop (rpm error → duty). PI tuned for the same
+        # Embraco VLT403U recipe the FOC default targets, scaled so the
+        # output sits in 0..duty_max.
+        "speed_kp": 0.0025,
+        "speed_ki": 0.05,
+        # Duty clamp (0..duty_max) — modulates only the active high-side
+        # of the commutation sector pair.
+        "duty_max": 0.95,
+        # Speed reference (rpm) used when SP pin is unwired.
+        "speed_ref_rpm": 1800.0,
+        # Speed-reference ramp time (s) — same purpose as FOC's: keep the
+        # outer PI from saturating on a cold-start step.
+        "speed_ramp_s": 0.1,
+        # PWM carrier frequency for the high-side modulation.
+        "switching_frequency_hz": 20000.0,
+        # Commutation sector advance (electrical degrees). 0° = classic
+        # 120° trapezoidal alignment; +30° / −30° emulates the lead /
+        # lag many production drives use to chase BEMF peak.
+        "sector_advance_deg": 0.0,
+        # Optional explicit binding overrides — leave empty for auto-detect.
+        "pmsm_name": "",
+        "vsi_name": "",
+    },
+
     # Measurement
     ComponentType.VOLTAGE_PROBE: {
         "display_name": "V",
@@ -2164,6 +2217,7 @@ def _synchronize_special_component(component: Component) -> None:
         # gets the default template position).
         ComponentType.PFC_BOOST_CONTROLLER,
         ComponentType.FOC_CONTROLLER,
+        ComponentType.SIXSTEP_CONTROLLER,
     ):
         _synchronize_default_pin_layout(component)
     elif component.type == ComponentType.SUBCIRCUIT_PORT:

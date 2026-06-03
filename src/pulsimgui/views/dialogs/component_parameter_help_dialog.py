@@ -474,6 +474,56 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "Front-end nominal DC bus (e.g. 320 V doubler, 400 V PFC).",
         ),
     },
+    ComponentType.SIXSTEP_CONTROLLER: {
+        "speed_kp": ParameterHelp(
+            "Outer speed-loop proportional gain (Δω → duty).",
+            "Tune for the desired speed bandwidth. The 6-step law has no "
+            "inner current loop, so Kp couples to duty directly — start "
+            "small (~1e-3) and increase until rise time is acceptable.",
+        ),
+        "speed_ki": ParameterHelp(
+            "Outer speed-loop integral gain (∫Δω → duty).",
+            "Sets steady-state speed error. Anti-windup is built in: the "
+            "integrator is held when the duty clamps at 0 or duty_max.",
+        ),
+        "duty_max": ParameterHelp(
+            "Maximum modulation duty (0..1) applied to the active "
+            "high-side switch each sector.",
+            "Inverter ratings (deadtime margin) and motor ceiling. 0.95 "
+            "leaves headroom for sensorless BEMF observation windows.",
+        ),
+        "speed_ref_rpm": ParameterHelp(
+            "Fallback speed reference (rpm) used when the SP pin is unwired.",
+            "Use as a constant baseline; wire a CONSTANT (or any signal "
+            "source) into the SP pin for runtime control.",
+        ),
+        "speed_ramp_s": ParameterHelp(
+            "Speed-reference ramp time (s). Softens step changes in SP and "
+            "gives the rotor (and any sensorless observer) time to lock.",
+            "Application requirement; raise if startup stalls.",
+        ),
+        "switching_frequency_hz": ParameterHelp(
+            "PWM carrier frequency for the active high-side switch of the "
+            "current commutation sector.",
+            "Inverter datasheet (max f_sw) and motor audible-noise budget.",
+        ),
+        "sector_advance_deg": ParameterHelp(
+            "Electrical-angle offset (deg) added before sector lookup. "
+            "Used by production drives to align commutation with the "
+            "BEMF peak instead of the zero-crossing.",
+            "Empirical; start at 0 and adjust ±15° to peak torque/efficiency.",
+        ),
+        "pmsm_name": ParameterHelp(
+            "Optional explicit PMSM name override. Leave blank for auto-"
+            "detect by tracing the FB-pin wire back to the motor's SIG bus.",
+            "Component name of the PMSM in this schematic.",
+        ),
+        "vsi_name": ParameterHelp(
+            "Optional explicit VSI name override. Leave blank when there is "
+            "only one 3φ VSI in the schematic (auto-detected).",
+            "Component name of the THREE_PHASE_VSI to drive.",
+        ),
+    },
 }
 
 _DATASHEET_SEARCH_TERMS: dict[str, str] = {

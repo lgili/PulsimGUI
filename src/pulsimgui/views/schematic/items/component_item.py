@@ -1407,6 +1407,31 @@ class FOCControllerItem(BlockComponentItem):
             return "FOC"
 
 
+class SixStepControllerItem(BlockComponentItem):
+    """Item for the basic 6-step (trapezoidal / 120°) BLDC controller.
+
+    Same SP / FB pin layout as :class:`FOCControllerItem` so the user can
+    swap one for the other on the same schematic and compare the
+    sinusoidal-current FOC behaviour against classic 6-step's quasi-
+    square current with two-of-six commutation per sector. Different
+    accent (cyan/teal) so the two blocks are visually distinct in a
+    side-by-side comparison.
+    """
+
+    ACCENT_COLOR = QColor(60, 175, 200)  # Cyan — distinct from FOC's magenta
+
+    def block_label(self) -> str:
+        return "6STEP"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters
+        ref = params.get("speed_ref_rpm", 0.0) or 0.0
+        try:
+            return f"{float(ref):g} rpm · 6-step"
+        except (TypeError, ValueError):
+            return "6STEP"
+
+
 class PFCBoostControllerItem(BlockComponentItem):
     """Item for the closed-loop PFC boost controller block.
 
@@ -4225,6 +4250,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.C_BLOCK: CBlockItem,
         ComponentType.FOC_CONTROLLER: FOCControllerItem,
         ComponentType.PFC_BOOST_CONTROLLER: PFCBoostControllerItem,
+        ComponentType.SIXSTEP_CONTROLLER: SixStepControllerItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
         ComponentType.SUBTRACTOR: SubtractorItem,

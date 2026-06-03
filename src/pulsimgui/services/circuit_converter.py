@@ -154,6 +154,10 @@ class CircuitConverter:
             # consumed later by ``_infer_pfc_loops``.
             if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
                 continue
+            # 6-Step BLDC controller — descriptor-only, consumed by
+            # ``_infer_sixstep_loops``.
+            if comp_type == ComponentType.SIXSTEP_CONTROLLER:
+                continue
             if comp_type == ComponentType.C_BLOCK and self._is_foc_marker(
                 component.get("parameters")
             ):
@@ -281,6 +285,16 @@ class CircuitConverter:
         try:
             foc_loops = self._infer_foc_loops(components)
             setattr(circuit, "foc_loop_descriptors", foc_loops)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
+        # Closed-loop 6-step BLDC: detect any SIXSTEP_CONTROLLER and emit a
+        # descriptor with the auto-detected VSI + PMSM names + outer-PI
+        # gains. Same mutex with the open-loop VSI path as FOC has — the
+        # backend excludes the controlled VSI from open-loop SPWM.
+        try:
+            sixstep_loops = self._infer_sixstep_loops(components)
+            setattr(circuit, "sixstep_loop_descriptors", sixstep_loops)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -683,6 +697,11 @@ class CircuitConverter:
             # SP (speed setpoint) and FB (motor feedback bus) are control-
             # domain inputs; they can be left unwired (parameters provide
             # fallbacks) without breaking the electrical netlist.
+            return True
+        if comp_type == ComponentType.SIXSTEP_CONTROLLER:
+            # SP (speed setpoint) and FB (motor feedback bus) are control-
+            # domain inputs; the 6-step controller can resolve the VSI / PMSM
+            # via parameter overrides if the wires are absent.
             return True
         if comp_type == ComponentType.PFC_BOOST_CONTROLLER:
             # VBUS / IL / VAC are signal-domain inputs that the parameter
@@ -3390,6 +3409,96 @@ class CircuitConverter:
             descriptors.append(
                 _make_descriptor(foc_comp, ComponentType.FOC_CONTROLLER)
             )
+        return descriptors
+
+    def _infer_sixstep_loops(
+        self,
+        components: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Detect a ``SIXSTEP_CONTROLLER`` and emit a descriptor binding it
+        to a native 3φ VSI + dynamic PMSM.
+
+        Same topology gate as :meth:`_infer_foc_loops` — a sixstep block,
+        a switched VSI, and a dynamic PMSM. The descriptor carries the
+        controlled VSI name + observed PMSM name plus the outer speed PI
+        gains, duty clamp, PWM frequency, and sector advance. The backend
+        ``_build_sixstep_loops`` consumes it at simulate time and drives
+        the VSI's six switches via a complementary mask whose bit pattern
+        depends on the sector (0..5) of the PMSM electrical angle, with
+        only the active high-side switch modulated by the PI duty.
+        """
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        six_blocks = by_type.get(ComponentType.SIXSTEP_CONTROLLER, [])
+        vsis = by_type.get(ComponentType.THREE_PHASE_VSI, [])
+        pmsms = by_type.get(ComponentType.PMSM, [])
+        if not six_blocks or not vsis or not pmsms:
+            return []
+
+        def _float(d: dict[str, Any], key: str, default: float) -> float:
+            val = d.get(key)
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        def _params_of(comp: dict[str, Any]) -> dict[str, Any]:
+            raw = comp.get("parameters")
+            return raw if isinstance(raw, dict) else {}
+
+        # Same FB-trace heuristic as the FOC path.
+        def _trace_pmsm_via_fb(sx_comp: dict[str, Any]) -> str:
+            pin_nodes = sx_comp.get("pin_nodes") or []
+            if len(pin_nodes) < 2:
+                return ""
+            fb_net = str(pin_nodes[1] or "").strip()
+            if not fb_net:
+                return ""
+            for motor in pmsms:
+                motor_pin_nodes = motor.get("pin_nodes") or []
+                if len(motor_pin_nodes) >= 5 and str(motor_pin_nodes[4] or "").strip() == fb_net:
+                    return self._component_name(motor, ComponentType.PMSM)
+            return ""
+
+        descriptors: list[dict[str, Any]] = []
+        for sx_comp in six_blocks:
+            params = _params_of(sx_comp)
+            pmsm_name = _trace_pmsm_via_fb(sx_comp)
+            if not pmsm_name:
+                pmsm_name = str(params.get("pmsm_name", "") or "").strip()
+            if not pmsm_name:
+                pmsm_name = self._component_name(pmsms[0], ComponentType.PMSM)
+            vsi_name = str(params.get("vsi_name", "") or "").strip()
+            if not vsi_name:
+                vsi_name = self._component_name(vsis[0], ComponentType.THREE_PHASE_VSI)
+            descriptors.append({
+                "name": self._component_name(sx_comp, ComponentType.SIXSTEP_CONTROLLER),
+                "vsi_name": vsi_name,
+                "pmsm_name": pmsm_name,
+                # --- speed (outer) PI -> duty ---
+                "speed_kp": _float(params, "speed_kp", 0.0025),
+                "speed_ki": _float(params, "speed_ki", 0.05),
+                # Output clamp on the duty fed into the active high-side.
+                "duty_max": _float(params, "duty_max", 0.95),
+                # --- references / ramp ---
+                "speed_ref_rpm": _float(params, "speed_ref_rpm", 1800.0),
+                "speed_ramp_s": _float(params, "speed_ramp_s", 0.10),
+                # PWM carrier on the active high-side switch.
+                "switching_frequency_hz": _float(
+                    params, "switching_frequency_hz", 20000.0
+                ),
+                # Sector advance (electrical degrees) — many production
+                # drives use a small ± offset to track BEMF peak.
+                "sector_advance_deg": _float(params, "sector_advance_deg", 0.0),
+            })
         return descriptors
 
     def _infer_pfc_loops(

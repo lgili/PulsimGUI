@@ -62,6 +62,10 @@ COMPONENT_LIBRARY = {
         # Drop-in field-oriented-control block. Wire SP ← speed reference,
         # FB ← PMSM SIG bus, and the converter auto-binds the 3φ VSI.
         {"type": ComponentType.FOC_CONTROLLER, "name": "FOC Drive", "shortcut": ""},
+        # Classic trapezoidal / 120° 6-step BLDC controller — the
+        # baseline most production fridge/HVAC compressor drives still
+        # use. Drop in to compare against FOC on the same PMSM rig.
+        {"type": ComponentType.SIXSTEP_CONTROLLER, "name": "6-Step", "shortcut": ""},
     ],
     "Power Conversion": [
         {"type": ComponentType.SINGLE_PHASE_DIODE_BRIDGE, "name": "1φ Bridge", "shortcut": ""},
@@ -165,6 +169,11 @@ QUICK_ADD_COMPONENTS = [
          "ccm", "dcm", "fator de potencia", "correção fator potencia",
          "elevador", "input current shaping", "sine reference",
          "voltage loop", "current loop", "cascaded pi"]),
+    (ComponentType.SIXSTEP_CONTROLLER, "6-Step BLDC Controller",
+        ["6 step", "6-step", "six step", "trapezoidal", "120", "120°",
+         "bldc", "trap drive", "block commutation", "comutacao",
+         "comutação", "production drive", "compressor drive",
+         "fridge drive", "low cost drive", "controle 6 passos"]),
 ]
 
 

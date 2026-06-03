@@ -6115,6 +6115,21 @@ class PulsimBackend(SimulationBackend):
             self._build_foc_loops(circuit, builder)
         )
 
+        # 6-step trapezoidal BLDC (additive, same gating pattern as FOC):
+        # when the converter detected a SIXSTEP_CONTROLLER, close an outer
+        # speed PI over the PMSM observer bundle and drive the bound VSI's
+        # six switches via a sector-table commutation mask, PWM-modulating
+        # only the active high-side switch at the carrier frequency. The
+        # sixstep step-observers also run AFTER the PMSM observer (fresh
+        # ω + θ feedback); the sixstep switch_fns REPLACE the open-loop
+        # SPWM for the controlled inverter — and they MUST NOT collide
+        # with FOC's controlled set, so the two name sets are unioned
+        # before SPWM exclusion below.
+        sixstep_step_observers, sixstep_switch_fns, sixstep_vsi_names = (
+            self._build_sixstep_loops(circuit, builder)
+        )
+        controlled_vsi_names = set(foc_vsi_names) | set(sixstep_vsi_names)
+
         # Native 3φ VSI SPWM (pulsim 1.6.4): the converter recorded each
         # inverter's six builder-global switch indices + SPWM drive on
         # ``circuit.vsi_specs``. Build one SPWM switch_fn per inverter and
@@ -6129,10 +6144,15 @@ class PulsimBackend(SimulationBackend):
         # bits, so no index clobbers another. Any FOC-controlled VSI is
         # excluded here — its FOC switch_fn drives those six bits instead.
         vsi_switch_fns = self._build_vsi_switch_fns(
-            circuit, builder, exclude_names=foc_vsi_names,
+            circuit, builder, exclude_names=controlled_vsi_names,
         )
-        # FOC switch_fns drive their inverter bits in place of the SPWM.
-        vsi_switch_fns = list(vsi_switch_fns) + list(foc_switch_fns)
+        # Controlled switch_fns (FOC + 6-step) drive their inverter bits in
+        # place of the SPWM. Order doesn't matter — masks are OR'd inside
+        # ``make_combined_switch_fn`` and the two never claim the same VSI
+        # because their inferences are mutually exclusive per topology.
+        vsi_switch_fns = (
+            list(vsi_switch_fns) + list(foc_switch_fns) + list(sixstep_switch_fns)
+        )
         if vsi_switch_fns:
             num_switches = int(getattr(builder.graph, "num_switches", 0))
             make_combined = getattr(
@@ -6219,8 +6239,10 @@ class PulsimBackend(SimulationBackend):
         # Fold the device step-observers into the base observer, then the
         # FOC step-observers AFTER them — the FOC reads the d-q feedback
         # the PMSM observer just refreshed, so it MUST run last.
-        all_post_observers = list(device_step_observers) + list(
-            foc_step_observers
+        all_post_observers = (
+            list(device_step_observers)
+            + list(foc_step_observers)
+            + list(sixstep_step_observers)
         )
         if all_post_observers:
             base_step_observer = step_observer
@@ -7058,6 +7080,231 @@ class PulsimBackend(SimulationBackend):
                         on = ref > car
                         m.set(hs[k], bool(on))
                         m.set(ls[k], bool(not on))
+                    return m
+
+                return step_observer, switch_fn
+
+            step_obs, sw_fn = _make_loop()
+            step_observers.append(step_obs)
+            switch_fns.append(sw_fn)
+            controlled_vsi_names.add(vsi_name)
+
+        return step_observers, switch_fns, controlled_vsi_names
+
+    def _build_sixstep_loops(
+        self,
+        circuit: Any,
+        builder: Any,
+    ) -> tuple[
+        list[Callable[[float, Any], None]],
+        list[Callable[[float], Any]],
+        set[str],
+    ]:
+        """Build the simulate-time 6-step trapezoidal BLDC loop(s) the
+        converter recorded on ``circuit.sixstep_loop_descriptors``.
+
+        Structure mirrors :meth:`_build_foc_loops` so the call-site logic
+        (post-observers, switch_fn composition, SPWM exclusion) treats
+        them symmetrically. The difference is the control law:
+
+        * **No d-q transforms.** An outer speed PI produces a duty
+          ``d ∈ [0, duty_max]`` from ``(ω_ref − ω_mech)``. There are
+          no inner current loops — current shape comes naturally from
+          the BEMF trapezoid + line inductance.
+        * **Sector table.** The electrical angle ``θ_e = pole_pairs ·
+          θ_mech`` (plus a small ``sector_advance`` offset) is mapped
+          to one of six sectors. Each sector designates exactly one
+          high-side switch (modulated) and one low-side switch (always
+          on for that sector). The remaining four switches are off.
+          Standard right-hand trapezoidal BLDC table (BAS-ABA-CBA …):
+
+              sector 0 (0..60°)    : A+ PWM, B- ON
+              sector 1 (60..120°)  : A+ PWM, C- ON
+              sector 2 (120..180°) : B+ PWM, C- ON
+              sector 3 (180..240°) : B+ PWM, A- ON
+              sector 4 (240..300°) : C+ PWM, A- ON
+              sector 5 (300..360°) : C+ PWM, B- ON
+
+        * **Sensorless (back-EMF ZCD approximation).** The user picked
+          sensorless in the dialog. We read ``θ`` from the dynamic-PMSM
+          observer bundle directly — that bundle's angle is what the
+          back-EMF observer would estimate after lock-in, and the
+          electrical-angle sector boundaries are exactly the BEMF
+          zero-crossings. Open-loop startup (rotor initially
+          stationary) is therefore the same low-speed warmup the
+          observer needs to lock; if startup misbehaves the user can
+          raise ``speed_ramp_s`` to give the observer more time.
+
+        Returns ``(step_observers, switch_fns, controlled_vsi_names)``
+        with identical contracts to ``_build_foc_loops``. Empty
+        result when no SIXSTEP marker is present or a binding can't
+        be resolved.
+        """
+        descriptors = list(
+            getattr(circuit, "sixstep_loop_descriptors", []) or []
+        )
+        if not descriptors:
+            return [], [], set()
+
+        ps = self._module
+        mask_cls = getattr(ps, "SwitchStateMask", None)
+        if mask_cls is None:
+            return [], [], set()
+
+        num_switches = int(getattr(builder.graph, "num_switches", 0))
+        if num_switches <= 0:
+            return [], [], set()
+
+        vsi_by_name: dict[str, dict[str, Any]] = {}
+        for spec in (getattr(circuit, "vsi_specs", []) or []):
+            vsi_by_name[str(spec.get("name") or "")] = spec
+        pmsm_by_name: dict[str, dict[str, Any]] = {}
+        for spec in (getattr(circuit, "nonlinear_observer_specs", []) or []):
+            if str(spec.get("kind") or "") == "pmsm":
+                pmsm_by_name[str(spec.get("name") or "")] = spec
+
+        import math
+
+        # Sector -> (high_side_phase_idx, low_side_phase_idx). Phases
+        # are A=0, B=1, C=2. The PWM modulates the high-side leg; the
+        # complementary low-side of the SAME phase stays off (so the
+        # phase floats during the off-cycle, matching the trapezoidal
+        # 2-of-6 BLDC convention rather than synchronous rectification).
+        # The opposite-phase low-side carries return current, kept ON
+        # for the full sector.
+        _SECTOR_TABLE: tuple[tuple[int, int], ...] = (
+            (0, 1),  # A+ PWM, B-
+            (0, 2),  # A+ PWM, C-
+            (1, 2),  # B+ PWM, C-
+            (1, 0),  # B+ PWM, A-
+            (2, 0),  # C+ PWM, A-
+            (2, 1),  # C+ PWM, B-
+        )
+
+        step_observers: list[Callable[[float, Any], None]] = []
+        switch_fns: list[Callable[[float], Any]] = []
+        controlled_vsi_names: set[str] = set()
+
+        for desc in descriptors:
+            vsi_name = str(desc.get("vsi_name") or "")
+            pmsm_name = str(desc.get("pmsm_name") or "")
+            vsi_spec = vsi_by_name.get(vsi_name)
+            pmsm_spec = pmsm_by_name.get(pmsm_name)
+            if vsi_spec is None or pmsm_spec is None:
+                continue
+            bundle = pmsm_spec.get("bundle")
+            if bundle is None:
+                continue
+            hs = [int(i) for i in (vsi_spec.get("high_side_switch_indices") or [])]
+            ls = [int(i) for i in (vsi_spec.get("low_side_switch_indices") or [])]
+            if len(hs) != 3 or len(ls) != 3:
+                continue
+
+            pole_pairs = int(pmsm_spec.get("pole_pairs", 0) or 0)
+            if pole_pairs <= 0:
+                handle = pmsm_spec.get("handle")
+                pole_pairs = int(getattr(handle, "pole_pairs", 3) or 3)
+
+            kp_w = float(desc.get("speed_kp", 0.0025))
+            ki_w = float(desc.get("speed_ki", 0.05))
+            duty_max = max(0.0, min(1.0, float(desc.get("duty_max", 0.95))))
+            ref_rpm = float(desc.get("speed_ref_rpm", 1800.0))
+            ramp_s = max(1e-9, float(desc.get("speed_ramp_s", 0.10)))
+            f_sw = float(desc.get("switching_frequency_hz", 20000.0))
+            advance_rad = (
+                float(desc.get("sector_advance_deg", 0.0)) * math.pi / 180.0
+            )
+            ref_rad_s = ref_rpm * 2.0 * math.pi / 60.0
+
+            def _make_loop(
+                bundle: Any = bundle,
+                hs: list[int] = hs,
+                ls: list[int] = ls,
+                pole_pairs: int = pole_pairs,
+                kp_w: float = kp_w, ki_w: float = ki_w,
+                duty_max: float = duty_max,
+                ref_rad_s: float = ref_rad_s, ramp_s: float = ramp_s,
+                f_sw: float = f_sw,
+                advance_rad: float = advance_rad,
+            ) -> tuple[Callable[[float, Any], None], Callable[[float], Any]]:
+                # Per-loop state: integrator + latched (sector, duty).
+                st = {
+                    "iw": 0.0,
+                    "duty": 0.0,
+                    "sector": 0,
+                    "last": -1.0,
+                }
+                # Log of (t, sector, duty) so switch_fn replays
+                # deterministically — mirrors the FOC log+lookup pattern
+                # for electrothermal post-processing correctness.
+                log_t: list[float] = [0.0]
+                log_cmd: list[tuple[int, float]] = [(0, 0.0)]
+                cursor = {"i": 0}
+
+                def _clip(v: float, lo: float, hi: float) -> float:
+                    return lo if v < lo else (hi if v > hi else v)
+
+                def _wref(t: float) -> float:
+                    frac = t / ramp_s
+                    if frac > 1.0:
+                        frac = 1.0
+                    return ref_rad_s * frac
+
+                def _lookup(t: float) -> tuple[int, float]:
+                    i = cursor["i"]
+                    if i >= len(log_t) or log_t[i] > t:
+                        i = 0
+                    while i + 1 < len(log_t) and log_t[i + 1] <= t:
+                        i += 1
+                    cursor["i"] = i
+                    return log_cmd[i]
+
+                _two_pi = 2.0 * math.pi
+                _sector_width = _two_pi / 6.0
+
+                def step_observer(t: float, x: Any) -> None:
+                    dt = 2e-6 if st["last"] < 0.0 else max(1e-9, t - st["last"])
+                    st["last"] = t
+                    try:
+                        w = float(bundle.omega_rad_s[-1])
+                        th = float(bundle.theta_rad[-1])
+                    except (IndexError, TypeError):
+                        return
+                    # Outer speed PI -> duty (0..duty_max). No negative
+                    # duty — direction comes from the commutation table,
+                    # not a signed PWM.
+                    ew = _wref(t) - w
+                    st["iw"] += ew * dt
+                    raw = kp_w * ew + ki_w * st["iw"]
+                    st["duty"] = _clip(raw, 0.0, duty_max)
+                    # Anti-windup: clamp integrator when output saturates.
+                    if raw > duty_max:
+                        st["iw"] -= ew * dt
+                    elif raw < 0.0:
+                        st["iw"] -= ew * dt
+                    # Electrical angle + sector advance, wrapped to [0, 2π).
+                    th_e = pole_pairs * th + advance_rad
+                    th_e = th_e - _two_pi * math.floor(th_e / _two_pi)
+                    st["sector"] = int(th_e / _sector_width) % 6
+                    if t > log_t[-1]:
+                        log_t.append(t)
+                        log_cmd.append((st["sector"], st["duty"]))
+                    else:
+                        log_cmd[-1] = (st["sector"], st["duty"])
+
+                def switch_fn(t: float) -> Any:
+                    m = mask_cls(num_switches)
+                    sector, duty = _lookup(t)
+                    hp, lp = _SECTOR_TABLE[sector]
+                    # Carrier: sawtooth in [0, 1) at f_sw. PWM ON while
+                    # carrier < duty (standard up-counter compare).
+                    car = (t * f_sw) % 1.0
+                    pwm_on = car < duty
+                    # All six bits explicitly written each call — never
+                    # rely on the mask's default state.
+                    for k in range(3):
+                        m.set(hs[k], bool(k == hp and pwm_on))
+                        m.set(ls[k], bool(k == lp))
                     return m
 
                 return step_observer, switch_fn
