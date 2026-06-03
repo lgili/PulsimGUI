@@ -821,6 +821,16 @@ class MainWindow(QMainWindow):
         )
         self.action_foster_fit.triggered.connect(self._on_show_foster_fit)
 
+        # pulsim 1.7 — TIM + convection sizing helpers.
+        self.action_thermal_sizing = QAction("Thermal &Sizing (TIM + Convection)…", self)
+        self.action_thermal_sizing.setToolTip(
+            "Compute the case-to-sink resistance from a TIM material + "
+            "bond-line geometry, and the sink-to-ambient resistance "
+            "from heatsink area + airflow. Use the resulting K/W "
+            "values in the HEATSINK and device thermal-port fields."
+        )
+        self.action_thermal_sizing.triggered.connect(self._on_show_thermal_sizing)
+
         # Wave-4 sub-A 1.4 — loss & efficiency dashboard.
         self.action_losses_dashboard = QAction("&Losses && Efficiency…", self)
         self.action_losses_dashboard.setToolTip(
@@ -944,6 +954,7 @@ class MainWindow(QMainWindow):
         sim_menu.addAction(self.action_parameter_sweep)
         sim_menu.addAction(self.action_thermal_viewer)
         sim_menu.addAction(self.action_foster_fit)
+        sim_menu.addAction(self.action_thermal_sizing)
         sim_menu.addAction(self.action_losses_dashboard)
         sim_menu.addSeparator()
         # Wave-4 sub-B — new analysis modes.
@@ -4029,6 +4040,22 @@ class MainWindow(QMainWindow):
             FosterFitDialog,
         )
         dialog = FosterFitDialog(self)
+        dialog.show()
+
+    def _on_show_thermal_sizing(self) -> None:
+        """Open the TIM + Convection sizing helper dialog (pulsim 1.7+).
+
+        Non-modal sketchpad — does not touch the schematic. The user
+        plays with TIM material / thickness / area to get an
+        R_th_case_to_sink, and with sink area + airflow to get an
+        R_th_sink_to_amb, then copies those values into the HEATSINK +
+        device fields manually. The dialog has no Apply button: the
+        decision of where to paste the answers belongs to the user.
+        """
+        from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+            ThermalSizingDialog,
+        )
+        dialog = ThermalSizingDialog(self)
         dialog.show()
 
     def _on_show_thermal_viewer(self) -> None:
