@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Claude Code runtime state — session locks, scheduled-task spool,
+# transient worktree metadata. Project artefacts stay tracked
+# (e.g. .claude/commands/*.md if the team checks those in).
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
 # C extensions
 *.so
 
