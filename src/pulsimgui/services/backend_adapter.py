@@ -3574,6 +3574,15 @@ class PulsimBackend(SimulationBackend):
         if isinstance(tl_trips, list) and tl_trips:
             result.statistics["thermal_limit_trips"] = tl_trips
 
+        # Special key: self-consistent electrothermal steady-state
+        # records from ``_compute_electrothermal_steady_state``. Only
+        # present when at least one device opted into a non-zero loss
+        # tempco — runaway detection is a sizing-time answer that
+        # belongs alongside the legacy shared-heatsink result.
+        eth_ss = virtual_channels.get("__electrothermal_steady_state__")
+        if isinstance(eth_ss, list) and eth_ss:
+            result.statistics["electrothermal_steady_state"] = eth_ss
+
         # Special key: raw pulsim ``SimulationResult`` mounted on
         # ``result.raw_kernel_result`` so post-processing helpers
         # (e.g. ``_repair_current_probe_channels_from_bypass``) can
@@ -3590,6 +3599,7 @@ class PulsimBackend(SimulationBackend):
                 "__kernel_result__",
                 "__shared_heatsink_results__",
                 "__thermal_limit_trips__",
+                "__electrothermal_steady_state__",
             ):
                 continue  # handled above as statistics / raw_kernel_result
             channel_name = str(raw_name or "").strip()
@@ -6531,6 +6541,13 @@ class PulsimBackend(SimulationBackend):
             electrothermal_rows=electrothermal_rows,
         )
 
+        # Shared component lookup for per-device post-sim helpers
+        # (ThermalLimitMonitor, TempCoLoss/electrothermal). The
+        # converter stashes ``components_by_name`` on the Circuit shim.
+        comp_lookup = dict(
+            getattr(circuit, "components_by_name", {}) or {},
+        )
+
         # Per-device junction-temperature limit check (pulsim 1.7
         # ``ThermalLimitMonitor``). For every device that opted in via
         # ``thermal_t_max_C > 0``, replay its temperature_trace through
@@ -6540,10 +6557,22 @@ class PulsimBackend(SimulationBackend):
         # didn't opt in are silently skipped — empty result list means
         # "no trip" AND "nobody asked".
         thermal_limit_trips = self._check_thermal_limits(
-            component_lookup=dict(
-                getattr(circuit, "components_by_name", {}) or {},
-            ),
+            component_lookup=comp_lookup,
             electrothermal_rows=electrothermal_rows,
+        )
+
+        # Self-consistent electrothermal steady-state (pulsim 1.7
+        # ``electrothermal_steady_state`` + ``TempCoLoss``). When any
+        # device on a heatsink has a non-zero loss tempco
+        # (``loss_a_cond_per_C`` or ``loss_a_sw_per_C``), solve the
+        # coupled fixed-point at the converged T_j and surface it on
+        # ``result.statistics["electrothermal_steady_state"]``. Empty
+        # when all tempcos are zero — that case reduces exactly to
+        # ``shared_heatsink_steady_state`` already computed above.
+        electrothermal_ss = self._compute_electrothermal_steady_state(
+            circuit=circuit,
+            electrothermal_rows=electrothermal_rows,
+            component_lookup=comp_lookup,
         )
 
         # Pull arrays in the same layout the legacy streaming API
@@ -6554,7 +6583,10 @@ class PulsimBackend(SimulationBackend):
         # into ``result.signals`` / ``result.statistics`` by the
         # caller.
         virtual_payload: dict[str, Any] | None = None
-        if electrothermal_rows or shared_heatsink_results or thermal_limit_trips:
+        if (
+            electrothermal_rows or shared_heatsink_results
+            or thermal_limit_trips or electrothermal_ss
+        ):
             virtual_payload = {
                 "__electrothermal_rows__": electrothermal_rows,
                 # New: per-sink coupled steady-state — list of dicts
@@ -6566,6 +6598,11 @@ class PulsimBackend(SimulationBackend):
                 # ``result.statistics["thermal_limit_trips"]`` — a list
                 # of records (one per opted-in device).
                 "__thermal_limit_trips__": thermal_limit_trips,
+                # New: self-consistent electrothermal steady-state. Each
+                # record carries ``runaway`` + ``feedback_gain`` (margin
+                # = 1 − ρ) so the UI can warn about thermal runaway
+                # BEFORE the user blows up real hardware.
+                "__electrothermal_steady_state__": electrothermal_ss,
                 # Temperature traces keyed as ``T(<device>)`` so the
                 # thermal_service's ``_collect_transient_thermal_traces``
                 # finds them via its existing T(…)/T_<…> heuristics.
@@ -6748,6 +6785,257 @@ class PulsimBackend(SimulationBackend):
                 "T_sink_C": t_sink,
                 "devices": device_tj,
                 "powers_W": dict(powers),
+            })
+        return results
+
+    def _compute_electrothermal_steady_state(
+        self,
+        *,
+        circuit: Any,
+        electrothermal_rows: list[dict[str, Any]],
+        component_lookup: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Self-consistent ``T_j`` with temperature-dependent loss.
+
+        Wraps :func:`pulsim.thermal.electrothermal_steady_state` for
+        every HEATSINK descriptor whose devices have at least one
+        non-zero temperature coefficient (``loss_a_cond_per_C`` or
+        ``loss_a_sw_per_C``). When all tempcos are zero, this solver
+        reduces exactly to ``shared_heatsink_steady_state`` — already
+        run by :meth:`_compute_shared_heatsink_steady_state` — so we
+        skip it to keep the result list clean.
+
+        Why this matters: the legacy thermal pipeline assumes losses
+        are temperature-independent. Real silicon disagrees — a MOSFET
+        gets hotter, ``Rds_on`` rises, conduction loss rises, the
+        device gets *even hotter*. If the positive feedback gain
+        ``ρ(M·K) ≥ 1`` the device runs away. The closed-form
+        electrothermal solver returns ``runaway=True`` BEFORE the user
+        blows up a real part on the bench.
+
+        Returns one record per heatsink with non-trivial tempcos::
+
+            {
+              "name": "HS_PFC",
+              "T_amb_C": 40.0,
+              "R_th_sink_to_amb_K_per_W": 3.0,
+              "converged": True,
+              "runaway": False,
+              "feedback_gain": 0.42,   # ρ(M·K); margin = 1 − ρ
+              "T_sink_C": 92.1,
+              "devices": {"Q1": 105.4, "Q2": 118.2},
+              "final_powers_W": {"Q1": 5.3, "Q2": 11.4},  # T-corrected
+              "reference_powers_W": {"Q1": 5.0, "Q2": 10.0},  # what fed in
+            }
+
+        For runaway (no stable equilibrium)::
+
+            {
+              "name": "HS_PFC",
+              "converged": False,
+              "runaway": True,
+              "feedback_gain": 1.07,
+              "message": "Thermal runaway — ρ(M·K)=1.07 ≥ 1.",
+              "T_amb_C": 40.0,
+              "R_th_sink_to_amb_K_per_W": 3.0,
+            }
+
+        Empty list when:
+          * no HEATSINK descriptors;
+          * pulsim 1.7 lacks ``electrothermal_steady_state`` / ``TempCoLoss``;
+          * every device in every descriptor has tempcos = 0 (nothing
+            new vs the already-computed shared_heatsink result).
+        """
+        descriptors = list(
+            getattr(circuit, "shared_heatsink_descriptors", []) or []
+        )
+        if not descriptors:
+            return []
+        try:
+            import pulsim.thermal as pt
+        except Exception:  # noqa: BLE001
+            return []
+        if not (hasattr(pt, "electrothermal_steady_state") and hasattr(pt, "TempCoLoss")):
+            return []
+
+        # Power lookups: per-device totals AND per-stage breakdowns so
+        # the conduction tempco is anchored only to P_cond and the
+        # switching tempco only to P_sw (mixing them would skew the
+        # closed-form fixed point).
+        ref_total: dict[str, float] = {}
+        ref_cond: dict[str, float] = {}
+        ref_sw: dict[str, float] = {}
+        for row in electrothermal_rows or []:
+            name = str(row.get("component_name") or "").strip()
+            if not name:
+                continue
+            cond = 0.0
+            sw = 0.0
+            for key, target in (
+                ("conduction", "cond"),
+                ("turn_on", "sw"),
+                ("turn_off", "sw"),
+            ):
+                stage = row.get(key)
+                if not isinstance(stage, dict):
+                    continue
+                p_avg = float(stage.get("P_avg_W", 0.0) or 0.0)
+                if target == "cond":
+                    cond += p_avg
+                else:
+                    sw += p_avg
+            ref_cond[name] = cond
+            ref_sw[name] = sw
+            ref_total[name] = cond + sw
+
+        results: list[dict[str, Any]] = []
+        for desc in descriptors:
+            sink_name = str(desc.get("name") or "")
+            T_amb_C = float(desc.get("T_amb_C", 25.0) or 25.0)
+            R_th_sa = float(
+                desc.get("R_th_sink_to_amb_K_per_W", 5.0) or 5.0
+            )
+            device_specs = list(desc.get("devices") or [])
+            if not device_specs:
+                continue
+
+            heatsink_devices: list[Any] = []
+            loss_models: dict[str, Any] = {}
+            ref_powers_for_sink: dict[str, float] = {}
+            saw_nonzero_tempco = False
+            for dev in device_specs:
+                dname = str(dev.get("device_name") or "").strip()
+                if not dname or dname not in ref_total:
+                    continue
+                # Pull tempcos from the component's params (NOT the
+                # descriptor — the descriptor carries thermal stack
+                # only; tempcos live on the device itself).
+                comp = component_lookup.get(dname)
+                params = self._params_of(comp)
+                try:
+                    a_cond = float(params.get("loss_a_cond_per_C", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    a_cond = 0.0
+                try:
+                    a_sw = float(params.get("loss_a_sw_per_C", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    a_sw = 0.0
+                # Reference temperature: re-use the per-device
+                # ``thermal_temp_ref`` (defaults to 25 °C, matches the
+                # datasheet "T_j = 25 °C" condition).
+                try:
+                    T_ref = float(params.get("thermal_temp_ref", 25.0) or 25.0)
+                except (TypeError, ValueError):
+                    T_ref = 25.0
+
+                if a_cond != 0.0 or a_sw != 0.0:
+                    saw_nonzero_tempco = True
+
+                # Build the HeatsinkDevice using the same Foster math
+                # as the shared-heatsink solver — no point diverging.
+                stages = self._foster_stages_from_csv(
+                    dev.get("thermal_rth_stages", ""),
+                    dev.get("thermal_cth_stages", ""),
+                ) or self._foster_stages_from_single_rc(
+                    float(dev.get("thermal_rth_K_per_W", 1.0) or 1.0),
+                    float(dev.get("thermal_cth_J_per_K", 0.1) or 0.1),
+                )
+                try:
+                    hsd = pt.HeatsinkDevice(
+                        name=dname,
+                        junction_to_case=stages,
+                        R_th_case_to_sink_K_per_W=float(
+                            dev.get("R_th_case_to_sink_K_per_W", 0.0) or 0.0
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                heatsink_devices.append(hsd)
+
+                try:
+                    loss_models[dname] = pt.TempCoLoss(
+                        P_cond_ref_W=ref_cond.get(dname, 0.0),
+                        P_sw_ref_W=ref_sw.get(dname, 0.0),
+                        a_cond_per_C=a_cond,
+                        a_sw_per_C=a_sw,
+                        T_ref_C=T_ref,
+                    )
+                except Exception:  # noqa: BLE001
+                    # Drop the device pair atomically so we don't end up
+                    # with a HeatsinkDevice that has no loss model.
+                    heatsink_devices.pop()
+                    continue
+                ref_powers_for_sink[dname] = ref_total.get(dname, 0.0)
+
+            if not saw_nonzero_tempco:
+                continue  # tempcos all zero — no value over shared steady-state
+            if not heatsink_devices:
+                continue
+
+            try:
+                solved = pt.electrothermal_steady_state(
+                    heatsink_devices,
+                    loss_models,
+                    R_th_sink_to_amb_K_per_W=R_th_sa,
+                    T_amb_C=T_amb_C,
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append({
+                    "name": sink_name,
+                    "T_amb_C": T_amb_C,
+                    "R_th_sink_to_amb_K_per_W": R_th_sa,
+                    "converged": False,
+                    "runaway": False,
+                    "feedback_gain": float("nan"),
+                    "message": f"electrothermal solve failed: {exc!s}",
+                    "reference_powers_W": dict(ref_powers_for_sink),
+                })
+                continue
+
+            converged = bool(solved.get("converged", True))
+            runaway = bool(solved.get("runaway", False))
+            feedback_gain = float(solved.get("feedback_gain", float("nan")))
+
+            if not converged or runaway:
+                results.append({
+                    "name": sink_name,
+                    "T_amb_C": T_amb_C,
+                    "R_th_sink_to_amb_K_per_W": R_th_sa,
+                    "converged": converged,
+                    "runaway": runaway,
+                    "feedback_gain": feedback_gain,
+                    "message": str(solved.get("message", "thermal runaway")),
+                    "reference_powers_W": dict(ref_powers_for_sink),
+                })
+                continue
+
+            # Stable solve — flatten the same shape as
+            # _compute_shared_heatsink_steady_state.
+            t_sink = float(solved.get("T_sink_C", T_amb_C))
+            device_tj: dict[str, float] = {}
+            dev_results = solved.get("devices") or {}
+            if isinstance(dev_results, dict):
+                for dname, payload in dev_results.items():
+                    if isinstance(payload, dict):
+                        device_tj[str(dname)] = float(
+                            payload.get("T_j_C", t_sink)
+                        )
+                    else:
+                        device_tj[str(dname)] = float(payload)
+            final_powers = solved.get("final_powers_W") or {}
+            results.append({
+                "name": sink_name,
+                "T_amb_C": T_amb_C,
+                "R_th_sink_to_amb_K_per_W": R_th_sa,
+                "converged": True,
+                "runaway": False,
+                "feedback_gain": feedback_gain,
+                "T_sink_C": t_sink,
+                "devices": device_tj,
+                "final_powers_W": {
+                    str(k): float(v) for k, v in final_powers.items()
+                },
+                "reference_powers_W": dict(ref_powers_for_sink),
             })
         return results
 

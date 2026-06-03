@@ -1337,6 +1337,19 @@ DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
     # avoids chatter when T_j hovers right at the limit.
     "thermal_t_max_C": 0.0,
     "thermal_t_max_hysteresis_C": 0.0,
+    # Linear temperature-coefficient of loss (pulsim 1.7
+    # ``TempCoLoss``). Multipliers on the conduction / switching
+    # reference power: ``P(T_j) = P_ref · (1 + α · (T_j − T_ref))``.
+    # Defaults to 0 (temperature-independent — behaves like the
+    # legacy isolated/coupled paths). Typical values from datasheets:
+    #   * MOSFET conduction (Rds_on rises with T): a_cond ≈ +0.006
+    #   * Diode conduction  (V_f falls with T):    a_cond ≈ −0.002
+    #   * Switching energy:                         a_sw   ≈ +0.001
+    # When non-zero, the backend runs the coupled fixed-point solve
+    # (``electrothermal_steady_state``) which can detect THERMAL
+    # RUNAWAY (ρ(M·K) ≥ 1) before the user blows up a real device.
+    "loss_a_cond_per_C": 0.0,
+    "loss_a_sw_per_C": 0.0,
 }
 
 DEFAULT_SWITCHING_ENERGY_PARAMS: dict[str, Any] = {
