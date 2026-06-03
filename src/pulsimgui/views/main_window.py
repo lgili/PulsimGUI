@@ -4459,6 +4459,23 @@ class MainWindow(QMainWindow):
             if series is not None:
                 return list(series)
 
+        # Case-insensitive probe-name sweep — picks up keys the kernel
+        # emits with slightly different casing or whose body matches the
+        # probe component name (e.g. ``I_L`` vs ``i_l`` vs ``I(I_L)``).
+        # This is the path that historically fell through for current
+        # probes whose kernel-side name didn't match what the GUI
+        # remembered (1.1.2 user report on ex 20).
+        if component_name:
+            needle = component_name.lower()
+            for key, series in result.signals.items():
+                key_str = str(key)
+                if key_str.lower() == needle:
+                    return list(series)
+                if "(" in key_str and key_str.endswith(")"):
+                    body = key_str[key_str.index("(") + 1 : -1]
+                    if body.lower() == needle:
+                        return list(series)
+
         # Case-insensitive fuzzy sweep using the node label's body.
         if node_label:
             needle = node_label.lower()
@@ -4468,6 +4485,25 @@ class MainWindow(QMainWindow):
                     body = key_str[key_str.index("(") + 1 : -1]
                     if body.lower() == needle:
                         return list(series)
+
+        # No match — emit a one-line warning with the probe name and
+        # the available kernel signal keys (capped) so a confused user
+        # can paste it in a bug report and we can extend the candidates
+        # list rather than guessing. Using a print() so the message
+        # appears in the same stream the user already monitors (the
+        # ``Application Output`` panel attached to the launcher); the
+        # GUI hasn't initialised a logger here historically.
+        try:
+            available = sorted(str(k) for k in result.signals.keys())[:30]
+            print(
+                f"[PulsimGUI] probe lookup failed — component_name={component_name!r} "
+                f"node_label={node_label!r} node_id={node_id!r} "
+                f"kernel_prefix={kernel_prefix!r}\n"
+                f"             first kernel signal keys: {available}",
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
     def _on_dc_finished(self, result) -> None:
