@@ -194,3 +194,204 @@ def test_full_dialog_constructs_all_three_tabs(qtbot) -> None:
     assert dialog._tabs.count() == 3
     assert dialog.tim_sizer.current_R_th() is not None
     assert dialog.convection_sizer.current_R_th() is not None
+
+
+# ---------------------------------------------------------------------------
+# Apply-to-selected callbacks
+# ---------------------------------------------------------------------------
+
+
+def _fake_main_window(*, selected_items: list, captured_commands: list):
+    """A QWidget subclass that quacks like enough of a MainWindow for
+    the dialog's Apply buttons + duck-typed selection walk to work.
+
+    Two reasons we need a real QWidget rather than a SimpleNamespace:
+      * ``QDialog(parent=...)`` validates the parent's runtime type.
+      * The dialog uses ``self.parent()`` (a Qt accessor) to reach
+        the main window — that only returns objects Qt set via the
+        parent slot.
+
+    Quacks like:
+      * ``_schematic_scene.selectedItems()`` → list of fake items
+        (each with a ``.component`` attribute, duck-typed against
+        the dialog's filter).
+      * ``_execute_schematic_command(cmd, **k)`` → records the cmd.
+      * ``_current_circuit()`` → returns None (the command snapshots
+        don't need a real circuit, just the component dict shape).
+    """
+    from PySide6.QtWidgets import QWidget
+
+    class _FakeMainWindow(QWidget):
+        def __init__(self):
+            super().__init__()
+            self._schematic_scene = type(
+                "Scene", (), {"selectedItems": staticmethod(
+                    lambda: list(selected_items),
+                )},
+            )()
+            self._current_circuit = lambda: None
+
+        def _execute_schematic_command(self, cmd, **kwargs):
+            captured_commands.append(cmd)
+
+    return _FakeMainWindow()
+
+
+def _fake_item(component):
+    """An object that duck-types as a ComponentItem for the dialog's
+    selection walk — it just exposes ``.component``."""
+    import types
+    return types.SimpleNamespace(component=component)
+
+
+def test_apply_callback_omitted_when_no_main_window_parent(qtbot) -> None:
+    """Without a MainWindow-shaped parent the Apply buttons must not
+    render — otherwise the user gets a button that crashes on click."""
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+
+    dialog = ThermalSizingDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.tim_sizer._apply_button is None
+    assert dialog.convection_sizer._apply_button is None
+
+
+def test_apply_buttons_present_when_parent_looks_like_main_window(qtbot) -> None:
+    """A parent that quacks like a MainWindow enables the Apply
+    buttons. Both sub-widgets must show one."""
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    fake_mw = _fake_main_window(selected_items=[], captured_commands=[])
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    assert dialog.tim_sizer._apply_button is not None
+    assert dialog.convection_sizer._apply_button is not None
+
+
+def test_apply_with_no_selection_returns_user_friendly_message(qtbot) -> None:
+    """Click "Apply to HS" when nothing is selected → status label
+    asks the user to select a HEATSINK first; no mutation attempted."""
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    captured: list = []
+    fake_mw = _fake_main_window(selected_items=[], captured_commands=captured)
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    status = dialog._apply_to_selected_heatsink_convection(5.0)
+    assert "Select a HEATSINK" in status
+    assert captured == []
+
+
+def test_apply_convection_writes_R_th_sink_to_amb_on_selected_heatsink(qtbot) -> None:
+    """Selected HEATSINK + clicked Apply → an
+    ``UpdateComponentStateCommand`` runs through the schematic pipeline
+    with the new ``R_th_sink_to_amb_K_per_W`` in its patch."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    hs = Component(type=ComponentType.HEATSINK, name="HS1")
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(hs)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    status = dialog._apply_to_selected_heatsink_convection(7.5)
+
+    assert "HS1" in status
+    assert "7.5" in status
+    assert len(captured) == 1
+    cmd = captured[0]
+    # ``UpdateComponentStateCommand`` exposes ``new_state``.
+    new_state = getattr(cmd, "new_state", None) or getattr(cmd, "_new_state", None)
+    assert new_state is not None
+    assert new_state["parameters"]["R_th_sink_to_amb_K_per_W"] == 7.5
+
+
+def test_apply_tim_appends_into_first_slot_of_case_csv(qtbot) -> None:
+    """The TIM tab writes into ``case_to_sink_R_th_csv`` slot 1 while
+    preserving slots 2+. This lets the user fill the first device's
+    TIM via the dialog and edit the rest manually."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    hs = Component(type=ComponentType.HEATSINK, name="HS_PFC")
+    hs.parameters["case_to_sink_R_th_csv"] = "0.3, 0.5, 0.7"
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(hs)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    status = dialog._apply_to_selected_heatsink_tim(0.42)
+
+    assert "HS_PFC" in status
+    assert "slot 1" in status
+    assert len(captured) == 1
+    new_state = getattr(captured[0], "new_state", None) or getattr(
+        captured[0], "_new_state", None,
+    )
+    csv = new_state["parameters"]["case_to_sink_R_th_csv"]
+    parts = [t.strip() for t in csv.split(",")]
+    assert parts[0] == "0.42"
+    assert parts[1] == "0.5"
+    assert parts[2] == "0.7"
+
+
+def test_apply_tim_on_empty_csv_creates_first_slot(qtbot) -> None:
+    """A HEATSINK that has never had case_to_sink CSV edited starts
+    with an empty string. Applying TIM creates a single-entry CSV
+    (the converter reads remaining slots as 0, which is the right
+    default)."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    hs = Component(type=ComponentType.HEATSINK, name="HS")
+    hs.parameters["case_to_sink_R_th_csv"] = ""
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(hs)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    dialog._apply_to_selected_heatsink_tim(0.5)
+
+    new_state = getattr(captured[0], "new_state", None) or getattr(
+        captured[0], "_new_state", None,
+    )
+    assert new_state["parameters"]["case_to_sink_R_th_csv"] == "0.5"
+
+
+def test_apply_ignores_non_heatsink_selection(qtbot) -> None:
+    """If the user has a MOSFET selected (not a HEATSINK), the Apply
+    button must refuse — not write to the wrong component."""
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.views.dialogs.thermal_sizing_dialog import (
+        ThermalSizingDialog,
+    )
+    mosfet = Component(type=ComponentType.MOSFET_N, name="Q1")
+
+    captured: list = []
+    fake_mw = _fake_main_window(
+        selected_items=[_fake_item(mosfet)], captured_commands=captured,
+    )
+    qtbot.addWidget(fake_mw)
+    dialog = ThermalSizingDialog(parent=fake_mw)
+    qtbot.addWidget(dialog)
+    status = dialog._apply_to_selected_heatsink_convection(5.0)
+    assert "Select a HEATSINK" in status
+    assert captured == []

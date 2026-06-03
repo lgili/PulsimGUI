@@ -36,7 +36,7 @@ error message in the readout instead of an exception.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
@@ -58,6 +58,17 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+# Callback signature for the "Apply to selected HEATSINK" buttons.
+# The widget passes its current R_th [K/W] to the callback. The
+# callback returns a status message:
+#   * "" → success (typically prefixed with a check + the sink name)
+#   * non-empty string → human-readable error (e.g. "Select a HEATSINK first")
+# Widgets show the returned message in a small status label below
+# the buttons. Returning None is treated the same as "" (success
+# without text).
+ApplyCallback = Callable[[float], str]
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +151,14 @@ class TIMSizerWidget(QWidget):
     """Calculator for the case-to-sink R_th via a thermal-interface
     material. Live-updates as values change."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        apply_callback: ApplyCallback | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._apply_callback = apply_callback
         layout = QFormLayout(self)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -201,7 +218,37 @@ class TIMSizerWidget(QWidget):
         self._copy_button.clicked.connect(self._copy_result)
         result_row.addWidget(self._result_label, 1)
         result_row.addWidget(self._copy_button)
+        # "Apply to selected HEATSINK (slot 1)" button — appears only
+        # when the dialog wires the apply_callback. The result of the
+        # TIM calculator is the R_th_case_to_sink of ONE device on the
+        # heatsink; the HEATSINK component stores per-slot values in
+        # a CSV (positionally aligned with DEV_k pins). We write to
+        # the first slot — the common case is one MOSFET on one
+        # heatsink. Multi-slot edits stay manual.
+        if self._apply_callback is not None:
+            self._apply_button = QPushButton("Apply to HS")
+            self._apply_button.setFixedWidth(96)
+            self._apply_button.setToolTip(
+                "Write this R_th into slot 1 of the selected HEATSINK's "
+                "case_to_sink_R_th_csv field. Preserves any existing "
+                "slot 2+ entries. Requires a HEATSINK to be selected "
+                "on the schematic."
+            )
+            self._apply_button.clicked.connect(self._on_apply_clicked)
+            result_row.addWidget(self._apply_button)
+        else:
+            self._apply_button = None
         layout.addRow("→ R_th_case_to_sink", result_row)
+
+        # Status label for the Apply button — shows success/error text
+        # after a click. Empty by default.
+        self._apply_status = QLabel("")
+        self._apply_status.setWordWrap(True)
+        self._apply_status.setStyleSheet(
+            "color: #4a5568; font-size: 11px; padding-top: 2px;"
+        )
+        if self._apply_button is not None:
+            layout.addRow("", self._apply_status)
 
         tip = QLabel(
             "Typical values: TO-220 + grease ≈ 0.5 K/W; TO-247 + pad ≈ "
@@ -213,6 +260,29 @@ class TIMSizerWidget(QWidget):
 
         # Initialise display.
         self._recompute()
+
+    def _on_apply_clicked(self) -> None:
+        """Invoke the dialog-supplied callback with the current R_th
+        and surface the returned status in the small label below the
+        buttons. Callback is None-safe so the button can be wired up
+        in tests without driving the full main_window."""
+        value = getattr(self, "_last_value", None)
+        if value is None or self._apply_callback is None:
+            return
+        try:
+            status = self._apply_callback(float(value))
+        except Exception as exc:  # noqa: BLE001 — surface, don't crash
+            status = f"Error: {exc}"
+        self._apply_status.setText(status or "")
+        # Red-ish for error messages, neutral for success.
+        if status and status.lower().startswith(("error", "select")):
+            self._apply_status.setStyleSheet(
+                "color: #c53030; font-size: 11px; padding-top: 2px;"
+            )
+        else:
+            self._apply_status.setStyleSheet(
+                "color: #2f855a; font-size: 11px; padding-top: 2px;"
+            )
 
     # The "(custom k…)" option keeps the k_spin editable; selecting a
     # catalog entry locks k_spin to the catalog value.
@@ -264,8 +334,14 @@ class ConvectionSizerWidget(QWidget):
     """Calculator for the sink-to-ambient R_th via natural / forced
     convection. Live-updates as values change."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        apply_callback: ApplyCallback | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._apply_callback = apply_callback
         layout = QFormLayout(self)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -314,7 +390,30 @@ class ConvectionSizerWidget(QWidget):
         self._copy_button.clicked.connect(self._copy_result)
         result_row.addWidget(self._result_label, 1)
         result_row.addWidget(self._copy_button)
+        # "Apply to selected HEATSINK" — same pattern as the TIM tab.
+        # Writes directly to ``R_th_sink_to_amb_K_per_W`` (single
+        # scalar field, not per-slot CSV).
+        if self._apply_callback is not None:
+            self._apply_button = QPushButton("Apply to HS")
+            self._apply_button.setFixedWidth(96)
+            self._apply_button.setToolTip(
+                "Write this R_th into R_th_sink_to_amb_K_per_W of the "
+                "selected HEATSINK component. Requires a HEATSINK to be "
+                "selected on the schematic."
+            )
+            self._apply_button.clicked.connect(self._on_apply_clicked)
+            result_row.addWidget(self._apply_button)
+        else:
+            self._apply_button = None
         layout.addRow("→ R_th_sink_to_amb", result_row)
+
+        self._apply_status = QLabel("")
+        self._apply_status.setWordWrap(True)
+        self._apply_status.setStyleSheet(
+            "color: #4a5568; font-size: 11px; padding-top: 2px;"
+        )
+        if self._apply_button is not None:
+            layout.addRow("", self._apply_status)
 
         tip = QLabel(
             "Natural convection: 5 – 20 K/W. Forced (1 – 5 m/s): "
@@ -326,6 +425,27 @@ class ConvectionSizerWidget(QWidget):
         layout.addRow("", tip)
 
         self._recompute()
+
+    def _on_apply_clicked(self) -> None:
+        """Mirror of ``TIMSizerWidget._on_apply_clicked``. See there
+        for the contract — same callback signature, same surface
+        behaviour, different target param."""
+        value = getattr(self, "_last_value", None)
+        if value is None or self._apply_callback is None:
+            return
+        try:
+            status = self._apply_callback(float(value))
+        except Exception as exc:  # noqa: BLE001
+            status = f"Error: {exc}"
+        self._apply_status.setText(status or "")
+        if status and status.lower().startswith(("error", "select")):
+            self._apply_status.setStyleSheet(
+                "color: #c53030; font-size: 11px; padding-top: 2px;"
+            )
+        else:
+            self._apply_status.setStyleSheet(
+                "color: #2f855a; font-size: 11px; padding-top: 2px;"
+            )
 
     def _on_airflow_changed(self) -> None:
         # No special UI gating — h_spin = 0 means "let airflow drive
@@ -434,8 +554,30 @@ class ThermalSizingDialog(QDialog):
         layout.addWidget(intro)
 
         self._tabs = QTabWidget()
-        self._tim_sizer = TIMSizerWidget(self)
-        self._convection_sizer = ConvectionSizerWidget(self)
+        # The Apply callbacks walk up to the parent MainWindow to find
+        # the selected HEATSINK and emit an UpdateComponentStateCommand
+        # so writes participate in the global undo stack. Only wire
+        # them when the parent looks like a MainWindow — keeps the
+        # dialog usable from tests + standalone smoke runs (where the
+        # parent is None or a bare QWidget).
+        parent_looks_like_main_window = (
+            parent is not None
+            and hasattr(parent, "_schematic_scene")
+            and hasattr(parent, "_execute_schematic_command")
+            and hasattr(parent, "_current_circuit")
+        )
+        tim_cb = (
+            self._apply_to_selected_heatsink_tim
+            if parent_looks_like_main_window
+            else None
+        )
+        conv_cb = (
+            self._apply_to_selected_heatsink_convection
+            if parent_looks_like_main_window
+            else None
+        )
+        self._tim_sizer = TIMSizerWidget(self, apply_callback=tim_cb)
+        self._convection_sizer = ConvectionSizerWidget(self, apply_callback=conv_cb)
         self._catalog_view = TIMCatalogWidget(self)
 
         self._tabs.addTab(self._tim_sizer, "TIM (case → sink)")
@@ -463,3 +605,133 @@ class ThermalSizingDialog(QDialog):
     @property
     def convection_sizer(self) -> ConvectionSizerWidget:
         return self._convection_sizer
+
+    # ------------------------------------------------------------------
+    # Apply-to-selected callbacks. Both follow the same recipe: walk
+    # up to MainWindow, find the selected HEATSINK component, build
+    # the new-state snapshot, dispatch an UpdateComponentStateCommand
+    # via the existing schematic command pipeline (so it participates
+    # in undo/redo + dirty-marking).
+    #
+    # The return value is the status string the widget shows: "" /
+    # "Applied …" on success, "Select a HEATSINK first" / "Error: …"
+    # on failure. Widgets pick the color based on the prefix.
+    # ------------------------------------------------------------------
+
+    def _find_selected_heatsink(self) -> tuple[Any, Any, str] | None:
+        """Return ``(main_window, component, sink_display_name)`` for
+        the currently-selected HEATSINK, or ``None`` when no valid
+        target exists.
+
+        Duck-typed on ``item.component`` rather than
+        ``isinstance(item, ComponentItem)`` — keeps the dialog
+        decoupled from the graphics-item class hierarchy and makes
+        it trivial to test with fake selected-item stand-ins. Items
+        that have no ``.component`` attribute (wires, ports, labels,
+        decorations) silently fail the filter, same as if the
+        isinstance had rejected them."""
+        main_window = self.parent()
+        if main_window is None:
+            return None
+        scene = getattr(main_window, "_schematic_scene", None)
+        if scene is None:
+            return None
+        for item in scene.selectedItems():
+            comp = getattr(item, "component", None)
+            if comp is None:
+                continue
+            # Compare on str(type) so we don't need to import the enum
+            # here (avoids tight coupling for tests that stub out the
+            # ComponentType module).
+            type_name = getattr(comp.type, "name", str(comp.type))
+            if type_name == "HEATSINK":
+                return main_window, comp, getattr(comp, "name", "HS")
+        return None
+
+    def _dispatch_param_update(
+        self,
+        main_window: Any,
+        component: Any,
+        params_patch: dict[str, Any],
+    ) -> str:
+        """Build an ``UpdateComponentStateCommand`` that merges
+        ``params_patch`` into the component's current parameters dict
+        and ship it through the schematic command pipeline. Returns a
+        status string. Tolerant of import / runtime errors — surfaces
+        them as the user-visible status rather than crashing the
+        dialog."""
+        try:
+            from copy import deepcopy
+
+            from pulsimgui.commands.component_commands import (
+                UpdateComponentStateCommand,
+            )
+
+            circuit = main_window._current_circuit()
+            old_state = UpdateComponentStateCommand.snapshot(component)
+            new_state = deepcopy(old_state)
+            new_state.setdefault("parameters", {}).update(params_patch)
+            command = UpdateComponentStateCommand(
+                circuit, component.id, new_state, old_state=old_state,
+            )
+            main_window._execute_schematic_command(
+                command, refresh_scene=True, merge=False,
+            )
+            return ""  # success — caller adds the "Applied …" prefix
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+
+    def _apply_to_selected_heatsink_convection(self, r_th: float) -> str:
+        """Write R_th into ``R_th_sink_to_amb_K_per_W`` on the selected
+        HEATSINK (single scalar field)."""
+        target = self._find_selected_heatsink()
+        if target is None:
+            return "Select a HEATSINK on the schematic first."
+        main_window, component, sink_name = target
+        err = self._dispatch_param_update(
+            main_window, component,
+            {"R_th_sink_to_amb_K_per_W": float(r_th)},
+        )
+        if err:
+            return err
+        return f"Applied {r_th:.4g} K/W to {sink_name} (R_th_sink_to_amb)."
+
+    def _apply_to_selected_heatsink_tim(self, r_th: float) -> str:
+        """Write R_th into slot 1 of the HEATSINK's
+        ``case_to_sink_R_th_csv`` field, preserving any existing
+        slot-2+ entries. The CSV is positional: slot k aligns with
+        DEV_k pin → device on that pin gets ``csv[k-1]`` as its
+        case-to-sink R_th in the backend."""
+        target = self._find_selected_heatsink()
+        if target is None:
+            return "Select a HEATSINK on the schematic first."
+        main_window, component, sink_name = target
+
+        # Patch slot 1 in the CSV; keep slots 2+ untouched.
+        current_csv = ""
+        try:
+            params = getattr(component, "parameters", None) or {}
+            current_csv = str(params.get("case_to_sink_R_th_csv") or "")
+        except Exception:  # noqa: BLE001
+            current_csv = ""
+        # Split on , or ;. Empty/whitespace tokens are preserved as ""
+        # so user's spacing survives a slot-1 edit.
+        tokens = [
+            t.strip() for t in current_csv.replace(";", ",").split(",")
+        ]
+        if not tokens or (len(tokens) == 1 and not tokens[0]):
+            new_tokens = [f"{r_th:.4g}"]
+        else:
+            new_tokens = list(tokens)
+            new_tokens[0] = f"{r_th:.4g}"
+        new_csv = ", ".join(new_tokens)
+
+        err = self._dispatch_param_update(
+            main_window, component, {"case_to_sink_R_th_csv": new_csv},
+        )
+        if err:
+            return err
+        return (
+            f"Applied {r_th:.4g} K/W to {sink_name} slot 1 "
+            f"(case_to_sink_R_th_csv)."
+        )
