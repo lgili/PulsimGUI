@@ -1365,17 +1365,27 @@ class PulsimBackend(SimulationBackend):
             if not channel_name:
                 continue
 
+            # Decide whether the kernel-emitted channel is good enough.
+            # Three cases need synthesis from the bypass branch:
+            #   1) Channel missing entirely (kernel registered no signal).
+            #   2) Channel present but truncated (sample mismatch).
+            #   3) Channel present but flatlined at ≤ 1 pA.
             existing = result.signals.get(channel_name)
-            if not isinstance(existing, list) or len(existing) < sample_count:
-                continue
-
-            try:
-                peak_existing = max(abs(float(value)) for value in existing[:sample_count])
-            except Exception:
-                continue
-            if peak_existing > 1e-12:
-                # Backend already produced a meaningful current-probe channel.
-                continue
+            needs_synthesis = (
+                not isinstance(existing, list)
+                or len(existing) < sample_count
+            )
+            if not needs_synthesis:
+                try:
+                    peak_existing = max(
+                        abs(float(value)) for value in existing[:sample_count]
+                    )
+                except Exception:
+                    peak_existing = 0.0
+                if peak_existing > 1e-12:
+                    # Backend already produced a meaningful current-probe
+                    # channel — nothing to do for this probe.
+                    continue
 
             raw_nodes = getattr(entry, "nodes", None)
             if not isinstance(raw_nodes, list) or len(raw_nodes) < 2:
