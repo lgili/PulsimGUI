@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "name": "19 Doubler Drive \u2014 127 V 1\u03c6 Voltage-Doubler Front-End + FOC VSI + PMSM (Embraco VLT403U)",
+  "name": "19 Doubler Drive — 127 V 1φ Voltage-Doubler Front-End + FOC VSI + PMSM (Embraco VLT403U)",
   "created": "2026-05-31T11:47:12",
   "modified": "2026-05-31T11:47:12",
   "active_circuit": "main",
@@ -515,6 +515,12 @@
               "name": "C",
               "x": 35.0,
               "y": 25.0
+            },
+            {
+              "index": 5,
+              "name": "PWM",
+              "x": -40.0,
+              "y": 40.0
             }
           ]
         },
@@ -863,8 +869,6 @@
             "switching_frequency_hz": 20000.0,
             "speed_ref_rpm": 1800.0,
             "v_bus": 340.0,
-            "pmsm_name": "",
-            "vsi_name": "",
             "sample_time": 0.0
           },
           "pins": [
@@ -879,6 +883,12 @@
               "name": "FB",
               "x": -40.0,
               "y": 20.0
+            },
+            {
+              "index": 2,
+              "name": "PWM",
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -1796,6 +1806,40 @@
           },
           "junctions": [],
           "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "0d671593-c6c7-4c84-a617-4d4cec1e261d",
+          "segments": [
+            {
+              "x1": 440.0,
+              "y1": -140.0,
+              "x2": 380.0,
+              "y2": -140.0
+            },
+            {
+              "x1": 380.0,
+              "y1": -140.0,
+              "x2": 380.0,
+              "y2": 40.0
+            },
+            {
+              "x1": 380.0,
+              "y1": 40.0,
+              "x2": 320.0,
+              "y2": 40.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "4359d6a6-d295-4cf2-b5bc-3a5eea195617",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "859eef54-bdce-57f8-bfa8-d52c5f92cf6b",
+            "pin_index": 5
+          },
+          "junctions": [],
+          "node_name": "PWM_BUS",
           "alias": ""
         }
       ]

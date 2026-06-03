@@ -1023,8 +1023,13 @@ def test_converter_normalizes_explicit_cblock_duty_channel_to_first_output() -> 
 
 
 def test_converter_maps_current_probe_to_virtual_backend_component() -> None:
-    """Current probe should be emitted as backend current_probe virtual component."""
-    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtual)
+    """Current probe should be emitted as backend current_probe virtual
+    component AND a 0 V voltage source on the same nodes — the source
+    name matches the probe name so the backend can call
+    ``result.i(<probe_name>)`` to read the exact branch current
+    (pulsim ≥ 1.6.5 path; replaces the legacy bypass-resistor
+    workaround)."""
+    fake_module = SimpleNamespace(Circuit=_CircuitWithVirtualAndSource)
     converter = CircuitConverter(fake_module)
 
     circuit_data = {
@@ -1056,11 +1061,19 @@ def test_converter_maps_current_probe_to_virtual_backend_component() -> None:
     assert comp_type == "current_probe"
     assert nodes == [1, 2]
     assert metadata.get("target_component") == "R1"
-    assert ("__IP_BYPASS_IP1", 1, 2, 1e-4) in converted.devices
+    # Modern path: a 0 V voltage source named after the probe IS the
+    # sense element. No bypass resistor stamped any more.
+    assert ("IP1", 1, 2, 0.0) in converted.voltage_sources
+    assert not any(
+        dev_name.startswith("__IP_BYPASS_") for dev_name, *_ in converted.devices
+    )
 
 
-def test_converter_current_probe_keeps_branch_continuity_without_virtual_support() -> None:
-    """Current probe must not open the branch even when virtual probes are unavailable."""
+def test_converter_current_probe_falls_back_to_bypass_resistor_when_no_voltage_source_api() -> None:
+    """Legacy backend without ``add_voltage_source`` must still keep
+    IN/OUT electrically continuous by stamping the bypass resistor —
+    same workaround the backend used before pulsim 1.6.5 exposed
+    branch currents via ``result.i()``."""
     fake_module = SimpleNamespace(Circuit=_CircuitNoAddNode)
     converter = CircuitConverter(fake_module)
 

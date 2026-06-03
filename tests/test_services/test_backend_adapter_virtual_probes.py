@@ -144,4 +144,10 @@ def test_repair_current_probe_channel_from_bypass_voltage() -> None:
     backend._repair_current_probe_channels_from_bypass(circuit, result)
 
     assert result.signals["IP1"] == pytest.approx([2.4, 2.4], rel=1e-9)
-    assert result.statistics.get("virtual_probe_repaired_channels") == ["IP1"]
+    # Telemetry key carries a path suffix so we can tell at a glance
+    # which branch served the channel — the modern direct-i path uses
+    # ``:result.i`` while this V/R fallback (no kernel ``i`` accessor)
+    # uses ``:vr_fallback``.
+    assert result.statistics.get("virtual_probe_repaired_channels") == [
+        "IP1:vr_fallback"
+    ]

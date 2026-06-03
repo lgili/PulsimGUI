@@ -65,11 +65,16 @@ def test_pfc_controller_defaults_target_ccm_240_to_1000w() -> None:
     assert defaults["f_sw"] == pytest.approx(65_000.0)
 
 
-def test_infer_pfc_loops_emits_descriptor_with_auto_detected_mosfet() -> None:
+def test_infer_pfc_loops_emits_descriptor_via_pwm_wire() -> None:
+    """The PWM pin (index 3) must wire to the boost MOSFET's gate to bind
+    that switch. No PWM wire ⇒ no descriptor (the user's visual cue
+    that the loop isn't fully specified)."""
     conv = _converter()
     comps = [
-        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
-        _pfc_comp(),
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost",
+         # MOSFET pins are [D, G, S] — only the gate's net matters here.
+         "pin_nodes": ["drain", "gate_net", "source"]},
+        _pfc_comp(pin_nodes=["", "", "", "gate_net"]),
     ]
     descs = conv._infer_pfc_loops(comps, {}, {})
     assert len(descs) == 1
@@ -85,10 +90,11 @@ def test_infer_pfc_loops_traces_v_bus_node_via_voltage_probe() -> None:
     must read for V_bus feedback."""
     conv = _converter()
     comps = [
-        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost",
+         "pin_nodes": ["drain", "gate_net", "source"]},
         {"id": "vbus_probe", "type": "VOLTAGE_PROBE_GND", "name": "V_bus",
          "pin_nodes": ["bus_net", "vbus_out_net"]},
-        _pfc_comp(pin_nodes=["vbus_out_net", "", ""]),
+        _pfc_comp(pin_nodes=["vbus_out_net", "", "", "gate_net"]),
     ]
     descs = conv._infer_pfc_loops(comps, {}, {})
     assert len(descs) == 1
@@ -101,10 +107,11 @@ def test_infer_pfc_loops_captures_current_probe_name() -> None:
     component name (the backend uses it via builder.branch_index_of)."""
     conv = _converter()
     comps = [
-        {"id": "q", "type": "MOSFET_N", "name": "Q_boost"},
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost",
+         "pin_nodes": ["drain", "gate_net", "source"]},
         {"id": "il_probe", "type": "CURRENT_PROBE", "name": "I_L",
          "pin_nodes": ["a", "b", "il_meas_net"]},
-        _pfc_comp(pin_nodes=["", "il_meas_net", ""]),
+        _pfc_comp(pin_nodes=["", "il_meas_net", "", "gate_net"]),
     ]
     descs = conv._infer_pfc_loops(comps, {}, {})
     assert len(descs) == 1
@@ -112,6 +119,7 @@ def test_infer_pfc_loops_captures_current_probe_name() -> None:
 
 
 def test_no_descriptor_without_mosfet() -> None:
+    """No MOSFET in the schematic ⇒ no PWM wire can land ⇒ no descriptor."""
     conv = _converter()
     descs = conv._infer_pfc_loops([_pfc_comp()], {}, {})
     assert descs == []
@@ -125,14 +133,17 @@ def test_no_descriptor_without_pfc_controller() -> None:
     assert descs == []
 
 
-def test_explicit_parameter_override_wins_over_auto_detect() -> None:
-    """When the user sets boost_mosfet_name explicitly, it beats the
-    auto-detect even when multiple MOSFETs are present."""
+def test_no_descriptor_when_pwm_pin_unwired() -> None:
+    """Mandatory contract: a PFC controller with an unwired PWM pin
+    cannot identify its MOSFET — no descriptor emitted even if a
+    MOSFET exists in the circuit. The single-MOSFET auto-detect
+    fallback was removed in v1.1.3."""
     conv = _converter()
     comps = [
-        {"id": "q1", "type": "MOSFET_N", "name": "Q_other"},
-        {"id": "q2", "type": "MOSFET_N", "name": "Q_chosen"},
-        _pfc_comp(params={"boost_mosfet_name": "Q_chosen"}),
+        {"id": "q", "type": "MOSFET_N", "name": "Q_boost",
+         "pin_nodes": ["drain", "gate_net", "source"]},
+        # PFC PWM pin (index 3) is empty — no wire.
+        _pfc_comp(pin_nodes=["", "", "", ""]),
     ]
     descs = conv._infer_pfc_loops(comps, {}, {})
-    assert descs[0]["mosfet_name"] == "Q_chosen"
+    assert descs == []

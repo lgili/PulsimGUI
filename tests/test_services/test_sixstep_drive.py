@@ -89,24 +89,33 @@ def _drive_components(
          "pins": [{"index": 0, "name": "+"}, {"index": 1, "name": "-"}]},
         {"id": vid, "type": "THREE_PHASE_VSI", "name": "INV1",
          "parameters": _vsi_params(switching_frequency_hz=20000.0),
+         # Pin 5 is the new PWM input bus.
          "pins": [{"index": i, "name": n} for i, n in
-                  enumerate(["VDC+", "VDC-", "A", "B", "C"])]},
+                  enumerate(["VDC+", "VDC-", "A", "B", "C", "PWM"])]},
         {"id": mid, "type": "PMSM", "name": "M1",
          "parameters": _pmsm_params(Rs=6.6, Ld=12e-3, Lq=12e-3, psi_pm=0.05,
                                     pole_pairs=3, J=2e-4, b_friction=5e-4,
                                     **(pmsm_overrides or {})),
+         # Pin 4 is the SIG bus.
          "pins": [{"index": i, "name": n}
-                  for i, n in enumerate(["A", "B", "C", "N"])]},
+                  for i, n in enumerate(["A", "B", "C", "N", "SIG"])]},
         {"id": sx, "type": "SIXSTEP_CONTROLLER", "name": "SIXSTEP1",
          "parameters": _sixstep_params(**(sixstep_overrides or {})),
-         "pins": [{"index": 0, "name": "SP"}, {"index": 1, "name": "FB"}]},
+         # Pin 2 is the PWM output bus.
+         "pins": [{"index": 0, "name": "SP"},
+                  {"index": 1, "name": "FB"},
+                  {"index": 2, "name": "PWM"}]},
         {"id": gid, "type": "GROUND", "name": "G1", "parameters": {},
          "pins": [{"index": 0, "name": "gnd"}]},
     ]
+    # PWM bus net shared between SIXSTEP.PWM (pin 2) and VSI.PWM (pin 5);
+    # FB net shared between SIXSTEP.FB (pin 1) and PMSM.SIG (pin 4).
     node_map = {
         vp: ["busp", "0"], vn: ["0", "busn"],
-        vid: ["busp", "busn", "pha", "phb", "phc"],
-        mid: ["pha", "phb", "phc", "0"], gid: ["0"],
+        vid: ["busp", "busn", "pha", "phb", "phc", "pwm_bus"],
+        mid: ["pha", "phb", "phc", "0", "motor_sig"],
+        sx: ["sp", "motor_sig", "pwm_bus"],
+        gid: ["0"],
     }
     return comps, node_map
 
@@ -155,13 +164,24 @@ def test_sixstep_controller_adds_nothing_to_builder() -> None:
     assert getattr(circ, "cblock_loop_descriptors", []) == []
 
 
-def test_sixstep_controller_with_unwired_pins_does_not_raise() -> None:
-    """Unwired SP / FB pins must NOT trip the build path — the
-    controller can resolve VSI/PMSM via parameters or auto-detect."""
+def test_sixstep_controller_with_unwired_pwm_emits_no_descriptor() -> None:
+    """Mandatory contract: PWM wire MUST be present. The build path
+    tolerates an unwired controller (no error) but emits NO descriptor
+    when the PWM bus wire is missing — the user's visual cue that the
+    loop isn't fully specified."""
     comps, node_map = _drive_components()
+    # Break the PWM wire by isolating the SIXSTEP.PWM net from the VSI.
+    nm = dict(node_map)
+    for cid, nets in list(nm.items()):
+        if cid in {c["id"] for c in comps if c.get("name") == "SIXSTEP1"}:
+            # SIXSTEP pins: [sp, motor_sig, pwm_bus] — disconnect pwm pin.
+            nm[cid] = list(nets[:2]) + [""]
     conv = CircuitConverter(make_compat_module(p))
-    circ = conv.build({"components": comps, "node_map": node_map})
-    assert len(circ.sixstep_loop_descriptors) == 1
+    circ = conv.build({"components": comps, "node_map": nm})
+    # Build still succeeds, but no SIXSTEP descriptor emitted.
+    assert list(getattr(circ, "sixstep_loop_descriptors", [])) == []
+    # The native VSI is still built; just the closed loop is missing.
+    assert len(circ.vsi_specs) == 1
 
 
 def test_no_sixstep_descriptor_without_controller() -> None:

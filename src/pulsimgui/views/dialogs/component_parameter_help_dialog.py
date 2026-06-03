@@ -386,27 +386,14 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "low enough to keep MOSFET losses manageable.",
             "Inverter MOSFET / driver datasheet (max f_sw, dead-time).",
         ),
-        "boost_mosfet_name": ParameterHelp(
-            "Optional explicit boost MOSFET name override. Leave blank to "
-            "auto-detect by topology (a MOSFET whose drain is the boost "
-            "inductor / diode anode junction).",
-            "Component name of the boost MOSFET in the schematic.",
-        ),
-        "v_bus_node_name": ParameterHelp(
-            "Optional explicit V_bus node-alias override. Leave blank to "
-            "auto-detect via the VBUS pin's wire trace.",
-            "Wire alias attached to the bus-capacitor positive terminal.",
-        ),
-        "v_ac_node_name": ParameterHelp(
-            "Optional explicit V_rect node-alias override. Leave blank to "
-            "auto-detect via the VAC pin's wire trace.",
-            "Wire alias attached to the diode-bridge DC+ rail.",
-        ),
-        "i_l_branch_name": ParameterHelp(
-            "Optional explicit i_L branch label override. Leave blank to "
-            "auto-detect via the IL pin's wire trace.",
-            "Current probe name on the boost inductor.",
-        ),
+        # NOTE: as of v1.1.3 the wireless-binding override parameters
+        # (``boost_mosfet_name`` / ``v_bus_node_name`` / ``v_ac_node_name``
+        # / ``i_l_branch_name``) have been removed. The MOSFET is
+        # identified by wiring the ``PWM`` output pin to its gate; the
+        # V_bus / V_rect nodes are identified by wiring the ``VBUS`` /
+        # ``VAC`` input pins to voltage probes on those nodes; the i_L
+        # branch is identified by wiring the ``IL`` input pin to a
+        # current probe on the boost inductor.
     },
     ComponentType.FOC_CONTROLLER: {
         "speed_kp": ParameterHelp(
@@ -458,21 +445,15 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "Use as a constant baseline; for runtime control, wire a CONSTANT "
             "(or any signal source) into the SP pin instead.",
         ),
-        "pmsm_name": ParameterHelp(
-            "Optional explicit PMSM name override. Leave blank for auto-detect "
-            "by tracing the FB-pin wire back to the motor's SIG bus.",
-            "Component name of the PMSM in this schematic.",
-        ),
-        "vsi_name": ParameterHelp(
-            "Optional explicit VSI name override. Leave blank when there is "
-            "only one 3φ VSI in the schematic (auto-detected).",
-            "Component name of the THREE_PHASE_VSI to drive.",
-        ),
         "v_bus": ParameterHelp(
             "Optional explicit DC-bus magnitude (V). Leave 0 to read from the "
             "VSI's vdc setting at simulate time. Used to normalise modulation.",
             "Front-end nominal DC bus (e.g. 320 V doubler, 400 V PFC).",
         ),
+        # NOTE: as of v1.1.3 ``pmsm_name`` / ``vsi_name`` overrides are
+        # gone — the observed PMSM is identified by wiring FB to the
+        # motor's SIG bus, and the driven VSI by wiring the PWM output
+        # to the inverter's PWM bus input.
     },
     ComponentType.SIXSTEP_CONTROLLER: {
         "speed_kp": ParameterHelp(
@@ -513,16 +494,9 @@ _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = 
             "BEMF peak instead of the zero-crossing.",
             "Empirical; start at 0 and adjust ±15° to peak torque/efficiency.",
         ),
-        "pmsm_name": ParameterHelp(
-            "Optional explicit PMSM name override. Leave blank for auto-"
-            "detect by tracing the FB-pin wire back to the motor's SIG bus.",
-            "Component name of the PMSM in this schematic.",
-        ),
-        "vsi_name": ParameterHelp(
-            "Optional explicit VSI name override. Leave blank when there is "
-            "only one 3φ VSI in the schematic (auto-detected).",
-            "Component name of the THREE_PHASE_VSI to drive.",
-        ),
+        # NOTE: as of v1.1.3 ``pmsm_name`` / ``vsi_name`` overrides are
+        # gone — both bindings are wire-traced (FB → SIG bus, PWM →
+        # inverter PWM bus input).
     },
 }
 

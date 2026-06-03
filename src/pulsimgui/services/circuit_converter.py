@@ -283,17 +283,17 @@ class CircuitConverter:
         # unless the FOC marker is present, so it never perturbs the
         # open-loop VSI / averaged-VSI / cblock paths above.
         try:
-            foc_loops = self._infer_foc_loops(components)
+            foc_loops = self._infer_foc_loops(components, node_map)
             setattr(circuit, "foc_loop_descriptors", foc_loops)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
         # Closed-loop 6-step BLDC: detect any SIXSTEP_CONTROLLER and emit a
-        # descriptor with the auto-detected VSI + PMSM names + outer-PI
+        # descriptor with the wire-traced VSI + PMSM names + outer-PI
         # gains. Same mutex with the open-loop VSI path as FOC has — the
         # backend excludes the controlled VSI from open-loop SPWM.
         try:
-            sixstep_loops = self._infer_sixstep_loops(components)
+            sixstep_loops = self._infer_sixstep_loops(components, node_map)
             setattr(circuit, "sixstep_loop_descriptors", sixstep_loops)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
@@ -1682,25 +1682,54 @@ class CircuitConverter:
         if comp_type == ComponentType.CURRENT_PROBE:
             # Keep IN/OUT electrically continuous; the probe must not open the branch.
             n_in, n_out = self._require_nodes(name, nodes, 2)
-            try:
-                bypass_r = float(
-                    params.get("series_resistance", self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS)
-                )
-            except (TypeError, ValueError):
-                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
-            if bypass_r <= 0.0:
-                bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+            n_in_idx = self._node_index(circuit, n_in, node_cache)
+            n_out_idx = self._node_index(circuit, n_out, node_cache)
 
-            circuit.add_resistor(
-                f"__IP_BYPASS_{name}",
-                self._node_index(circuit, n_in, node_cache),
-                self._node_index(circuit, n_out, node_cache),
-                bypass_r,
-            )
+            # PREFERRED PATH — modern pulsim (≥ 1.6.5): stamp a 0 V
+            # voltage source with the probe's own name. A voltage source
+            # is a state-variable branch, so ``result.i(<probe_name>)``
+            # returns the EXACT current through it — no V/R
+            # reconstruction, no parasitic series resistance, and the
+            # name shows up directly in the result's branch registry
+            # (no ``__IP_BYPASS_`` prefix). This replaces the legacy
+            # bypass-resistor + ``(V_in − V_out) / R`` synthesis we
+            # used before pulsim exposed branch currents.
+            if hasattr(circuit, "add_voltage_source"):
+                circuit.add_voltage_source(name, n_in_idx, n_out_idx, 0.0)
+            else:
+                # FALLBACK PATH — legacy backend without
+                # ``add_voltage_source``. Stamp the bypass resistor so
+                # the branch stays continuous; the backend then
+                # synthesises the current channel from node voltages
+                # in :meth:`PulsimBackend._repair_current_probe_channels_from_bypass`.
+                try:
+                    bypass_r = float(
+                        params.get(
+                            "series_resistance",
+                            self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+                if bypass_r <= 0.0:
+                    bypass_r = self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS
+                circuit.add_resistor(
+                    f"__IP_BYPASS_{name}",
+                    n_in_idx,
+                    n_out_idx,
+                    bypass_r,
+                )
 
             if hasattr(circuit, "add_virtual_component"):
                 virtual_params = dict(params)
-                virtual_params.setdefault("series_resistance", bypass_r)
+                # The series-resistance key is preserved for back-compat
+                # with downstream consumers (cascaded-control detection
+                # reads it). Modern path stamps the probe as a 0 V
+                # source so this value is informational only.
+                virtual_params.setdefault(
+                    "series_resistance",
+                    self._CURRENT_PROBE_BYPASS_RESISTANCE_OHMS,
+                )
                 self._add_virtual_component(
                     circuit,
                     comp_type,
@@ -3277,6 +3306,7 @@ class CircuitConverter:
     def _infer_foc_loops(
         self,
         components: list[dict[str, Any]],
+        node_map: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Detect a Field-Oriented-Control marker and emit one
         ``foc_loop_descriptor`` binding it to a native 3φ VSI + a dynamic
@@ -3336,36 +3366,79 @@ class CircuitConverter:
             raw = comp.get("parameters")
             return raw if isinstance(raw, dict) else {}
 
-        # Resolve the FB-pin wire of a FOC_CONTROLLER back to the PMSM that
-        # owns the bus, so wiring (not the parameter alone) drives the binding.
+        # Pin-nodes lookup that prefers the on-dict cache (used by
+        # subcircuit-flattening + direct synthetic dicts) and falls
+        # back to the converter-side ``node_map`` (which the loader
+        # builds from the schematic's wire list).
+        nm = node_map or {}
+
+        def _pin_nodes_of(comp: dict[str, Any]) -> list:
+            local = comp.get("pin_nodes")
+            if isinstance(local, list) and local:
+                return list(local)
+            return list(nm.get(comp.get("id") or "", []) or [])
+
+        # Resolve the FB-pin wire of a FOC_CONTROLLER back to the PMSM
+        # that owns the bus. Mandatory: a missing wire means no
+        # descriptor (and therefore no FOC loop runs).
         def _trace_pmsm_via_fb(foc_comp: dict[str, Any]) -> str:
-            pin_nodes = foc_comp.get("pin_nodes") or []
+            pin_nodes = _pin_nodes_of(foc_comp)
             if len(pin_nodes) < 2:
                 return ""
             fb_net = str(pin_nodes[1] or "").strip()
             if not fb_net:
                 return ""
             for motor in pmsms:
-                motor_pin_nodes = motor.get("pin_nodes") or []
+                motor_pin_nodes = _pin_nodes_of(motor)
                 # PMSM pin 4 is SIG (signal-bus output).
                 if len(motor_pin_nodes) >= 5 and str(motor_pin_nodes[4] or "").strip() == fb_net:
                     return self._component_name(motor, ComponentType.PMSM)
             return ""
 
-        def _make_descriptor(comp: dict[str, Any], owner_type: ComponentType) -> dict[str, Any]:
+        # Resolve the PWM-bus wire of a FOC_CONTROLLER (pin 2) back to the
+        # THREE_PHASE_VSI whose PWM input pin (pin 5) shares that net.
+        # Mandatory: no wire ⇒ no descriptor.
+        def _trace_vsi_via_pwm(foc_comp: dict[str, Any]) -> str:
+            pin_nodes = _pin_nodes_of(foc_comp)
+            if len(pin_nodes) < 3:
+                return ""
+            pwm_net = str(pin_nodes[2] or "").strip()
+            if not pwm_net:
+                return ""
+            for vsi in vsis:
+                vsi_pin_nodes = _pin_nodes_of(vsi)
+                # VSI pin 5 is PWM (signal-bus input).
+                if (
+                    len(vsi_pin_nodes) >= 6
+                    and str(vsi_pin_nodes[5] or "").strip() == pwm_net
+                ):
+                    return self._component_name(vsi, ComponentType.THREE_PHASE_VSI)
+            return ""
+
+        def _make_descriptor(comp: dict[str, Any], owner_type: ComponentType) -> dict[str, Any] | None:
             params = _params_of(comp)
-            # Wire-traced PMSM (FOC_CONTROLLER FB pin) wins over the explicit
-            # parameter; falls back to the explicit name, then to the single
-            # PMSM in the circuit.
+            # Wire-traced PMSM (FOC_CONTROLLER FB pin) — mandatory for
+            # the dedicated controller component. Legacy C_BLOCK marker
+            # path is unwired so it still falls back to the single PMSM
+            # in the circuit.
             pmsm_name = ""
             if owner_type == ComponentType.FOC_CONTROLLER:
                 pmsm_name = _trace_pmsm_via_fb(comp)
-            if not pmsm_name:
-                pmsm_name = str(params.get("pmsm_name", "") or "").strip()
-            if not pmsm_name:
+                if not pmsm_name:
+                    return None
+            else:
+                # Legacy C_BLOCK marker: no PWM/FB pin wiring, single-
+                # PMSM fallback. Preserved for back-compat with older
+                # schematics that predate the FOC_CONTROLLER component.
                 pmsm_name = self._component_name(pmsms[0], ComponentType.PMSM)
-            vsi_name = str(params.get("vsi_name", "") or "").strip()
-            if not vsi_name:
+            # VSI binding — wire-trace MANDATORY for FOC_CONTROLLER.
+            # The PWM bus wire is the only way to identify which
+            # inverter the FOC drives.
+            if owner_type == ComponentType.FOC_CONTROLLER:
+                vsi_name = _trace_vsi_via_pwm(comp)
+                if not vsi_name:
+                    return None
+            else:
                 vsi_name = self._component_name(vsis[0], ComponentType.THREE_PHASE_VSI)
             return {
                 "name": self._component_name(comp, owner_type),
@@ -3403,17 +3476,23 @@ class CircuitConverter:
         for cblock in cblocks:
             cb_params = _params_of(cblock)
             if str(cb_params.get("control_kind", "") or "").strip().lower() == "foc":
-                descriptors.append(_make_descriptor(cblock, ComponentType.C_BLOCK))
+                d = _make_descriptor(cblock, ComponentType.C_BLOCK)
+                if d is not None:
+                    descriptors.append(d)
         # New: dedicated ``FOC_CONTROLLER`` component (visible, wireable).
+        # Returns ``None`` if the FB / PWM pins are unwired — no
+        # parameter-based override exists, so an unwired controller
+        # produces no descriptor (and therefore no FOC loop runs).
         for foc_comp in foc_blocks:
-            descriptors.append(
-                _make_descriptor(foc_comp, ComponentType.FOC_CONTROLLER)
-            )
+            d = _make_descriptor(foc_comp, ComponentType.FOC_CONTROLLER)
+            if d is not None:
+                descriptors.append(d)
         return descriptors
 
     def _infer_sixstep_loops(
         self,
         components: list[dict[str, Any]],
+        node_map: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Detect a ``SIXSTEP_CONTROLLER`` and emit a descriptor binding it
         to a native 3φ VSI + dynamic PMSM.
@@ -3454,31 +3533,56 @@ class CircuitConverter:
             raw = comp.get("parameters")
             return raw if isinstance(raw, dict) else {}
 
-        # Same FB-trace heuristic as the FOC path.
+        nm = node_map or {}
+
+        def _pin_nodes_of(comp: dict[str, Any]) -> list:
+            local = comp.get("pin_nodes")
+            if isinstance(local, list) and local:
+                return list(local)
+            return list(nm.get(comp.get("id") or "", []) or [])
+
+        # Same FB-trace heuristic as the FOC path — mandatory.
         def _trace_pmsm_via_fb(sx_comp: dict[str, Any]) -> str:
-            pin_nodes = sx_comp.get("pin_nodes") or []
+            pin_nodes = _pin_nodes_of(sx_comp)
             if len(pin_nodes) < 2:
                 return ""
             fb_net = str(pin_nodes[1] or "").strip()
             if not fb_net:
                 return ""
             for motor in pmsms:
-                motor_pin_nodes = motor.get("pin_nodes") or []
+                motor_pin_nodes = _pin_nodes_of(motor)
                 if len(motor_pin_nodes) >= 5 and str(motor_pin_nodes[4] or "").strip() == fb_net:
                     return self._component_name(motor, ComponentType.PMSM)
+            return ""
+
+        # PWM-bus trace — same shape as the FOC path: SIXSTEP pin 2 ↔
+        # VSI pin 5. Mandatory.
+        def _trace_vsi_via_pwm(sx_comp: dict[str, Any]) -> str:
+            pin_nodes = _pin_nodes_of(sx_comp)
+            if len(pin_nodes) < 3:
+                return ""
+            pwm_net = str(pin_nodes[2] or "").strip()
+            if not pwm_net:
+                return ""
+            for vsi in vsis:
+                vsi_pin_nodes = _pin_nodes_of(vsi)
+                if (
+                    len(vsi_pin_nodes) >= 6
+                    and str(vsi_pin_nodes[5] or "").strip() == pwm_net
+                ):
+                    return self._component_name(vsi, ComponentType.THREE_PHASE_VSI)
             return ""
 
         descriptors: list[dict[str, Any]] = []
         for sx_comp in six_blocks:
             params = _params_of(sx_comp)
+            # Wire-trace mandatory — no parameter override fallback.
             pmsm_name = _trace_pmsm_via_fb(sx_comp)
             if not pmsm_name:
-                pmsm_name = str(params.get("pmsm_name", "") or "").strip()
-            if not pmsm_name:
-                pmsm_name = self._component_name(pmsms[0], ComponentType.PMSM)
-            vsi_name = str(params.get("vsi_name", "") or "").strip()
+                continue
+            vsi_name = _trace_vsi_via_pwm(sx_comp)
             if not vsi_name:
-                vsi_name = self._component_name(vsis[0], ComponentType.THREE_PHASE_VSI)
+                continue
             descriptors.append({
                 "name": self._component_name(sx_comp, ComponentType.SIXSTEP_CONTROLLER),
                 "vsi_name": vsi_name,
@@ -3669,37 +3773,28 @@ class CircuitConverter:
         for pfc_comp in pfc_blocks:
             params = _params_of(pfc_comp)
 
-            # MOSFET binding — priority order:
-            # 1. ``boost_mosfet_name`` parameter (explicit user override).
-            # 2. Wired PWM pin: trace from PFC.PWM (pin 3) to the gate
-            #    of the MOSFET / IGBT it drives. This is the preferred
-            #    path now that ``PFC_BOOST_CONTROLLER`` exposes a
-            #    visible output pin — the schematic shows the wire so
-            #    the user knows exactly which switch the loop controls.
-            # 3. Single-MOSFET fallback for older schematics that don't
-            #    wire the PWM pin (back-compat with the auto-detect-by-
-            #    topology path that used to be the only option).
-            mosfet_name = str(params.get("boost_mosfet_name", "") or "").strip()
+            # MOSFET binding — wire-trace MANDATORY. The PFC's PWM
+            # output (pin 3) must be wired to the boost MOSFET's gate;
+            # the converter follows that wire to identify the
+            # controlled switch. No ``boost_mosfet_name`` parameter
+            # override and no single-MOSFET auto-detect — a missing
+            # wire is the user's signal that the loop isn't fully
+            # specified, so we skip silently (no descriptor → no PFC
+            # loop runs).
+            mosfet_name = _trace_switch_via_pwm_pin(pfc_comp) or ""
             if not mosfet_name:
-                mosfet_name = _trace_switch_via_pwm_pin(pfc_comp) or ""
-            if not mosfet_name and mosfets:
-                mosfet_name = self._component_name(mosfets[0], ComponentType.MOSFET_N)
-            if not mosfet_name:
-                # No MOSFET available — can't close the loop. Skip silently.
                 continue
 
-            # V_bus + V_ac node aliases.
-            v_bus_node = str(params.get("v_bus_node_name", "") or "").strip()
-            if not v_bus_node:
-                v_bus_node = _trace_node_via_pin(pfc_comp, 0)
-            v_ac_node = str(params.get("v_ac_node_name", "") or "").strip()
-            if not v_ac_node:
-                v_ac_node = _trace_node_via_pin(pfc_comp, 2)
+            # V_bus + V_ac node aliases — wire-trace MANDATORY (no
+            # ``v_bus_node_name`` / ``v_ac_node_name`` overrides).
+            # The user must wire VBUS / VAC to voltage probes on the
+            # corresponding nodes.
+            v_bus_node = _trace_node_via_pin(pfc_comp, 0)
+            v_ac_node = _trace_node_via_pin(pfc_comp, 2)
 
-            # Current-probe name on i_L.
-            i_l_branch = str(params.get("i_l_branch_name", "") or "").strip()
-            if not i_l_branch:
-                i_l_branch = _trace_current_probe_name(pfc_comp)
+            # Current-probe name on i_L — wire-trace MANDATORY (no
+            # ``i_l_branch_name`` override).
+            i_l_branch = _trace_current_probe_name(pfc_comp)
 
             descriptors.append({
                 "name": self._component_name(

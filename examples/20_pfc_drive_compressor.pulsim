@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "name": "20 PFC Drive \u2014 220 V 1\u03c6 Rectifier + switched Boost PFC (~400 V bus) + FOC VSI + PMSM (Embraco VLT403U)",
+  "name": "20 PFC Drive — 220 V 1φ Rectifier + switched Boost PFC (~400 V bus) + FOC VSI + PMSM (Embraco VLT403U)",
   "created": "2026-05-31T11:47:12",
   "modified": "2026-06-03T13:29:48.684253",
   "active_circuit": "main",
@@ -471,6 +471,12 @@
               "name": "C",
               "x": 40.0,
               "y": 20.0
+            },
+            {
+              "index": 5,
+              "name": "PWM",
+              "x": -40.0,
+              "y": 40.0
             }
           ]
         },
@@ -820,8 +826,6 @@
             "switching_frequency_hz": 20000.0,
             "speed_ref_rpm": 1800.0,
             "v_bus": 400.0,
-            "pmsm_name": "",
-            "vsi_name": "",
             "sample_time": 0.0
           },
           "pins": [
@@ -836,6 +840,12 @@
               "name": "FB",
               "x": -40.0,
               "y": 20.0
+            },
+            {
+              "index": 2,
+              "name": "PWM",
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -947,10 +957,6 @@
             "vac_pk_nom": 325.0,
             "f_line": 60.0,
             "f_sw": 65000.0,
-            "boost_mosfet_name": "Q_boost",
-            "v_bus_node_name": "",
-            "v_ac_node_name": "",
-            "i_l_branch_name": "I_L",
             "sample_time": 0.0,
             "soft_start_time": 0.05,
             "v_bus_initial": 310.0
@@ -2540,6 +2546,40 @@
           },
           "junctions": [],
           "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "3aca2d66-2905-4f8f-9e29-5dd6fd7ec3bb",
+          "segments": [
+            {
+              "x1": 480.0,
+              "y1": -140.0,
+              "x2": 420.0,
+              "y2": -140.0
+            },
+            {
+              "x1": 420.0,
+              "y1": -140.0,
+              "x2": 420.0,
+              "y2": 40.0
+            },
+            {
+              "x1": 420.0,
+              "y1": 40.0,
+              "x2": 360.0,
+              "y2": 40.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "00895775-d8e8-4ae3-9584-bb38a4d2d82f",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "77c729ec-0af9-5c52-908b-41b54a269beb",
+            "pin_index": 5
+          },
+          "junctions": [],
+          "node_name": "PWM_BUS",
           "alias": ""
         }
       ]

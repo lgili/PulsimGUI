@@ -1329,27 +1329,30 @@ class PulsimBackend(SimulationBackend):
     ) -> None:
         """Populate ``result.signals[<probe_name>]`` for every current_probe.
 
-        pulsim's PWL kernel publishes V(…) and T(…) but does not natively
-        name a current channel for a virtual ``current_probe``. We obtain
-        the branch current via two paths, in order:
+        The CURRENT_PROBE component is stamped by
+        :meth:`CircuitConverter.build` as a 0 V voltage source whose
+        name matches the probe (modern path, pulsim ≥ 1.6.5) or as a
+        tiny bypass resistor named ``__IP_BYPASS_<probe>`` (legacy
+        path, pre-1.6.5 backends without ``add_voltage_source``).
+        Either way pulsim publishes a branch the GUI can scope; this
+        helper just normalises the lookup to a single
+        ``result.signals[<probe_name>]`` entry the rest of the GUI
+        already keys on.
 
-        Path A — modern pulsim (PR #82, ``result.i(name)`` + ``result.
-        currents()``):
-            Call ``result.i(name)`` against the bypass resistor we already
-            stamped (``__IP_BYPASS_<probe>``) and use its reconstructed
-            series directly. This is exact (uses the solver-state-driven
-            ``(V_from − V_to) / R`` evaluator inside pulsim) and supported
-            for every resistor / inductor / capacitor / switch / diode /
-            voltage-source branch.
+        Lookup order per probe (first hit wins):
 
-        Path B — legacy pulsim (pre-PR #82):
-            Fall back to reading the node voltages ourselves and computing
-            ``(V(N_in) − V(N_out)) / R_bypass`` here. Same arithmetic,
-            done by us instead of by the kernel.
-
-        Either way the resulting series ends up at
-        ``result.signals[<probe_name>]`` — exactly what the GUI's probe
-        enrichment expects as the first candidate key.
+          1. ``result.signals[<probe_name>]`` is already populated
+             with a non-trivial series — leave it alone.
+          2. ``result.i(<probe_name>)`` — the modern direct branch
+             current. Exact, no reconstruction. Returns the current
+             through the 0 V sense source we stamped at convert time.
+          3. ``result.i("__IP_BYPASS_<probe_name>")`` — legacy
+             stamping path (the converter used a bypass resistor
+             instead of a voltage source). Same exactness, different
+             branch name.
+          4. Last-resort ``(V(N_in) − V(N_out)) / R_bypass``
+             reconstruction — only reached if the kernel has no
+             ``result.i`` accessor at all (pre-PR #82 builds).
         """
         sample_count = len(result.time)
         if sample_count <= 0:
@@ -1359,8 +1362,6 @@ class PulsimBackend(SimulationBackend):
         if not callable(virtual_components_attr):
             return
         node_name_attr = getattr(circuit, "node_name", None)
-        if not callable(node_name_attr):
-            return
 
         try:
             virtual_components = virtual_components_attr()
@@ -1371,9 +1372,8 @@ class PulsimBackend(SimulationBackend):
         except Exception:
             return
 
-        # Try to grab the pulsim Result's PR-#82 ``i(name)`` accessor
-        # once, up-front. ``getattr`` returns None on older builds and
-        # we silently fall through to the legacy path on each probe.
+        # Resolve the pulsim Result's ``i(name)`` accessor once. ``None``
+        # means we're on a pre-PR-#82 build and must use the V/R fallback.
         kernel_result = getattr(result, "raw_result", None) or getattr(
             result, "_raw_result", None
         ) or getattr(result, "result", None) or result
@@ -1382,6 +1382,25 @@ class PulsimBackend(SimulationBackend):
             i_accessor = None
 
         repaired_channels: list[str] = []
+
+        def _series_from_i(branch_name: str) -> list[float] | None:
+            """Call ``result.i(branch_name)`` and coerce to a list of the
+            right length. Returns None on any kind of miss."""
+            if i_accessor is None:
+                return None
+            try:
+                series = i_accessor(branch_name)
+            except Exception:
+                return None
+            if series is None:
+                return None
+            try:
+                series_list = [float(v) for v in series]
+            except Exception:
+                return None
+            if len(series_list) < sample_count:
+                return None
+            return series_list[:sample_count]
 
         for entry in components_iter:
             comp_type = str(getattr(entry, "type", "") or "").strip().lower()
@@ -1392,10 +1411,7 @@ class PulsimBackend(SimulationBackend):
             if not channel_name:
                 continue
 
-            # Existing-channel check: if pulsim *already* published a
-            # meaningful current series under the probe name, leave it
-            # alone (future-proof for kernels that learn to publish
-            # ``current_probe`` natively).
+            # Already populated with meaningful data — done.
             existing = result.signals.get(channel_name)
             needs_synthesis = (
                 not isinstance(existing, list)
@@ -1411,23 +1427,29 @@ class PulsimBackend(SimulationBackend):
                 if peak_existing > 1e-12:
                     continue
 
-            # Path A: ``result.i("__IP_BYPASS_<probe>")``.
-            if i_accessor is not None:
-                bypass_branch = f"__IP_BYPASS_{channel_name}"
-                try:
-                    series = i_accessor(bypass_branch)
-                except Exception:
-                    series = None
-                if series is not None:
-                    try:
-                        series_list = [float(v) for v in series]
-                    except Exception:
-                        series_list = []
-                    if len(series_list) >= sample_count:
-                        result.signals[channel_name] = series_list[:sample_count]
-                        repaired_channels.append(f"{channel_name}:result.i")
-                        continue
+            # 2. ``result.i(<probe_name>)`` — modern stamping (0 V source).
+            series_list = _series_from_i(channel_name)
+            if series_list is not None:
+                result.signals[channel_name] = series_list
+                repaired_channels.append(f"{channel_name}:result.i")
+                continue
 
+            # 3. ``result.i("__IP_BYPASS_<probe>")`` — legacy stamping
+            # (bypass resistor branch). Still a state-variable branch
+            # in newer pulsim because we put a tiny resistor there; on
+            # newer pulsim the resistor isn't a state branch so this
+            # call raises NotImplementedError and we drop through.
+            series_list = _series_from_i(f"__IP_BYPASS_{channel_name}")
+            if series_list is not None:
+                result.signals[channel_name] = series_list
+                repaired_channels.append(f"{channel_name}:result.i_bypass")
+                continue
+
+            # 4. Last-resort V/R reconstruction. Requires the helper
+            # node-name accessor to translate node indices, plus a
+            # bypass-resistor parameter to divide by.
+            if not callable(node_name_attr):
+                continue
             raw_nodes = getattr(entry, "nodes", None)
             if not isinstance(raw_nodes, list) or len(raw_nodes) < 2:
                 continue
@@ -1466,7 +1488,7 @@ class PulsimBackend(SimulationBackend):
                 for idx in range(sample_count)
             ]
             result.signals[channel_name] = repaired
-            repaired_channels.append(channel_name)
+            repaired_channels.append(f"{channel_name}:vr_fallback")
 
         if repaired_channels:
             result.statistics["virtual_probe_repaired_channels"] = sorted(set(repaired_channels))

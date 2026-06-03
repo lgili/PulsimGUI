@@ -41,12 +41,15 @@ def _foc_comp(comp_id: str, params: dict | None = None, pin_nodes: list | None =
     return out
 
 
-def test_foc_controller_has_two_signal_input_pins() -> None:
+def test_foc_controller_has_two_signal_input_pins_and_pwm_output_bus() -> None:
     foc = Component(type=ComponentType.FOC_CONTROLLER, name="FOC1")
     names = [p.name for p in foc.pins]
-    assert names == ["SP", "FB"]
+    # SP/FB stay as signal-domain inputs; the new PWM pin is the
+    # signal-bus output that wires to the VSI's PWM input.
+    assert names == ["SP", "FB", "PWM"]
     assert pin_connection_domain(foc, 0) == CONNECTION_DOMAIN_SIGNAL
     assert pin_connection_domain(foc, 1) == CONNECTION_DOMAIN_SIGNAL
+    assert pin_connection_domain(foc, 2) == CONNECTION_DOMAIN_SIGNAL
 
 
 def test_foc_controller_defaults_match_vlt403u_recipe() -> None:
@@ -64,10 +67,19 @@ def test_foc_controller_defaults_match_vlt403u_recipe() -> None:
 
 def test_infer_emits_descriptor_for_foc_controller() -> None:
     conv = _converter()
+    # PWM bus + FB wires are MANDATORY now: ``pwm_net`` shared between
+    # VSI.PWM (pin 5) and FOC.PWM (pin 2); ``sig_net`` shared between
+    # PMSM.SIG (pin 4) and FOC.FB (pin 1).
     comps = [
-        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI"},
-        {"id": "m", "type": "PMSM", "name": "M1"},
-        _foc_comp("f", {"speed_kp": 0.30, "speed_ref_rpm": 1500.0}),
+        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI",
+         "pin_nodes": ["busp", "busn", "pha", "phb", "phc", "pwm_net"]},
+        {"id": "m", "type": "PMSM", "name": "M1",
+         "pin_nodes": ["pha", "phb", "phc", "0", "sig_net"]},
+        _foc_comp(
+            "f",
+            {"speed_kp": 0.30, "speed_ref_rpm": 1500.0},
+            pin_nodes=["sp_net", "sig_net", "pwm_net"],
+        ),
     ]
     descs = conv._infer_foc_loops(comps)
     assert len(descs) == 1
@@ -82,12 +94,14 @@ def test_infer_traces_pmsm_via_fb_wire_when_multiple_motors() -> None:
     which motor the descriptor binds to."""
     conv = _converter()
     comps = [
-        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI"},
+        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI",
+         "pin_nodes": ["busp", "busn", "pha", "phb", "phc", "pwm_net"]},
         {"id": "m1", "type": "PMSM", "name": "M_first",
          "pin_nodes": ["A1", "B1", "C1", "N1", "bus_net_first"]},
         {"id": "m2", "type": "PMSM", "name": "M_target",
          "pin_nodes": ["A2", "B2", "C2", "N2", "bus_net_target"]},
-        _foc_comp("f", pin_nodes=["sp_net", "bus_net_target"]),
+        # FB wires to motor M_target; PWM wires to VSI.
+        _foc_comp("f", pin_nodes=["sp_net", "bus_net_target", "pwm_net"]),
     ]
     descs = conv._infer_foc_loops(comps)
     assert len(descs) == 1
@@ -112,14 +126,18 @@ def test_legacy_cblock_marker_still_works() -> None:
 
 def test_both_legacy_and_new_components_emit_two_descriptors() -> None:
     """A circuit carrying both kinds (transitional file) emits one
-    descriptor per controller."""
+    descriptor per controller. The new FOC_CONTROLLER requires the
+    wired PWM + FB bus; the legacy C_BLOCK marker keeps its parameter-
+    based / single-VSI binding."""
     conv = _converter()
     comps = [
-        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI"},
-        {"id": "m", "type": "PMSM", "name": "M1"},
+        {"id": "v", "type": "THREE_PHASE_VSI", "name": "VSI",
+         "pin_nodes": ["busp", "busn", "pha", "phb", "phc", "pwm_net"]},
+        {"id": "m", "type": "PMSM", "name": "M1",
+         "pin_nodes": ["pha", "phb", "phc", "0", "sig_net"]},
         {"id": "c", "type": "C_BLOCK", "name": "FOC_legacy",
          "parameters": {"control_kind": "foc"}},
-        _foc_comp("f"),
+        _foc_comp("f", pin_nodes=["sp_net", "sig_net", "pwm_net"]),
     ]
     descs = conv._infer_foc_loops(comps)
     assert {d["name"] for d in descs} == {"FOC_legacy", "FOC1"}

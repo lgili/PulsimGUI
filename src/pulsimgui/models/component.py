@@ -384,6 +384,39 @@ def supports_motor_signal_bus(component_type: ComponentType) -> bool:
     return component_type in MOTOR_SIGNAL_BUS_SUPPORTED_TYPES
 
 
+# Inverter PWM bus — a single signal-domain pin carrying the 6 PWM gate
+# signals (3 high-side + 3 low-side) for a native 3φ VSI. The wire from
+# the controller (FOC_CONTROLLER / SIXSTEP_CONTROLLER) to the VSI's
+# ``PWM`` input pin is the SOLE binding between them — the converter
+# uses the wire to identify which inverter the controller drives. No
+# parameter-based ``vsi_name`` fallback: a missing wire is a converter
+# error so the user always sees the binding on the schematic.
+INVERTER_PWM_BUS_PIN_NAME = "PWM"
+INVERTER_PWM_BUS_CHANNELS: tuple[tuple[str, str], ...] = (
+    ("ha", "A high-side"),
+    ("la", "A low-side"),
+    ("hb", "B high-side"),
+    ("lb", "B low-side"),
+    ("hc", "C high-side"),
+    ("lc", "C low-side"),
+)
+INVERTER_PWM_BUS_INPUT_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.THREE_PHASE_VSI,
+}
+INVERTER_PWM_BUS_OUTPUT_SUPPORTED_TYPES: set[ComponentType] = {
+    ComponentType.FOC_CONTROLLER,
+    ComponentType.SIXSTEP_CONTROLLER,
+}
+
+
+def supports_inverter_pwm_bus(component_type: ComponentType) -> bool:
+    """Return True when a component has a 6-PWM inverter bus pin (input or output)."""
+    return (
+        component_type in INVERTER_PWM_BUS_INPUT_SUPPORTED_TYPES
+        or component_type in INVERTER_PWM_BUS_OUTPUT_SUPPORTED_TYPES
+    )
+
+
 MAGNETIC_CORE_SUPPORTED_TYPES: set[ComponentType] = {
     ComponentType.SATURABLE_INDUCTOR,
 }
@@ -757,6 +790,18 @@ def is_motor_signal_bus_pin(component: "Component", pin_index: int) -> bool:
     return _pin_name(component, pin_index).strip().upper() == MOTOR_SIGNAL_BUS_PIN_NAME
 
 
+def is_inverter_pwm_bus_pin(component: "Component", pin_index: int) -> bool:
+    """Return True for an inverter PWM bus pin (``PWM`` on VSI / FOC / SIXSTEP).
+
+    The pin carries the 6 gate signals between a FOC / SIXSTEP controller's
+    PWM output and a THREE_PHASE_VSI's PWM input. Signal-domain (not
+    electrical) — the converter must NOT treat the wire as a circuit branch.
+    """
+    if not supports_inverter_pwm_bus(component.type):
+        return False
+    return _pin_name(component, pin_index).strip().upper() == INVERTER_PWM_BUS_PIN_NAME
+
+
 def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
     """Return True when the pin can feed an electrical scope with control-domain data."""
     if pin_index < 0 or pin_index >= len(component.pins):
@@ -778,6 +823,11 @@ def is_signal_scope_source_pin(component: "Component", pin_index: int) -> bool:
 
     # Dynamic-machine signal bus (PMSM ``SIG``) feeds a demux/scope.
     if is_motor_signal_bus_pin(component, pin_index):
+        return True
+
+    # Inverter PWM bus (FOC/SIXSTEP ``PWM`` output, VSI ``PWM`` input)
+    # can also be tapped by a demux/scope for individual-gate plotting.
+    if is_inverter_pwm_bus_pin(component, pin_index):
         return True
 
     if component.type not in SIGNAL_DOMAIN_COMPONENT_TYPES:
@@ -833,6 +883,13 @@ def pin_connection_domain(component: "Component", pin_index: int) -> str:
     # A dynamic machine's signal-bus output (PMSM ``SIG``) is signal-domain
     # even though the device itself is a circuit component.
     if is_motor_signal_bus_pin(component, pin_index):
+        return CONNECTION_DOMAIN_SIGNAL
+
+    # The 6-PWM inverter bus (VSI ``PWM`` input + FOC/SIXSTEP ``PWM``
+    # output) is signal-domain. The VSI itself is a circuit component
+    # (electrical phases + DC bus pins), but its PWM pin is the
+    # controller wire and must NOT feed MNA.
+    if is_inverter_pwm_bus_pin(component, pin_index):
         return CONNECTION_DOMAIN_SIGNAL
 
     return component_connection_domain(component.type)
@@ -949,25 +1006,32 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     ],
     ComponentType.C_BLOCK: _default_c_block_pins(1, 1),
 
-    # FOC controller: 2 signal-domain inputs.
-    # SP = speed-setpoint reference (rpm, signal). Typically driven by a
-    #      CONSTANT carrying the target speed.
-    # FB = motor feedback bus (signal). Wire to the PMSM's SIG pin (or to a
-    #      demux of it) so the converter can identify which PMSM to observe.
-    # The converter auto-detects the controlled VSI and drives its 6 switches
-    # via inverse Park/Clarke, so no output pin is needed.
+    # FOC controller: 2 signal-domain inputs + 1 signal-bus output.
+    # SP  = speed-setpoint reference (rpm, signal). Typically driven by a
+    #       CONSTANT carrying the target speed.
+    # FB  = motor feedback bus (signal). Wire to the PMSM's SIG pin (or
+    #       to a demux of it) so the converter can identify which PMSM
+    #       to observe.
+    # PWM = inverter PWM bus (signal-bus output). A single pin carrying
+    #       all 6 gate signals (3 high-side + 3 low-side) produced by
+    #       inverse Park/Clarke. Wire to a THREE_PHASE_VSI's ``PWM``
+    #       input pin — that wire is the SOLE binding between the FOC
+    #       and the inverter (no parameter-based ``vsi_name`` fallback).
     ComponentType.FOC_CONTROLLER: [
         Pin(0, "SP", -40, -20),
         Pin(1, "FB", -40, 20),
+        Pin(2, INVERTER_PWM_BUS_PIN_NAME, 40, 0),
     ],
 
-    # 6-step BLDC controller — same SP / FB convention as the FOC block
-    # so the user can swap one for the other on the same schematic and
-    # see the difference. The converter routes through the PMSM ``SIG``
-    # bus the FB pin reaches to bind both the VSI and the PMSM.
+    # 6-step BLDC controller — same SP / FB / PWM convention as the FOC
+    # block so the user can swap one for the other on the same
+    # schematic and see the difference. The converter routes through
+    # the PMSM ``SIG`` bus the FB pin reaches to bind the PMSM, and
+    # through the ``PWM`` output bus wire to bind the VSI.
     ComponentType.SIXSTEP_CONTROLLER: [
         Pin(0, "SP", -40, -20),
         Pin(1, "FB", -40, 20),
+        Pin(2, INVERTER_PWM_BUS_PIN_NAME, 40, 0),
     ],
 
     # PFC boost controller: 3 signal-domain inputs.
@@ -1152,6 +1216,12 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(2, "A", 40, -20),
         Pin(3, "B", 40, 0),
         Pin(4, "C", 40, 20),
+        # Inverter PWM bus input (signal-domain). A single bus pin
+        # carrying all 6 gate signals (3 high-side + 3 low-side). The
+        # FOC_CONTROLLER / SIXSTEP_CONTROLLER ``PWM`` output pin wires
+        # here — that wire is the SOLE binding between the controller
+        # and this inverter (no parameter-based ``vsi_name`` fallback).
+        Pin(5, INVERTER_PWM_BUS_PIN_NAME, -40, 40),
     ],
 
     # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
@@ -1588,12 +1658,13 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # ramp. Defaults to the peak rectified mains (≈ vac_pk_nom);
         # set explicitly when the bus has a different precharge level.
         "v_bus_initial": 310.0,
-        # --- Optional explicit binding overrides — leave blank for
-        # auto-detect by topology / single-instance fallback.
-        "boost_mosfet_name": "",
-        "v_bus_node_name": "",
-        "v_ac_node_name": "",
-        "i_l_branch_name": "",
+        # NOTE: as of v1.1.3 there are NO ``*_name`` binding overrides
+        # here. The MOSFET (PWM output), the bus-voltage node (VBUS
+        # input), the rectified-input node (VAC input), and the
+        # inductor current probe (IL input) are ALL identified by
+        # wire-tracing the corresponding pin. A missing wire is a hard
+        # converter error so the user always sees the binding on the
+        # schematic, never a silent ``auto-detect`` magic.
     },
 
     # FOC drive controller — cascaded speed → d/q current PI loops over a
@@ -1622,11 +1693,17 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "switching_frequency_hz": 20000.0,
         # Fallback speed reference (rpm) when the SP pin is left unwired.
         "speed_ref_rpm": 1800.0,
-        # Optional explicit binding overrides — leave empty for auto-detect.
-        "pmsm_name": "",
-        "vsi_name": "",
-        # Optional explicit DC-bus magnitude — read from the VSI when blank.
+        # Explicit DC-bus magnitude. Used by the backend to normalise
+        # the modulation + clamp v_d/v_q (Vbus/2). Set this to the
+        # nominal DC bus of the front-end feeding the VSI (e.g. 360 V
+        # for a doubler, 400 V for a PFC). 0 leaves it at the
+        # converter-side default (360 V).
         "v_bus": 0.0,
+        # NOTE: no ``pmsm_name`` / ``vsi_name`` overrides — the
+        # observed PMSM is identified by tracing the FB pin wire back
+        # to the motor's SIG bus, and the driven VSI is identified by
+        # tracing the PWM output wire to the inverter's PWM bus input.
+        # A missing wire is a hard converter error.
     },
 
     ComponentType.SIXSTEP_CONTROLLER: {
@@ -1649,9 +1726,9 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # 120° trapezoidal alignment; +30° / −30° emulates the lead /
         # lag many production drives use to chase BEMF peak.
         "sector_advance_deg": 0.0,
-        # Optional explicit binding overrides — leave empty for auto-detect.
-        "pmsm_name": "",
-        "vsi_name": "",
+        # NOTE: no ``pmsm_name`` / ``vsi_name`` overrides — both the
+        # observed PMSM and the driven VSI are identified by wire-
+        # tracing (FB → SIG bus and PWM → inverter PWM bus).
     },
 
     # Measurement
@@ -2207,17 +2284,20 @@ def _synchronize_special_component(component: Component) -> None:
         ComponentType.GAIN,
         ComponentType.GOTO_LABEL,
         ComponentType.FROM_LABEL,
-        # PFC / FOC controllers ship-as is — but pin layouts evolve
-        # (the ``PWM`` output pin landed in 1.1.2). Running the default-
-        # layout sync ensures saved files migrate forward: if the saved
-        # pin set differs from the current template, it's replaced. The
-        # ``__post_init__`` step that follows then snaps every retained
-        # coord back to the user's saved geometry (so the unchanged
-        # left-side input pins keep their layout while the new PWM pin
-        # gets the default template position).
+        # PFC / FOC / SIXSTEP controllers + the THREE_PHASE_VSI all
+        # ship pin layouts that evolved (the PFC ``PWM`` output pin
+        # landed in 1.1.2; the FOC / SIXSTEP ``PWM`` output pins + the
+        # VSI's matching ``PWM`` input bus pin landed in 1.1.3 when
+        # the wireless name-binding overrides were removed in favour
+        # of explicit-wire-only binding). Running the default-layout
+        # sync ensures saved files migrate forward: if the saved pin
+        # set differs from the current template, it's replaced. The
+        # ``__post_init__`` step that follows then snaps every
+        # retained coord back to the user's saved geometry.
         ComponentType.PFC_BOOST_CONTROLLER,
         ComponentType.FOC_CONTROLLER,
         ComponentType.SIXSTEP_CONTROLLER,
+        ComponentType.THREE_PHASE_VSI,
     ):
         _synchronize_default_pin_layout(component)
     elif component.type == ComponentType.SUBCIRCUIT_PORT:

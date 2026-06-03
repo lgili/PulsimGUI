@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "name": "21 FOC Drive \u2014 360 V DC Bus + VSI + Field-Oriented Control (Embraco VLT403U PMSM)",
+  "name": "21 FOC Drive — 360 V DC Bus + VSI + Field-Oriented Control (Embraco VLT403U PMSM)",
   "created": "2026-05-31T10:07:55",
   "modified": "2026-06-02T07:06:20.738276",
   "active_circuit": "main",
@@ -225,6 +225,12 @@
               "name": "C",
               "x": 35.0,
               "y": 25.0
+            },
+            {
+              "index": 5,
+              "name": "PWM",
+              "x": -40.0,
+              "y": 40.0
             }
           ]
         },
@@ -592,8 +598,6 @@
             "switching_frequency_hz": 20000.0,
             "speed_ref_rpm": 1800.0,
             "v_bus": 360.0,
-            "pmsm_name": "",
-            "vsi_name": "",
             "sample_time": 0.0
           },
           "pins": [
@@ -608,6 +612,12 @@
               "name": "FB",
               "x": -40.0,
               "y": 20.0
+            },
+            {
+              "index": 2,
+              "name": "PWM",
+              "x": 40.0,
+              "y": 0.0
             }
           ]
         },
@@ -1838,6 +1848,40 @@
           },
           "junctions": [],
           "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "9b1cd80f-fe15-4e25-8991-8eae795b6f73",
+          "segments": [
+            {
+              "x1": 120.0,
+              "y1": -140.0,
+              "x2": 60.0,
+              "y2": -140.0
+            },
+            {
+              "x1": 60.0,
+              "y1": -140.0,
+              "x2": 60.0,
+              "y2": 40.0
+            },
+            {
+              "x1": 60.0,
+              "y1": 40.0,
+              "x2": 0.0,
+              "y2": 40.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "60c3dbcb-d54d-45fe-8672-40aecda5ee07",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "3759dad4-6c3f-56ae-8116-687ca143e3eb",
+            "pin_index": 5
+          },
+          "junctions": [],
+          "node_name": "PWM_BUS",
           "alias": ""
         }
       ]
