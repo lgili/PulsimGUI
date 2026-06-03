@@ -1327,12 +1327,29 @@ class PulsimBackend(SimulationBackend):
         circuit: Any,
         result: BackendRunResult,
     ) -> None:
-        """Repair flatlined current-probe channels using the stamped bypass branch.
+        """Populate ``result.signals[<probe_name>]`` for every current_probe.
 
-        Some backend builds expose current-probe channels but return all-zero values
-        even when branch current is flowing. Current probes are stamped with a tiny
-        bypass resistor by the converter; reconstruct probe current from node voltages
-        when the reported probe channel is effectively zero.
+        pulsim's PWL kernel publishes V(…) and T(…) but does not natively
+        name a current channel for a virtual ``current_probe``. We obtain
+        the branch current via two paths, in order:
+
+        Path A — modern pulsim (PR #82, ``result.i(name)`` + ``result.
+        currents()``):
+            Call ``result.i(name)`` against the bypass resistor we already
+            stamped (``__IP_BYPASS_<probe>``) and use its reconstructed
+            series directly. This is exact (uses the solver-state-driven
+            ``(V_from − V_to) / R`` evaluator inside pulsim) and supported
+            for every resistor / inductor / capacitor / switch / diode /
+            voltage-source branch.
+
+        Path B — legacy pulsim (pre-PR #82):
+            Fall back to reading the node voltages ourselves and computing
+            ``(V(N_in) − V(N_out)) / R_bypass`` here. Same arithmetic,
+            done by us instead of by the kernel.
+
+        Either way the resulting series ends up at
+        ``result.signals[<probe_name>]`` — exactly what the GUI's probe
+        enrichment expects as the first candidate key.
         """
         sample_count = len(result.time)
         if sample_count <= 0:
@@ -1354,6 +1371,16 @@ class PulsimBackend(SimulationBackend):
         except Exception:
             return
 
+        # Try to grab the pulsim Result's PR-#82 ``i(name)`` accessor
+        # once, up-front. ``getattr`` returns None on older builds and
+        # we silently fall through to the legacy path on each probe.
+        kernel_result = getattr(result, "raw_result", None) or getattr(
+            result, "_raw_result", None
+        ) or getattr(result, "result", None) or result
+        i_accessor = getattr(kernel_result, "i", None)
+        if not callable(i_accessor):
+            i_accessor = None
+
         repaired_channels: list[str] = []
 
         for entry in components_iter:
@@ -1365,11 +1392,10 @@ class PulsimBackend(SimulationBackend):
             if not channel_name:
                 continue
 
-            # Decide whether the kernel-emitted channel is good enough.
-            # Three cases need synthesis from the bypass branch:
-            #   1) Channel missing entirely (kernel registered no signal).
-            #   2) Channel present but truncated (sample mismatch).
-            #   3) Channel present but flatlined at ≤ 1 pA.
+            # Existing-channel check: if pulsim *already* published a
+            # meaningful current series under the probe name, leave it
+            # alone (future-proof for kernels that learn to publish
+            # ``current_probe`` natively).
             existing = result.signals.get(channel_name)
             needs_synthesis = (
                 not isinstance(existing, list)
@@ -1383,9 +1409,24 @@ class PulsimBackend(SimulationBackend):
                 except Exception:
                     peak_existing = 0.0
                 if peak_existing > 1e-12:
-                    # Backend already produced a meaningful current-probe
-                    # channel — nothing to do for this probe.
                     continue
+
+            # Path A: ``result.i("__IP_BYPASS_<probe>")``.
+            if i_accessor is not None:
+                bypass_branch = f"__IP_BYPASS_{channel_name}"
+                try:
+                    series = i_accessor(bypass_branch)
+                except Exception:
+                    series = None
+                if series is not None:
+                    try:
+                        series_list = [float(v) for v in series]
+                    except Exception:
+                        series_list = []
+                    if len(series_list) >= sample_count:
+                        result.signals[channel_name] = series_list[:sample_count]
+                        repaired_channels.append(f"{channel_name}:result.i")
+                        continue
 
             raw_nodes = getattr(entry, "nodes", None)
             if not isinstance(raw_nodes, list) or len(raw_nodes) < 2:
