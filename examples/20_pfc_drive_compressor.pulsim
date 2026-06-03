@@ -1074,6 +1074,43 @@
               "y": 20.0
             }
           ]
+        },
+        {
+          "id": "a45dcbe5-57b5-4d62-8a00-d4720c1a46e1",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_Input",
+          "x": -1040.0,
+          "y": -400.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "V_ac (V)",
+                "overlay": false
+              },
+              {
+                "label": "I_L (A)",
+                "overlay": false
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 20.0
+            }
+          ]
         }
       ],
       "wires": [
@@ -2550,6 +2587,60 @@
           "junctions": [],
           "node_name": "",
           "alias": ""
+        },
+        {
+          "id": "b47cca52-876b-4c11-8c34-5815bb9bb8b7",
+          "alias": "",
+          "segments": [
+            {
+              "x1": -1300.0,
+              "y1": -20.0,
+              "x2": -1300.0,
+              "y2": -420.0
+            },
+            {
+              "x1": -1300.0,
+              "y1": -420.0,
+              "x2": -1080.0,
+              "y2": -420.0
+            }
+          ],
+          "junctions": [],
+          "start_connection": {
+            "component_id": "55a757b7-1e5a-47e6-8838-e6913c169f8d",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "a45dcbe5-57b5-4d62-8a00-d4720c1a46e1",
+            "pin_index": 0
+          }
+        },
+        {
+          "id": "b0da2e65-4fd7-4833-8198-bc2d0cfc8085",
+          "alias": "",
+          "segments": [
+            {
+              "x1": -520.0,
+              "y1": -120.0,
+              "x2": -520.0,
+              "y2": -380.0
+            },
+            {
+              "x1": -520.0,
+              "y1": -380.0,
+              "x2": -1080.0,
+              "y2": -380.0
+            }
+          ],
+          "junctions": [],
+          "start_connection": {
+            "component_id": "cdc5e45a-589f-4f98-be57-4cc969d97d7f",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "a45dcbe5-57b5-4d62-8a00-d4720c1a46e1",
+            "pin_index": 1
+          }
         }
       ]
     }
