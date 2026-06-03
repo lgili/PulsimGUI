@@ -389,13 +389,19 @@ def _convert_example(name: str):
 
 
 @pytest.mark.parametrize(
-    "example, v_bus",
+    "example, v_bus, iq_limit",
     [
-        ("19_doubler_drive_compressor.pulsim", 340.0),
-        ("20_pfc_drive_compressor.pulsim", 400.0),
+        # ex 19 keeps the conservative 3.0 A cap (open-loop V/f baseline).
+        ("19_doubler_drive_compressor.pulsim", 340.0, 3.0),
+        # ex 20 was retuned for the 240 W compressor operating point and
+        # needs the wider 7.4 A cap so the speed PI doesn't clip into a
+        # current-limited stall on startup.
+        ("20_pfc_drive_compressor.pulsim", 400.0, 7.4),
     ],
 )
-def test_compressor_example_carries_foc_marker(example: str, v_bus: float) -> None:
+def test_compressor_example_carries_foc_marker(
+    example: str, v_bus: float, iq_limit: float
+) -> None:
     """Both compressor-drive examples must convert without error and emit
     exactly one FOC descriptor bound to their VSI ("VSI") + PMSM ("M1"),
     carrying the front-end's nominal ``v_bus`` and the validated VLT403U
@@ -418,7 +424,7 @@ def test_compressor_example_carries_foc_marker(example: str, v_bus: float) -> No
     assert d["current_kp"] == pytest.approx(45.0)
     assert d["current_ki"] == pytest.approx(24000.0)
     assert d["id_ref"] == pytest.approx(0.0)
-    assert d["iq_limit"] == pytest.approx(3.0)
+    assert d["iq_limit"] == pytest.approx(iq_limit)
     assert d["speed_ref_rpm"] == pytest.approx(1800.0)
 
 
