@@ -52,9 +52,12 @@ def test_pfc_controller_defaults_target_ccm_240_to_1000w() -> None:
     # Outer loop tuned below 2·f_line so 120 Hz ripple is not amplified.
     assert defaults["voltage_kp"] == pytest.approx(0.30)
     assert defaults["voltage_ki"] == pytest.approx(6.0)
-    # Inner loop targets ~5 kHz BW with 1 mH inductor.
-    assert defaults["current_kp"] == pytest.approx(31.4)
-    assert defaults["current_ki"] == pytest.approx(3140.0)
+    # Inner loop targets ~5 kHz crossover. The PI output is the DUTY
+    # cycle, so the plant gain ``ΔI/Δduty = V_bus / (s·L)`` divides
+    # the "Kp ≈ L·ω_c" formula by V_bus → Kp ≈ ω_c·L/V_bus. For the
+    # example recipe (L=5 mH, V_bus=400 V): Kp ≈ 0.39, Ki ≈ 1200.
+    assert defaults["current_kp"] == pytest.approx(0.4)
+    assert defaults["current_ki"] == pytest.approx(1200.0)
     # 65 kHz is the modern high-power PFC carrier default.
     assert defaults["f_sw"] == pytest.approx(65_000.0)
 
