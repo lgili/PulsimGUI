@@ -2490,6 +2490,14 @@ class MainWindow(QMainWindow):
         self._place_project_in_tab(project)
         self._settings.add_recent_project(path)
         self._update_recent_menu()
+        # Re-resolve every open scope window's probe bindings — saved
+        # examples that pre-date a binding-handler change (e.g. the
+        # "any pin of a probe → ``IP(<probe>)``" / pin-set migration
+        # passes) would otherwise reuse stale signal keys and the user
+        # has to manually close + reopen each scope to pick up the new
+        # resolution. Refreshing on open is essentially free (no
+        # windows open → no-op) and removes the "old scope" footgun.
+        self._refresh_scope_window_bindings()
         self.statusBar().showMessage(f"Opened: {path}", 3000)
 
     def _schedule_auto_fit_view(self) -> None:
