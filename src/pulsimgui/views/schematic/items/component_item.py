@@ -2891,13 +2891,35 @@ class _RotatingMachineItem(ComponentItem):
                    2 * (self.BODY_RADIUS + 4), 2 * (self.BODY_RADIUS + 4))
         )
 
-    def _draw_symbol(self, painter: QPainter) -> None:
+    def _draw_orthogonal_leads(self, painter: QPainter) -> None:
+        """Draw an L-shaped lead from every pin to the body's nearest
+        CARDINAL point — (±r, 0) or (0, ±r). Off-axis pins like the
+        3-phase stator inputs at (-40, ±20) get a horizontal stub to
+        x=-r then a short vertical stub to (-r, 0), keeping every
+        segment on the 20-px grid (no diagonals to off-grid arc points).
+
+        Subclasses share this so DCMotor / PMSM steady / PMSM dynamic /
+        InductionMotor all use the same lead routing.
+        """
+        r = self.BODY_RADIUS
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
         for pin in self._component.pins:
-            # Trace a short lead from the body edge straight to each pin.
             px, py = float(pin.x), float(pin.y)
-            edge = self._closest_circle_edge(px, py, self.BODY_RADIUS)
-            painter.drawLine(edge, QPointF(px, py))
+            if abs(px) >= abs(py):
+                # Side pin (more horizontal than vertical).
+                entry_x = r if px > 0 else -r
+                painter.drawLine(QPointF(px, py), QPointF(entry_x, py))
+                if abs(py) > 1e-6:
+                    painter.drawLine(QPointF(entry_x, py), QPointF(entry_x, 0))
+            else:
+                # Top/bottom pin.
+                entry_y = r if py > 0 else -r
+                painter.drawLine(QPointF(px, py), QPointF(px, entry_y))
+                if abs(px) > 1e-6:
+                    painter.drawLine(QPointF(px, entry_y), QPointF(0, entry_y))
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        self._draw_orthogonal_leads(painter)
 
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
@@ -3024,14 +3046,10 @@ class InductionMotorItem(_RotatingMachineItem):
     GLYPH_SUFFIX = ""
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        # Reuse the base leads + circle, but draw an "IM" glyph instead
-        # of the inherited "M"+suffix so the asynchronous machine reads
-        # clearly. Replicate the base body, then overlay.
-        painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        for pin in self._component.pins:
-            px, py = float(pin.x), float(pin.y)
-            edge = self._closest_circle_edge(px, py, self.BODY_RADIUS)
-            painter.drawLine(edge, QPointF(px, py))
+        # Reuse the shared lead + body geometry (orthogonal stator leads
+        # via the base helper) and overlay the "IM" glyph in place of
+        # the inherited "M".
+        self._draw_orthogonal_leads(painter)
 
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
@@ -3162,8 +3180,13 @@ class ThreePhaseVSIItem(ComponentItem):
     """
 
     def boundingRect(self) -> QRectF:
-        """Return the local-space rectangle used for painting and hit-testing."""
-        return self._with_pin_bounds(QRectF(-30, -34, 60, 68))
+        """Return the local-space rectangle used for painting and hit-testing.
+
+        Body is a 40 × 40 square — all four edges land on the 20-px
+        wiring grid (corners on grid dots). The pin bubbles extend the
+        bound by 6 px halo each side.
+        """
+        return self._with_pin_bounds(QRectF(-20, -20, 40, 40))
 
     def _draw_symbol(self, painter: QPainter) -> None:
         # Post-snap pin layout: VDC+/VDC- on the left (y=±20), A/B/C on
@@ -3174,7 +3197,10 @@ class ThreePhaseVSIItem(ComponentItem):
         b_pin = self._pin_position_by_name("B", QPointF(40, 0))
         c_pin = self._pin_position_by_name("C", QPointF(40, 20))
 
-        body = QRectF(-26, -30, 52, 60)
+        # Visible body — every edge on the 20-px grid (corners at
+        # ±20 / ±20). The "=" / "∼" half-marks and the diagonal divider
+        # are scaled down to fit the compact 40 × 40 card.
+        body = QRectF(-20, -20, 40, 40)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
         painter.drawRoundedRect(body, style.BLOCK_RADIUS, style.BLOCK_RADIUS)
@@ -3194,8 +3220,9 @@ class ThreePhaseVSIItem(ComponentItem):
             painter.drawLine(QPointF(body.right(), pin.y()), pin)
 
         # IEC inverter mark: diagonal divider from bottom-left to top-right.
+        # Scaled for the 40×40 body.
         painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
-        diag_pad = 8.0
+        diag_pad = 5.0
         painter.drawLine(
             QPointF(body.left() + diag_pad, body.bottom() - diag_pad),
             QPointF(body.right() - diag_pad, body.top() + diag_pad),
@@ -3203,25 +3230,25 @@ class ThreePhaseVSIItem(ComponentItem):
 
         # Upper-left half → DC mark ("=").
         painter.setPen(self._symbol_pen(style.STROKE_BODY, self._line_color()))
-        dc_x_center = body.left() + 16
-        dc_y_center = body.top() + 18
+        dc_x_center = body.left() + 11
+        dc_y_center = body.top() + 11
         painter.drawLine(
-            QPointF(dc_x_center - 7, dc_y_center - 3),
-            QPointF(dc_x_center + 7, dc_y_center - 3),
+            QPointF(dc_x_center - 5, dc_y_center - 2),
+            QPointF(dc_x_center + 5, dc_y_center - 2),
         )
         painter.drawLine(
-            QPointF(dc_x_center - 7, dc_y_center + 3),
-            QPointF(dc_x_center + 7, dc_y_center + 3),
+            QPointF(dc_x_center - 5, dc_y_center + 2),
+            QPointF(dc_x_center + 5, dc_y_center + 2),
         )
 
         # Lower-right half → AC mark ("∼") + small superscript "3φ".
-        ac_x_center = body.right() - 16
-        ac_y_center = body.bottom() - 18
+        ac_x_center = body.right() - 11
+        ac_y_center = body.bottom() - 11
         import math
         path = QPainterPath()
-        steps = 22
-        amp = 4.0
-        half_w = 9.0
+        steps = 18
+        amp = 3.0
+        half_w = 6.5
         for i in range(steps + 1):
             t = i / steps
             x = ac_x_center - half_w + t * 2 * half_w
@@ -3238,10 +3265,10 @@ class ThreePhaseVSIItem(ComponentItem):
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._muted_color()))
         font = QFont()
         font.setBold(True)
-        font.setPointSize(7)
+        font.setPointSize(6)
         painter.setFont(font)
         painter.drawText(
-            QRectF(ac_x_center - 12, ac_y_center - 14, 24, 9),
+            QRectF(ac_x_center - 9, ac_y_center - 11, 18, 8),
             Qt.AlignmentFlag.AlignCenter, "3φ",
         )
 
