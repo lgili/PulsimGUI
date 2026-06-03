@@ -4303,24 +4303,56 @@ class MainWindow(QMainWindow):
 
         for component in circuit.components.values():
             if component.type == ComponentType.VOLTAGE_PROBE:
+                # Differential probe: 3 pins (+, -, OUT). Reported value
+                # is V(+) − V(−), NOT just V(+). Without the subtraction
+                # the probe reads whatever single-ended node potential
+                # the kernel happened to assign — typically ~0 V when
+                # one side floats — instead of the true differential
+                # the user expects (e.g. ±325 V across an AC source).
                 probe_name = component.name or "VoltageProbe"
-                node_label = self._probe_node_label(
+                node_label_pos = self._probe_node_label(
                     component, node_map, alias_map, pin_index=0,
                 )
-                backend_series = MainWindow._probe_backend_series(
+                node_label_neg = self._probe_node_label(
+                    component, node_map, alias_map, pin_index=1,
+                )
+                series_pos = MainWindow._probe_backend_series(
                     enriched,
                     probe_name,
                     str(component.id),
-                    node_label=node_label,
+                    node_label=node_label_pos,
                     node_id=node_map.get((str(component.id), 0)),
                     kernel_prefix="V",
                 )
-                if backend_series is not None:
-                    scale = float(component.parameters.get("scale", 1.0) or 1.0)
-                    samples = min(len(backend_series), len(enriched.time))
-                    enriched.signals[format_signal_key("VP", probe_name)] = [
-                        backend_series[idx] * scale for idx in range(samples)
+                series_neg = MainWindow._probe_backend_series(
+                    enriched,
+                    probe_name,
+                    str(component.id),
+                    node_label=node_label_neg,
+                    node_id=node_map.get((str(component.id), 1)),
+                    kernel_prefix="V",
+                )
+                if series_pos is None:
+                    continue
+                # Subtract the negative-terminal voltage when we have it.
+                # When the ``−`` pin sits on the kernel ground (node 0)
+                # ``_probe_backend_series`` returns the constant-0 series
+                # for ``V(0)``; subtracting it is a no-op, so the GND-
+                # referenced case degrades into the legacy behaviour
+                # without a special case.
+                if series_neg is None:
+                    diff = list(series_pos)
+                else:
+                    n = min(len(series_pos), len(series_neg))
+                    diff = [
+                        float(series_pos[idx]) - float(series_neg[idx])
+                        for idx in range(n)
                     ]
+                scale = float(component.parameters.get("scale", 1.0) or 1.0)
+                samples = min(len(diff), len(enriched.time))
+                enriched.signals[format_signal_key("VP", probe_name)] = [
+                    diff[idx] * scale for idx in range(samples)
+                ]
                 continue
 
             if component.type == ComponentType.VOLTAGE_PROBE_GND:
