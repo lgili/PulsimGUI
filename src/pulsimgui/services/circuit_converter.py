@@ -332,6 +332,22 @@ class CircuitConverter:
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
+        # By-name lookup for per-device post-sim helpers (ThermalLimitMonitor,
+        # TempCoLoss, …). The backend needs ``params[name]`` at result-merge
+        # time without re-walking the schematic. We populate this lazily so
+        # legacy callers that build their own Circuit get a sensible default.
+        try:
+            comp_lookup: dict[str, dict[str, Any]] = {}
+            for c in components:
+                if not isinstance(c, dict):
+                    continue
+                nm = c.get("name") or c.get("id")
+                if nm:
+                    comp_lookup[str(nm)] = c
+            setattr(circuit, "components_by_name", comp_lookup)
+        except Exception:  # noqa: BLE001 — lookup is convenience, not load-bearing
+            pass
+
         return circuit
 
     # ------------------------------------------------------------------

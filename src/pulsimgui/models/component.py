@@ -1332,6 +1332,11 @@ DEFAULT_THERMAL_DEVICE_PARAMS: dict[str, Any] = {
     "thermal_shared_sink_id": "",
     "thermal_shared_sink_rth": 0.0,
     "thermal_shared_sink_cth": 0.0,
+    # Per-device junction-temperature safety limit (pulsim 1.7
+    # ``ThermalLimitMonitor``). Disabled when ``T_max_C <= 0``. Hysteresis
+    # avoids chatter when T_j hovers right at the limit.
+    "thermal_t_max_C": 0.0,
+    "thermal_t_max_hysteresis_C": 0.0,
 }
 
 DEFAULT_SWITCHING_ENERGY_PARAMS: dict[str, Any] = {

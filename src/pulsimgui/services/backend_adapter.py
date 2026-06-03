@@ -3566,6 +3566,14 @@ class PulsimBackend(SimulationBackend):
         if isinstance(sh_results, list) and sh_results:
             result.statistics["shared_heatsink_steady_state"] = sh_results
 
+        # Special key: per-device T_j limit-trip records from
+        # ``_check_thermal_limits``. Always merged (even empty) so the
+        # UI can distinguish "nobody opted in" (empty list) from "limit
+        # exists but didn't trip" (list with ``tripped: False``).
+        tl_trips = virtual_channels.get("__thermal_limit_trips__")
+        if isinstance(tl_trips, list) and tl_trips:
+            result.statistics["thermal_limit_trips"] = tl_trips
+
         # Special key: raw pulsim ``SimulationResult`` mounted on
         # ``result.raw_kernel_result`` so post-processing helpers
         # (e.g. ``_repair_current_probe_channels_from_bypass``) can
@@ -3581,6 +3589,7 @@ class PulsimBackend(SimulationBackend):
                 "__electrothermal_rows__",
                 "__kernel_result__",
                 "__shared_heatsink_results__",
+                "__thermal_limit_trips__",
             ):
                 continue  # handled above as statistics / raw_kernel_result
             channel_name = str(raw_name or "").strip()
@@ -6522,6 +6531,21 @@ class PulsimBackend(SimulationBackend):
             electrothermal_rows=electrothermal_rows,
         )
 
+        # Per-device junction-temperature limit check (pulsim 1.7
+        # ``ThermalLimitMonitor``). For every device that opted in via
+        # ``thermal_t_max_C > 0``, replay its temperature_trace through
+        # a live ``ThermalLimitMonitor`` and surface tripped /
+        # trip_time / trip_temperature / peak_temperature on
+        # ``result.statistics["thermal_limit_trips"]``. Devices that
+        # didn't opt in are silently skipped — empty result list means
+        # "no trip" AND "nobody asked".
+        thermal_limit_trips = self._check_thermal_limits(
+            component_lookup=dict(
+                getattr(circuit, "components_by_name", {}) or {},
+            ),
+            electrothermal_rows=electrothermal_rows,
+        )
+
         # Pull arrays in the same layout the legacy streaming API
         # produced. ``SimulationResult.states`` is a list of NumPy
         # vectors (one per timestep); ``times`` is a 1-D array.
@@ -6530,7 +6554,7 @@ class PulsimBackend(SimulationBackend):
         # into ``result.signals`` / ``result.statistics`` by the
         # caller.
         virtual_payload: dict[str, Any] | None = None
-        if electrothermal_rows or shared_heatsink_results:
+        if electrothermal_rows or shared_heatsink_results or thermal_limit_trips:
             virtual_payload = {
                 "__electrothermal_rows__": electrothermal_rows,
                 # New: per-sink coupled steady-state — list of dicts
@@ -6538,6 +6562,10 @@ class PulsimBackend(SimulationBackend):
                 # {device_name: T_j_C}}``. Merged into
                 # ``result.statistics["shared_heatsink_steady_state"]``.
                 "__shared_heatsink_results__": shared_heatsink_results,
+                # New: per-device T_j limit checks.  Merged into
+                # ``result.statistics["thermal_limit_trips"]`` — a list
+                # of records (one per opted-in device).
+                "__thermal_limit_trips__": thermal_limit_trips,
                 # Temperature traces keyed as ``T(<device>)`` so the
                 # thermal_service's ``_collect_transient_thermal_traces``
                 # finds them via its existing T(…)/T_<…> heuristics.
@@ -6782,6 +6810,177 @@ class PulsimBackend(SimulationBackend):
             return [pt.FosterStage(R_th_K_per_W=float(rth), tau_s=float(rth * cth))]
         except Exception:  # noqa: BLE001
             return []
+
+    def _check_thermal_limits(
+        self,
+        *,
+        component_lookup: dict[str, Any],
+        electrothermal_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Post-sim T_j(t) limit check using pulsim 1.7
+        ``ThermalLimitMonitor`` as a stateful trip detector.
+
+        For each device that recorded a ``thermal_t_max_C > 0`` limit,
+        replay its ``temperature_trace`` through a
+        :class:`pulsim.thermal.ThermalLimitMonitor`. We pick up the
+        official semantics — strict ``>`` comparison, hysteresis when
+        the user wants it, ``tripped`` / ``trip_time`` /
+        ``trip_temperature`` / ``peak_temperature`` attributes — without
+        wiring a live ``should_continue`` (that would need
+        ``make_thermal_observer`` baked into ``build()`` to expose a
+        junction-temperature node, which the GUI doesn't do today).
+
+        Returns one record per device whose monitor saw any samples.
+        Each record carries:
+
+            {
+              "device_name": str,
+              "T_limit_C": float,
+              "hysteresis_C": float,
+              "tripped": bool,
+              "trip_time_s": float | None,    # first t where T_j > T_limit
+              "trip_temperature_C": float | None,
+              "peak_temperature_C": float,
+              "trip_margin_C": float,         # peak − T_limit (positive ⇒ breach)
+            }
+
+        The list is empty when no device opted in (``T_limit_C <= 0``)
+        or when no transient ran. Devices that opted in but didn't
+        record a trace are silently skipped so a missing thermal model
+        doesn't masquerade as "no trip".
+        """
+        if not electrothermal_rows:
+            return []
+        try:
+            import pulsim.thermal as pt
+        except Exception:  # noqa: BLE001 — pulsim<1.7 lacks the class
+            return []
+        monitor_cls = getattr(pt, "ThermalLimitMonitor", None)
+        if monitor_cls is None:
+            return []
+
+        out: list[dict[str, Any]] = []
+        for row in electrothermal_rows:
+            name = row.get("component_name") or ""
+            if not name:
+                continue
+            comp = component_lookup.get(name)
+            if comp is None:
+                continue
+            params = self._params_of(comp)
+            try:
+                t_limit = float(params.get("thermal_t_max_C", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if t_limit <= 0.0:
+                continue  # device opted out
+            try:
+                hysteresis = float(
+                    params.get("thermal_t_max_hysteresis_C", 0.0) or 0.0
+                )
+            except (TypeError, ValueError):
+                hysteresis = 0.0
+            hysteresis = max(0.0, hysteresis)
+
+            trace = row.get("temperature_trace") or []
+            if not trace:
+                continue
+
+            try:
+                monitor = monitor_cls(
+                    T_limit_C=t_limit, hysteresis_C=hysteresis,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+
+            # Replay the trace through the monitor. The traces from
+            # ``_compute_per_device_electrothermal`` already share the
+            # solver's time grid via ``sim_result.times``, but the
+            # times list isn't carried per-row, so we feed a synthetic
+            # uniform t-axis. The monitor only cares about temperature
+            # ordering for trip detection — strict ``>`` against
+            # T_limit_C — so the exact t values matter only for
+            # ``trip_time`` (we surface it for the user as a "the trip
+            # happened at sample N of the trace" indicator; better than
+            # nothing, and the typical use is "did anything ever cross
+            # the limit?").
+            for sample_idx, t_j in enumerate(trace):
+                try:
+                    monitor.update(float(sample_idx), float(t_j))
+                except Exception:  # noqa: BLE001
+                    break
+
+            import math
+            try:
+                peak_raw = getattr(monitor, "peak_temperature", None)
+                peak = float(peak_raw) if peak_raw is not None else float("nan")
+                # pulsim seeds peak_temperature with -inf before the first
+                # update so an empty trace stays a non-finite outlier; clamp
+                # that to a sane "no peak seen" rather than leaking it.
+                if not math.isfinite(peak):
+                    peak = float("nan")
+            except (TypeError, ValueError):
+                peak = float("nan")
+
+            trip_time = getattr(monitor, "trip_time", None)
+            trip_temp = getattr(monitor, "trip_temperature", None)
+            try:
+                trip_time_val = (
+                    float(trip_time) if trip_time is not None else None
+                )
+            except (TypeError, ValueError):
+                trip_time_val = None
+            try:
+                trip_temp_val = (
+                    float(trip_temp) if trip_temp is not None else None
+                )
+            except (TypeError, ValueError):
+                trip_temp_val = None
+            # pulsim seeds ``trip_time`` / ``trip_temperature`` with NaN
+            # until the monitor actually trips. Normalise to ``None`` so
+            # downstream code can do a straightforward ``is None`` check
+            # and the JSON serialiser doesn't have to deal with NaN.
+            if trip_time_val is not None and not math.isfinite(trip_time_val):
+                trip_time_val = None
+            if trip_temp_val is not None and not math.isfinite(trip_temp_val):
+                trip_temp_val = None
+
+            # The pulsim ``tripped`` attribute tracks the LIVE state (it
+            # auto-releases when T_j cools back below T_limit − hysteresis).
+            # For a post-sim diagnostic the user actually wants "did this
+            # device ever cross the limit during the run?" — that's the
+            # ``trip_time`` being set. Treat ``trip_time != None`` as the
+            # canonical "tripped at any point" flag.
+            tripped_ever = trip_time_val is not None
+            margin = (
+                peak - t_limit
+                if peak == peak  # NaN check
+                else float("nan")
+            )
+
+            out.append({
+                "device_name": name,
+                "T_limit_C": t_limit,
+                "hysteresis_C": hysteresis,
+                "tripped": tripped_ever,
+                "trip_time_s": trip_time_val,
+                "trip_temperature_C": trip_temp_val,
+                "peak_temperature_C": peak,
+                "trip_margin_C": margin,
+            })
+        return out
+
+    @staticmethod
+    def _params_of(comp: Any) -> dict[str, Any]:
+        """Tolerant accessor for ``component.parameters`` whether the
+        object is a dict (converter shim) or a pydantic Component."""
+        if comp is None:
+            return {}
+        if isinstance(comp, dict):
+            raw = comp.get("parameters") or {}
+            return raw if isinstance(raw, dict) else {}
+        raw = getattr(comp, "parameters", None) or {}
+        return raw if isinstance(raw, dict) else {}
 
     def _compute_per_device_electrothermal(
         self,
