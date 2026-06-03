@@ -1814,15 +1814,26 @@ class BJTItem(ComponentItem):
     def _draw_symbol(self, painter: QPainter) -> None:
         is_npn = self._component.type == ComponentType.BJT_NPN
 
+        # Pins (post-snap) — same layout for NPN/PNP: B(-20,0), C(20,∓20), E(20,±20).
+        b_pin = self._pin_position_by_name("B", QPointF(-20, 0))
+        c_pin = self._pin_position_by_name("C", QPointF(20, -20 if is_npn else 20))
+        e_pin = self._pin_position_by_name("E", QPointF(20, 20 if is_npn else -20))
+
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-25, 0), QPointF(-8, 0))
+        # Base lead: from the actual B pin to the vertical body bar at x=-8.
+        painter.drawLine(b_pin, QPointF(-8, b_pin.y()))
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.drawLine(QPointF(-8, -12), QPointF(-8, 12))
         painter.setPen(self._symbol_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-8, -8), QPointF(15, -20))
-        painter.drawLine(QPointF(15, -20), QPointF(15, -28))
-        painter.drawLine(QPointF(-8, 8), QPointF(15, 20))
-        painter.drawLine(QPointF(15, 20), QPointF(15, 28))
+        # Collector / emitter leads keep the textbook dogleg: a diagonal
+        # off the body bar that turns horizontal at the pin's y, then
+        # runs out to the actual pin (so the bubble connects cleanly).
+        c_dog_x = c_pin.x() - 5
+        painter.drawLine(QPointF(-8, -8 if is_npn else 8), QPointF(c_dog_x, c_pin.y()))
+        painter.drawLine(QPointF(c_dog_x, c_pin.y()), c_pin)
+        e_dog_x = e_pin.x() - 5
+        painter.drawLine(QPointF(-8, 8 if is_npn else -8), QPointF(e_dog_x, e_pin.y()))
+        painter.drawLine(QPointF(e_dog_x, e_pin.y()), e_pin)
 
         arrow_color = self._line_color()
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, arrow_color))
@@ -1843,11 +1854,21 @@ class ThyristorItem(ComponentItem):
         return QRectF(-25, -25, 50, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
+        # Pins are post-snap at A(0,-20), K(0,20), G(-20,20). Capture
+        # the actual positions so leads reach the rendered bubbles.
+        a_pin = self._pin_position_by_name("A", QPointF(0, -20))
+        k_pin = self._pin_position_by_name("K", QPointF(0, 20))
+        g_pin = self._pin_position_by_name("G", QPointF(-20, 20))
+
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(0, -25), QPointF(0, -10))
-        painter.drawLine(QPointF(0, 10), QPointF(0, 25))
-        painter.drawLine(QPointF(-25, 10), QPointF(-8, 10))
-        painter.drawLine(QPointF(-8, 10), QPointF(-8, 4))
+        # Anode lead: from pin down to the top of the triangle (y=-10).
+        painter.drawLine(a_pin, QPointF(a_pin.x(), -10))
+        # Cathode lead: from cathode bar (y=6) down to the K pin.
+        painter.drawLine(QPointF(k_pin.x(), 6), k_pin)
+        # Gate lead: from the G pin horizontally inward, then up to the
+        # triangle base so the gate kinks toward the device body.
+        painter.drawLine(g_pin, QPointF(-8, g_pin.y()))
+        painter.drawLine(QPointF(-8, g_pin.y()), QPointF(-8, 4))
 
         triangle = QPolygonF([QPointF(-10, -10), QPointF(10, -10), QPointF(0, 6)])
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
@@ -1866,11 +1887,20 @@ class TriacItem(ComponentItem):
         return QRectF(-25, -25, 50, 50)
 
     def _draw_symbol(self, painter: QPainter) -> None:
+        # Pins are post-snap at MT1(0,-20), MT2(0,20), G(-20,20). Drive
+        # every lead from the actual pin position so the bubbles connect.
+        mt1_pin = self._pin_position_by_name("MT1", QPointF(0, -20))
+        mt2_pin = self._pin_position_by_name("MT2", QPointF(0, 20))
+        g_pin = self._pin_position_by_name("G", QPointF(-20, 20))
+
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(0, -25), QPointF(0, -12))
-        painter.drawLine(QPointF(0, 12), QPointF(0, 25))
-        painter.drawLine(QPointF(-25, 10), QPointF(-10, 10))
-        painter.drawLine(QPointF(-10, 10), QPointF(-10, 0))
+        # MT1 lead: from the upper pin down to the top triangle apex (y=-12).
+        painter.drawLine(mt1_pin, QPointF(mt1_pin.x(), -12))
+        # MT2 lead: from the bottom triangle apex (y=12) down to the pin.
+        painter.drawLine(QPointF(mt2_pin.x(), 12), mt2_pin)
+        # Gate lead: from the G pin inward, then up to the triangle joint.
+        painter.drawLine(g_pin, QPointF(-10, g_pin.y()))
+        painter.drawLine(QPointF(-10, g_pin.y()), QPointF(-10, 0))
 
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._line_color())  # Bidirectional triangles filled (anti-parallel SCR pair)
@@ -2658,18 +2688,24 @@ class PowerProbeItem(ComponentItem):
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
-        return QRectF(-30, -22, 60, 44)
+        return QRectF(-30, -26, 60, 52)
 
     def _draw_symbol(self, painter: QPainter) -> None:
+        # Pins are post-snap at V+(-20,-20), V-(-20,20), I+(20,-20), I-(20,20).
+        v_plus = self._pin_position_by_name("V+", QPointF(-20, -20))
+        v_minus = self._pin_position_by_name("V-", QPointF(-20, 20))
+        i_plus = self._pin_position_by_name("I+", QPointF(20, -20))
+        i_minus = self._pin_position_by_name("I-", QPointF(20, 20))
+
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-30, -15), QPointF(-15, -15))
-        painter.drawLine(QPointF(-30, 15), QPointF(-15, 15))
-        painter.drawLine(QPointF(15, -15), QPointF(30, -15))
-        painter.drawLine(QPointF(15, 15), QPointF(30, 15))
+        painter.drawLine(v_plus, QPointF(-15, v_plus.y()))
+        painter.drawLine(v_minus, QPointF(-15, v_minus.y()))
+        painter.drawLine(QPointF(15, i_plus.y()), i_plus)
+        painter.drawLine(QPointF(15, i_minus.y()), i_minus)
 
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(self._surface_color())
-        painter.drawRoundedRect(QRectF(-15, -18, 30, 36), style.BLOCK_RADIUS, style.BLOCK_RADIUS)
+        painter.drawRoundedRect(QRectF(-15, -22, 30, 44), style.BLOCK_RADIUS, style.BLOCK_RADIUS)
 
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, self._accent_orange()))
         font = QFont()
@@ -2767,9 +2803,13 @@ class SnubberRCItem(ComponentItem):
         return QRectF(-28, -18, 56, 36)
 
     def _draw_symbol(self, painter: QPainter) -> None:
+        # Pins are post-snap at (-20, 0) and (20, 0).
+        left_pin = self._pin_position_by_index(0, QPointF(-20, 0))
+        right_pin = self._pin_position_by_index(1, QPointF(20, 0))
+
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
-        painter.drawLine(QPointF(-25, 0), QPointF(-18, 0))
-        painter.drawLine(QPointF(18, 0), QPointF(25, 0))
+        painter.drawLine(left_pin, QPointF(-18, left_pin.y()))
+        painter.drawLine(QPointF(18, right_pin.y()), right_pin)
 
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -3011,10 +3051,12 @@ class ThreePhaseSourceItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-30, -32, 60, 64))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        a_pin = self._pin_position_by_name("A", QPointF(30, -25))
-        b_pin = self._pin_position_by_name("B", QPointF(30, 0))
-        c_pin = self._pin_position_by_name("C", QPointF(30, 25))
-        n_pin = self._pin_position_by_name("N", QPointF(-30, 0))
+        # Pin fallbacks reflect post-snap layout (A/B/C on the right at
+        # y=±20/0, N on the left).
+        a_pin = self._pin_position_by_name("A", QPointF(40, -20))
+        b_pin = self._pin_position_by_name("B", QPointF(40, 0))
+        c_pin = self._pin_position_by_name("C", QPointF(40, 20))
+        n_pin = self._pin_position_by_name("N", QPointF(-40, 0))
 
         phase_colors = (
             QColor(220, 60, 60),    # A — red
@@ -3082,11 +3124,13 @@ class ThreePhaseVSIItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-30, -34, 60, 68))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        vdc_p = self._pin_position_by_name("VDC+", QPointF(-35, -25))
-        vdc_n = self._pin_position_by_name("VDC-", QPointF(-35, 25))
-        a_pin = self._pin_position_by_name("A", QPointF(35, -25))
-        b_pin = self._pin_position_by_name("B", QPointF(35, 0))
-        c_pin = self._pin_position_by_name("C", QPointF(35, 25))
+        # Post-snap pin layout: VDC+/VDC- on the left (y=±20), A/B/C on
+        # the right (y=±20/0).
+        vdc_p = self._pin_position_by_name("VDC+", QPointF(-40, -20))
+        vdc_n = self._pin_position_by_name("VDC-", QPointF(-40, 20))
+        a_pin = self._pin_position_by_name("A", QPointF(40, -20))
+        b_pin = self._pin_position_by_name("B", QPointF(40, 0))
+        c_pin = self._pin_position_by_name("C", QPointF(40, 20))
 
         body = QRectF(-26, -30, 52, 60)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
@@ -3176,10 +3220,11 @@ class ThreePhaseRLLoadItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-26, -34, 52, 68))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        a_pin = self._pin_position_by_name("A", QPointF(-30, -25))
-        b_pin = self._pin_position_by_name("B", QPointF(-30, 0))
-        c_pin = self._pin_position_by_name("C", QPointF(-30, 25))
-        n_pin = self._pin_position_by_name("N", QPointF(30, 0))
+        # Post-snap pin layout: A/B/C on the left (y=±20/0), N on the right.
+        a_pin = self._pin_position_by_name("A", QPointF(-40, -20))
+        b_pin = self._pin_position_by_name("B", QPointF(-40, 0))
+        c_pin = self._pin_position_by_name("C", QPointF(-40, 20))
+        n_pin = self._pin_position_by_name("N", QPointF(40, 0))
 
         body = QRectF(-20, -30, 40, 60)
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
@@ -3406,10 +3451,12 @@ class SinglePhaseDiodeBridgeItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-32, -28, 64, 56))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        acp = self._pin_position_by_name("AC+", QPointF(-35, -20))
-        acn = self._pin_position_by_name("AC-", QPointF(-35, 20))
-        dcp = self._pin_position_by_name("DC+", QPointF(35, -20))
-        dcn = self._pin_position_by_name("DC-", QPointF(35, 20))
+        # Post-snap pin layout: AC+/AC- on the left (y=±20), DC+/DC- on
+        # the right (y=±20).
+        acp = self._pin_position_by_name("AC+", QPointF(-40, -20))
+        acn = self._pin_position_by_name("AC-", QPointF(-40, 20))
+        dcp = self._pin_position_by_name("DC+", QPointF(40, -20))
+        dcn = self._pin_position_by_name("DC-", QPointF(40, 20))
 
         body = QRectF(-28, -24, 56, 48)
         line_color = self._line_color()
@@ -3536,11 +3583,13 @@ class ThreePhaseDiodeBridgeItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-32, -34, 64, 68))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        a = self._pin_position_by_name("A", QPointF(-35, -25))
-        b = self._pin_position_by_name("B", QPointF(-35, 0))
-        c = self._pin_position_by_name("C", QPointF(-35, 25))
-        dcp = self._pin_position_by_name("DC+", QPointF(35, -20))
-        dcn = self._pin_position_by_name("DC-", QPointF(35, 20))
+        # Post-snap pin layout: A/B/C on the left (y=±20/0), DC+/DC- on
+        # the right (y=±20).
+        a = self._pin_position_by_name("A", QPointF(-40, -20))
+        b = self._pin_position_by_name("B", QPointF(-40, 0))
+        c = self._pin_position_by_name("C", QPointF(-40, 20))
+        dcp = self._pin_position_by_name("DC+", QPointF(40, -20))
+        dcn = self._pin_position_by_name("DC-", QPointF(40, 20))
 
         body = QRectF(-28, -30, 56, 60)
         line_color = self._line_color()
@@ -3954,9 +4003,10 @@ class MMCArmItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-38, -52, 76, 104))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        top = self._pin_position_by_name("TOP", QPointF(-35, -40))
-        bot = self._pin_position_by_name("BOT", QPointF(-35, 40))
-        mref = self._pin_position_by_name("M_REF", QPointF(35, 0))
+        # Post-snap pin layout: TOP/BOT on the left (y=±40), M_REF on the right.
+        top = self._pin_position_by_name("TOP", QPointF(-40, -40))
+        bot = self._pin_position_by_name("BOT", QPointF(-40, 40))
+        mref = self._pin_position_by_name("M_REF", QPointF(40, 0))
 
         body = QRectF(-34, -48, 68, 96)
         line = self._line_color()
