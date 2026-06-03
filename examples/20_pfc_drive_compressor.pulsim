@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "20 PFC Drive \u2014 220 V 1\u03c6 Rectifier + switched Boost PFC (~400 V bus) + FOC VSI + PMSM (Embraco VLT403U)",
   "created": "2026-05-31T11:47:12",
-  "modified": "2026-06-03T10:51:08.891875",
+  "modified": "2026-06-03T11:33:41.309665",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.22,
@@ -190,7 +190,32 @@
             "g_on": 1000.0,
             "g_off": 1e-09,
             "v_forward": 0.7,
-            "enable_thermal_port": false
+            "enable_thermal_port": false,
+            "is_": 1e-14,
+            "n": 1.0,
+            "rs": 0.0,
+            "switching_loss_model": "scalar",
+            "switching_eon_j": 0.0,
+            "switching_eoff_j": 0.0,
+            "switching_err_j": 0.0,
+            "switching_loss_axes_current": "",
+            "switching_loss_axes_voltage": "",
+            "switching_loss_axes_temperature": "",
+            "switching_loss_eon_table": "",
+            "switching_loss_eoff_table": "",
+            "switching_loss_err_table": "",
+            "thermal_enabled": true,
+            "thermal_network": "single_rc",
+            "thermal_rth": 1.0,
+            "thermal_cth": 0.1,
+            "thermal_rth_stages": "",
+            "thermal_cth_stages": "",
+            "thermal_temp_init": 25.0,
+            "thermal_temp_ref": 25.0,
+            "thermal_alpha": 0.004,
+            "thermal_shared_sink_id": "",
+            "thermal_shared_sink_rth": 0.0,
+            "thermal_shared_sink_cth": 0.0
           },
           "pins": [
             {
@@ -221,7 +246,33 @@
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0,
-            "enable_thermal_port": false
+            "enable_thermal_port": false,
+            "vth": 2.0,
+            "kp": 0.1,
+            "lambda_": 0.0,
+            "g_off": 1e-09,
+            "switching_loss_model": "scalar",
+            "switching_eon_j": 0.0,
+            "switching_eoff_j": 0.0,
+            "switching_err_j": 0.0,
+            "switching_loss_axes_current": "",
+            "switching_loss_axes_voltage": "",
+            "switching_loss_axes_temperature": "",
+            "switching_loss_eon_table": "",
+            "switching_loss_eoff_table": "",
+            "switching_loss_err_table": "",
+            "thermal_enabled": true,
+            "thermal_network": "single_rc",
+            "thermal_rth": 1.0,
+            "thermal_cth": 0.1,
+            "thermal_rth_stages": "",
+            "thermal_cth_stages": "",
+            "thermal_temp_init": 25.0,
+            "thermal_temp_ref": 25.0,
+            "thermal_alpha": 0.004,
+            "thermal_shared_sink_id": "",
+            "thermal_shared_sink_rth": 0.0,
+            "thermal_shared_sink_cth": 0.0
           },
           "pins": [
             {
@@ -468,11 +519,12 @@
             "pole_pairs": 3,
             "J": 0.0002,
             "b_friction": 0.0005,
-            "tau_load": 0.3,
+            "tau_load": 1.273,
             "i_d_init": 0.0,
             "i_q_init": 0.0,
             "omega_init": 0.0,
-            "theta_init": 0.0
+            "theta_init": 0.0,
+            "friction_coulomb": 0.0
           },
           "pins": [
             {
@@ -762,7 +814,7 @@
             "current_kp": 45.0,
             "current_ki": 24000.0,
             "id_ref": 0.0,
-            "iq_limit": 3.0,
+            "iq_limit": 7.4,
             "v_limit_frac": 0.92,
             "speed_ramp_s": 0.1,
             "switching_frequency_hz": 20000.0,
@@ -2140,6 +2192,10 @@
               120.0
             ],
             [
+              -440.0,
+              340.0
+            ],
+            [
               -220.0,
               340.0
             ]
@@ -2428,6 +2484,64 @@
               "x1": -1020.0,
               "y1": -200.0,
               "x2": -1020.0,
+              "y2": -200.0
+            }
+          ],
+          "start_connection": null,
+          "end_connection": null,
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "23d1215c-b589-4bfd-95e2-b07712857b1e",
+          "segments": [
+            {
+              "x1": -940.0,
+              "y1": 20.0,
+              "x2": -900.0,
+              "y2": 20.0
+            },
+            {
+              "x1": -900.0,
+              "y1": 20.0,
+              "x2": -900.0,
+              "y2": 340.0
+            },
+            {
+              "x1": -900.0,
+              "y1": 340.0,
+              "x2": -440.0,
+              "y2": 340.0
+            },
+            {
+              "x1": -440.0,
+              "y1": 340.0,
+              "x2": -440.0,
+              "y2": 340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "aeb768e3-5fb5-5ce1-910c-e478f424463f",
+            "pin_index": 3
+          },
+          "end_connection": null,
+          "junctions": [
+            [
+              -440.0,
+              340.0
+            ]
+          ],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "a740dcb9-384e-48c8-b793-f1f82a785fee",
+          "segments": [
+            {
+              "x1": -1000.0,
+              "y1": -200.0,
+              "x2": -1000.0,
               "y2": -200.0
             }
           ],
