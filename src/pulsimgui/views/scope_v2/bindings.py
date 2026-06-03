@@ -9,10 +9,8 @@ from pulsimgui.models.circuit import Circuit
 from pulsimgui.models.component import (
     CONNECTION_DOMAIN_SIGNAL,
     CONNECTION_DOMAIN_THERMAL,
-    CURRENT_PROBE_OUTPUT_PIN_NAME,
     MOTOR_SIGNAL_BUS_CHANNELS,
     THERMAL_PORT_PIN_NAME,
-    VOLTAGE_PROBE_OUTPUT_PIN_NAME,
     Component,
     ComponentType,
     is_motor_signal_bus_pin,
@@ -229,11 +227,18 @@ def _resolve_node_signals(
                     ignored,
                 )
             )
-        elif component.type in (ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND) and pin_name in (
-            VOLTAGE_PROBE_OUTPUT_PIN_NAME,
-            "+",
-            "-",
+        elif component.type in (
+            ComponentType.VOLTAGE_PROBE,
+            ComponentType.VOLTAGE_PROBE_GND,
         ):
+            # Same UX rule as CURRENT_PROBE: a scope channel touching
+            # *any* pin of a voltage probe resolves to the canonical
+            # ``VP(<probe_name>)`` signal so the user doesn't have to
+            # remember which terminal is the "output" pin. Without
+            # this, wiring the scope to the probe's electrical ``+`` /
+            # ``IN`` side would silently fall through to a raw node-
+            # voltage that scaled like the switching node — never what
+            # was intended.
             expanded = True
             probe_name = component.name or "Voltage Probe"
             signals.append(
@@ -244,10 +249,17 @@ def _resolve_node_signals(
                     node_label=probe_name,
                 )
             )
-        elif component.type == ComponentType.CURRENT_PROBE and pin_name in (
-            CURRENT_PROBE_OUTPUT_PIN_NAME,
-            "OUT",
-        ):
+        elif component.type == ComponentType.CURRENT_PROBE:
+            # A scope channel wired to ANY pin of a current probe should
+            # plot the current. The MEAS pin (signal-domain output) is
+            # the canonical one, but users very often wire to the
+            # electrical IN/OUT side by mistake (the side that looks
+            # like a regular two-port component in the schematic) — and
+            # in that case the scope would otherwise resolve to a node-
+            # voltage on the switching net, which is confusing and
+            # almost never what the user wanted. So expand any pin
+            # touching the probe to the same ``IP(<probe_name>)``
+            # signal key the kernel emits for that probe.
             expanded = True
             probe_name = component.name or "Current Probe"
             signals.append(

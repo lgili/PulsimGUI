@@ -2154,6 +2154,16 @@ def _synchronize_special_component(component: Component) -> None:
         ComponentType.GAIN,
         ComponentType.GOTO_LABEL,
         ComponentType.FROM_LABEL,
+        # PFC / FOC controllers ship-as is — but pin layouts evolve
+        # (the ``PWM`` output pin landed in 1.1.2). Running the default-
+        # layout sync ensures saved files migrate forward: if the saved
+        # pin set differs from the current template, it's replaced. The
+        # ``__post_init__`` step that follows then snaps every retained
+        # coord back to the user's saved geometry (so the unchanged
+        # left-side input pins keep their layout while the new PWM pin
+        # gets the default template position).
+        ComponentType.PFC_BOOST_CONTROLLER,
+        ComponentType.FOC_CONTROLLER,
     ):
         _synchronize_default_pin_layout(component)
     elif component.type == ComponentType.SUBCIRCUIT_PORT:
