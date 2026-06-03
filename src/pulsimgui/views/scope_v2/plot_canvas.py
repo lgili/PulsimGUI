@@ -188,7 +188,15 @@ class PlotCanvas(QFrame):
         # Only the bottom-most panel shows the time axis label/ticks.
         plot.getAxis("bottom").setStyle(showValues=True)
         plot.setLabel("bottom", "t", units="s")
-        plot.setDownsampling(auto=True, mode="peak")
+        # ``mode="mean"`` averages each pixel-bin's samples instead of
+        # showing min/max — this is what the user expects when looking
+        # at a PWM-driven current / voltage at zoom-out: the smooth
+        # half-rect-sine average, not a "filled" envelope of switching
+        # ripple that visually reads as noise. The application can flip
+        # back to "peak" (envelope) via ``set_decimation_mode`` when
+        # short-transient inspection (turn-off spikes, single-cycle
+        # disturbances) is wanted instead.
+        plot.setDownsampling(auto=True, mode="mean")
         plot.setClipToView(True)
         plot.addLegend(offset=(8, 8))
 
@@ -221,14 +229,14 @@ class PlotCanvas(QFrame):
             color = DEFAULT_PALETTE[len(self._signals) % len(DEFAULT_PALETTE)]
         pen = pg.mkPen(color=QColor(color), width=1.6)
         curve = plot.plot([], [], pen=pen, name=name)
-        # Per-curve downsampling — PLECS/Saleae-style min/max-per-pixel
-        # envelope rendering for switching waveforms. The PlotItem-level
-        # ``setDownsampling`` call in ``add_panel`` configures defaults
-        # but explicit per-curve settings are more reliable across
-        # pyqtgraph versions. ``method='peak'`` preserves max-magnitude
-        # samples per bin so transient spikes don't disappear at zoom-out.
+        # Per-curve downsampling. Default to ``method='mean'`` (the same
+        # as the parent PlotItem set in ``add_panel``): when a power-
+        # electronics waveform is zoomed out, the user wants the smooth
+        # average — half-rect-sine, sinusoid, DC level — not the min/max
+        # envelope of every PWM switching cycle. Explicit per-curve
+        # settings are still more reliable across pyqtgraph versions.
         try:
-            curve.setDownsampling(auto=True, method="peak")
+            curve.setDownsampling(auto=True, method="mean")
             curve.setClipToView(True)
         except Exception:  # noqa: BLE001 — old pyqtgraph fallback
             pass
@@ -236,6 +244,43 @@ class PlotCanvas(QFrame):
             name=name, panel=panel, color=color, unit=unit, curve=curve,
         )
         self._update_empty_overlay()
+
+    def set_decimation_mode(self, mode: str) -> None:
+        """Change how every curve downsamples at zoom-out.
+
+        Accepted modes (passed through to pyqtgraph):
+
+        * ``"mean"`` — average each pixel-bin's samples. Default.
+          Best for displaying the slow envelope (half-rect sine,
+          DC level) of a PWM-driven waveform; switching ripple
+          averages away cleanly.
+        * ``"peak"`` — show min + max per bin. PLECS-style envelope
+          rendering; preserves transient spikes (turn-off
+          overshoot, single-cycle disturbances) at zoom-out.
+        * ``"subsample"`` — take 1 in every N samples. Cheapest;
+          can hide spikes between samples but the trace stays
+          single-line at all zoom levels.
+
+        Updates both the panel-level default (for any future curve
+        added without an override) and every already-registered curve
+        so the change is immediate.
+        """
+        mode = (mode or "mean").lower()
+        if mode not in ("mean", "peak", "subsample"):
+            raise ValueError(
+                f"Unknown decimation mode {mode!r}; "
+                f"expected one of mean / peak / subsample."
+            )
+        for plot in self._panels.values():
+            try:
+                plot.setDownsampling(auto=True, mode=mode)
+            except Exception:  # noqa: BLE001
+                pass
+        for state in self._signals.values():
+            try:
+                state.curve.setDownsampling(auto=True, method=mode)
+            except Exception:  # noqa: BLE001
+                pass
 
     def append_signal(self, name: str, t_new: np.ndarray, y_new: np.ndarray) -> None:
         """Append new samples to a signal (live streaming hot path)."""
