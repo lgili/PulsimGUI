@@ -1085,10 +1085,31 @@ class BlockComponentItem(ComponentItem):
     """Base class for rectangular control blocks with modern CAD styling."""
 
     ACCENT_COLOR = QColor(60, 132, 225)
+    # Visible pin-name labels — small text drawn just inside the block body
+    # next to each pin. Helps the user identify e.g. PFC.VBUS vs PFC.IL vs
+    # PFC.VAC, or FOC.SP vs FOC.FB, without opening the Help dialog. Each
+    # subclass can disable via ``show_pin_labels()`` if its symbol already
+    # makes the pin role obvious (e.g. a single-input GAIN).
+    PIN_LABEL_FONT_PT = 7.5
+    PIN_LABEL_PAD = 2.0   # px from the block edge to the label
 
     def boundingRect(self) -> QRectF:
         """Return the local-space rectangle used for painting and hit-testing."""
         return self._with_pin_bounds(QRectF(-28, -24, 56, 48))
+
+    def show_pin_labels(self) -> bool:
+        """Return True to render pin-name labels inside the block body.
+
+        Default: True for any block with ≥ 3 pins OR with a non-trivial pin
+        name (anything other than the bare ``"IN"``/``"OUT"`` pair). A plain
+        IN→OUT block (GAIN, INTEGRATOR, etc.) skips the labels — the symbol
+        already says "signal in left, signal out right".
+        """
+        pins = self._component.pins
+        if len(pins) >= 3:
+            return True
+        names = {p.name.strip().upper() for p in pins}
+        return not names.issubset({"IN", "OUT", ""})
 
     def _draw_block_pin_leads(self, painter: QPainter, rect: QRectF) -> None:
         """Draw short leads from every pin to the nearest block edge."""
@@ -1103,6 +1124,78 @@ class BlockComponentItem(ComponentItem):
                 painter.drawLine(QPointF(px, py), QPointF(px, rect.top()))
             elif py >= rect.bottom():
                 painter.drawLine(QPointF(px, rect.bottom()), QPointF(px, py))
+
+    def _body_rect(self) -> QRectF:
+        """Return the rounded-rectangle BODY of the block (without the pin
+        extension that ``boundingRect`` adds for hit-testing). Pin-name
+        labels anchor to the body so they sit *inside* the visible card
+        rather than overlapping the pin bubbles which extend further out.
+        """
+        return QRectF(-28, -24, 56, 48)
+
+    def _draw_pin_name_labels(self, painter: QPainter, rect: QRectF) -> None:
+        """Draw small pin-name labels just inside the block body, aligned to
+        each pin.
+
+        Left-side pins → label sits inside the body, right of the accent
+        stripe (which occupies the leftmost band). Right-side pins → mirror.
+        Top/bottom pins anchor against the matching edge. Skips empty /
+        single-char generic names so the decoration is informative rather
+        than noisy. Pin names are bold + accent-coloured so they stand out
+        from the centred block glyph without competing visually.
+
+        Anchored to ``_body_rect`` (NOT the passed-in ``rect``, which is the
+        extended ``boundingRect``) so labels sit *inside* the rounded body
+        and don't paint over the pin bubbles outside it.
+        """
+        if not self.show_pin_labels():
+            return
+        body = self._body_rect()
+        font = QFont()
+        font.setPointSizeF(self.PIN_LABEL_FONT_PT)
+        font.setBold(True)
+        painter.setFont(font)
+        # Use the block's accent so labels read as "part of the block"
+        # rather than as floating text — and ensure they pop on top of
+        # the surface tint underneath them.
+        accent = QColor(self.ACCENT_COLOR)
+        if self._dark_mode:
+            accent = accent.lighter(135)
+        painter.setPen(QPen(accent))
+        metrics = QFontMetricsF(font)
+        # Left-edge offset = stripe inset + stripe width + small gap so the
+        # text starts after (not under) the coloured accent stripe.
+        left_text_x = (
+            body.left() + style.BLOCK_STRIPE_INSET
+            + style.BLOCK_STRIPE_WIDTH + self.PIN_LABEL_PAD
+        )
+        right_text_pad = self.PIN_LABEL_PAD
+        for pin in self._component.pins:
+            name = (pin.name or "").strip()
+            if not name or len(name) <= 1:
+                continue
+            px, py = float(pin.x), float(pin.y)
+            text_w = metrics.horizontalAdvance(name)
+            text_h = metrics.height()
+            if px <= body.left():
+                # Left-side input — label inside, right of the accent stripe.
+                y = py + text_h * 0.32
+                painter.drawText(QPointF(left_text_x, y), name)
+            elif px >= body.right():
+                # Right-side output — label inside, left of the body edge.
+                x = body.right() - right_text_pad - text_w
+                y = py + text_h * 0.32
+                painter.drawText(QPointF(x, y), name)
+            elif py <= body.top():
+                # Top — label inside body, below the edge, centred on pin x.
+                x = px - text_w * 0.5
+                y = body.top() + self.PIN_LABEL_PAD + text_h * 0.8
+                painter.drawText(QPointF(x, y), name)
+            elif py >= body.bottom():
+                # Bottom — label inside body, above the edge, centred on pin x.
+                x = px - text_w * 0.5
+                y = body.bottom() - self.PIN_LABEL_PAD
+                painter.drawText(QPointF(x, y), name)
 
     def _draw_symbol(self, painter: QPainter) -> None:
         rect = self.boundingRect()
@@ -1127,15 +1220,41 @@ class BlockComponentItem(ComponentItem):
         )
         painter.drawRoundedRect(stripe_rect, style.BLOCK_STRIPE_RADIUS, style.BLOCK_STRIPE_RADIUS)
 
-        # Centred glyph (uses the bold block-label font from tokens).
+        # Centred glyph (bold block-label font). Omitted when pin labels
+        # are shown AND the block has a pin sitting on the centred-glyph
+        # row (y ≈ 0) — otherwise the type label collides with the pin
+        # name (e.g. PFC.IL or MATH.OUT at y=0). The component's name
+        # tag rendered above the block ("PFC1") already conveys the type,
+        # so removing the inner glyph in those cases keeps the body clean.
         painter.setPen(self._symbol_pen(style.STROKE_BODY))
         painter.setFont(style.block_label_font(painter.font()))
-        label_rect = rect.adjusted(
-            style.BLOCK_STRIPE_INSET + style.BLOCK_STRIPE_WIDTH + 2, 0, -2, 0,
-        )
-        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, self.block_label())
+        if self._should_draw_centred_glyph():
+            label_rect = rect.adjusted(
+                style.BLOCK_STRIPE_INSET + style.BLOCK_STRIPE_WIDTH + 2, 0, -2, 0,
+            )
+            painter.drawText(
+                label_rect, Qt.AlignmentFlag.AlignCenter, self.block_label(),
+            )
 
         self._draw_block_pin_leads(painter, rect)
+        self._draw_pin_name_labels(painter, rect)
+
+    def _should_draw_centred_glyph(self) -> bool:
+        """True when the bold centred type glyph (``PFC`` / ``FOC`` / …) can
+        be drawn without colliding with a pin-name label on the middle row.
+
+        Skips the glyph when:
+          - Pin labels are shown (``show_pin_labels()`` True) AND
+          - At least one pin sits on the centred glyph's row (|y| ≤ 6 px).
+        That row hosts the centred type text, so a label there (e.g.
+        ``IL`` on PFC, ``OUT`` on a 3-pin MATH block) would overlap.
+        """
+        if not self.show_pin_labels():
+            return True
+        for pin in self._component.pins:
+            if abs(float(pin.y)) <= 6.0:
+                return False
+        return True
 
     def block_label(self) -> str:
         """Return the short label shown in the block body."""
