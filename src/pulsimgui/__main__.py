@@ -75,20 +75,41 @@ def _preferred_ui_font(base_font: QFont) -> QFont:
 
 
 def _resolve_app_version() -> str:
-    """Return app version for runtime branding."""
+    """Return app version for runtime branding.
+
+    Resolution order (most-current to most-stable):
+
+      1. ``PULSIMGUI_VERSION`` env var — explicit override (used by
+         installer CI when the dist isn't built from the source tree).
+      2. ``pulsimgui.__version__`` from ``src/pulsimgui/__init__.py``
+         — the LIVE source of truth in the working tree. Picked up
+         immediately by ``pip install -e .`` installs without needing
+         a reinstall after a version bump.
+      3. ``importlib.metadata.version("pulsimgui")`` — the
+         installed-package metadata. Last-resort fallback because it
+         can go STALE on editable installs (the ``dist-info``
+         snapshot only refreshes on reinstall, so a fresh source-tree
+         bump shows the old version here until the next install).
+
+    Without step 2 the splash badge silently lagged the working
+    tree's actual version every time the package was edited without
+    a reinstall — exactly the regression the user flagged.
+    """
     env_version = os.environ.get("PULSIMGUI_VERSION", "").strip().lstrip("v")
     if env_version:
         return env_version
 
     try:
-        return metadata.version("pulsimgui")
+        from pulsimgui import __version__ as package_version
+
+        version = str(package_version).strip().lstrip("v")
+        if version:
+            return version
     except Exception:
         pass
 
     try:
-        from pulsimgui import __version__ as package_version
-
-        return str(package_version).strip().lstrip("v")
+        return metadata.version("pulsimgui")
     except Exception:
         return ""
 

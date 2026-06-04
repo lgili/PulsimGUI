@@ -4,7 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pulsimgui"
-version = "1.1.1"
+# Version is sourced from ``src/pulsimgui/__init__.py``'s ``__version__``
+# attribute via the ``[tool.hatch.version]`` configuration below. This
+# is the SINGLE source of truth — bump it in one place and pyproject,
+# the installed-package metadata, the splash screen badge, and the
+# about dialog all pick up the new value the next time the wheel is
+# built or the dev install is refreshed.
+dynamic = ["version"]
 description = "Cross-platform GUI for Pulsim power electronics simulator"
 readme = "README.md"
 license = "MIT"
@@ -100,6 +106,15 @@ pulsimgui-gui = "pulsimgui.__main__:main"
 [project.urls]
 Homepage = "https://github.com/lgili/PulsimGui"
 Repository = "https://github.com/lgili/PulsimGui"
+
+[tool.hatch.version]
+# Single source of truth: the ``__version__`` attribute defined in the
+# package's ``__init__.py``. Hatchling reads this at build time and
+# stamps it into the wheel + installed-metadata. The splash screen
+# resolves the same attribute at runtime so dev installs without
+# ``pip install -e . --force-reinstall`` still show the fresh version
+# rather than the stale dist-info value.
+path = "src/pulsimgui/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pulsimgui"]
