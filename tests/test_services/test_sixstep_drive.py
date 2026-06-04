@@ -258,9 +258,18 @@ def test_sixstep_sector_table_drives_2of6_switches() -> None:
         vsi_spec = circ.vsi_specs[0]
         hs = list(vsi_spec["high_side_switch_indices"])
         ls = list(vsi_spec["low_side_switch_indices"])
-        # Expected per sector (matches the SECTOR_TABLE in
-        # _build_sixstep_loops): (hs_phase_on, ls_phase_on).
-        expected = ((0, 1), (0, 2), (1, 2), (1, 0), (2, 0), (2, 1))
+        # Expected per sector — matches the empirically-verified
+        # ``SIXSTEP_SECTOR_TABLE`` on the backend. The pre-Jun-2026
+        # table was ``((0,1), (0,2), (1,2), (1,0), (2,0), (2,1))``
+        # which DROVE THE MOTOR IN REVERSE under pulsim's cos-convention
+        # PMSM (the current vector at theta_e=0 was at -30° in αβ →
+        # projection on q-axis was negative → negative torque). The
+        # corrected table starts at (1, 2) = B+/C- so the current
+        # vector aligns with the q-axis at sector midpoint and produces
+        # maximum forward torque. Each subsequent sector advances the
+        # current vector by +60° to track the rotating q-axis.
+        # Verified empirically with M1.i_q sign for ex 22.
+        expected = ((1, 2), (1, 0), (2, 0), (2, 1), (0, 1), (0, 2))
         hp, lp = expected[sector]
         # Use the mask's __getitem__ if available; otherwise raw .get.
         get_bit = getattr(mask, "__getitem__", None) or mask.get

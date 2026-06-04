@@ -6673,6 +6673,29 @@ class PulsimBackend(SimulationBackend):
     # Default Foster network: single-stage TO-220 ballpark
     # (R_th_jc ≈ 1.5 K/W, τ ≈ 75 ms). Used for every loss-carrying
     # device until the GUI threads per-device Foster params through.
+    # 6-step BLDC commutation table — class attribute so tests can
+    # monkey-patch it without touching the closure.
+    # Sector → (high_side_phase_idx, low_side_phase_idx); phases A=0, B=1, C=2.
+    # See the docstring on ``_build_sixstep_loops`` for the derivation
+    # against pulsim's PMSM convention. The default below is the empirically
+    # verified table that drives pulsim's cos-convention PMSM in the
+    # POSITIVE direction (M1.speed_rpm → +speed_ref_rpm).
+    SIXSTEP_SECTOR_TABLE: tuple[tuple[int, int], ...] = (
+        # Empirically determined for pulsim's PMSM cos-convention.
+        # At theta_e=0 (rotor d-axis along phase A), maximum positive
+        # torque comes from applying current along +β (q-axis), which
+        # in 2-of-6 commutation means B+, C- (the (1, 2) pattern).
+        # Each subsequent sector advances the current vector by +60°
+        # to track the rotating q-axis. Verified at fixed-sector tests
+        # against M1.i_q sign.
+        (1, 2),  # sector 0 (theta_e ∈ [0°, 60°]): B+ PWM, C-
+        (1, 0),  # sector 1 (theta_e ∈ [60°, 120°]): B+ PWM, A-
+        (2, 0),  # sector 2 (theta_e ∈ [120°, 180°]): C+ PWM, A-
+        (2, 1),  # sector 3 (theta_e ∈ [180°, 240°]): C+ PWM, B-
+        (0, 1),  # sector 4 (theta_e ∈ [240°, 300°]): A+ PWM, B-
+        (0, 2),  # sector 5 (theta_e ∈ [300°, 360°]): A+ PWM, C-
+    )
+
     _DEFAULT_FOSTER_RTH = 1.5
     _DEFAULT_FOSTER_TAU = 0.075
 
@@ -8071,14 +8094,7 @@ class PulsimBackend(SimulationBackend):
         # 2-of-6 BLDC convention rather than synchronous rectification).
         # The opposite-phase low-side carries return current, kept ON
         # for the full sector.
-        _SECTOR_TABLE: tuple[tuple[int, int], ...] = (
-            (0, 1),  # A+ PWM, B-
-            (0, 2),  # A+ PWM, C-
-            (1, 2),  # B+ PWM, C-
-            (1, 0),  # B+ PWM, A-
-            (2, 0),  # C+ PWM, A-
-            (2, 1),  # C+ PWM, B-
-        )
+        _SECTOR_TABLE = self.SIXSTEP_SECTOR_TABLE
 
         step_observers: list[Callable[[float, Any], None]] = []
         switch_fns: list[Callable[[float], Any]] = []

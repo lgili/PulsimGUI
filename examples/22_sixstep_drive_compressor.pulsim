@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "name": "22 6-Step BLDC Drive — 220 V 1φ Rectifier + switched Boost PFC (~400 V bus) + 6-step trapezoidal VSI + PMSM (Embraco VLT403U)",
+  "name": "22 6-Step BLDC Drive \u2014 220 V 1\u03c6 Rectifier + switched Boost PFC (~400 V bus) + 6-step trapezoidal VSI + PMSM (Embraco VLT403U)",
   "created": "2026-06-03T15:14:00",
   "modified": "2026-06-03T15:14:00",
   "active_circuit": "main",
@@ -525,7 +525,7 @@
             "pole_pairs": 3,
             "J": 0.0002,
             "b_friction": 0.0005,
-            "tau_load": 1.273,
+            "tau_load": 0.3,
             "i_d_init": 0.0,
             "i_q_init": 0.0,
             "omega_init": 0.0,
