@@ -1575,11 +1575,32 @@ class PulsimBackend(SimulationBackend):
 
     @staticmethod
     def _normalize_signal_name(raw_name: str) -> str:
-        """Normalize backend signal names for waveform display."""
+        """Normalize backend signal names for waveform display.
+
+        Recognised already-prefixed names (returned unchanged):
+
+          * ``V(...)`` — node voltage
+          * ``I(...)`` — branch current via state-vector entry
+          * ``Is(...)`` — branch current via voltage-source equivalent
+            (pulsim's state_var_names emits these for ideal V-sources,
+            current-mode probes, etc.). Without this branch the
+            wrapper would produce ``V(Is(I_L))`` keys — a double wrap
+            that breaks probe lookup and pollutes the scope channel
+            list with phantom voltages that are really currents.
+          * ``P(...)`` — power
+          * ``T(...)`` — temperature trace
+          * Anything starting with one of the above is left alone;
+            everything else is wrapped as ``V(name)`` (the default
+            assumption for raw kernel keys).
+        """
         name = str(raw_name or "").strip()
         if not name:
             return "V(?)"
 
+        # Order matters: check 2-char "Is" before single-letter "I("
+        # — otherwise "Is(I_L)" would match the "I(" prefix check.
+        if name.startswith(("Is(", "V(", "I(", "P(", "T(")):
+            return name
         upper = name.upper()
         if upper.startswith(("V(", "I(", "P(", "T(")):
             return name
