@@ -65,7 +65,11 @@ def test_differential_voltage_probe_on_ex20_ac_source_reports_full_swing(
     gc = proj.get_active_circuit()
     nm = build_node_map(gc)
 
-    settings = SimulationSettings(t_start=0.0, t_stop=0.040)
+    # 150 ms = 9 cycles at 60 Hz. Earlier (40 ms = 2.4 cycles) didn't
+    # leave enough integer-cycle window at the tail for the windowed-
+    # mean assertion that catches the pairing bug — that check now needs
+    # AT LEAST 4 cycles of steady-state data after the bus settles.
+    settings = SimulationSettings(t_start=0.0, t_stop=0.150)
     settings.dt = 5e-6
     settings.max_step = 5e-6
     settings.step_mode = "fixed"
@@ -120,6 +124,7 @@ def test_differential_voltage_probe_on_ex20_ac_source_reports_full_swing(
         "channel — probe enrichment regressed"
     )
     series = np.asarray(enriched.signals["VP(Vin)"])
+    times = np.asarray(enriched.time)
     # Drop initial-condition transient.
     body = series[200:]
     peak = float(np.abs(body).max())
@@ -129,4 +134,53 @@ def test_differential_voltage_probe_on_ex20_ac_source_reports_full_swing(
     assert 200.0 < peak < 400.0, (
         f"VP(Vin) peak = {peak:.3g} V; expected full AC line swing "
         "(~309 V). Pre-fix bug would yield ~7 V."
+    )
+    # Second-class regression — the state-vector → signal-name pairing
+    # bug (Jun 2026): shim's node_names() was insertion-ordered, but
+    # pulsim's state vector is kernel-MNA-ordered with branch currents
+    # mixed in. Pairing names[idx] with values[idx] silently wrote the
+    # AC node's voltage signal with the bus voltage (or even an
+    # inductor current), so VP(Vin) ended up clamped to one polarity
+    # with a strong DC offset that grew alongside Cbus charging. The
+    # original peak assertion above STILL passed because |min| reached
+    # ~311 V — but the trace was [-311, +0] instead of ±311. These
+    # follow-up checks tighten the contract:
+    #
+    #   1. Mean over an integer-cycle window must be ≈ 0. A
+    #      symmetric sine over N full periods at 60 Hz has zero mean
+    #      analytically; > 5 V here means the trace is offset.
+    #
+    #   2. Both polarities must reach the peak. The pre-state-pairing
+    #      bug yielded ``series.max() < 5`` (the trace never went
+    #      positive) while ``series.min() ≈ -311``. Asserting BOTH
+    #      ``max > 200`` AND ``min < -200`` catches that one-sided
+    #      failure.
+    #
+    #   3. RMS must match the analytic 311/√2 ≈ 219.91 V to ~1 %.
+    #      The DC-offset bug shifted RMS up to ~230 V (because RMS
+    #      includes the offset).
+    f_grid = 60.0
+    cycle_mask = times >= times[-1] - 4.0 / f_grid
+    window = series[cycle_mask]
+    mean = float(window.mean())
+    assert abs(mean) < 5.0, (
+        f"VP(Vin) windowed mean = {mean:+.2f} V over the last 4 "
+        f"cycles; expected ≈ 0 for a symmetric AC source. A non-zero "
+        f"mean is the smoking gun for the Jun 2026 state-vector → "
+        f"signal-name pairing bug (shim insertion order vs kernel "
+        f"MNA order)."
+    )
+    pos_peak = float(window.max())
+    neg_peak = float(window.min())
+    assert pos_peak > 200.0 and neg_peak < -200.0, (
+        f"VP(Vin) reached pos_peak={pos_peak:+.2f}, neg_peak={neg_peak:+.2f} "
+        f"— a symmetric AC line voltage must reach BOTH polarities. The "
+        f"pre-fix bug clamped this trace to one polarity (max ≈ 0)."
+    )
+    rms = float(np.sqrt(np.mean(window**2)))
+    # 220 Vrms analytic ± 1 V tolerance for diode drops + sampling noise.
+    assert 215.0 < rms < 225.0, (
+        f"VP(Vin) RMS = {rms:.2f} V; expected 220 V analytic. RMS shift "
+        f"would indicate a DC offset or scaling error from the "
+        f"state-vector → signal-name bug."
     )

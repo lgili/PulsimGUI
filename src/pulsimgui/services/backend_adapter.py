@@ -964,15 +964,54 @@ class PulsimBackend(SimulationBackend):
         return result
 
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
-        """Resolve labels for transient state-vector signals."""
+        """Resolve labels for transient state-vector signals.
+
+        The order MUST match the column order of the state vector
+        emitted by the kernel — pairing wrong names with wrong columns
+        silently writes ``V(N27)`` with the value of ``Is(I_L)`` (a
+        scalar current) or some unrelated node's voltage, which
+        corrupts every downstream scope channel that references that
+        key. This bit users on ex 20 when the VOLTAGE_PROBE across the
+        AC source rendered as a negative DC offset growing with bus
+        charging — actually the bus voltage that pulsim had stored at
+        the same state-vector column as the shim's ``N27`` placeholder.
+
+        Priority order (most authoritative first):
+
+          1. ``circuit.builder.state_var_names()`` — pulsim's
+             kernel-side, in the EXACT order of state-vector columns
+             (e.g. ``"V(N1), V(N2), ..., Is(I_L), I(L_boost)"``).
+             Includes branch currents alongside node voltages — every
+             column has a label.
+          2. ``circuit.signal_names()`` — legacy backend API.
+          3. ``circuit.node_names()`` — last resort, the shim's
+             insertion-ordered name list. Order may NOT match the
+             kernel; use only when nothing else is available, then
+             leave a comment that this path is suspect.
+        """
         candidates: list[str] = []
 
-        if hasattr(circuit, "signal_names"):
+        # 1. Pulsim's authoritative ordering from the underlying builder.
+        builder = getattr(circuit, "builder", None) or circuit
+        if hasattr(builder, "state_var_names"):
+            try:
+                candidates = [str(name) for name in builder.state_var_names()]
+            except Exception:
+                candidates = []
+
+        # 2. Legacy backend API.
+        if not candidates and hasattr(circuit, "signal_names"):
             try:
                 candidates = [str(name) for name in circuit.signal_names()]
             except Exception:
                 candidates = []
 
+        # 3. Shim-side node names — order is NOT guaranteed to match
+        # the kernel's state vector. Falls through here only when the
+        # underlying builder doesn't expose ``state_var_names`` (legacy
+        # pulsim builds < 1.5). Logs a one-shot warning so the user
+        # knows their scope reads may be subject to the misalignment
+        # bug above.
         if not candidates and hasattr(circuit, "node_names"):
             try:
                 candidates = [str(name) for name in circuit.node_names()]
