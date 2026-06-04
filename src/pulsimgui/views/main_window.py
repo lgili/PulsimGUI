@@ -4506,24 +4506,55 @@ class MainWindow(QMainWindow):
     ) -> list[float] | None:
         """Resolve backend-native probe channel names to a signal series.
 
-        Tries, in order:
+        Lookup chain, in order of preference:
 
-        1. ``component_name`` (e.g. ``"Xsw"``) — works when the kernel
-           registers the probe under its component name.
-        2. ``component_id`` (UUID).
-        3. ``node_label`` directly, ``V(node_label)``, plus case
-           variants — works when the kernel emits the node's voltage
-           under the wire alias (e.g. ``"V(SW)"``).
-        4. ``N{node_id}`` / ``V(N{node_id})`` — the backend names every
-           electrical node ``N{netid}`` and emits its voltage as
-           ``V(N{netid})`` regardless of any wire alias, so an aliased
-           node (alias ``BUSP`` but backend name ``N1``) or a bare numeric
-           net id (``4`` vs backend ``N4``) still resolves.
-        5. Last-resort: a case-insensitive sweep of ``result.signals``
-           keys whose body inside ``V(…)`` / ``I(…)`` matches
-           ``node_label``.
+        **Priority 1 — type-prefix-wrapped candidates** (unambiguous):
+          * ``{kernel_prefix}({node_label})`` and case variants
+          * ``{kernel_prefix}(N{node_id})``, ``{kernel_prefix}({node_id})``
+
+          These keys are kernel-emitted with explicit V/I/Is wrappers
+          that disambiguate voltage vs current at lookup time. A V
+          probe wired to "N5" finds ``V(N5)`` here even when
+          ``signals`` also contains a current series under "I_L"
+          (collision with a misnamed probe — see priority 2 + guard).
+
+        **Priority 2 — bare candidates** (potentially ambiguous,
+        type-guarded):
+          * ``component_name`` (e.g. ``"Xsw"`` for a probe the kernel
+            registered by its component name)
+          * ``component_id`` (UUID)
+          * ``node_label`` and case variants
+          * ``N{node_id}``, raw ``node_id``
+
+          Each bare candidate is type-checked: if the SAME body also
+          appears under the OPPOSITE kernel-prefix wrapping (e.g.
+          looking up a V probe and finding both bare ``"I_L"`` AND
+          ``"Is(I_L)"`` in signals), the bare match is rejected —
+          the wrapped form is the canonical kernel emission and the
+          bare collision is a probe-name vs kernel-key clash.
+
+        **Priority 3 — fuzzy match** with the same type-guard:
+          * Case-insensitive match against the body of any
+            ``V(…)``/``I(…)``/``Is(…)`` key, skipping matches whose
+            wrapper conflicts with ``kernel_prefix``.
+
+        Catches:
+          * Wire alias divergence (probe wired to "SW", kernel emits
+            ``V(N7)`` — N7 = same node)
+          * Kernel-side casing differences (``i_l`` vs ``I_L``)
+          * Type-collision between probe component_name and a
+            kernel-emitted current key with the same name (e.g. a
+            VOLTAGE_PROBE the user named ``"I_L"`` while ``I_L`` is
+            also the kernel's current-probe key on a different
+            branch). The type-guard prevents the voltage probe from
+            silently picking up the current series.
         """
-        candidates: list[str] = [component_name, component_id]
+        # Build the two priority groups separately so we try ALL
+        # type-prefix-wrapped candidates before falling back to bare
+        # name lookups (which can collide with the OTHER signal
+        # type's keys when probes are misnamed).
+        wrapped: list[str] = []
+        bare: list[str] = [component_name, component_id]
         if node_label:
             label_variants = {
                 node_label,
@@ -4531,45 +4562,89 @@ class MainWindow(QMainWindow):
                 node_label.lower(),
             }
             for variant in label_variants:
-                candidates.append(variant)
-                candidates.append(f"{kernel_prefix}({variant})")
+                wrapped.append(f"{kernel_prefix}({variant})")
+                bare.append(variant)
         if node_id:
             nid = str(node_id)
             for variant in (f"N{nid}", nid):
-                candidates.append(variant)
-                candidates.append(f"{kernel_prefix}({variant})")
+                wrapped.append(f"{kernel_prefix}({variant})")
+                bare.append(variant)
 
-        for key in candidates:
+        # Wrappers a foreign type might use for the same body — keys
+        # whose presence indicates that a bare name is actually a
+        # current/voltage key from the opposite domain. For a V probe
+        # we treat I( and Is( as foreign; for an I probe, V( is
+        # foreign. POWER_PROBE ("P") doesn't share its namespace.
+        foreign_wrappers = (
+            ("I(", "Is(") if kernel_prefix == "V"
+            else ("V(",) if kernel_prefix == "I"
+            else ()
+        )
+
+        def _has_foreign_wrapping(name: str) -> bool:
+            """True when ``signals`` contains ``{foreign_prefix}{name})``
+            for any of the opposite-type wrappers. Indicates a name
+            collision where the bare match would be the wrong domain."""
+            return any(
+                f"{prefix}{name})" in result.signals
+                for prefix in foreign_wrappers
+            )
+
+        # Priority 1: type-prefix-wrapped (unambiguous).
+        for key in wrapped:
+            if key and key in result.signals:
+                return list(result.signals[key])
+
+        # Priority 2: bare candidates — but only when not a same-name
+        # collision with the opposite type. The foreign-wrapping check
+        # catches the "probe named like a current key, but voltage
+        # was expected" case the way ex 20's VP(Vin) lookup was
+        # silently flipping over.
+        for key in bare:
             if not key:
                 continue
             series = result.signals.get(key)
-            if series is not None:
-                return list(series)
+            if series is None:
+                continue
+            if _has_foreign_wrapping(str(key)):
+                continue  # type collision — fall through to fuzzy.
+            return list(series)
 
-        # Case-insensitive probe-name sweep — picks up keys the kernel
-        # emits with slightly different casing or whose body matches the
-        # probe component name (e.g. ``I_L`` vs ``i_l`` vs ``I(I_L)``).
-        # This is the path that historically fell through for current
-        # probes whose kernel-side name didn't match what the GUI
-        # remembered (1.1.2 user report on ex 20).
+        # Priority 3: fuzzy match by name body, type-guarded.
         if component_name:
             needle = component_name.lower()
             for key, series in result.signals.items():
                 key_str = str(key)
+                # Bare same-name match — same guard as priority 2.
                 if key_str.lower() == needle:
+                    if _has_foreign_wrapping(key_str):
+                        continue
                     return list(series)
                 if "(" in key_str and key_str.endswith(")"):
-                    body = key_str[key_str.index("(") + 1 : -1]
+                    # Skip wrapped keys whose prefix conflicts with
+                    # the probe's expected kernel_prefix (a V probe
+                    # should never accept ``I(...)`` or ``Is(...)``
+                    # via fuzzy match).
+                    prefix_end = key_str.index("(")
+                    key_prefix = key_str[:prefix_end + 1]
+                    if foreign_wrappers and key_prefix in foreign_wrappers:
+                        continue
+                    body = key_str[prefix_end + 1 : -1]
                     if body.lower() == needle:
                         return list(series)
 
-        # Case-insensitive fuzzy sweep using the node label's body.
+        # Case-insensitive fuzzy sweep using the node label's body —
+        # same type-guard as above.
         if node_label:
             needle = node_label.lower()
             for key, series in result.signals.items():
                 key_str = str(key)
                 if "(" in key_str and key_str.endswith(")"):
-                    body = key_str[key_str.index("(") + 1 : -1]
+                    prefix_end = key_str.index("(")
+                    key_prefix = key_str[:prefix_end + 1]
+                    if foreign_wrappers and key_prefix in foreign_wrappers:
+                        continue
+                    body = key_str[prefix_end + 1 : -1]
                     if body.lower() == needle:
                         return list(series)
 
