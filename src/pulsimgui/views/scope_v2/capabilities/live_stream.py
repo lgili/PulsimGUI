@@ -62,6 +62,8 @@ class LiveSignalSpec:
     color: str = ""
     unit: str = ""
     panel: str = "Main"
+    pos_keys: tuple[str, ...] = ()
+    neg_keys: tuple[str, ...] = ()
 
 
 class LiveStreamCapability:
@@ -82,6 +84,11 @@ class LiveStreamCapability:
         self._stream: Any | None = None
         self._timer: QTimer | None = None
         self._active = False
+        # Resolved (pos_col, neg_col) per spec for the active stream. The
+        # kernel reorders nodes internally, so a node's live column is only
+        # knowable from the stream itself (``state_index_for``); we resolve
+        # once per run in ``_on_stream_ready`` and reuse on every tick.
+        self._resolved_cols: list[tuple[int, int | None]] = []
 
     # ── ScopeCapability protocol ────────────────────────────────────────
 
@@ -171,6 +178,7 @@ class LiveStreamCapability:
             return
         self._stream = stream
         self._active = True
+        self._resolved_cols = [self._resolve_columns(stream, spec) for spec in self._signal_specs]
 
         # Refresh the empty-state overlay text in case nothing's drawn yet.
         self._shell.plot_canvas.set_empty_message(
@@ -200,6 +208,39 @@ class LiveStreamCapability:
             self._timer.stop()
         self._active = False
 
+    # ── Column resolution ───────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_columns(stream: Any, spec: LiveSignalSpec) -> tuple[int, int | None]:
+        """Map a spec's "+"/"−" node names to live state-vector columns.
+
+        The kernel permutes nodes internally, so a column index is only
+        meaningful via the stream's own ``state_index_for(name)`` lookup
+        (names are ``V(<wire-alias>)`` / ``V(N<id>)``). Falls back to the
+        pre-resolved ``state_idx`` (channel index) when the stream can't be
+        queried — keeps older backends drawing *something*.
+        """
+        index_for = getattr(stream, "state_index_for", None)
+
+        def _first(keys: tuple[str, ...]) -> int | None:
+            if not callable(index_for):
+                return None
+            for key in keys:
+                idx: Any = None
+                try:
+                    idx = index_for(key)
+                except Exception:  # noqa: BLE001 - defensive against backend errors
+                    idx = None
+                if idx is not None:
+                    return int(idx)
+            return None
+
+        pos = _first(spec.pos_keys)
+        if pos is None:
+            pos = spec.state_idx
+        neg = _first(spec.neg_keys)
+        return pos, neg
+
     # ── Hot path ────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -212,10 +253,17 @@ class LiveStreamCapability:
         t_new, x_new = samples
         if t_new.size == 0:
             return
-        for spec in self._signal_specs:
-            if spec.state_idx >= x_new.shape[1]:
+        n_cols = x_new.shape[1]
+        for i, spec in enumerate(self._signal_specs):
+            pos, neg = self._resolved_cols[i] if i < len(self._resolved_cols) else (spec.state_idx, None)
+            if pos >= n_cols:
                 continue
-            y = x_new[:, spec.state_idx]
+            y = x_new[:, pos]
+            # Differential voltage probe: V(+) − V(−). The "−" terminal is
+            # resolved only when it is a real (non-ground) node, so a
+            # ground-referenced probe stays single-ended.
+            if neg is not None and neg < n_cols:
+                y = y - x_new[:, neg]
             self._shell.plot_canvas.append_signal(spec.name, t_new, y)
 
 

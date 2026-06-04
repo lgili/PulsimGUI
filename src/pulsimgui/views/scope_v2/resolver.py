@@ -15,16 +15,72 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pulsimgui.models.component import Component
 from pulsimgui.models.circuit import Circuit
-from .bindings import build_scope_channel_bindings
+from pulsimgui.models.component import Component, ComponentType
+from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
 from ._auto_palette import next_palette_color
+from .bindings import build_scope_channel_bindings
 from .capabilities.live_stream import LiveSignalSpec
 from .capabilities.post_sim import PostSimSignalSpec
 
-
 _LOG = logging.getLogger(__name__)
+
+
+def _live_node_keys(node_id: str | None, node_label: str | None) -> tuple[str, ...]:
+    """Candidate live-stream channel names (``V(...)``) for a circuit node.
+
+    The kernel names live state-vector columns ``V(<wire-alias>)`` or
+    ``V(N<netid>)`` and exposes them via ``stream.state_index_for(name)``.
+    We try the alias form first, then the numeric forms — mirroring
+    ``MainWindow._probe_backend_series`` so post-sim and live agree.
+    """
+    keys: list[str] = []
+    if node_label:
+        keys.append(f"V({node_label})")
+    if node_id:
+        keys.append(f"V(N{node_id})")
+        keys.append(f"V({node_id})")
+    return tuple(dict.fromkeys(keys))
+
+
+def _channel_sense_nodes(
+    circuit: Circuit,
+    node_map: dict[tuple[str, int], str],
+    alias_map: dict[str, str],
+    binding: Any,
+    first_signal: Any,
+) -> tuple[tuple[str | None, str | None], tuple[str | None, str | None]]:
+    """Resolve a channel's ``"+"`` / ``"-"`` sense nodes as ``(id, label)`` pairs.
+
+    For a voltage-probe channel the terminals are the probe's sense pins
+    (pin 0 = ``"+"``, pin 1 = ``"-"``); a ``VOLTAGE_PROBE_GND`` or a
+    ground-referenced ``"-"`` has no second terminal. For a scope wired
+    straight to a node, ``"+"`` is that node and there is no ``"-"``.
+    """
+    key = (first_signal.signal_key or "") if first_signal is not None else ""
+    if key.startswith("VP(") and first_signal is not None:
+        probe = next(
+            (
+                c
+                for c in circuit.components.values()
+                if c.name == first_signal.label
+                and c.type in (ComponentType.VOLTAGE_PROBE, ComponentType.VOLTAGE_PROBE_GND)
+            ),
+            None,
+        )
+        if probe is not None:
+            pid = str(probe.id)
+            pos_id = node_map.get((pid, 0))
+            pos_label = alias_map.get(pos_id) if pos_id else None
+            neg_id = neg_label = None
+            if probe.type == ComponentType.VOLTAGE_PROBE:
+                cand = node_map.get((pid, 1))
+                if cand is not None and str(cand).strip() not in ("0", ""):
+                    neg_id = cand
+                    neg_label = alias_map.get(cand)
+            return (pos_id, pos_label or pos_id), (neg_id, neg_label or neg_id)
+    return (binding.node_id, binding.node_label), (None, None)
 
 
 def _circuit_builder(simulation_service: Any, project: Any) -> Any | None:
@@ -106,6 +162,8 @@ def resolve_scope_signal_specs(
     """
     bindings = build_scope_channel_bindings(scope_component, circuit)
     builder = _circuit_builder(simulation_service, project)
+    node_map = build_node_map(circuit)
+    alias_map = build_node_alias_map(circuit, node_map)
     channels = scope_component.parameters.get("channels", []) or []
 
     is_thermal = scope_component.type.name == "THERMAL_SCOPE"
@@ -195,12 +253,21 @@ def resolve_scope_signal_specs(
                 seen.add(key)
                 fallback_keys.append(key)
 
+        # Live state-vector columns: the kernel permutes nodes, so the
+        # capability resolves these names against the stream's own index
+        # at run time. A differential VOLTAGE_PROBE yields a "-" terminal
+        # so the live trace plots V(+) − V(−), matching the post-sim path.
+        (pos_id, pos_label), (neg_id, neg_label) = _channel_sense_nodes(
+            circuit, node_map, alias_map, binding, first_signal,
+        )
         live.append(LiveSignalSpec(
             name=display,
             state_idx=state_idx,
             color=color,
             unit=unit,
             panel="Main",
+            pos_keys=_live_node_keys(pos_id, pos_label),
+            neg_keys=_live_node_keys(neg_id, neg_label),
         ))
         post.append(PostSimSignalSpec(
             name=display,
