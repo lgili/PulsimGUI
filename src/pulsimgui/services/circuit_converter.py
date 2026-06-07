@@ -244,6 +244,16 @@ class CircuitConverter:
         self._predeclare_nodes(circuit, resolved_components, node_cache)
         probe_target_overrides = self._infer_probe_target_overrides(resolved_components)
 
+        # 3-phase MMC modulation: build the per-arm m_ref(t) override map
+        # BEFORE the conversion loop so the MMC_ARM build consumes it (the
+        # arm passes m_ref to pulsim at construction time). Empty map ⇒
+        # constant-modulation MMCs are untouched.
+        try:
+            mmc_overrides = self._infer_mmc_arm_mref_overrides(components, node_map)
+            setattr(circuit, "mmc_mref_overrides", mmc_overrides)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
         for resolved_index, (component, comp_type, name, nodes) in enumerate(resolved_components):
             if resolved_index and resolved_index % 128 == 0:
                 time.sleep(0)
@@ -364,17 +374,6 @@ class CircuitConverter:
                 components, node_map,
             )
             setattr(circuit, "shared_heatsink_descriptors", heatsink_descriptors)
-        except Exception:  # noqa: BLE001 - detection must never break a build
-            pass
-
-        # 3-phase MMC modulation: when an MMC_CONTROLLER's six outputs are
-        # wired to the arms' M_REF pins, build a per-arm ``m_ref(t)``
-        # callable (open-loop sinusoidal) keyed by arm name. The MMC_ARM
-        # conversion uses it in place of the constant ``m_ref_constant``.
-        # Empty map ⇒ constant-modulation MMCs are untouched.
-        try:
-            mmc_overrides = self._infer_mmc_arm_mref_overrides(components, node_map)
-            setattr(circuit, "mmc_mref_overrides", mmc_overrides)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 

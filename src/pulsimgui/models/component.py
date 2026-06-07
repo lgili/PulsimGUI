@@ -589,6 +589,7 @@ _CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
     ComponentType.THYRISTOR: {2},   # G
     ComponentType.TRIAC:     {2},   # G
     ComponentType.SWITCH:    {2},   # CTL
+    ComponentType.MMC_ARM:   {2},   # M_REF (signal-driven modulation ref)
 }
 
 SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {

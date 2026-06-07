@@ -287,6 +287,36 @@ def test_mmc_controller_drives_arm_mref_sinusoid() -> None:
     assert abs(ov["ARM_Bu"](0.0) - expected_bu0) < 1e-9
 
 
+def test_mmc_controller_override_reaches_arm_build() -> None:
+    """End-to-end through ``build()``: a controller-driven arm must receive
+    the callable m_ref (pulsim takes m_ref at construction). Catches both
+    regressions — M_REF must be signal-domain so build_node_map unions it
+    with the controller output, AND the override pre-pass must run before
+    the conversion loop. Either failing leaves the arm at constant 0.5."""
+    converter = CircuitConverter(_FakeBackend)
+    components, node_map = _mmc_ctrl_and_arms()
+    circuit = converter.build({
+        "components": components,
+        "node_map": node_map,
+        "node_aliases": {},
+    })
+    calls = {c["name"]: c for c in circuit._builder.arm_calls}
+    assert callable(calls["ARM_Au"]["m_ref"])  # the override, not 0.5
+    assert callable(calls["ARM_Cl"]["m_ref"])
+
+
+def test_mmc_arm_mref_pin_is_signal_domain() -> None:
+    """The MMC_ARM M_REF pin must accept signal-domain drives (the
+    controller's outputs) — like a MOSFET gate."""
+    from pulsimgui.models.component import (
+        CONNECTION_DOMAIN_SIGNAL,
+        Component,
+        pin_connection_domain,
+    )
+    arm = Component(type=ComponentType.MMC_ARM, name="A", x=0, y=0)
+    assert pin_connection_domain(arm, 2) == CONNECTION_DOMAIN_SIGNAL  # M_REF
+
+
 def test_mmc_arms_without_controller_keep_constant_mref() -> None:
     """No MMC_CONTROLLER ⇒ empty override map (arms keep ``m_ref_constant``)."""
     converter = CircuitConverter(_FakeBackend)
