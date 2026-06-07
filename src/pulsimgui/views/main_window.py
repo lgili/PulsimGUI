@@ -83,6 +83,8 @@ from pulsimgui.services.simulation_service import (
     SimulationService,
     SimulationState,
     normalize_control_mode,
+    normalize_dsed_integrator,
+    normalize_engine,
     normalize_formulation_mode,
     normalize_frequency_anchor_mode,
     normalize_frequency_sweep_scale,
@@ -2200,6 +2202,32 @@ class MainWindow(QMainWindow):
         runtime_settings.step_mode = normalize_step_mode(
             getattr(project_settings, "step_mode", runtime_settings.step_mode)
         )
+        # pulsim 1.6 engine selector + DSED knobs. Previously NOT mirrored —
+        # the project's saved engine was silently ignored, so a global DSED
+        # preference ran even on circuits that need PWL (e.g. an MMC, whose
+        # controlled-source arms have no LTI state-space for DSED).
+        runtime_settings.engine = normalize_engine(
+            getattr(project_settings, "engine", runtime_settings.engine)
+        )
+        runtime_settings.dsed_rtol = float(
+            getattr(project_settings, "dsed_rtol", runtime_settings.dsed_rtol)
+        )
+        runtime_settings.dsed_atol = float(
+            getattr(project_settings, "dsed_atol", runtime_settings.dsed_atol)
+        )
+        runtime_settings.dsed_dt_init = float(
+            getattr(project_settings, "dsed_dt_init", runtime_settings.dsed_dt_init)
+        )
+        runtime_settings.dsed_integrator = normalize_dsed_integrator(
+            getattr(project_settings, "dsed_integrator", runtime_settings.dsed_integrator)
+        )
+        runtime_settings.dsed_stiffness_threshold = float(
+            getattr(project_settings, "dsed_stiffness_threshold",
+                    runtime_settings.dsed_stiffness_threshold)
+        )
+        runtime_settings.dsed_h_bdf2 = float(
+            getattr(project_settings, "dsed_h_bdf2", runtime_settings.dsed_h_bdf2)
+        )
         runtime_settings.output_points = int(
             getattr(project_settings, "output_points", runtime_settings.output_points)
         )
@@ -2354,6 +2382,17 @@ class MainWindow(QMainWindow):
         project_settings.reltol = float(runtime_settings.rel_tol)
         project_settings.solver = normalize_integration_method(runtime_settings.solver)
         project_settings.step_mode = normalize_step_mode(runtime_settings.step_mode)
+        project_settings.engine = normalize_engine(runtime_settings.engine)
+        project_settings.dsed_rtol = float(runtime_settings.dsed_rtol)
+        project_settings.dsed_atol = float(runtime_settings.dsed_atol)
+        project_settings.dsed_dt_init = float(runtime_settings.dsed_dt_init)
+        project_settings.dsed_integrator = normalize_dsed_integrator(
+            runtime_settings.dsed_integrator
+        )
+        project_settings.dsed_stiffness_threshold = float(
+            runtime_settings.dsed_stiffness_threshold
+        )
+        project_settings.dsed_h_bdf2 = float(runtime_settings.dsed_h_bdf2)
         project_settings.output_points = int(runtime_settings.output_points)
         project_settings.enable_events = bool(runtime_settings.enable_events)
         project_settings.max_step_retries = int(runtime_settings.max_step_retries)

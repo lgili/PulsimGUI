@@ -310,6 +310,9 @@ sim_settings = {
     # Short window: open-loop modulation has no energy/circulating-current
     # control, so the arm caps drift — keep it brief to see clean 3φ AC
     # (Scope_ACVoltages) before the drift (Scope_CapVoltages) dominates.
+    # PWL engine: the MMC average arms drive controlled sources via a
+    # b_extra residual that DSED can't extract an LTI state-space for.
+    "engine": "pwl",
     "tstop": 0.025, "dt": 2.0e-6, "tstart": 0.0, "output_points": 12500,
     "control_sample_time": 1.0e-5, "control_mode": "discrete",
     "tol_newton_dx": 1.0e-6, "tol_newton_res": 1.0e-6,
