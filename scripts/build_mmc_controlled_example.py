@@ -15,14 +15,21 @@ so the observer advances each arm's capacitor voltage and publishes it as
 ``<arm>.v_C`` telemetry.
 
 Split DC bus (±Vdc/2, midpoint grounded = load neutral) so the AC phase
-nodes swing about 0 — a clean 3-phase output. Scopes expose the AC output
-voltages, the phase currents, the per-arm capacitor voltages, and the
+nodes swing about 0. Scopes expose the AC output voltages (V(PHASE_x) node
+signals), the phase currents, the per-arm capacitor voltages, and the
 phase-A arm currents.
 
-NOTE: open-loop modulation has no circulating-current / energy control,
-so the arm cap voltages drift over time (visible in Scope_CapVoltages) —
-exactly why a closed-loop controller is the next step. Keep tstop short
-to see clean AC before the drift dominates.
+NOTE — this is the OPEN-LOOP stepping stone. With fixed sinusoidal
+modulation and no circulating-current / energy control, the arm capacitor
+voltages are only marginally stable: the AC modulation pumps a net energy
+imbalance into the arms and v_C runs away (Scope_CapVoltages shows it
+collapse within a few ms), so the 3φ output is clean only at the very
+start and then sags/unbalances. That instability is the whole point of the
+*next* step — a closed-loop controller (dq output-current control +
+circulating-current suppression + arm-energy balancing) actively holds v_C
+and yields sustained balanced AC. This example exists to prove the
+end-to-end path (MMC_CONTROLLER → arm M_REF → L0 observer telemetry →
+scopes) and to motivate that controller.
 """
 from __future__ import annotations
 
@@ -159,9 +166,9 @@ mmc_ctrl = comp(
     type="MMC_CONTROLLER", name="MMC_Ctrl", x=-600, y=480,
     parameters={"m_ref_offset": 0.5, "modulation_index": MOD_INDEX,
                 "frequency": F_OUT, "phase_deg": 0.0, "sample_time": 0.0},
-    pins=[pin(0, "A_UP", 40, -50), pin(1, "A_LO", 40, -30),
-          pin(2, "B_UP", 40, -10), pin(3, "B_LO", 40, 10),
-          pin(4, "C_UP", 40, 30), pin(5, "C_LO", 40, 50)],
+    pins=[pin(0, "A_UP", 40, -60), pin(1, "A_LO", 40, -40),
+          pin(2, "B_UP", 40, -20), pin(3, "B_LO", 40, 20),
+          pin(4, "C_UP", 40, 40), pin(5, "C_LO", 40, 60)],
 )
 components.append(mmc_ctrl)
 
@@ -172,9 +179,12 @@ components.append(mmc_ctrl)
 mref_targets = [arm_upper[0], arm_lower[0], arm_upper[1], arm_lower[1],
                 arm_upper[2], arm_lower[2]]
 goto_labels, from_labels = [], []
+_ctrl_dy = (-60, -40, -20, 20, 40, 60)  # MMC_CONTROLLER output pin Y offsets
 for i, arm in enumerate(mref_targets):
     text = f"MREF_{i}"
-    g = comp(type="GOTO_LABEL", name=f"GOTO_{text}", x=-470, y=430 + 20 * i,
+    # GOTO label aligned to its controller output (full grid Y) so the stub
+    # is horizontal and the label never snap-collapses onto its neighbour.
+    g = comp(type="GOTO_LABEL", name=f"GOTO_{text}", x=-480, y=480 + _ctrl_dy[i],
              parameters={"net_label": text}, pins=[pin(0, "NET", 0, 0)])
     fr = comp(type="FROM_LABEL", name=f"FROM_{text}", x=arm["x"] + 120, y=arm["y"],
               parameters={"net_label": text}, pins=[pin(0, "NET", 0, 0)])
@@ -199,19 +209,39 @@ for i, (ph, col_x) in enumerate(zip(("A", "B", "C"), X_PHASE)):
 gnd_n = comp(type="GROUND", name="GND_n", x=580, y=80, parameters={}, pins=[pin(0, "gnd", 0, -20)])
 components.append(gnd_n)
 
-# ---- Phase voltage probes (AC output to ground) ----
+# Phase tap → load is carried by a GOTO/FROM net-label pair (PH_x), not a long
+# routed wire. Three routed phase wires would otherwise share the y=arm-BOT
+# corridor, overlap, and get merged into one node on the scene's junction pass
+# (shorting all three AC phases together → singular matrix). GOTO sits at each
+# arm (300 px apart), FROM sits at each load probe.
+goto_ph, from_ph = [], []
+for i, (ph, col_x) in enumerate(zip(("A", "B", "C"), X_PHASE)):
+    gp = comp(type="GOTO_LABEL", name=f"GOTO_PH_{ph}", x=col_x + 60, y=Y_ARM_UPPER + 40,
+              parameters={"net_label": f"PH_{ph}"}, pins=[pin(0, "NET", 0, 0)])
+    fp = comp(type="FROM_LABEL", name=f"FROM_PH_{ph}", x=100, y=Y_PHASE_TAP + (i - 1) * 80,
+              parameters={"net_label": f"PH_{ph}"}, pins=[pin(0, "NET", 0, 0)])
+    components += [gp, fp]
+    goto_ph.append(gp); from_ph.append(fp)
+
+# ---- Phase voltage probes — sit in the load row and tap the phase through
+# the PH_x label (clear of the arm columns and of each other's nodes). ----
 vp_phase = []
-for ph, col_x in zip(("A", "B", "C"), X_PHASE):
-    vp = comp(type="VOLTAGE_PROBE_GND", name=f"V_ph{ph}", x=col_x + 110, y=Y_PHASE_TAP - 70,
+for i, ph in enumerate(("A", "B", "C")):
+    vp = comp(type="VOLTAGE_PROBE_GND", name=f"V_ph{ph}", x=40, y=Y_PHASE_TAP + (i - 1) * 80,
               parameters={"display_name": f"V_ph{ph}", "scale": 1.0},
               pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)])
     components.append(vp); vp_phase.append(vp)
 
 # ---- Phase-A arm current probes ----
-ip_arm_uA = comp(type="CURRENT_PROBE", name="I_arm_uA", x=X_PHASE[0], y=Y_L_UPPER + 70,
+# Rotated 90°: CURRENT_PROBE's canonical pins are horizontal (IN/OUT left-right),
+# but these sit in a vertical arm leg. Rotating makes IN/OUT vertical so the
+# series wires run straight down the leg; a horizontal probe here forces the
+# OUT→arm wire back across the IN pin, shorting the ammeter (singular matrix).
+# Full-grid Y (±80) so the body never snap-shifts on load.
+ip_arm_uA = comp(type="CURRENT_PROBE", name="I_arm_uA", x=X_PHASE[0], y=Y_L_UPPER + 80, rotation=90,
                  parameters={"display_name": "I_arm_uA", "scale": 1.0},
                  pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25), pin(2, "OUT", 30, 0)])
-ip_arm_lA = comp(type="CURRENT_PROBE", name="I_arm_lA", x=X_PHASE[0], y=Y_L_LOWER - 70,
+ip_arm_lA = comp(type="CURRENT_PROBE", name="I_arm_lA", x=X_PHASE[0], y=Y_L_LOWER - 80, rotation=90,
                  parameters={"display_name": "I_arm_lA", "scale": 1.0},
                  pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25), pin(2, "OUT", 30, 0)])
 components += [ip_arm_uA, ip_arm_lA]
@@ -219,15 +249,15 @@ components += [ip_arm_uA, ip_arm_lA]
 # ---- Scopes ----
 scope_v = comp(type="ELECTRICAL_SCOPE", name="Scope_ACVoltages", x=820, y=-380,
                parameters={"channel_count": 3, "channels": [
-                   {"label": "V_phA", "overlay": True},
-                   {"label": "V_phB", "overlay": True},
-                   {"label": "V_phC", "overlay": True}]},
+                   {"signal": "V(PHASE_A)", "label": "V_phA", "overlay": True},
+                   {"signal": "V(PHASE_B)", "label": "V_phB", "overlay": True},
+                   {"signal": "V(PHASE_C)", "label": "V_phC", "overlay": True}]},
                pins=[pin(0, "CH1", -40, -25), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 25)])
 scope_i = comp(type="ELECTRICAL_SCOPE", name="Scope_PhaseCurrents", x=820, y=-160,
                parameters={"channel_count": 3, "channels": [
-                   {"label": "I_phA", "overlay": True},
-                   {"label": "I_phB", "overlay": True},
-                   {"label": "I_phC", "overlay": True}]},
+                   {"signal": "I_phA", "label": "I_phA", "overlay": True},
+                   {"signal": "I_phB", "label": "I_phB", "overlay": True},
+                   {"signal": "I_phC", "label": "I_phC", "overlay": True}]},
                pins=[pin(0, "CH1", -40, -25), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 25)])
 # Cap-voltage scope — direct-signal channels (the <arm>.v_C telemetry the
 # L0 observer publishes; no wires needed for a direct-signal channel).
@@ -242,8 +272,8 @@ scope_vc = comp(type="ELECTRICAL_SCOPE", name="Scope_CapVoltages", x=820, y=80,
                 pins=[pin(i, f"CH{i+1}", -40, -50 + i * 20) for i in range(6)])
 scope_arm = comp(type="ELECTRICAL_SCOPE", name="Scope_ArmCurrentsA", x=820, y=320,
                  parameters={"channel_count": 2, "channels": [
-                     {"label": "I_arm_uA", "overlay": True},
-                     {"label": "I_arm_lA", "overlay": True}]},
+                     {"signal": "I_arm_uA", "label": "I_arm_uA", "overlay": True},
+                     {"signal": "I_arm_lA", "label": "I_arm_lA", "overlay": True}]},
                  pins=[pin(0, "CH1", -40, -15), pin(1, "CH2", -40, 15)])
 components += [scope_v, scope_i, scope_vc, scope_arm]
 
@@ -289,21 +319,21 @@ for i, arm in enumerate(mref_targets):
     wires.append(wire_direct(mmc_ctrl["id"], i, goto_labels[i]["id"], 0, comp_by_id))
     wires.append(wire_direct(arm["id"], 2, from_labels[i]["id"], 0, comp_by_id))
 
-# AC load + phase probes: PHASE → I_phX → R → L → neutral(gnd); probe taps phase
+# AC load + phase probes. The phase tap reaches each load through its PH_x
+# label pair; only short, column-local wires are routed here.
 for i, ph in enumerate(("A", "B", "C")):
     au = arm_upper[i]
-    w(au, 1, ip_phase[i], 0, node_name=f"PHASE_{ph}")
+    wires.append(wire_direct(au["id"], 1, goto_ph[i]["id"], 0, comp_by_id))          # tap → PH_x
+    wires.append(wire_direct(ip_phase[i]["id"], 0, from_ph[i]["id"], 0, comp_by_id))  # PH_x → load
+    wires.append(wire_direct(vp_phase[i]["id"], 0, from_ph[i]["id"], 0, comp_by_id))  # PH_x → V_ph
     w(ip_phase[i], 1, load_r[i], 0, node_name=f"LOAD_{ph}_PRE")
     w(load_r[i], 1, load_l[i], 0, node_name=f"LOAD_{ph}_MID")
     w(load_l[i], 1, gnd_n, 0, node_name="NEUTRAL")
-    w(au, 1, vp_phase[i], 0, node_name=f"PHASE_{ph}")
 
-# Scope wires (analog channels). Cap-voltage scope uses direct signals (no wires).
-for i in range(3):
-    w(vp_phase[i], 1, scope_v, i, node_name=f"SIG_VPH{i}")
-    w(ip_phase[i], 2, scope_i, i, node_name=f"SIG_IPH{i}")
-w(ip_arm_uA, 2, scope_arm, 0, node_name="SIG_IARMUA")
-w(ip_arm_lA, 2, scope_arm, 1, node_name="SIG_IARMLA")
+# No scope wires: every scope channel reads its probe by signal name (direct
+# signal), exactly like the cap-voltage scope. Routed probe→scope signal
+# wires otherwise span the whole sheet, share corridors, and merge nets on
+# the scene's junction pass.
 
 # ---------------------------------------------------------------------------
 sim_settings = {

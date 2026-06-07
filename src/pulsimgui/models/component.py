@@ -1204,12 +1204,17 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # MMC_ARM ``M_REF`` pin; the converter reads the pin role (phase +
     # up/lo) to build that arm's m_ref(t).
     ComponentType.MMC_CONTROLLER: [
-        Pin(0, "A_UP", 40, -50),
-        Pin(1, "A_LO", 40, -30),
-        Pin(2, "B_UP", 40, -10),
-        Pin(3, "B_LO", 40,  10),
-        Pin(4, "C_UP", 40,  30),
-        Pin(5, "C_LO", 40,  50),
+        # Pin offsets are multiples of the 20 px grid so that, for a
+        # grid-aligned body, every output pin lands exactly on the grid.
+        # Half-grid pins (e.g. y=±50, ±30) snap-collapse onto their
+        # neighbour when the scene normalises geometry on load, shorting
+        # adjacent modulation outputs together.
+        Pin(0, "A_UP", 40, -60),
+        Pin(1, "A_LO", 40, -40),
+        Pin(2, "B_UP", 40, -20),
+        Pin(3, "B_LO", 40,  20),
+        Pin(4, "C_UP", 40,  40),
+        Pin(5, "C_LO", 40,  60),
     ],
 
     # Three-phase / vector control (Pulsim Phase 28)
