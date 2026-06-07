@@ -6801,8 +6801,12 @@ class PulsimBackend(SimulationBackend):
             return []
 
         # Build a name → average-power dict from ``electrothermal_rows``.
-        # The conduction rows are keyed by component name; switching +
-        # core losses are summed in. ``P_avg`` is the canonical key.
+        # ``_electrothermal_via_thermal_summary`` / the legacy fallback
+        # both write the per-stage averages as flat floats (W) under
+        # ``conduction`` / ``turn_on`` / ``turn_off``. An older spec
+        # used ``{stage: {"P_avg_W": float}}`` dicts — accept either so
+        # the solver doesn't silently see ΣP=0 when the float form is
+        # active (the only form the producers actually emit today).
         power_by_device: dict[str, float] = {}
         for row in electrothermal_rows or []:
             name = str(row.get("component_name") or "").strip()
@@ -6813,6 +6817,11 @@ class PulsimBackend(SimulationBackend):
                 stage = row.get(key)
                 if isinstance(stage, dict):
                     p_total += float(stage.get("P_avg_W", 0.0) or 0.0)
+                elif stage is not None:
+                    try:
+                        p_total += float(stage)
+                    except (TypeError, ValueError):
+                        pass
             power_by_device[name] = p_total
 
         results: list[dict[str, Any]] = []
@@ -6987,15 +6996,26 @@ class PulsimBackend(SimulationBackend):
                 continue
             cond = 0.0
             sw = 0.0
+            # Accept either dict form ``{stage: {"P_avg_W": float}}``
+            # (older spec) or flat float (what the producers actually
+            # emit today). Skipping floats here silently zeros out the
+            # tempco feedback gain → coupled solver reports ρ=0 even
+            # for a clearly-runaway design. Matches the wider fix in
+            # ``_compute_shared_heatsink_steady_state``.
             for key, target in (
                 ("conduction", "cond"),
                 ("turn_on", "sw"),
                 ("turn_off", "sw"),
             ):
                 stage = row.get(key)
-                if not isinstance(stage, dict):
-                    continue
-                p_avg = float(stage.get("P_avg_W", 0.0) or 0.0)
+                p_avg = 0.0
+                if isinstance(stage, dict):
+                    p_avg = float(stage.get("P_avg_W", 0.0) or 0.0)
+                elif stage is not None:
+                    try:
+                        p_avg = float(stage)
+                    except (TypeError, ValueError):
+                        p_avg = 0.0
                 if target == "cond":
                     cond += p_avg
                 else:

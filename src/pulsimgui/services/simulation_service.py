@@ -1429,6 +1429,13 @@ class SimulationService(QObject):
         runtime_settings.enable_newton_lm = bool(
             getattr(project_settings, "enable_newton_lm", runtime_settings.enable_newton_lm)
         )
+        # Pre-seed the transient with the steady-state DC OP. Critical
+        # for closed-loop converter thermal demos — the cold-start
+        # transient otherwise breaks pulsim's PWM-switch loss
+        # reconstruction. Default False keeps legacy projects unchanged.
+        runtime_settings.start_from_dc_op = bool(
+            getattr(project_settings, "start_from_dc_op", runtime_settings.start_from_dc_op)
+        )
         runtime_settings.max_voltage_step = float(
             getattr(project_settings, "max_voltage_step", runtime_settings.max_voltage_step)
         )

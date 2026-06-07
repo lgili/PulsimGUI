@@ -24,9 +24,16 @@ pulsim 1.7 thermal stack so the example exercises EVERY new feature:
     designer would compute via ``tim_resistance`` + ``convection_resistance``.
   * Cauer topology on ONE heatsink (``HS_INV``) to exercise the
     ``CauerStage`` alternative network alongside the default Foster.
-  * T_amb = 50 °C (hot ambient — sealed compressor housing).
-  * tstop = 1 s (long enough for the thermal capacitances to charge to
-    near steady-state on a Foster network).
+  * T_amb = 40 °C (warm sealed-compressor housing — leaves headroom for
+    the tempco-driven rise without hugging the 150 °C T_jmax).
+  * tstop = 50 ms (the longest stable window for this PFC + FOC
+    topology in PWL mode — see the ``sim["tstop"]`` comment for the
+    full story). The slow τ ≈ 80 ms Foster pole only partially
+    charges, which is fine for an *instrumentation* demo: the new
+    pulsim 1.7 telemetry (Foster + Cauer + T_jmax monitor +
+    TempCoLoss steady-state) is fully exercised even in this short
+    window. The ``start_from_dc_op`` flag (also set by this builder)
+    skips the cold-start transient.
 
 The script does NOT touch the electrical topology — it preserves the
 27-component, 50-wire schematic from ex 20 verbatim and only:
@@ -81,7 +88,7 @@ GBPC2510 = {
     "thermal_cth": 0.10,             # τ_total ≈ 0.18 s — order-of-magnitude
     "thermal_rth_stages": "0.6, 0.8, 0.4",
     "thermal_cth_stages": "0.00833, 0.0625, 0.625",  # τ = 5, 50, 250 ms
-    "thermal_temp_init": 50.0,       # start at ambient (sealed housing)
+    "thermal_temp_init": 40.0,       # start at ambient (sealed housing)
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,          # legacy single-RC alpha — unused
     "thermal_shared_sink_id": "",
@@ -128,7 +135,7 @@ STW57N65M5 = {
     "thermal_cth": 0.10,
     "thermal_rth_stages": "0.18, 0.24, 0.18",
     "thermal_cth_stages": "0.00556, 0.0417, 0.444",  # τ = 1, 10, 80 ms
-    "thermal_temp_init": 50.0,
+    "thermal_temp_init": 40.0,
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,
     "thermal_shared_sink_id": "",
@@ -136,10 +143,16 @@ STW57N65M5 = {
     "thermal_shared_sink_cth": 0.0,
     "thermal_t_max_C": 150.0,
     "thermal_t_max_hysteresis_C": 5.0,
-    # Super-junction Rds_on roughly doubles 25→150 °C → a_cond ≈ +0.006/°C.
-    # Eon+Eoff also rises mildly with T_j → +0.001/°C.
-    "loss_a_cond_per_C": 0.006,
-    "loss_a_sw_per_C": 0.001,
+    # Super-junction Rds_on rises ~+0.4%/°C in the 25–125 °C band — the
+    # 2× rise to 150 °C is the catalogue rule-of-thumb at the upper
+    # limit, not the design point. Use 0.004 here so the TempCo feedback
+    # gain stays in the "demo-friendly" range; bumping to 0.006 in the
+    # GUI dialog flips the device into runaway, which is the very
+    # behaviour the new ``electrothermal_steady_state`` solver is meant
+    # to catch — a built-in lever for showing the runaway path on
+    # demand without permanently destabilising the canned example.
+    "loss_a_cond_per_C": 0.004,
+    "loss_a_sw_per_C": 0.0005,
 }
 
 # IDH16S60C — SiC Schottky diode, 600 V / 16 A (TO-220). Vf = 1.5 V @ 8 A.
@@ -168,7 +181,7 @@ IDH16S60C = {
     "thermal_cth": 0.10,
     "thermal_rth_stages": "0.24, 0.32, 0.24",
     "thermal_cth_stages": "0.00417, 0.0313, 0.333",   # τ = 1, 10, 80 ms
-    "thermal_temp_init": 50.0,
+    "thermal_temp_init": 40.0,
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,
     "thermal_shared_sink_id": "",
@@ -211,7 +224,7 @@ STGW40H65DFB2 = {
     "thermal_cth": 0.05,
     "thermal_rth_stages": "0.15, 0.20, 0.15",
     "thermal_cth_stages": "0.00667, 0.05, 0.533",     # τ = 1, 10, 80 ms
-    "thermal_temp_init": 50.0,
+    "thermal_temp_init": 40.0,
     "thermal_temp_ref": 25.0,
     "thermal_alpha": 0.004,
     "thermal_shared_sink_id": "",
@@ -244,10 +257,12 @@ GBPC_R_TIM = 0.018
 # Pulsim's ``convection_resistance`` returns this directly when called with
 # the right (h, A) pair — we round to 0.25 K/W to leave headroom.
 #
-# We pin R_th_sink_to_amb_C at 0.25 K/W for HS_INV (the loaded sink) and
-# 0.4 K/W for HS_BR (smaller bridge sink, less area dedicated).
-HS_INV_R_SA = 0.25
-HS_BR_R_SA = 0.40
+# Sized for the demo's expected dissipation (the boost stage is the
+# heavy hitter, the VSI is light at this operating point). Slightly
+# bigger heatsinks than ex 20's nominal — keeps the T_j numbers in the
+# 50–90 °C band that's easy to read on the thermal scope.
+HS_INV_R_SA = 0.20
+HS_BR_R_SA = 0.35
 
 
 def _bridge_pins() -> list[dict]:
@@ -384,13 +399,31 @@ def main() -> None:
     src_data["modified"] = datetime.now().isoformat()
 
     sim = src_data["simulation_settings"]
-    sim["tstop"] = 1.0                  # long enough for τ ≈ 80 ms to charge
-    sim["thermal_ambient"] = 50.0       # hot sealed-compressor housing
+    # 50 ms is the longest stable window for this PFC + FOC topology
+    # in the PWL engine. Beyond that, pulsim's ``v_SW²·g_arr`` loss
+    # reconstruction on the boost MOSFET drifts out of phase with the
+    # sampled state — the post-hoc mask says "switch ON" but the state
+    # snapshot still shows hundreds of volts across the device — and
+    # the reconstructed P_cond_avg balloons. ``start_from_dc_op``
+    # (below) keeps the 50 ms window clean by skipping the cold-start
+    # transient; the 80 ms slow Foster pole only partially charges,
+    # which is fine for an instrumentation demo (the rise IS visible).
+    sim["tstop"] = 0.05
+    sim["thermal_ambient"] = 40.0       # warm sealed housing, not extreme
     sim["thermal_network"] = "foster"   # default; HS_INV overrides to cauer
     sim["enable_losses"] = True
-    # The DSED engine on a 1 s window with 0.5 µs dt is heavy; PWL is
-    # fine for the demo and matches ex 20's setting.
+    # The DSED engine on this topology fails the C++ extractor (the
+    # plain-Python PFC controller defeats the analytical fast path).
+    # Stay on PWL.
     sim["engine"] = "pwl"
+    # CRITICAL: seed the transient with the steady-state DC OP. Without
+    # this, the cold-start transient drives a long ill-conditioned
+    # ramp where pulsim's PWM-switch loss reconstruction explodes
+    # (gives 100+ kW for a device that physically dissipates ~1 W).
+    # With start_from_dc_op=True the inductor current is already
+    # settled when the simulation starts, the PWM-mask / state phasing
+    # stays aligned, and the reported P_cond stays physical.
+    sim["start_from_dc_op"] = True
 
     # ----------------------------------------------------------------
     # Patch the four power devices' parameters + pin lists in place
@@ -442,7 +475,7 @@ def main() -> None:
         x=-1080.0, y=160.0,
         n_devices=1,
         R_sa=HS_BR_R_SA,
-        T_amb=50.0,
+        T_amb=40.0,
         case_csv=f"{GBPC_R_TIM:.4f}",
         thermal_network="foster",
     )
@@ -457,7 +490,7 @@ def main() -> None:
         x=200.0, y=240.0,
         n_devices=3,
         R_sa=HS_INV_R_SA,
-        T_amb=50.0,
+        T_amb=40.0,
         # Slot 1: boost diode (small SiC, lower R_TIM), slot 2: boost
         # MOSFET, slot 3: VSI module (bigger, lower R_TIM).
         case_csv=f"{TO247_R_TIM:.4f}, {TO247_R_TIM:.4f}, 0.025",

@@ -98,6 +98,18 @@ class SimulationSettings:
     dsed_stiffness_threshold: float = 10.0
     dsed_h_bdf2: float = 1e-6
 
+    # Seed the transient with the steady-state DC operating point
+    # instead of all-zero initial conditions. False = legacy behaviour
+    # (start at x=0, let the simulation ramp up). True is recommended
+    # for closed-loop converters whose soft-start would otherwise leave
+    # a long ill-conditioned transient at the start of the run — that
+    # transient breaks pulsim's ``v_SW²·g_arr`` loss reconstruction for
+    # PWM switches (the sampled state and the post-hoc PWM mask drift
+    # out of phase, producing absurdly large reconstructed P_cond).
+    # Persisting it here lets thermal demos request the stable start
+    # right in the .pulsim file.
+    start_from_dc_op: bool = False
+
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
@@ -152,6 +164,7 @@ class SimulationSettings:
             "dsed_integrator": self.dsed_integrator,
             "dsed_stiffness_threshold": self.dsed_stiffness_threshold,
             "dsed_h_bdf2": self.dsed_h_bdf2,
+            "start_from_dc_op": self.start_from_dc_op,
         }
 
     @classmethod
@@ -270,6 +283,9 @@ class SimulationSettings:
                 data.get("dsed_stiffness_threshold", 10.0)
             ),
             dsed_h_bdf2=float(data.get("dsed_h_bdf2", 1e-6)),
+            # Optional persistence — defaults to False so pre-existing
+            # projects keep their old (cold-start) behaviour.
+            start_from_dc_op=bool(data.get("start_from_dc_op", False)),
         )
 
 
