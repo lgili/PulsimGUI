@@ -1149,6 +1149,12 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(1, "AC-", -40, 20),
         Pin(2, "DC+", 40, -20),
         Pin(3, "DC-", 40, 20),
+        # pulsim 1.7 — thermal-port pin for SharedHeatsink wiring.
+        # Wires the 4 internal diodes (BR_D1..D4) as a single lumped
+        # device to a HEATSINK's DEV pin; the converter expands this
+        # into 4 sub-device descriptor rows sharing the same Foster
+        # stack (so the user only has to enter one device's data).
+        Pin(4, "TH", 0, 40),
     ],
 
     # Three-phase diode bridge (6-pulse rectifier). 5 pins: A, B, C, DC+, DC-.
@@ -1256,6 +1262,12 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         # here — that wire is the SOLE binding between the controller
         # and this inverter (no parameter-based ``vsi_name`` fallback).
         Pin(5, INVERTER_PWM_BUS_PIN_NAME, -40, 40),
+        # pulsim 1.7 — thermal-port pin for SharedHeatsink wiring.
+        # Wires the 6 internal MOSFETs (VSI__HSa/HSb/HSc/LSa/LSb/LSc)
+        # as a single lumped device. Converter expands into 6 sub-
+        # device descriptor rows sharing the same Foster stack so
+        # users only enter ONE device's thermal data.
+        Pin(6, "TH", 40, 40),
     ],
 
     # DC Motor (pulsim>=0.10.0a2). 2-terminal armature device with internal
@@ -1918,6 +1930,13 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # Optional thermal (per-diode, applied uniformly)
         "r_th_jc": 1.5,          # K/W
         "tau_th": 0.075,         # s
+        # pulsim 1.7 — fields used WHEN the TH pin is wired to a
+        # HEATSINK. All 4 sub-diodes get the same Foster stack +
+        # tempcos. Single-stage fallback if multi-stage CSVs are
+        # blank. Mirrors ``DEFAULT_THERMAL_DEVICE_PARAMS`` but uses
+        # this composite's own keys (so the inspector renders the
+        # full set without colliding with the per-MOSFET fields).
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
     },
     ComponentType.THREE_PHASE_DIODE_BRIDGE: {
         # Diode model — applied to all 6 diodes (D1..D6)
@@ -2036,6 +2055,11 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "v_gate_off":              0.0,    # V
         "mosfet_r_on_ohm":         0.01,   # Ω — R_ds(on)
         "mosfet_vth":              1.0,    # V — gate threshold
+        # pulsim 1.7 — fields used WHEN the TH pin is wired to a
+        # HEATSINK. All 6 sub-MOSFETs (HSa/HSb/HSc/LSa/LSb/LSc) get
+        # the same Foster stack + tempcos. See SINGLE_PHASE_DIODE_BRIDGE
+        # entry for the rationale.
+        **DEFAULT_THERMAL_DEVICE_PARAMS,
     },
     # DC Motor (Pulsim 0.10.0a2). Full device-variant — runtime advances
     # ω and θ internally; user only needs to wire the armature terminals.

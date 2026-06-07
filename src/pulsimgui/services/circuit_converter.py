@@ -68,6 +68,36 @@ class CircuitConverter:
     }
     _CURRENT_PROBE_BYPASS_RESISTANCE_OHMS = 1e-4
 
+    # Composite-device thermal expansion table (pulsim 1.7 SharedHeatsink).
+    #
+    # When a HEATSINK's ``DEV`` pin wires to the ``TH`` pin of a composite
+    # component (e.g. a 3-phase VSI built as a single primitive that
+    # internally instantiates 6 MOSFETs), the heatsink descriptor needs
+    # one row per INTERNAL sub-device — pulsim's ``device_loss_summary``
+    # reports each sub-device under its own name, and the coupled
+    # ``shared_heatsink_steady_state`` solver needs to see them
+    # individually to apply the ``Σ Pᵢ · R_sa`` cross-coupling.
+    #
+    # Each entry maps a ComponentType → tuple of NAME TEMPLATES. The
+    # template ``"{name}"`` is replaced with the schematic's component
+    # name at expansion time, so a VSI named ``"INV"`` produces sub-device
+    # names ``"INV__HSa"`` / ``"INV__HSb"`` / ... matching the kernel's
+    # loss-summary keys.
+    #
+    # A ComponentType absent from this dict is treated as a "single
+    # device" — the existing 1-row-per-wire behaviour is preserved
+    # (MOSFET, DIODE, SWITCH, etc.). Adding a new composite is a one-line
+    # extension here + a TH pin on the model.
+    _COMPOSITE_THERMAL_SUBDEVICES: dict[ComponentType, tuple[str, ...]] = {
+        ComponentType.SINGLE_PHASE_DIODE_BRIDGE: (
+            "{name}_D1", "{name}_D2", "{name}_D3", "{name}_D4",
+        ),
+        ComponentType.THREE_PHASE_VSI: (
+            "{name}__HSa", "{name}__HSb", "{name}__HSc",
+            "{name}__LSa", "{name}__LSb", "{name}__LSc",
+        ),
+    }
+
     _ATTRIBUTE_ALIASES: dict[str, tuple[str, ...]] = {
         "vce_sat": ("v_ce_sat",),
         "v_ce_sat": ("vce_sat",),
@@ -4019,8 +4049,23 @@ class CircuitConverter:
                     if csv_idx < len(case_values)
                     else 0.0
                 )
-                wired_devices.append({
-                    "device_name": device_name,
+                # Composite-device expansion (pulsim 1.7 multi-switch).
+                # When the wired device is a SINGLE_PHASE_DIODE_BRIDGE
+                # or a THREE_PHASE_VSI, it represents N internal
+                # sub-devices that all dissipate on the same TH wire.
+                # The kernel's ``device_loss_summary`` reports each
+                # sub-device under its own name (``BR1_D1..D4``,
+                # ``VSI__HSa..C``, ``VSI__LSa..C``), so the descriptor
+                # has to enumerate them individually for the heatsink
+                # solver. The parent component's thermal params apply
+                # uniformly to every sub-device (one Foster stack per
+                # switch type) — which matches reality, since all 4
+                # bridge diodes (or 6 inverter switches) are the same
+                # part in any real board.
+                sub_names = self._COMPOSITE_THERMAL_SUBDEVICES.get(
+                    dev_type, (device_name,)
+                )
+                shared_row: dict[str, Any] = {
                     "device_type": dev_type.name,
                     "R_th_case_to_sink_K_per_W": float(r_cs),
                     "thermal_rth_stages": str(
@@ -4029,20 +4074,12 @@ class CircuitConverter:
                     "thermal_cth_stages": str(
                         dev_params.get("thermal_cth_stages") or ""
                     ),
-                    # Single-RC fallback values the backend uses when
-                    # the device skipped the multi-stage CSV.
                     "thermal_rth_K_per_W": float(
                         dev_params.get("thermal_rth", 1.0) or 1.0
                     ),
                     "thermal_cth_J_per_K": float(
                         dev_params.get("thermal_cth", 0.1) or 0.1
                     ),
-                    # Stage topology — reuse the existing per-device
-                    # ``thermal_network`` (3-way: single_rc / foster /
-                    # cauer). The backend builds ``CauerStage`` only
-                    # when this is "cauer"; everything else
-                    # (single_rc, foster, missing) maps to Foster so
-                    # legacy saves load bit-for-bit.
                     "thermal_stage_kind": (
                         "cauer"
                         if str(
@@ -4050,7 +4087,18 @@ class CircuitConverter:
                         ).strip().lower() == "cauer"
                         else "foster"
                     ),
-                })
+                }
+                # Each sub-device gets its OWN dict so post-sim
+                # mutation (e.g. backend mutating ``conduction``) on
+                # one row doesn't pollute the others.
+                for sub_template in sub_names:
+                    sub_name = (
+                        device_name
+                        if sub_template == device_name
+                        else sub_template.replace("{name}", device_name)
+                    )
+                    row = {**shared_row, "device_name": sub_name}
+                    wired_devices.append(row)
 
             if not wired_devices:
                 # A sink with no devices is noise — skip it so the

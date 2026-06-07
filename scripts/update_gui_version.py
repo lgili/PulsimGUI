@@ -27,18 +27,17 @@ class Rule:
 
 
 RULES: dict[str, list[Rule]] = {
-    "pyproject.toml": [
-        Rule(
-            pattern=re.compile(r'(?m)^version\s*=\s*"[^"]+"$'),
-            replacement='version = "{version}"',
-            description="Python package version",
-        ),
-    ],
+    # ``pyproject.toml`` no longer carries a literal ``version = "..."``
+    # line — hatchling sources it from ``src/pulsimgui/__init__.py`` via
+    # ``[tool.hatch.version] path = ...``. That's the single source of
+    # truth: bumping ``__version__`` below updates the installed-package
+    # metadata at build time AND the running splash at runtime. Keeping
+    # a literal in pyproject would silently lag a dev bump.
     "src/pulsimgui/__init__.py": [
         Rule(
             pattern=re.compile(r'(?m)^__version__\s*=\s*"[^"]+"$'),
             replacement='__version__ = "{version}"',
-            description="Application __version__",
+            description="Application __version__ (also drives pyproject dynamic version)",
         ),
     ],
     "scripts/build.py": [

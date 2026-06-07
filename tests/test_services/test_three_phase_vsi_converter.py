@@ -144,9 +144,11 @@ def test_palette_lists_3_phase_vsi() -> None:
 def test_3_phase_vsi_pins_and_defaults() -> None:
     pins = DEFAULT_PINS[ComponentType.THREE_PHASE_VSI]
     # 5 electrical + 1 signal-bus PWM input (the FOC / 6-step controller
-    # wire-binds the inverter via this pin).
-    assert len(pins) == 6
-    assert {p.name for p in pins} == {"VDC+", "VDC-", "A", "B", "C", "PWM"}
+    # wire-binds the inverter via this pin) + 1 thermal-port pin (pulsim
+    # 1.7 — wires the VSI's 6 internal switches into a SharedHeatsink as
+    # a single composite device; the converter expands to 6 sub-devices).
+    assert len(pins) == 7
+    assert {p.name for p in pins} == {"VDC+", "VDC-", "A", "B", "C", "PWM", "TH"}
     params = DEFAULT_PARAMETERS[ComponentType.THREE_PHASE_VSI]
     assert params["switching_frequency_hz"] == pytest.approx(10e3)
     assert params["modulation_index"] == pytest.approx(0.8)

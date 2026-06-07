@@ -111,7 +111,10 @@ def test_catalog_lists_all_new_components() -> None:
 
 def test_default_pins_and_parameters() -> None:
     p1 = DEFAULT_PINS[ComponentType.SINGLE_PHASE_DIODE_BRIDGE]
-    assert {p.name for p in p1} == {"AC+", "AC-", "DC+", "DC-"}
+    # pulsim 1.7 — the single-phase bridge gained a ``TH`` thermal-port
+    # pin so it can wire to a SharedHeatsink. The four electrical pins
+    # are unchanged.
+    assert {p.name for p in p1} == {"AC+", "AC-", "DC+", "DC-", "TH"}
 
     p3 = DEFAULT_PINS[ComponentType.THREE_PHASE_DIODE_BRIDGE]
     assert {p.name for p in p3} == {"A", "B", "C", "DC+", "DC-"}
