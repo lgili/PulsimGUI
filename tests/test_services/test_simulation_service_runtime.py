@@ -433,6 +433,25 @@ def test_prevalidate_blocks_unsupported_thermal_component(monkeypatch) -> None:
     assert backend.run_transient_calls == 0
 
 
+def test_prevalidate_accepts_composite_thermal_components(monkeypatch) -> None:
+    """``SINGLE_PHASE_DIODE_BRIDGE`` and ``THREE_PHASE_VSI`` are pulsim
+    1.7 composites — they wire a single TH pin into a SharedHeatsink and
+    the GUI converter then expands them into N internal sub-device
+    descriptor rows. Before pulsim 1.7 these types were not in the
+    pre-validator's allow-list; a user wiring them to a heatsink got
+    ``PULSIM_YAML_E_THERMAL_UNSUPPORTED_COMPONENT`` and the sim aborted
+    BEFORE the converter's composite expansion could run.
+
+    This test pins both composites as accepted by the validator. If
+    either is removed from ``_THERMAL_SUPPORTED_COMPONENT_TYPES``, the
+    GUI's thermal compressor-drive example (ex 23) goes back to
+    erroring out at click-Run."""
+    from pulsimgui.services.simulation_service import _THERMAL_SUPPORTED_COMPONENT_TYPES
+
+    assert "SINGLE_PHASE_DIODE_BRIDGE" in _THERMAL_SUPPORTED_COMPONENT_TYPES
+    assert "THREE_PHASE_VSI" in _THERMAL_SUPPORTED_COMPONENT_TYPES
+
+
 def test_worker_adds_runtime_consistency_kpis() -> None:
     worker = SimulationWorker(
         backend=_DummyBackend(),

@@ -130,6 +130,13 @@ _THERMAL_SUPPORTED_COMPONENT_TYPES = frozenset({
     "IGBT",
     "BJT_NPN",
     "BJT_PNP",
+    # pulsim 1.7 composites — a single TH pin lumps the package; the
+    # converter's ``_infer_shared_heatsink_loops`` expands these into
+    # per-sub-device descriptor rows so the kernel sees individual
+    # switches. The parent component carries the thermal stack + tempcos
+    # uniformly (matches reality — same part repeated inside the package).
+    "SINGLE_PHASE_DIODE_BRIDGE",
+    "THREE_PHASE_VSI",
 })
 
 _NON_ELECTRICAL_COMPONENT_TYPES = frozenset({
