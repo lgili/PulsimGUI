@@ -188,6 +188,11 @@ class CircuitConverter:
             # ``_infer_sixstep_loops``.
             if comp_type == ComponentType.SIXSTEP_CONTROLLER:
                 continue
+            # MMC modulation controller — descriptor-only: it carries no
+            # electrical branches; its six outputs drive the arms' M_REF
+            # via ``_infer_mmc_arm_mref_overrides`` (consumed at arm build).
+            if comp_type == ComponentType.MMC_CONTROLLER:
+                continue
             # HEATSINK — pure thermal-domain block (no electrical
             # branches). Consumed later by
             # ``_infer_shared_heatsink_loops`` which translates its
@@ -359,6 +364,17 @@ class CircuitConverter:
                 components, node_map,
             )
             setattr(circuit, "shared_heatsink_descriptors", heatsink_descriptors)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
+        # 3-phase MMC modulation: when an MMC_CONTROLLER's six outputs are
+        # wired to the arms' M_REF pins, build a per-arm ``m_ref(t)``
+        # callable (open-loop sinusoidal) keyed by arm name. The MMC_ARM
+        # conversion uses it in place of the constant ``m_ref_constant``.
+        # Empty map ⇒ constant-modulation MMCs are untouched.
+        try:
+            mmc_overrides = self._infer_mmc_arm_mref_overrides(components, node_map)
+            setattr(circuit, "mmc_mref_overrides", mmc_overrides)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -1683,12 +1699,15 @@ class CircuitConverter:
 
             mmc_p = params_cls(**mmc_kwargs)
 
-            # Call the helper. Modulation reference is a constant
-            # for now — callable references (signal-driven
-            # modulation) need backend observer wiring, which is a
-            # separate task. The kwarg name differs between L0
-            # (``m_b``, branch modulation) and L1/L2/L3 (``m_ref``).
-            mod_kw = {"m_b" if level == "L0" else "m_ref": m_ref_const}
+            # Modulation reference. An MMC_CONTROLLER wired to this arm's
+            # M_REF pin supplies a callable ``m_ref(t)`` (signal-driven
+            # modulation, built by ``_infer_mmc_arm_mref_overrides``);
+            # otherwise fall back to the constant. The kwarg name differs
+            # between L0 (``m_b``, branch modulation) and L1/L2/L3
+            # (``m_ref``). pulsim accepts ``float | Callable[[float], float]``.
+            mref_overrides = getattr(circuit, "mmc_mref_overrides", None) or {}
+            mod_value = mref_overrides.get(name, m_ref_const)
+            mod_kw = {"m_b" if level == "L0" else "m_ref": mod_value}
             arm_handle = helper(
                 circuit._builder,
                 name=name,
@@ -3916,6 +3935,100 @@ class CircuitConverter:
             })
 
         return descriptors
+
+    def _infer_mmc_arm_mref_overrides(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        """Map each MMC_ARM name → an open-loop ``m_ref(t)`` callable when an
+        MMC_CONTROLLER output pin is wired to that arm's ``M_REF`` pin.
+
+        The controller exposes six semantic outputs (phase A/B/C × upper/
+        lower). For a pin wired to an arm we build::
+
+            upper:  m(t) = offset - (index/2)·sin(2π·f·t + φ_phase)
+            lower:  m(t) = offset + (index/2)·sin(2π·f·t + φ_phase)
+
+        with ``φ_phase = phase_deg + {A:0°, B:-120°, C:+120°}``. pulsim's
+        ``add_mmc_arm_*`` accepts ``m_ref: float | Callable[[float], float]``
+        so this drives a real DC→AC inverter. Returns ``{}`` when no
+        controller is wired (constant-modulation MMCs stay untouched).
+        """
+        import math
+
+        by_type: dict[ComponentType, list[dict[str, Any]]] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            by_type.setdefault(ct, []).append(component)
+
+        ctrls = by_type.get(ComponentType.MMC_CONTROLLER, [])
+        arms = by_type.get(ComponentType.MMC_ARM, [])
+        if not ctrls or not arms:
+            return {}
+
+        def _pin_nodes_of(comp: dict[str, Any]) -> list[Any]:
+            local = comp.get("pin_nodes")
+            if isinstance(local, list) and local:
+                return list(local)
+            return list(node_map.get(comp.get("id") or "", []) or [])
+
+        # Output-pin index → (phase 0/1/2, is_upper). Matches DEFAULT_PINS:
+        # 0=A_UP 1=A_LO 2=B_UP 3=B_LO 4=C_UP 5=C_LO.
+        pin_role = {
+            0: (0, True), 1: (0, False),
+            2: (1, True), 3: (1, False),
+            4: (2, True), 5: (2, False),
+        }
+        phase_offset_deg = (0.0, -120.0, 120.0)
+
+        # Map each arm's M_REF net → arm name (M_REF is pin index 2).
+        arm_net_to_name: dict[str, str] = {}
+        for arm in arms:
+            a_nodes = _pin_nodes_of(arm)
+            if len(a_nodes) < 3:
+                continue
+            mref_net = str(a_nodes[2] or "").strip()
+            if mref_net:
+                arm_net_to_name[mref_net] = self._component_name(
+                    arm, ComponentType.MMC_ARM,
+                )
+
+        overrides: dict[str, Any] = {}
+        for ctrl in ctrls:
+            params = ctrl.get("parameters")
+            params = params if isinstance(params, dict) else {}
+            offset = self._as_float(params.get("m_ref_offset"), default=0.5)
+            index = self._as_float(params.get("modulation_index"), default=0.8)
+            freq = self._as_float(params.get("frequency"), default=60.0)
+            phase0 = self._as_float(params.get("phase_deg"), default=0.0)
+            amp = 0.5 * index
+            c_nodes = _pin_nodes_of(ctrl)
+            for pin_idx, (phase_i, is_upper) in pin_role.items():
+                if pin_idx >= len(c_nodes):
+                    continue
+                out_net = str(c_nodes[pin_idx] or "").strip()
+                if not out_net:
+                    continue
+                arm_name = arm_net_to_name.get(out_net)
+                if not arm_name:
+                    continue
+                phi = math.radians(phase0 + phase_offset_deg[phase_i])
+                omega = 2.0 * math.pi * freq
+                sign = -1.0 if is_upper else 1.0
+
+                def _mref(
+                    t: float,
+                    _off: float = offset, _amp: float = amp,
+                    _w: float = omega, _phi: float = phi, _s: float = sign,
+                ) -> float:
+                    return _off + _s * _amp * math.sin(_w * t + _phi)
+
+                overrides[arm_name] = _mref
+        return overrides
 
     def _infer_shared_heatsink_loops(
         self,

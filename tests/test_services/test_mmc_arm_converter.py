@@ -237,6 +237,64 @@ def test_mmc_arm_recorded_for_observer_and_telemetry() -> None:
     assert spec["handle"] is not None  # the recorded pulsim arm handle
 
 
+def _mmc_ctrl_and_arms() -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """An MMC_CONTROLLER whose 6 outputs are wired to 6 arm M_REF pins."""
+    ctrl = {
+        "id": "c1", "name": "MMCC1", "type": "MMC_CONTROLLER",
+        "parameters": {
+            "m_ref_offset": 0.5, "modulation_index": 0.6,
+            "frequency": 60.0, "phase_deg": 0.0,
+        },
+    }
+    arms = [
+        {"id": i, "name": n, "type": "MMC_ARM",
+         "parameters": {"model_fidelity": "L0 Average"}}
+        for i, n in [("au", "ARM_Au"), ("al", "ARM_Al"),
+                     ("bu", "ARM_Bu"), ("bl", "ARM_Bl"),
+                     ("cu", "ARM_Cu"), ("cl", "ARM_Cl")]
+    ]
+    node_map = {
+        "c1": ["nAU", "nAL", "nBU", "nBL", "nCU", "nCL"],  # 6 output pins
+        "au": ["dcp", "mu_a", "nAU"], "al": ["ml_a", "dcn", "nAL"],
+        "bu": ["dcp", "mu_b", "nBU"], "bl": ["ml_b", "dcn", "nBL"],
+        "cu": ["dcp", "mu_c", "nCU"], "cl": ["ml_c", "dcn", "nCL"],
+    }
+    return [ctrl, *arms], node_map
+
+
+def test_mmc_controller_drives_arm_mref_sinusoid() -> None:
+    """A wired MMC_CONTROLLER yields a per-arm callable m_ref(t): upper/lower
+    complementary about the offset, A/B/C shifted 120°, differential equal to
+    the modulation index (the AC output amplitude)."""
+    import math
+
+    converter = CircuitConverter(_FakeBackend)
+    components, node_map = _mmc_ctrl_and_arms()
+    ov = converter._infer_mmc_arm_mref_overrides(components, node_map)
+
+    assert set(ov) == {"ARM_Au", "ARM_Al", "ARM_Bu", "ARM_Bl", "ARM_Cu", "ARM_Cl"}
+    assert all(callable(f) for f in ov.values())
+
+    t_quarter = 0.25 / 60.0
+    # Upper arm dips, lower arm rises by amp = index/2 = 0.3 about offset 0.5.
+    assert abs(ov["ARM_Au"](0.0) - 0.5) < 1e-9
+    assert abs(ov["ARM_Au"](t_quarter) - 0.2) < 1e-9
+    assert abs(ov["ARM_Al"](t_quarter) - 0.8) < 1e-9
+    # Phase-leg differential equals the modulation index.
+    assert abs((ov["ARM_Al"](t_quarter) - ov["ARM_Au"](t_quarter)) - 0.6) < 1e-9
+    # Phase B is shifted -120°.
+    expected_bu0 = 0.5 - 0.3 * math.sin(math.radians(-120.0))
+    assert abs(ov["ARM_Bu"](0.0) - expected_bu0) < 1e-9
+
+
+def test_mmc_arms_without_controller_keep_constant_mref() -> None:
+    """No MMC_CONTROLLER ⇒ empty override map (arms keep ``m_ref_constant``)."""
+    converter = CircuitConverter(_FakeBackend)
+    arms = [{"id": "au", "name": "ARM_Au", "type": "MMC_ARM", "parameters": {}}]
+    ov = converter._infer_mmc_arm_mref_overrides(arms, {"au": ["dcp", "bot", "nAU"]})
+    assert ov == {}
+
+
 def test_arm_params_carry_common_fields() -> None:
     """n_sm, c_sm, v_c0, r_p, sm_type must propagate to the params
     instance handed to the pulsim helper."""

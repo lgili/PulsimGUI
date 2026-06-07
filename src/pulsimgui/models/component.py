@@ -215,6 +215,12 @@ class ComponentType(Enum):
     # Represents a WHOLE arm (TOP → BOT) — for a 3-phase MMC you'd
     # instantiate 6 arms (upper + lower per phase).
     MMC_ARM = auto()
+    # Dedicated 3-phase MMC modulation controller. Computes six arm
+    # modulation references (m_a/m_b/m_c, 120° apart, upper + lower per
+    # phase) and drives the six MMC_ARM ``M_REF`` pins. Open-loop
+    # sinusoidal today; closed-loop (output-current dq + circulating-
+    # current suppression) layers onto the same block later.
+    MMC_CONTROLLER = auto()
 
     # Hierarchical
     SUBCIRCUIT = auto()
@@ -615,6 +621,7 @@ SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
     ComponentType.FOC_CONTROLLER,
     ComponentType.PFC_BOOST_CONTROLLER,
     ComponentType.SIXSTEP_CONTROLLER,
+    ComponentType.MMC_CONTROLLER,
     ComponentType.OP_AMP,
     ComponentType.COMPARATOR,
     # Three-phase / vector control
@@ -678,6 +685,7 @@ CONTROL_SAMPLE_TIME_COMPONENT_TYPES: frozenset[ComponentType] = frozenset(
         ComponentType.FOC_CONTROLLER,
         ComponentType.PFC_BOOST_CONTROLLER,
         ComponentType.SIXSTEP_CONTROLLER,
+        ComponentType.MMC_CONTROLLER,
         # Three-phase / vector control
         ComponentType.CLARKE_TRANSFORM,
         ComponentType.INVERSE_CLARKE_TRANSFORM,
@@ -1189,6 +1197,18 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(0, "TOP",  -40, -40),
         Pin(1, "BOT",  -40, 40),
         Pin(2, "M_REF", 40, 0),
+    ],
+    # 3-phase MMC controller: six modulation-reference outputs, one per
+    # arm (phase A/B/C × upper/lower). Wire each to the matching
+    # MMC_ARM ``M_REF`` pin; the converter reads the pin role (phase +
+    # up/lo) to build that arm's m_ref(t).
+    ComponentType.MMC_CONTROLLER: [
+        Pin(0, "A_UP", 40, -50),
+        Pin(1, "A_LO", 40, -30),
+        Pin(2, "B_UP", 40, -10),
+        Pin(3, "B_LO", 40,  10),
+        Pin(4, "C_UP", 40,  30),
+        Pin(5, "C_LO", 40,  50),
     ],
 
     # Three-phase / vector control (Pulsim Phase 28)
@@ -1995,6 +2015,16 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         # L3-only (cap-voltage balancing strategy)
         "balancing": "sort_and_select",         # "sort_and_select" | "none"
     },
+    ComponentType.MMC_CONTROLLER: {
+        # Open-loop sinusoidal modulation (each phase 120° apart; the
+        # upper arm gets m, the lower arm the complement). The converter
+        # builds m_ref(t) = offset + (index/2)·sin(2π·f·t + phase) per
+        # phase and routes it to the wired arm M_REF pins.
+        "m_ref_offset": 0.5,        # DC operating point (mid-modulation)
+        "modulation_index": 0.8,    # AC modulation depth (0..1, peak)
+        "frequency": 60.0,          # output AC frequency [Hz]
+        "phase_deg": 0.0,           # phase-A reference angle [deg]
+    },
 
     # Three-phase / vector control (Pulsim Phase 28)
     # Clarke / inverse-Clarke have no numeric parameters.
@@ -2405,6 +2435,7 @@ def _synchronize_special_component(component: Component) -> None:
         ComponentType.PFC_BOOST_CONTROLLER,
         ComponentType.FOC_CONTROLLER,
         ComponentType.SIXSTEP_CONTROLLER,
+        ComponentType.MMC_CONTROLLER,
         ComponentType.THREE_PHASE_VSI,
     ):
         _synchronize_default_pin_layout(component)

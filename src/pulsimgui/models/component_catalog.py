@@ -77,6 +77,9 @@ COMPONENT_LIBRARY = {
         # VAC ← rectified-line voltage probe. Converter auto-detects the
         # boost MOSFET by topology.
         {"type": ComponentType.PFC_BOOST_CONTROLLER, "name": "PFC Boost", "shortcut": ""},
+        # 3-phase MMC modulation controller. Wire its six outputs
+        # (A/B/C × up/lo) to the six MMC_ARM M_REF pins.
+        {"type": ComponentType.MMC_CONTROLLER, "name": "MMC Control", "shortcut": ""},
     ],
     "Thermal": [
         {"type": ComponentType.THERMAL_SCOPE, "name": "Thermal Scope", "shortcut": "Ctrl+Shift+E"},
@@ -175,6 +178,10 @@ QUICK_ADD_COMPONENTS = [
          "ccm", "dcm", "fator de potencia", "correção fator potencia",
          "elevador", "input current shaping", "sine reference",
          "voltage loop", "current loop", "cascaded pi"]),
+    (ComponentType.MMC_CONTROLLER, "MMC Modulation Controller",
+        ["mmc", "modular multilevel", "multilevel controller", "modulation",
+         "m_ref", "arm modulation", "hvdc", "conversor multinivel",
+         "controlador mmc", "modulador", "multinível"]),
     (ComponentType.SIXSTEP_CONTROLLER, "6-Step BLDC Controller",
         ["6 step", "6-step", "six step", "trapezoidal", "120", "120°",
          "bldc", "trap drive", "block commutation", "comutacao",
