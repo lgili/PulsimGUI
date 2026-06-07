@@ -6520,6 +6520,14 @@ class PulsimBackend(SimulationBackend):
         # mismatched install doesn't crash, the user just loses the
         # DSED path until they upgrade).
         engine_value = str(getattr(settings, "engine", "pwl") or "pwl").lower()
+        if engine_value == "dsed" and has_mmc:
+            # MMC arms drive controlled voltage sources via a per-step
+            # ``b_extra`` residual (the average-arm model). DSED's LTI
+            # state-space extraction can't represent that — it reports the
+            # algebraic block ``G_aa`` as singular ("no unique algebraic
+            # solution for mask 0b0"). Fall back to the implicit PWL engine,
+            # which solves these circuits fine.
+            engine_value = "pwl"
         if engine_value == "dsed":
             simulate_kwargs["engine"] = "dsed"
             simulate_kwargs["rtol"] = float(settings.dsed_rtol)
