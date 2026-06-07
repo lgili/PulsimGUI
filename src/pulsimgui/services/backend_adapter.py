@@ -1166,6 +1166,29 @@ class PulsimBackend(SimulationBackend):
                 result.signals[key] = values.tolist()
                 published.append(key)
 
+        # MMC arm capacitor-voltage telemetry recorded by the step observer
+        # (see ``_build_nonlinear_device_observers``). Resample each arm's
+        # ``v_C`` onto the output time base and expose it as ``<arm>.v_C`` so
+        # a scope channel can plot the internal cap voltage the electrical
+        # node vector can't show.
+        mmc_trace = getattr(circuit, "_mmc_trace_state", None)
+        if isinstance(mmc_trace, dict) and mmc_trace.get("t"):
+            try:
+                t_b = np.asarray(mmc_trace["t"], dtype=np.float64)
+            except (TypeError, ValueError):
+                t_b = np.asarray([], dtype=np.float64)
+            for nm, vals in (mmc_trace.get("v_C") or {}).items():
+                try:
+                    arr = np.asarray(vals, dtype=np.float64)
+                except (TypeError, ValueError):
+                    continue
+                n = min(arr.size, t_b.size)
+                if n < 2:
+                    continue
+                key = f"{nm}.v_C"
+                result.signals[key] = np.interp(t_out, t_b[:n], arr[:n]).tolist()
+                published.append(key)
+
         if published:
             result.statistics["motor_observer_signals"] = sorted(set(published))
 
@@ -6281,6 +6304,10 @@ class PulsimBackend(SimulationBackend):
             str(spec.get("kind") or "") == "pmsm"
             for spec in (getattr(circuit, "nonlinear_observer_specs", []) or [])
         )
+        has_mmc = any(
+            str(spec.get("kind") or "") == "mmc_arm"
+            for spec in (getattr(circuit, "nonlinear_observer_specs", []) or [])
+        )
 
         # Field-Oriented Control (additive): when the converter detected a
         # FOC marker (``circuit.foc_loop_descriptors``), close the i_d/i_q
@@ -6477,9 +6504,10 @@ class PulsimBackend(SimulationBackend):
             simulate_kwargs["enable_nonlinear_refresh"] = bool(
                 settings.enable_nonlinear_refresh,
             )
-        if has_pmsm:
-            # PMSM back-EMF residual requires per-substep nonlinear
-            # refresh — override whatever the settings default was.
+        if has_pmsm or has_mmc:
+            # PMSM back-EMF residual and the MMC arm-voltage residual both
+            # require per-substep nonlinear refresh so the b_extra injection
+            # is recomputed each step — override the settings default.
             simulate_kwargs["enable_nonlinear_refresh"] = True
         if settings.start_from_dc_op:
             simulate_kwargs["start_from_dc_op"] = True
@@ -7681,6 +7709,49 @@ class PulsimBackend(SimulationBackend):
             # rebuilding (and double-stepping) the observer.
             if kind == "pmsm":
                 spec["bundle"] = obs
+
+        # MMC arms — average (L0) model. pulsim's observer maker is
+        # *plural* (takes the list of arms, returns one (step_observer,
+        # b_extra_fn) for the whole group) and exposes no trace bundle, so
+        # we also append a lightweight recorder that snapshots each arm's
+        # live ``v_C`` (total submodule-capacitor voltage) per step for
+        # scope telemetry. L1/L2/L3 observers differ (switching) and are
+        # wired separately later — their arms stay static for now, which
+        # matches today's behaviour (no regression).
+        avg_specs = [
+            s for s in specs
+            if str(s.get("kind") or "") == "mmc_arm"
+            and str(s.get("level") or "") == "L0"
+            and s.get("handle") is not None
+        ]
+        mmc_mod = getattr(ps, "mmc", None)
+        avg_maker = getattr(mmc_mod, "make_mmc_arms_observer", None) if mmc_mod else None
+        if avg_specs and callable(avg_maker):
+            handles = [s["handle"] for s in avg_specs]
+            try:
+                mmc_obs, mmc_b_extra = avg_maker(builder, handles, dt=float(dt))
+            except Exception:  # noqa: BLE001 - one bad group shouldn't abort
+                mmc_obs = mmc_b_extra = None
+            if callable(mmc_obs):
+                step_observers.append(mmc_obs)
+            if callable(mmc_b_extra):
+                b_extra_fns.append(mmc_b_extra)
+            arm_pairs = [(str(s.get("name") or "ARM"), s["handle"]) for s in avg_specs]
+            mmc_trace: dict[str, Any] = {
+                "t": [], "v_C": {nm: [] for nm, _ in arm_pairs},
+            }
+
+            def _mmc_recorder(t: float, _x: Any, _pairs=arm_pairs, _tr=mmc_trace) -> None:
+                # Runs AFTER mmc_obs (appended earlier) so v_C is fresh.
+                _tr["t"].append(float(t))
+                for nm, h in _pairs:
+                    _tr["v_C"][nm].append(float(getattr(h, "v_C", 0.0)))
+
+            step_observers.append(_mmc_recorder)
+            try:
+                circuit._mmc_trace_state = mmc_trace
+            except Exception:  # noqa: BLE001 - defensive against shim slots
+                pass
 
         if not b_extra_fns:
             return step_observers, None

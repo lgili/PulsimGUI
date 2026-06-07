@@ -12,10 +12,13 @@ from typing import Any
 import pytest
 
 from pulsimgui.models.component import (
-    ComponentType, DEFAULT_PARAMETERS, DEFAULT_PINS,
+    DEFAULT_PARAMETERS,
+    DEFAULT_PINS,
+    ComponentType,
 )
 from pulsimgui.services.circuit_converter import (
-    CircuitConversionError, CircuitConverter,
+    CircuitConversionError,
+    CircuitConverter,
 )
 
 
@@ -72,6 +75,14 @@ def _make_params_factory(name: str):
     return lambda **kw: _Params(_class_name=name, **kw)
 
 
+class _FakeArm:
+    """Stand-in for a pulsim MMC arm handle (carries live ``v_C`` state)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.v_C = 0.0
+
+
 class _FakeBuilder:
     def __init__(self):
         self.arm_calls: list[dict[str, Any]] = []
@@ -98,6 +109,9 @@ class _FakeMmcModule:
                 "params": params, "m_ref": mod_val,
                 "mod_kwarg": "m_b" if "m_b" in kw else "m_ref",
             })
+            # Real pulsim helpers return the arm handle; the converter
+            # records it on ``nonlinear_observer_specs`` for the backend.
+            return _FakeArm(name)
         return fn
 
     add_mmc_arm_average     = _record_call.__func__("L0")
@@ -113,6 +127,7 @@ class _FakeCircuit:
     def __init__(self) -> None:
         self.nodes: dict[str, int] = {}
         self._builder = _FakeBuilder()
+        self.nonlinear_observer_specs: list[dict[str, Any]] = []
 
     def add_node(self, name: str) -> int:
         if name in self.nodes:
@@ -156,7 +171,8 @@ def test_mmc_arm_pins_and_default_parameters() -> None:
 
 def test_mmc_arm_in_catalog() -> None:
     from pulsimgui.models.component_catalog import (
-        COMPONENT_LIBRARY, QUICK_ADD_COMPONENTS,
+        COMPONENT_LIBRARY,
+        QUICK_ADD_COMPONENTS,
     )
     pc = COMPONENT_LIBRARY.get("Power Conversion", [])
     assert any(it["type"] == ComponentType.MMC_ARM for it in pc)
@@ -199,6 +215,26 @@ def test_each_fidelity_dispatches_to_matching_helper(
     assert call["helper"] == expected_helper
     assert call["params"]._class_name == expected_params_class
     assert call["name"] == "ARM1"
+
+
+def test_mmc_arm_recorded_for_observer_and_telemetry() -> None:
+    """Each MMC arm must be recorded on ``nonlinear_observer_specs`` (with
+    its pulsim handle + fidelity level) so the backend can attach the
+    observer that advances the cap-voltage dynamics and publish the
+    ``<arm>.v_C`` telemetry channel. Without this the arm is a static
+    source frozen at ``m_ref·v_c0``."""
+    converter = CircuitConverter(_FakeBackend)
+    circuit = converter.build({
+        "components": [_arm_component("L0 Average")],
+        "node_map": {"arm-1": ["TOP_NODE", "BOT_NODE", "MREF_NODE"]},
+        "node_aliases": {},
+    })
+    specs = [s for s in circuit.nonlinear_observer_specs if s.get("kind") == "mmc_arm"]
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec["name"] == "ARM1"
+    assert spec["level"] == "L0"
+    assert spec["handle"] is not None  # the recorded pulsim arm handle
 
 
 def test_arm_params_carry_common_fields() -> None:

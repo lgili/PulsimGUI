@@ -1689,7 +1689,7 @@ class CircuitConverter:
             # separate task. The kwarg name differs between L0
             # (``m_b``, branch modulation) and L1/L2/L3 (``m_ref``).
             mod_kw = {"m_b" if level == "L0" else "m_ref": m_ref_const}
-            helper(
+            arm_handle = helper(
                 circuit._builder,
                 name=name,
                 node_a=top_name,
@@ -1697,6 +1697,18 @@ class CircuitConverter:
                 params=mmc_p,
                 **mod_kw,
             )
+            # Record the arm so the backend can attach pulsim's observer
+            # (which advances the capacitor-voltage dynamics each step) and
+            # publish ``<name>.v_C`` telemetry for scopes. Without this the
+            # arm is a static source frozen at ``m_ref·v_c0`` — no dynamics.
+            obs_specs = getattr(circuit, "nonlinear_observer_specs", None)
+            if isinstance(obs_specs, list):
+                obs_specs.append({
+                    "kind": "mmc_arm",
+                    "name": name,
+                    "handle": arm_handle,
+                    "level": level,
+                })
             return
 
         if comp_type == ComponentType.SNUBBER_RC and hasattr(circuit, "add_snubber_rc"):
