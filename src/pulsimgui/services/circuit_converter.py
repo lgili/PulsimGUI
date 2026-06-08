@@ -383,6 +383,49 @@ class CircuitConverter:
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
+        # Multi-output C_BLOCK driving MOSFET gates directly (path B
+        # gate-drive). When a C_BLOCK output node coincides with a
+        # MOSFET's gate node — i.e. ``add_c_block`` is stamping a
+        # ground-referenced controlled voltage source onto the gate
+        # net — synthesize a descriptor binding the MOSFET's switch
+        # bit to that C_BLOCK output index. The backend's post-pass
+        # closes over the ``CBlockHandle.outputs`` numpy buffer to
+        # threshold each gate voltage against ``v_th`` at every sim
+        # step.
+        #
+        # This unblocks topologies like example 25 (switched CMC with
+        # a 9-output Venturini-PWM block) where the existing path A
+        # (SISO C_BLOCK → PWM_GENERATOR → MOSFET) can't represent the
+        # multi-output dependency. Additive: empty list ⇒ nothing for
+        # the backend to wire, no behavioural change for existing
+        # circuits.
+        #
+        # Runs AFTER closed-loop / cblock / PFC inferences so the
+        # "already-claimed MOSFET" set is fully populated — we don't
+        # double-bind a switch index that some other controller is
+        # already driving.
+        try:
+            cblock_gate_drives = self._infer_cblock_gate_drives(
+                components,
+                node_map,
+                alias_map,
+                cblock_loops=list(
+                    getattr(circuit, "cblock_loop_descriptors", []) or []
+                ),
+                c_block_records=list(
+                    getattr(circuit, "c_block_records", []) or []
+                ),
+                closed_loop_descriptors=list(closed_loop_descriptors),
+                pfc_loop_descriptors=list(
+                    getattr(circuit, "pfc_loop_descriptors", []) or []
+                ),
+            )
+            setattr(
+                circuit, "cblock_gate_drive_descriptors", cblock_gate_drives,
+            )
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            setattr(circuit, "cblock_gate_drive_descriptors", [])
+
         # Coupled-thermal heatsink (pulsim 1.7): collect every HEATSINK
         # block + the devices wired to its DEV pins, package the per-
         # device thermal stack + R_th_sa + ambient into a descriptor
@@ -3594,6 +3637,7 @@ class CircuitConverter:
             name = self._component_name(component, ComponentType.C_BLOCK)
             records.append({
                 "name": name,
+                "component_id": str(component.get("id") or ""),
                 "implementation": implementation,
                 "source_code": source_code,
                 "source": source_path,
@@ -3609,6 +3653,227 @@ class CircuitConverter:
             })
 
         return records
+
+    def _infer_cblock_gate_drives(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+        *,
+        cblock_loops: list[dict[str, Any]] | None = None,
+        c_block_records: list[dict[str, Any]] | None = None,
+        closed_loop_descriptors: list[dict[str, Any]] | None = None,
+        pfc_loop_descriptors: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Bind MOSFET gate nodes to C_BLOCK output indices for the
+        pulsim 1.8 path-B gate-drive topology.
+
+        Topology matched:
+
+            C_BLOCK.out[k] ─(controlled voltage source)─▶ <gate node>
+            <gate node> ──▶ MOSFET.G pin
+
+        i.e. the C_BLOCK's ``add_c_block(outputs=[("v", gate_node, "0"), ...])``
+        stamps a ground-referenced controlled voltage source onto the
+        gate net, and the same gate node is wired to the MOSFET's gate
+        pin in the schematic. Because pulsim's MOSFET model is a
+        2-terminal switch driven by ``switch_fn(t) -> SwitchStateMask``
+        (the v1.3+ convention — the gate net is invisible to the MNA
+        for switch decisions), the backend needs a closure that reads
+        the live C_BLOCK output buffer and thresholds it against
+        ``v_th`` per step. This method emits the descriptors the
+        backend needs to build that closure.
+
+        Path-A safety:
+
+        A python_numba C_BLOCK driving a PWM_GENERATOR which drives a
+        MOSFET (the SISO SISO chain ``_infer_cblock_control_loops``
+        claims) is already handled by ``_build_cblock_closed_loops``
+        as a duty mask — re-binding the same MOSFET via gate-voltage
+        threshold would fight the duty path. We SKIP any MOSFET whose
+        name appears in any path-A descriptor's ``switch_device``
+        field.
+
+        We also skip MOSFETs claimed by:
+          * ``closed_loop_descriptors`` (PI + PWM + MOSFET chains)
+          * ``pfc_loop_descriptors`` (PFC boost MOSFET via
+            ``_trace_switch_via_pwm_pin``)
+
+        FOC and 6-step controllers bind to native ``THREE_PHASE_VSI``
+        composites (six internal switches managed by pulsim, not
+        individual GUI MOSFETs), so they never collide here.
+
+        Parameters
+        ----------
+        components
+            The lowered component list.
+        node_map
+            ``component_id → [node_per_pin]`` lookup.
+        alias_map
+            Raw node id → user-facing alias (used to convert MOSFET
+            gate nodes to the same labels ``c_block_records`` carries).
+        cblock_loops
+            Path-A descriptors (``circuit.cblock_loop_descriptors``).
+            Each entry's ``switch_device`` claims a MOSFET name.
+        c_block_records
+            Path-B records (``circuit.c_block_records``). The lookup
+            table for gate node → C_BLOCK + output index.
+        closed_loop_descriptors
+            PI-detector closed-loop descriptors. Each claims a MOSFET
+            via ``switch_device``.
+        pfc_loop_descriptors
+            PFC controller descriptors. Each claims a MOSFET via
+            ``mosfet_name``.
+
+        Returns
+        -------
+        list of descriptors. Each descriptor:
+
+            {
+                "mosfet_component_id": str,    # for backend → switch_idx
+                "mosfet_name": str,            # for diagnostics
+                "c_block_component_id": str,   # path-B record key
+                "c_block_name": str,           # for diagnostics
+                "c_block_output_index": int,   # index into outputs buffer
+                "v_threshold": float,          # gate threshold (MOSFET v_th)
+            }
+        """
+        cblock_loops = list(cblock_loops or [])
+        c_block_records = list(c_block_records or [])
+        closed_loop_descriptors = list(closed_loop_descriptors or [])
+        pfc_loop_descriptors = list(pfc_loop_descriptors or [])
+
+        if not c_block_records:
+            return []
+
+        # Build the set of MOSFET names already claimed by some other
+        # controller path. We compare by component NAME (the same name
+        # the GUI surfaces and the backend's switch_indices uses).
+        claimed_mosfets: set[str] = set()
+        for desc in cblock_loops:
+            if isinstance(desc, dict):
+                name = str(desc.get("switch_device") or "").strip()
+                if name:
+                    claimed_mosfets.add(name)
+        for desc in closed_loop_descriptors:
+            if isinstance(desc, dict):
+                name = str(desc.get("switch_device") or "").strip()
+                if name:
+                    claimed_mosfets.add(name)
+        for desc in pfc_loop_descriptors:
+            if isinstance(desc, dict):
+                name = str(desc.get("mosfet_name") or "").strip()
+                if name:
+                    claimed_mosfets.add(name)
+
+        # Reverse lookup: aliased gate node → (record_index, output_index).
+        # Pre-compute so we walk the C_BLOCK records once.
+        gate_node_to_output: dict[str, tuple[int, int]] = {}
+        for rec_idx, rec in enumerate(c_block_records):
+            if not isinstance(rec, dict):
+                continue
+            pairs = rec.get("output_node_pairs") or []
+            for out_idx, pair in enumerate(pairs):
+                if not isinstance(pair, (list, tuple)) or len(pair) < 1:
+                    continue
+                node = str(pair[0] or "").strip()
+                if not node:
+                    continue
+                # First C_BLOCK to claim a gate wins. Duplicate output
+                # writes onto the same node are an authoring error the
+                # backend would already barf on at add_c_block time.
+                gate_node_to_output.setdefault(node, (rec_idx, out_idx))
+
+        if not gate_node_to_output:
+            return []
+
+        # Pin-nodes helper — same shape every other inference uses.
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            return [str(node or "").strip() for node in node_map.get(comp_id, [])]
+
+        def _vth_of(params: Any, default: float = 3.0) -> float:
+            """Read the MOSFET's gate threshold. Accept ``v_th`` (the
+            switched-MOSFET / cell-model spelling) or ``vth`` (the
+            BSIM / kp-model spelling) — both appear in the schema."""
+            if not isinstance(params, dict):
+                return default
+            for key in ("v_th", "vth"):
+                val = params.get(key)
+                if val is None:
+                    continue
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+            return default
+
+        # Map raw node id → alias label, so MOSFET.G pin (raw node)
+        # comparisons match the aliased output_node_pairs labels.
+        # ``c_block_records`` outputs are already aliased through
+        # ``_node_label`` in ``_collect_c_block_records``, so we apply
+        # the same transform to MOSFET gate pins.
+        switched_types = (
+            ComponentType.MOSFET_N,
+            ComponentType.MOSFET_P,
+            ComponentType.IGBT,
+        )
+
+        descriptors: list[dict[str, Any]] = []
+        for component in components:
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            if comp_type not in switched_types:
+                continue
+
+            comp_id = str(component.get("id") or "")
+            mosfet_name = self._component_name(component, comp_type)
+            if mosfet_name in claimed_mosfets:
+                # Already bound by another inference path — don't
+                # double-drive the same switch bit.
+                continue
+
+            pin_nodes = _raw_nodes(component)
+            # MOSFET_N / MOSFET_P: gate pin is index 1 (D, G, S).
+            # IGBT: gate pin is index 1 (C, G, E).
+            if len(pin_nodes) < 2:
+                continue
+            raw_gate = pin_nodes[1]
+            if not raw_gate:
+                continue
+
+            # Alias the gate node the same way the C_BLOCK output
+            # labels were aliased so we compare apples to apples.
+            gate_label = self._node_label(raw_gate, alias_map)
+            match = gate_node_to_output.get(gate_label)
+            if match is None:
+                # Floating gate (no C_BLOCK output drives it) — skip
+                # silently. Other binding paths may catch it; if not,
+                # the existing all-OFF fallback still produces a
+                # runnable sim.
+                continue
+
+            rec_idx, out_idx = match
+            rec = c_block_records[rec_idx]
+            params = component.get("parameters") if isinstance(
+                component.get("parameters"), dict
+            ) else {}
+
+            descriptors.append({
+                "mosfet_component_id": comp_id,
+                "mosfet_name": mosfet_name,
+                "c_block_component_id": str(rec.get("component_id") or ""),
+                "c_block_name": str(rec.get("name") or ""),
+                "c_block_output_index": int(out_idx),
+                "v_threshold": _vth_of(params, default=3.0),
+            })
+
+        return descriptors
 
     @staticmethod
     def _is_foc_marker(params: Any) -> bool:
