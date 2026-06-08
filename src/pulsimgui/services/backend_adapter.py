@@ -7723,12 +7723,22 @@ class PulsimBackend(SimulationBackend):
                 and s.get("handle") is not None
             ]
 
-        avg_maker = getattr(mmc_mod, "make_mmc_arms_observer", None) if mmc_mod else None
-        det_maker = getattr(mmc_mod, "make_mmc_arm_detailed_observers", None) if mmc_mod else None
+        # Every fidelity exposes the same v_C + source_branch_id and integrates
+        # as (step_observer, b_extra_fn) — L0 average, L1 multilevel, L2
+        # equivalent, L3 detailed — so one loop attaches them all (the plural
+        # maker name is the only thing that differs per level).
+        _makers = {
+            "L0": "make_mmc_arms_observer",
+            "L1": "make_mmc_arm_multilevel_observers",
+            "L2": "make_mmc_arm_equivalent_observers",
+            "L3": "make_mmc_arm_detailed_observers",
+        }
 
         arm_pairs: list[tuple[str, Any]] = []  # (name, handle) — every controller-driven arm
         arm_obs: list[Any] = []                # the arm step observers (advance the caps)
-        for grp_specs, maker in ((_mmc_specs("L0"), avg_maker), (_mmc_specs("L3"), det_maker)):
+        for level, maker_name in _makers.items():
+            grp_specs = _mmc_specs(level)
+            maker = getattr(mmc_mod, maker_name, None) if mmc_mod else None
             if not (grp_specs and callable(maker)):
                 continue
             handles = [s["handle"] for s in grp_specs]

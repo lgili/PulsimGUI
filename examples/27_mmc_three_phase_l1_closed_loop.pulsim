@@ -1,0 +1,3593 @@
+{
+  "version": "1.0",
+  "name": "27 MMC 3-Phase Closed-Loop L1 \u2014 multilevel arms",
+  "created": "2026-06-07T21:46:19",
+  "modified": "2026-06-07T23:32:18",
+  "active_circuit": "main",
+  "simulation_settings": {
+    "engine": "pwl",
+    "tstop": 0.05,
+    "dt": 2e-06,
+    "tstart": 0.0,
+    "output_points": 25000,
+    "control_sample_time": 1e-05,
+    "control_mode": "discrete",
+    "tol_newton_dx": 1e-06,
+    "tol_newton_res": 1e-06,
+    "enable_newton_line_search": true,
+    "enable_newton_lm": true,
+    "enable_substep_state_correction": true,
+    "enable_nonlinear_refresh": true,
+    "start_from_dc_op": false,
+    "max_event_iterations": 50
+  },
+  "circuits": {
+    "main": {
+      "name": "main",
+      "components": [
+        {
+          "id": "f8aaf56c-dc39-4443-8efe-398e6d3f198f",
+          "type": "VOLTAGE_SOURCE",
+          "name": "V_DCp",
+          "x": -960.0,
+          "y": -200.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 400.0,
+              "amplitude": 0.0,
+              "frequency": 0.0,
+              "offset": 400.0,
+              "phase": 0.0
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "dd91c04a-faf8-40ee-8eea-1354a6c64c30",
+          "type": "VOLTAGE_SOURCE",
+          "name": "V_DCn",
+          "x": -960.0,
+          "y": 120.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "waveform": {
+              "type": "dc",
+              "value": 400.0,
+              "amplitude": 0.0,
+              "frequency": 0.0,
+              "offset": 400.0,
+              "phase": 0.0
+            }
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "e156f074-31a6-41fe-8302-4fbc3bed54f4",
+          "type": "GROUND",
+          "name": "GND_mid",
+          "x": -900.0,
+          "y": -40.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0.0,
+              "y": -20.0
+            }
+          ]
+        },
+        {
+          "id": "b50e356d-d1e9-43fd-adc9-a970ce77f2a0",
+          "type": "INDUCTOR",
+          "name": "L_uA",
+          "x": -600.0,
+          "y": -360.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "00b50f0f-0f95-49f2-becc-9b05dc607d86",
+          "type": "MMC_ARM",
+          "name": "ARM_uA",
+          "x": -600.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c2a7bc69-5ceb-48f3-8a0c-2fc3a56aa6d2",
+          "type": "MMC_ARM",
+          "name": "ARM_lA",
+          "x": -600.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c690faa9-64be-465e-9b80-79b075b72b2e",
+          "type": "INDUCTOR",
+          "name": "L_lA",
+          "x": -600.0,
+          "y": 240.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "e1406b20-56ff-4721-a014-49242569a4bf",
+          "type": "INDUCTOR",
+          "name": "L_uB",
+          "x": -300.0,
+          "y": -360.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "6e0a12ec-5c21-48ce-94a9-ef2addcb3d73",
+          "type": "MMC_ARM",
+          "name": "ARM_uB",
+          "x": -300.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "f39a5002-a6e6-4cc4-abfa-24348ac61fa5",
+          "type": "MMC_ARM",
+          "name": "ARM_lB",
+          "x": -300.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "17c8f32a-0409-46bf-8110-5542f44f7675",
+          "type": "INDUCTOR",
+          "name": "L_lB",
+          "x": -300.0,
+          "y": 240.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "96d112cc-5184-4bb8-bcfe-78c1a67365fd",
+          "type": "INDUCTOR",
+          "name": "L_uC",
+          "x": 0.0,
+          "y": -360.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "eb2517d7-0a99-41ea-be65-824aa14ea38d",
+          "type": "MMC_ARM",
+          "name": "ARM_uC",
+          "x": 0.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "1d421179-a255-4361-af72-032fda5e1004",
+          "type": "MMC_ARM",
+          "name": "ARM_lC",
+          "x": 0.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "model_fidelity": "L1 Multilevel",
+            "submodule_type": "Half-Bridge",
+            "n_submodules": 4,
+            "c_sm": 0.0047,
+            "v_c0": 800.0,
+            "r_arm": 0.1,
+            "m_ref_constant": 0.5,
+            "f_carrier": 1000.0,
+            "modulation_scheme": "PSC",
+            "t_dead": 1e-06,
+            "t_min": 1e-07,
+            "balancing": "sort_and_select"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "TOP",
+              "x": -35.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "BOT",
+              "x": -35.0,
+              "y": 40.0
+            },
+            {
+              "index": 2,
+              "name": "M_REF",
+              "x": 35.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "f607711a-1d8e-458a-b5bf-f921f3224cba",
+          "type": "INDUCTOR",
+          "name": "L_lC",
+          "x": 0.0,
+          "y": 240.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.005,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+          "type": "MMC_CONTROLLER",
+          "name": "MMC_Ctrl",
+          "x": -600.0,
+          "y": 480.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "m_ref_offset": 0.5,
+            "modulation_index": 0.6,
+            "frequency": 60.0,
+            "phase_deg": 0.0,
+            "sample_time": 1e-05,
+            "control_mode": "closed_loop",
+            "vdc_half": 400.0,
+            "vc_ref": 800.0,
+            "arm_inductance": 0.005,
+            "arm_resistance": 0.1,
+            "current_control": true,
+            "id_ref": 15.0,
+            "iq_ref": 0.0,
+            "load_inductance": 0.01,
+            "load_resistance": 15.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "A_UP",
+              "x": 40.0,
+              "y": -60.0
+            },
+            {
+              "index": 1,
+              "name": "A_LO",
+              "x": 40.0,
+              "y": -40.0
+            },
+            {
+              "index": 2,
+              "name": "B_UP",
+              "x": 40.0,
+              "y": -20.0
+            },
+            {
+              "index": 3,
+              "name": "B_LO",
+              "x": 40.0,
+              "y": 20.0
+            },
+            {
+              "index": 4,
+              "name": "C_UP",
+              "x": 40.0,
+              "y": 40.0
+            },
+            {
+              "index": 5,
+              "name": "C_LO",
+              "x": 40.0,
+              "y": 60.0
+            }
+          ]
+        },
+        {
+          "id": "9675f6a3-8b32-46c3-a310-dfce108129af",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_0",
+          "x": -480.0,
+          "y": 420.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_0"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "333b0e77-e9c4-4ac7-acf7-369c3b52683d",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_0",
+          "x": -480.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_0"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "31fb179d-621e-4223-a8c9-9fcf5a05d2b1",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_1",
+          "x": -480.0,
+          "y": 440.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_1"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "829324b3-0baf-4c34-91a4-0c95e1cd4382",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_1",
+          "x": -480.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_1"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "0f8830b8-2ca5-4a36-a5db-f876405db3a8",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_2",
+          "x": -480.0,
+          "y": 460.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_2"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "b558b3e9-7728-46f8-94fa-c81f460231c2",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_2",
+          "x": -180.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_2"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c20d011d-6382-45ea-aee2-5b0c13621025",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_3",
+          "x": -480.0,
+          "y": 500.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_3"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "b987dbd6-25a3-447c-8bac-429585bf1a77",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_3",
+          "x": -180.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_3"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "8cfd7725-8858-4da7-89ae-6ccc5edfe81a",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_4",
+          "x": -480.0,
+          "y": 520.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_4"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "b708cd4f-4c1c-4620-9d2f-7faa79c13038",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_4",
+          "x": 120.0,
+          "y": -220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_4"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "a5c40f5c-da15-4c18-92f1-5f8b5274a58b",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_MREF_5",
+          "x": -480.0,
+          "y": 540.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_5"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "977987cb-5bd2-4a79-8950-db125ae4970a",
+          "type": "FROM_LABEL",
+          "name": "FROM_MREF_5",
+          "x": 120.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "MREF_5"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "af3ecb83-3565-4e11-af45-900e3efec981",
+          "type": "CURRENT_PROBE",
+          "name": "I_phA",
+          "x": 160.0,
+          "y": -140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_phA",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "75825da1-544b-4845-8889-5e2dd66458d9",
+          "type": "RESISTOR",
+          "name": "R_A",
+          "x": 300.0,
+          "y": -140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 15.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "894c8655-576c-4c97-b9b8-c38f525e5c0b",
+          "type": "INDUCTOR",
+          "name": "L_A",
+          "x": 440.0,
+          "y": -140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.01,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c1736e20-4a43-4b57-8cd4-56032e4d0185",
+          "type": "CURRENT_PROBE",
+          "name": "I_phB",
+          "x": 160.0,
+          "y": -60.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_phB",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "9ab274dd-99ef-4dd9-abbe-de7b13e1a81e",
+          "type": "RESISTOR",
+          "name": "R_B",
+          "x": 300.0,
+          "y": -60.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 15.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "e1f53feb-259b-42e5-88c7-95ea4a369660",
+          "type": "INDUCTOR",
+          "name": "L_B",
+          "x": 440.0,
+          "y": -60.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.01,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "dfdc2ffd-7905-4681-9a54-3e34a784b6f3",
+          "type": "CURRENT_PROBE",
+          "name": "I_phC",
+          "x": 160.0,
+          "y": 20.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_phC",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 0.0,
+              "y": 25.0
+            }
+          ]
+        },
+        {
+          "id": "412b714a-bcaf-4da8-a8eb-758e9db31d9a",
+          "type": "RESISTOR",
+          "name": "R_C",
+          "x": 300.0,
+          "y": 20.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 15.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "80f99f49-3e69-4724-b2ac-c27f4ae4a405",
+          "type": "INDUCTOR",
+          "name": "L_C",
+          "x": 440.0,
+          "y": 20.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "inductance": 0.01,
+            "initial_current": 0.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": -25.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 25.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "0e52403b-cac5-430f-8c2c-f80c0e1f24a7",
+          "type": "GROUND",
+          "name": "GND_n",
+          "x": 580.0,
+          "y": 80.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {},
+          "pins": [
+            {
+              "index": 0,
+              "name": "gnd",
+              "x": 0.0,
+              "y": -20.0
+            }
+          ]
+        },
+        {
+          "id": "343bfad7-e6f8-4e4d-9032-c8a1a933ea8f",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_PH_A",
+          "x": -540.0,
+          "y": -180.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_A"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "691a028d-1951-425c-9027-9da894812865",
+          "type": "FROM_LABEL",
+          "name": "FROM_PH_A",
+          "x": 100.0,
+          "y": -140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_A"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "0ac96910-20be-419b-9658-08663b672a2f",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_PH_B",
+          "x": -240.0,
+          "y": -180.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_B"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c7090ce2-7681-49c4-b586-6bfc656fd4e1",
+          "type": "FROM_LABEL",
+          "name": "FROM_PH_B",
+          "x": 100.0,
+          "y": -60.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_B"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "8353a219-a0e0-4969-8cee-07b16ae9be5f",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_PH_C",
+          "x": 60.0,
+          "y": -180.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_C"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "0a7320a3-9ed4-4497-9118-116190a952f4",
+          "type": "FROM_LABEL",
+          "name": "FROM_PH_C",
+          "x": 100.0,
+          "y": 20.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_C"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "17ad22b2-4a67-4d1f-98da-0c31a9b54617",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "V_phA",
+          "x": 600.0,
+          "y": -420.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "V_phA",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "4f7d3a95-c526-40a6-96c2-f3df666e8708",
+          "type": "FROM_LABEL",
+          "name": "FROM_VPH_A",
+          "x": 540.0,
+          "y": -420.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_A"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "3c43c1aa-18a9-401b-9c40-49ad58f8bdf8",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "V_phB",
+          "x": 600.0,
+          "y": -380.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "V_phB",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "3c2c0a61-bd5f-41d6-b4b3-cb9708dd2aaa",
+          "type": "FROM_LABEL",
+          "name": "FROM_VPH_B",
+          "x": 540.0,
+          "y": -380.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_B"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "3c7cd95b-5e87-4f3a-8b6c-43bce1a9a0eb",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "V_phC",
+          "x": 600.0,
+          "y": -340.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "V_phC",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "a7b36e04-d464-47c9-9f95-e014f477ed32",
+          "type": "FROM_LABEL",
+          "name": "FROM_VPH_C",
+          "x": 540.0,
+          "y": -340.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "PH_C"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "07b0572a-7f1c-446b-bcbe-9d707a6b2271",
+          "type": "CURRENT_PROBE",
+          "name": "I_arm_uA",
+          "x": -600.0,
+          "y": -280.0,
+          "rotation": 90,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_arm_uA",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 30.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "103bdb67-cb5b-48bd-b93b-92a3c156eb2f",
+          "type": "CURRENT_PROBE",
+          "name": "I_arm_lA",
+          "x": -600.0,
+          "y": 160.0,
+          "rotation": 90,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_arm_lA",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -25.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 25.0
+            },
+            {
+              "index": 2,
+              "name": "OUT",
+              "x": 30.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "4e863d2c-e360-4764-bf02-e55b6d505bc7",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_ACVoltages",
+          "x": 820.0,
+          "y": -380.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 3,
+            "channels": [
+              {
+                "label": "V_phA",
+                "overlay": true
+              },
+              {
+                "label": "V_phB",
+                "overlay": true
+              },
+              {
+                "label": "V_phC",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "CH3",
+              "x": -40.0,
+              "y": 40.0
+            }
+          ]
+        },
+        {
+          "id": "d6e87539-1515-466e-9f78-dddd33373ee4",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_PhaseCurrents",
+          "x": 820.0,
+          "y": -160.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 3,
+            "channels": [
+              {
+                "label": "I_phA",
+                "overlay": true
+              },
+              {
+                "label": "I_phB",
+                "overlay": true
+              },
+              {
+                "label": "I_phC",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "CH3",
+              "x": -40.0,
+              "y": 40.0
+            }
+          ]
+        },
+        {
+          "id": "a56df98e-78d5-49f1-85ce-bd592f51f175",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_CapVoltages",
+          "x": 820.0,
+          "y": 80.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 6,
+            "channels": [
+              {
+                "signal": "ARM_uA.v_C",
+                "label": "Vc uA",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lA.v_C",
+                "label": "Vc lA",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_uB.v_C",
+                "label": "Vc uB",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lB.v_C",
+                "label": "Vc lB",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_uC.v_C",
+                "label": "Vc uC",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lC.v_C",
+                "label": "Vc lC",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -50.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": -30.0
+            },
+            {
+              "index": 2,
+              "name": "CH3",
+              "x": -40.0,
+              "y": -10.0
+            },
+            {
+              "index": 3,
+              "name": "CH4",
+              "x": -40.0,
+              "y": 10.0
+            },
+            {
+              "index": 4,
+              "name": "CH5",
+              "x": -40.0,
+              "y": 30.0
+            },
+            {
+              "index": 5,
+              "name": "CH6",
+              "x": -40.0,
+              "y": 50.0
+            }
+          ]
+        },
+        {
+          "id": "48fb7ca5-73fc-4787-8581-95f1c8aa9ba5",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_ArmCurrentsA",
+          "x": 820.0,
+          "y": 320.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 2,
+            "channels": [
+              {
+                "label": "I_arm_uA",
+                "overlay": true
+              },
+              {
+                "label": "I_arm_lA",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -40.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": 40.0
+            }
+          ]
+        },
+        {
+          "id": "589bc147-9506-4a73-ae00-466904525e96",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_VPHA",
+          "x": 660.0,
+          "y": -420.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c01374a6-7eb9-47c0-ba0d-a31bbe8bee8e",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_VPHA",
+          "x": 740.0,
+          "y": -420.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "2cbddf45-f180-4e2d-94a2-4cbd1345fd36",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_IPHA",
+          "x": 160.0,
+          "y": -180.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "67aba096-fcc0-4579-a88e-8b72fd3722de",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_IPHA",
+          "x": 740.0,
+          "y": -200.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "2cb13895-7ba9-46f8-a08c-ac5022d0b175",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_VPHB",
+          "x": 660.0,
+          "y": -380.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHB"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "fe43715e-e1aa-422a-a8eb-1e6ce93fbbb8",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_VPHB",
+          "x": 740.0,
+          "y": -380.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHB"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "25cbb38b-9c71-456c-81ac-d70d984113bc",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_IPHB",
+          "x": 160.0,
+          "y": -100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHB"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "17bff1df-75ab-4676-86bb-56627af4eb30",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_IPHB",
+          "x": 740.0,
+          "y": -160.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHB"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "82af3f0a-6c68-4f41-8ae8-9e0ed49722a5",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_VPHC",
+          "x": 660.0,
+          "y": -340.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHC"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "b8b94d0f-755c-4497-9983-5a7259d12dcc",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_VPHC",
+          "x": 740.0,
+          "y": -340.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_VPHC"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "c636444e-65f5-4ceb-8709-4082af7c6844",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_IPHC",
+          "x": 160.0,
+          "y": -20.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHC"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "36ad2132-318b-4dd1-80d2-ccc354d2c5bc",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_IPHC",
+          "x": 740.0,
+          "y": -120.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IPHC"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "0b7f0363-84ba-4425-ac6a-1165a5a5edb9",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_IARMUA",
+          "x": -680.0,
+          "y": -280.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IARMUA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "d680638f-6ef5-4dff-b2e6-4947763bd013",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_IARMUA",
+          "x": 740.0,
+          "y": 280.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IARMUA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "1f8084b5-18ba-4d26-bc19-e2e5e3794032",
+          "type": "GOTO_LABEL",
+          "name": "GOTO_SIG_IARMLA",
+          "x": -680.0,
+          "y": 160.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IARMLA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "5c17b3b0-c04f-4c49-b661-2ca1e18b349b",
+          "type": "FROM_LABEL",
+          "name": "FROM_SIG_IARMLA",
+          "x": 740.0,
+          "y": 360.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "net_label": "SIG_IARMLA"
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "NET",
+              "x": 0.0,
+              "y": 0.0
+            }
+          ]
+        }
+      ],
+      "wires": [
+        {
+          "id": "00f8057b-32bd-4b3c-9b30-1524597ce248",
+          "segments": [
+            {
+              "x1": -940.0,
+              "y1": -200.0,
+              "x2": -900.0,
+              "y2": -200.0
+            },
+            {
+              "x1": -900.0,
+              "y1": -200.0,
+              "x2": -900.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f8aaf56c-dc39-4443-8efe-398e6d3f198f",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "e156f074-31a6-41fe-8302-4fbc3bed54f4",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "MID",
+          "alias": ""
+        },
+        {
+          "id": "b5327637-1fb5-484c-91aa-e8f2431083d2",
+          "segments": [
+            {
+              "x1": -980.0,
+              "y1": 120.0,
+              "x2": -980.0,
+              "y2": -60.0
+            },
+            {
+              "x1": -980.0,
+              "y1": -60.0,
+              "x2": -900.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dd91c04a-faf8-40ee-8eea-1354a6c64c30",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "e156f074-31a6-41fe-8302-4fbc3bed54f4",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "MID",
+          "alias": ""
+        },
+        {
+          "id": "67d4a39a-5acf-49e0-8e4f-35a2dbd6f5be",
+          "segments": [
+            {
+              "x1": -980.0,
+              "y1": -200.0,
+              "x2": -980.0,
+              "y2": -380.0
+            },
+            {
+              "x1": -980.0,
+              "y1": -380.0,
+              "x2": -600.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f8aaf56c-dc39-4443-8efe-398e6d3f198f",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "b50e356d-d1e9-43fd-adc9-a970ce77f2a0",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "VDC_POS",
+          "alias": ""
+        },
+        {
+          "id": "a31e7d6e-b33b-4c02-8fd4-1af320e43e26",
+          "segments": [
+            {
+              "x1": -980.0,
+              "y1": -200.0,
+              "x2": -980.0,
+              "y2": -400.0
+            },
+            {
+              "x1": -980.0,
+              "y1": -400.0,
+              "x2": -300.0,
+              "y2": -400.0
+            },
+            {
+              "x1": -300.0,
+              "y1": -400.0,
+              "x2": -300.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f8aaf56c-dc39-4443-8efe-398e6d3f198f",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "e1406b20-56ff-4721-a014-49242569a4bf",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "VDC_POS",
+          "alias": ""
+        },
+        {
+          "id": "fa548df8-05ed-418b-935c-c28002b09b74",
+          "segments": [
+            {
+              "x1": -980.0,
+              "y1": -200.0,
+              "x2": -980.0,
+              "y2": -420.0
+            },
+            {
+              "x1": -980.0,
+              "y1": -420.0,
+              "x2": 0.0,
+              "y2": -420.0
+            },
+            {
+              "x1": 0.0,
+              "y1": -420.0,
+              "x2": 0.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f8aaf56c-dc39-4443-8efe-398e6d3f198f",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "96d112cc-5184-4bb8-bcfe-78c1a67365fd",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "VDC_POS",
+          "alias": ""
+        },
+        {
+          "id": "04a19540-1b6b-4019-9e19-7c8ebf43abc0",
+          "segments": [
+            {
+              "x1": -940.0,
+              "y1": 120.0,
+              "x2": -940.0,
+              "y2": 260.0
+            },
+            {
+              "x1": -940.0,
+              "y1": 260.0,
+              "x2": -600.0,
+              "y2": 260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dd91c04a-faf8-40ee-8eea-1354a6c64c30",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "c690faa9-64be-465e-9b80-79b075b72b2e",
+            "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "VDC_NEG",
+          "alias": ""
+        },
+        {
+          "id": "7861d46a-7758-48e6-ba10-2037dc15a57d",
+          "segments": [
+            {
+              "x1": -940.0,
+              "y1": 120.0,
+              "x2": -280.0,
+              "y2": 120.0
+            },
+            {
+              "x1": -280.0,
+              "y1": 120.0,
+              "x2": -280.0,
+              "y2": 260.0
+            },
+            {
+              "x1": -280.0,
+              "y1": 260.0,
+              "x2": -300.0,
+              "y2": 260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dd91c04a-faf8-40ee-8eea-1354a6c64c30",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "17c8f32a-0409-46bf-8110-5542f44f7675",
+            "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "VDC_NEG",
+          "alias": ""
+        },
+        {
+          "id": "dc80d987-14c3-448d-b0f9-9123e6e8ab61",
+          "segments": [
+            {
+              "x1": -940.0,
+              "y1": 120.0,
+              "x2": 20.0,
+              "y2": 120.0
+            },
+            {
+              "x1": 20.0,
+              "y1": 120.0,
+              "x2": 20.0,
+              "y2": 260.0
+            },
+            {
+              "x1": 20.0,
+              "y1": 260.0,
+              "x2": 0.0,
+              "y2": 260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dd91c04a-faf8-40ee-8eea-1354a6c64c30",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "f607711a-1d8e-458a-b5bf-f921f3224cba",
+            "pin_index": 1
+          },
+          "junctions": [],
+          "node_name": "VDC_NEG",
+          "alias": ""
+        },
+        {
+          "id": "972bc418-3975-46bb-a662-f368ac35d814",
+          "segments": [
+            {
+              "x1": -600.0,
+              "y1": -340.0,
+              "x2": -600.0,
+              "y2": -300.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "b50e356d-d1e9-43fd-adc9-a970ce77f2a0",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "07b0572a-7f1c-446b-bcbe-9d707a6b2271",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_uA_TOP_PRE",
+          "alias": ""
+        },
+        {
+          "id": "850602a6-f481-4140-a8cf-3cffa78e17e0",
+          "segments": [
+            {
+              "x1": -600.0,
+              "y1": -260.0,
+              "x2": -640.0,
+              "y2": -260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "07b0572a-7f1c-446b-bcbe-9d707a6b2271",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "00b50f0f-0f95-49f2-becc-9b05dc607d86",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_uA_TOP",
+          "alias": ""
+        },
+        {
+          "id": "206de2c5-99e4-41ff-9f99-3c3f13843913",
+          "segments": [
+            {
+              "x1": -640.0,
+              "y1": -180.0,
+              "x2": -640.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "00b50f0f-0f95-49f2-becc-9b05dc607d86",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "c2a7bc69-5ceb-48f3-8a0c-2fc3a56aa6d2",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "PHASE_A",
+          "alias": ""
+        },
+        {
+          "id": "fcb3e5cf-7cae-4dc8-8503-979b932fdc48",
+          "segments": [
+            {
+              "x1": -640.0,
+              "y1": 140.0,
+              "x2": -600.0,
+              "y2": 140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c2a7bc69-5ceb-48f3-8a0c-2fc3a56aa6d2",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "103bdb67-cb5b-48bd-b93b-92a3c156eb2f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_lA_BOT_PRE",
+          "alias": ""
+        },
+        {
+          "id": "c68efae9-5b69-47fd-968c-653df1a4613c",
+          "segments": [
+            {
+              "x1": -600.0,
+              "y1": 180.0,
+              "x2": -600.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "103bdb67-cb5b-48bd-b93b-92a3c156eb2f",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "c690faa9-64be-465e-9b80-79b075b72b2e",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_lA_BOT",
+          "alias": ""
+        },
+        {
+          "id": "ba1eb343-c0fd-4f12-baba-6ec17399fec1",
+          "segments": [
+            {
+              "x1": -300.0,
+              "y1": -340.0,
+              "x2": -340.0,
+              "y2": -340.0
+            },
+            {
+              "x1": -340.0,
+              "y1": -340.0,
+              "x2": -340.0,
+              "y2": -260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "e1406b20-56ff-4721-a014-49242569a4bf",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "6e0a12ec-5c21-48ce-94a9-ef2addcb3d73",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_uB_TOP",
+          "alias": ""
+        },
+        {
+          "id": "7da6230f-ab1f-4c9b-ba03-4a9d45b37141",
+          "segments": [
+            {
+              "x1": -340.0,
+              "y1": -180.0,
+              "x2": -340.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6e0a12ec-5c21-48ce-94a9-ef2addcb3d73",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "f39a5002-a6e6-4cc4-abfa-24348ac61fa5",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "PHASE_B",
+          "alias": ""
+        },
+        {
+          "id": "bd9d8616-7e33-49ac-883c-36d2088c0a69",
+          "segments": [
+            {
+              "x1": -340.0,
+              "y1": 140.0,
+              "x2": -300.0,
+              "y2": 140.0
+            },
+            {
+              "x1": -300.0,
+              "y1": 140.0,
+              "x2": -300.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f39a5002-a6e6-4cc4-abfa-24348ac61fa5",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "17c8f32a-0409-46bf-8110-5542f44f7675",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_lB_BOT",
+          "alias": ""
+        },
+        {
+          "id": "80bd66d0-b4e7-4b42-a5fc-e71745121ba4",
+          "segments": [
+            {
+              "x1": 0.0,
+              "y1": -340.0,
+              "x2": -40.0,
+              "y2": -340.0
+            },
+            {
+              "x1": -40.0,
+              "y1": -340.0,
+              "x2": -40.0,
+              "y2": -260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "96d112cc-5184-4bb8-bcfe-78c1a67365fd",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "eb2517d7-0a99-41ea-be65-824aa14ea38d",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_uC_TOP",
+          "alias": ""
+        },
+        {
+          "id": "187a4a28-676d-4528-abea-320dd1d1e773",
+          "segments": [
+            {
+              "x1": -40.0,
+              "y1": -180.0,
+              "x2": -40.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "eb2517d7-0a99-41ea-be65-824aa14ea38d",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "1d421179-a255-4361-af72-032fda5e1004",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "PHASE_C",
+          "alias": ""
+        },
+        {
+          "id": "edad2860-7e7f-4456-a806-1ae438b455bb",
+          "segments": [
+            {
+              "x1": -40.0,
+              "y1": 140.0,
+              "x2": 0.0,
+              "y2": 140.0
+            },
+            {
+              "x1": 0.0,
+              "y1": 140.0,
+              "x2": 0.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "1d421179-a255-4361-af72-032fda5e1004",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "f607711a-1d8e-458a-b5bf-f921f3224cba",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "ARM_lC_BOT",
+          "alias": ""
+        },
+        {
+          "id": "83e5af09-438e-4384-9108-5d2433e0ecc9",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 420.0,
+              "x2": -480.0,
+              "y2": 420.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "9675f6a3-8b32-46c3-a310-dfce108129af",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "9dedaaf1-2ac3-4264-9a9d-3d898eac5548",
+          "segments": [
+            {
+              "x1": -565.0,
+              "y1": -220.0,
+              "x2": -480.0,
+              "y2": -220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "00b50f0f-0f95-49f2-becc-9b05dc607d86",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "333b0e77-e9c4-4ac7-acf7-369c3b52683d",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "68be0b50-6773-48ef-85e7-cdd4b626abed",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 440.0,
+              "x2": -480.0,
+              "y2": 440.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "31fb179d-621e-4223-a8c9-9fcf5a05d2b1",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "7309d07d-7a3a-4208-9b6a-e05fa9b3c5ad",
+          "segments": [
+            {
+              "x1": -565.0,
+              "y1": 100.0,
+              "x2": -480.0,
+              "y2": 100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c2a7bc69-5ceb-48f3-8a0c-2fc3a56aa6d2",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "829324b3-0baf-4c34-91a4-0c95e1cd4382",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "6f6302a3-898d-46b0-9fbe-6e15061ef7f1",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 460.0,
+              "x2": -480.0,
+              "y2": 460.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "0f8830b8-2ca5-4a36-a5db-f876405db3a8",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "5fcc33c1-6cb8-4724-9072-a8f8dfe8716b",
+          "segments": [
+            {
+              "x1": -265.0,
+              "y1": -220.0,
+              "x2": -180.0,
+              "y2": -220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6e0a12ec-5c21-48ce-94a9-ef2addcb3d73",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "b558b3e9-7728-46f8-94fa-c81f460231c2",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "69ddb370-7a23-45fa-9fd4-5262eb8e3e33",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 500.0,
+              "x2": -480.0,
+              "y2": 500.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 3
+          },
+          "end_connection": {
+            "component_id": "c20d011d-6382-45ea-aee2-5b0c13621025",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "7c8955b4-0050-4536-b6ec-54fa0bcd52fe",
+          "segments": [
+            {
+              "x1": -265.0,
+              "y1": 100.0,
+              "x2": -180.0,
+              "y2": 100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f39a5002-a6e6-4cc4-abfa-24348ac61fa5",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "b987dbd6-25a3-447c-8bac-429585bf1a77",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "846f9483-5c09-4fa7-b103-cdcbc000c0f1",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 520.0,
+              "x2": -480.0,
+              "y2": 520.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 4
+          },
+          "end_connection": {
+            "component_id": "8cfd7725-8858-4da7-89ae-6ccc5edfe81a",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "1ec98a49-d98e-4693-8d51-c5c85efea3f1",
+          "segments": [
+            {
+              "x1": 35.0,
+              "y1": -220.0,
+              "x2": 120.0,
+              "y2": -220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "eb2517d7-0a99-41ea-be65-824aa14ea38d",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "b708cd4f-4c1c-4620-9d2f-7faa79c13038",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "4365f50d-9892-4b57-ae3a-8dc8ee9fd310",
+          "segments": [
+            {
+              "x1": -560.0,
+              "y1": 540.0,
+              "x2": -480.0,
+              "y2": 540.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6df20686-8c5d-4bcb-9c64-148ea8b7860c",
+            "pin_index": 5
+          },
+          "end_connection": {
+            "component_id": "a5c40f5c-da15-4c18-92f1-5f8b5274a58b",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "8b5872e8-9525-4b55-bc4c-f8c8b8a3804c",
+          "segments": [
+            {
+              "x1": 35.0,
+              "y1": 100.0,
+              "x2": 120.0,
+              "y2": 100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "1d421179-a255-4361-af72-032fda5e1004",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "977987cb-5bd2-4a79-8950-db125ae4970a",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "a4b60328-f4ef-421c-87d7-a1be03aa8374",
+          "segments": [
+            {
+              "x1": -635.0,
+              "y1": -180.0,
+              "x2": -540.0,
+              "y2": -180.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "00b50f0f-0f95-49f2-becc-9b05dc607d86",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "343bfad7-e6f8-4e4d-9032-c8a1a933ea8f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "b6853801-2cba-49c7-94e2-5b866ca52a2e",
+          "segments": [
+            {
+              "x1": 135.0,
+              "y1": -140.0,
+              "x2": 100.0,
+              "y2": -140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "af3ecb83-3565-4e11-af45-900e3efec981",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "691a028d-1951-425c-9027-9da894812865",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "8842a98c-0529-47c8-899b-646253ddd5f4",
+          "segments": [
+            {
+              "x1": 580.0,
+              "y1": -420.0,
+              "x2": 540.0,
+              "y2": -420.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "17ad22b2-4a67-4d1f-98da-0c31a9b54617",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "4f7d3a95-c526-40a6-96c2-f3df666e8708",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "e8ec54df-6cff-4b13-94e8-10d3c6ee6e5d",
+          "segments": [
+            {
+              "x1": 180.0,
+              "y1": -140.0,
+              "x2": 280.0,
+              "y2": -140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "af3ecb83-3565-4e11-af45-900e3efec981",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "75825da1-544b-4845-8889-5e2dd66458d9",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_A_PRE",
+          "alias": ""
+        },
+        {
+          "id": "3b252508-29dc-4fd6-a363-4785c31cbcfd",
+          "segments": [
+            {
+              "x1": 320.0,
+              "y1": -140.0,
+              "x2": 420.0,
+              "y2": -140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "75825da1-544b-4845-8889-5e2dd66458d9",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "894c8655-576c-4c97-b9b8-c38f525e5c0b",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_A_MID",
+          "alias": ""
+        },
+        {
+          "id": "aa714b3d-4f20-4cac-8b18-7bf76486cf05",
+          "segments": [
+            {
+              "x1": 460.0,
+              "y1": -140.0,
+              "x2": 580.0,
+              "y2": -140.0
+            },
+            {
+              "x1": 580.0,
+              "y1": -140.0,
+              "x2": 580.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "894c8655-576c-4c97-b9b8-c38f525e5c0b",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0e52403b-cac5-430f-8c2c-f80c0e1f24a7",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "NEUTRAL",
+          "alias": ""
+        },
+        {
+          "id": "a4c0fd37-f8ab-48b8-9249-bfa433d1069c",
+          "segments": [
+            {
+              "x1": -335.0,
+              "y1": -180.0,
+              "x2": -240.0,
+              "y2": -180.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "6e0a12ec-5c21-48ce-94a9-ef2addcb3d73",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0ac96910-20be-419b-9658-08663b672a2f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "5720a5ee-3c21-445c-aad0-4b3400fcfb84",
+          "segments": [
+            {
+              "x1": 135.0,
+              "y1": -60.0,
+              "x2": 100.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c1736e20-4a43-4b57-8cd4-56032e4d0185",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "c7090ce2-7681-49c4-b586-6bfc656fd4e1",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "c3879a3c-6f7e-43bb-9ec9-df2f940fdbbb",
+          "segments": [
+            {
+              "x1": 580.0,
+              "y1": -380.0,
+              "x2": 540.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3c43c1aa-18a9-401b-9c40-49ad58f8bdf8",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "3c2c0a61-bd5f-41d6-b4b3-cb9708dd2aaa",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "49cc37f6-56e5-4f55-8606-89914d87c837",
+          "segments": [
+            {
+              "x1": 180.0,
+              "y1": -60.0,
+              "x2": 280.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c1736e20-4a43-4b57-8cd4-56032e4d0185",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "9ab274dd-99ef-4dd9-abbe-de7b13e1a81e",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_B_PRE",
+          "alias": ""
+        },
+        {
+          "id": "baab7f21-f62c-4c45-ba4f-8f45a599d0f7",
+          "segments": [
+            {
+              "x1": 320.0,
+              "y1": -60.0,
+              "x2": 420.0,
+              "y2": -60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "9ab274dd-99ef-4dd9-abbe-de7b13e1a81e",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "e1f53feb-259b-42e5-88c7-95ea4a369660",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_B_MID",
+          "alias": ""
+        },
+        {
+          "id": "3387fdfd-251b-4291-b42f-352687e027f1",
+          "segments": [
+            {
+              "x1": 460.0,
+              "y1": -60.0,
+              "x2": 580.0,
+              "y2": -60.0
+            },
+            {
+              "x1": 580.0,
+              "y1": -60.0,
+              "x2": 580.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "e1f53feb-259b-42e5-88c7-95ea4a369660",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0e52403b-cac5-430f-8c2c-f80c0e1f24a7",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "NEUTRAL",
+          "alias": ""
+        },
+        {
+          "id": "889092a6-240d-43b0-9223-bddcd10272bc",
+          "segments": [
+            {
+              "x1": -35.0,
+              "y1": -180.0,
+              "x2": 60.0,
+              "y2": -180.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "eb2517d7-0a99-41ea-be65-824aa14ea38d",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "8353a219-a0e0-4969-8cee-07b16ae9be5f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "dd95acf1-0ff0-4087-b85a-028e2e65a00d",
+          "segments": [
+            {
+              "x1": 135.0,
+              "y1": 20.0,
+              "x2": 100.0,
+              "y2": 20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dfdc2ffd-7905-4681-9a54-3e34a784b6f3",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "0a7320a3-9ed4-4497-9118-116190a952f4",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "abab6af1-b7d1-426f-9ba0-6336a26cf0fa",
+          "segments": [
+            {
+              "x1": 580.0,
+              "y1": -340.0,
+              "x2": 540.0,
+              "y2": -340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3c7cd95b-5e87-4f3a-8b6c-43bce1a9a0eb",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "a7b36e04-d464-47c9-9f95-e014f477ed32",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "c53e9d34-d7e2-41c6-8a91-05fd94c34ba5",
+          "segments": [
+            {
+              "x1": 180.0,
+              "y1": 20.0,
+              "x2": 280.0,
+              "y2": 20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dfdc2ffd-7905-4681-9a54-3e34a784b6f3",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "412b714a-bcaf-4da8-a8eb-758e9db31d9a",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_C_PRE",
+          "alias": ""
+        },
+        {
+          "id": "be027ff8-df56-442b-9b19-316223dcc4a6",
+          "segments": [
+            {
+              "x1": 320.0,
+              "y1": 20.0,
+              "x2": 420.0,
+              "y2": 20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "412b714a-bcaf-4da8-a8eb-758e9db31d9a",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "80f99f49-3e69-4724-b2ac-c27f4ae4a405",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LOAD_C_MID",
+          "alias": ""
+        },
+        {
+          "id": "f711117e-cf2b-404c-bc03-15a665c5e932",
+          "segments": [
+            {
+              "x1": 460.0,
+              "y1": 20.0,
+              "x2": 580.0,
+              "y2": 20.0
+            },
+            {
+              "x1": 580.0,
+              "y1": 20.0,
+              "x2": 580.0,
+              "y2": 60.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "80f99f49-3e69-4724-b2ac-c27f4ae4a405",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0e52403b-cac5-430f-8c2c-f80c0e1f24a7",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "NEUTRAL",
+          "alias": ""
+        },
+        {
+          "id": "10d7608e-3bfc-417b-ae75-e5b226609a24",
+          "segments": [
+            {
+              "x1": 620.0,
+              "y1": -420.0,
+              "x2": 660.0,
+              "y2": -420.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "17ad22b2-4a67-4d1f-98da-0c31a9b54617",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "589bc147-9506-4a73-ae00-466904525e96",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "b0cbd186-dea8-4a58-9cb3-e3460a383a4a",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -420.0,
+              "x2": 740.0,
+              "y2": -420.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "4e863d2c-e360-4764-bf02-e55b6d505bc7",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "c01374a6-7eb9-47c0-ba0d-a31bbe8bee8e",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "d8d6d3a8-0a09-4277-a754-4e74fbffb0d0",
+          "segments": [
+            {
+              "x1": 160.0,
+              "y1": -115.0,
+              "x2": 160.0,
+              "y2": -180.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "af3ecb83-3565-4e11-af45-900e3efec981",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "2cbddf45-f180-4e2d-94a2-4cbd1345fd36",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "c3acef2e-0126-43af-8578-f7779fc7495c",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -200.0,
+              "x2": 740.0,
+              "y2": -200.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "d6e87539-1515-466e-9f78-dddd33373ee4",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "67aba096-fcc0-4579-a88e-8b72fd3722de",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "311136a0-132e-4289-887d-626da1f29c1f",
+          "segments": [
+            {
+              "x1": 620.0,
+              "y1": -380.0,
+              "x2": 660.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3c43c1aa-18a9-401b-9c40-49ad58f8bdf8",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "2cb13895-7ba9-46f8-a08c-ac5022d0b175",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "3f19d59b-0ba1-41e2-b7dc-c8f9cf7debd5",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -380.0,
+              "x2": 740.0,
+              "y2": -380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "4e863d2c-e360-4764-bf02-e55b6d505bc7",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "fe43715e-e1aa-422a-a8eb-1e6ce93fbbb8",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "4d2fe697-5235-4bc1-acbd-7eebb5e316d9",
+          "segments": [
+            {
+              "x1": 160.0,
+              "y1": -35.0,
+              "x2": 160.0,
+              "y2": -100.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c1736e20-4a43-4b57-8cd4-56032e4d0185",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "25cbb38b-9c71-456c-81ac-d70d984113bc",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "851a8a63-23d8-4bce-b21c-59e935a89097",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -160.0,
+              "x2": 740.0,
+              "y2": -160.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "d6e87539-1515-466e-9f78-dddd33373ee4",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "17bff1df-75ab-4676-86bb-56627af4eb30",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "910efa4e-3010-4412-b31b-eb89344e96fe",
+          "segments": [
+            {
+              "x1": 620.0,
+              "y1": -340.0,
+              "x2": 660.0,
+              "y2": -340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3c7cd95b-5e87-4f3a-8b6c-43bce1a9a0eb",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "82af3f0a-6c68-4f41-8ae8-9e0ed49722a5",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "668fe6c6-1ab5-4079-9af9-f805b0f67a70",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -340.0,
+              "x2": 740.0,
+              "y2": -340.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "4e863d2c-e360-4764-bf02-e55b6d505bc7",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "b8b94d0f-755c-4497-9983-5a7259d12dcc",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "4d4b7323-aebf-4f7e-9a9a-dc904d74bced",
+          "segments": [
+            {
+              "x1": 160.0,
+              "y1": 45.0,
+              "x2": 160.0,
+              "y2": -20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "dfdc2ffd-7905-4681-9a54-3e34a784b6f3",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "c636444e-65f5-4ceb-8709-4082af7c6844",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "7edc7ef3-fdb7-4ce6-9652-84fa2db00f6b",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": -120.0,
+              "x2": 740.0,
+              "y2": -120.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "d6e87539-1515-466e-9f78-dddd33373ee4",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "36ad2132-318b-4dd1-80d2-ccc354d2c5bc",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "7c721058-0885-4f6b-aeec-a6cff62ef360",
+          "segments": [
+            {
+              "x1": -570.0,
+              "y1": -280.0,
+              "x2": -680.0,
+              "y2": -280.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "07b0572a-7f1c-446b-bcbe-9d707a6b2271",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "0b7f0363-84ba-4425-ac6a-1165a5a5edb9",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "879306aa-29e4-4e81-ad7a-0ce8cb6cbf4b",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": 280.0,
+              "x2": 740.0,
+              "y2": 280.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "48fb7ca5-73fc-4787-8581-95f1c8aa9ba5",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "d680638f-6ef5-4dff-b2e6-4947763bd013",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "807d3525-4cb5-4e72-a1c9-48ad79b6d171",
+          "segments": [
+            {
+              "x1": -570.0,
+              "y1": 160.0,
+              "x2": -680.0,
+              "y2": 160.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "103bdb67-cb5b-48bd-b93b-92a3c156eb2f",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "1f8084b5-18ba-4d26-bc19-e2e5e3794032",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        },
+        {
+          "id": "ee287ba9-1467-4f08-b338-cc92c8b14a7c",
+          "segments": [
+            {
+              "x1": 780.0,
+              "y1": 360.0,
+              "x2": 740.0,
+              "y2": 360.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "48fb7ca5-73fc-4787-8581-95f1c8aa9ba5",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "5c17b3b0-c04f-4c49-b661-2ca1e18b349b",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "",
+          "alias": ""
+        }
+      ]
+    }
+  },
+  "subcircuits": {},
+  "scope_windows": {},
+  "scope_workspace_state": {}
+}
