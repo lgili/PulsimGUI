@@ -224,14 +224,21 @@ for i, (ph, col_x) in enumerate(zip(("A", "B", "C"), X_PHASE)):
     components += [gp, fp]
     goto_ph.append(gp); from_ph.append(fp)
 
-# ---- Phase voltage probes — sit in the load row and tap the phase through
-# the PH_x label (clear of the arm columns and of each other's nodes). ----
-vp_phase = []
+# ---- Phase voltage probes — a clean column right of the load, aligned with
+# the AC-voltage scope. Each one taps its phase through a (left) PH_x FROM
+# label and feeds the scope through a (right) SIG_VPHx GOTO label, so the
+# probe→scope path is fully visible. Kept out of the dense load row, where the
+# horizontal IN→OUT body would otherwise sit on top of its own sense wire. ----
+VP_Y = (-420, -380, -340)   # full grid, 40 px apart, matched to scope_v CH pins
+vp_phase, vp_sense_from = [], []
 for i, ph in enumerate(("A", "B", "C")):
-    vp = comp(type="VOLTAGE_PROBE_GND", name=f"V_ph{ph}", x=40, y=Y_PHASE_TAP + (i - 1) * 80,
+    vp = comp(type="VOLTAGE_PROBE_GND", name=f"V_ph{ph}", x=600, y=VP_Y[i],
               parameters={"display_name": f"V_ph{ph}", "scale": 1.0},
-              pins=[pin(0, "1", -25, 0), pin(1, "OUT", 25, 0)])
-    components.append(vp); vp_phase.append(vp)
+              pins=[pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0)])
+    sf = comp(type="FROM_LABEL", name=f"FROM_VPH_{ph}", x=540, y=VP_Y[i],
+              parameters={"net_label": f"PH_{ph}"}, pins=[pin(0, "NET", 0, 0)])
+    components += [vp, sf]
+    vp_phase.append(vp); vp_sense_from.append(sf)
 
 # ---- Phase-A arm current probes ----
 # Rotated 90°: CURRENT_PROBE's canonical pins are horizontal (IN/OUT left-right),
@@ -248,18 +255,21 @@ ip_arm_lA = comp(type="CURRENT_PROBE", name="I_arm_lA", x=X_PHASE[0], y=Y_L_LOWE
 components += [ip_arm_uA, ip_arm_lA]
 
 # ---- Scopes ----
+# CH pins spaced 40 px (full grid) so the per-channel FROM labels never
+# snap-collapse onto a neighbour. Channels are *wired* (label only, no direct
+# signal) — fed from the probes through SIG_* GOTO/FROM label pairs below.
 scope_v = comp(type="ELECTRICAL_SCOPE", name="Scope_ACVoltages", x=820, y=-380,
                parameters={"channel_count": 3, "channels": [
-                   {"signal": "V(PHASE_A)", "label": "V_phA", "overlay": True},
-                   {"signal": "V(PHASE_B)", "label": "V_phB", "overlay": True},
-                   {"signal": "V(PHASE_C)", "label": "V_phC", "overlay": True}]},
-               pins=[pin(0, "CH1", -40, -25), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 25)])
+                   {"label": "V_phA", "overlay": True},
+                   {"label": "V_phB", "overlay": True},
+                   {"label": "V_phC", "overlay": True}]},
+               pins=[pin(0, "CH1", -40, -40), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 40)])
 scope_i = comp(type="ELECTRICAL_SCOPE", name="Scope_PhaseCurrents", x=820, y=-160,
                parameters={"channel_count": 3, "channels": [
-                   {"signal": "I_phA", "label": "I_phA", "overlay": True},
-                   {"signal": "I_phB", "label": "I_phB", "overlay": True},
-                   {"signal": "I_phC", "label": "I_phC", "overlay": True}]},
-               pins=[pin(0, "CH1", -40, -25), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 25)])
+                   {"label": "I_phA", "overlay": True},
+                   {"label": "I_phB", "overlay": True},
+                   {"label": "I_phC", "overlay": True}]},
+               pins=[pin(0, "CH1", -40, -40), pin(1, "CH2", -40, 0), pin(2, "CH3", -40, 40)])
 # Cap-voltage scope — direct-signal channels (the <arm>.v_C telemetry the
 # L0 observer publishes; no wires needed for a direct-signal channel).
 scope_vc = comp(type="ELECTRICAL_SCOPE", name="Scope_CapVoltages", x=820, y=80,
@@ -273,10 +283,42 @@ scope_vc = comp(type="ELECTRICAL_SCOPE", name="Scope_CapVoltages", x=820, y=80,
                 pins=[pin(i, f"CH{i+1}", -40, -50 + i * 20) for i in range(6)])
 scope_arm = comp(type="ELECTRICAL_SCOPE", name="Scope_ArmCurrentsA", x=820, y=320,
                  parameters={"channel_count": 2, "channels": [
-                     {"signal": "I_arm_uA", "label": "I_arm_uA", "overlay": True},
-                     {"signal": "I_arm_lA", "label": "I_arm_lA", "overlay": True}]},
-                 pins=[pin(0, "CH1", -40, -15), pin(1, "CH2", -40, 15)])
+                     {"label": "I_arm_uA", "overlay": True},
+                     {"label": "I_arm_lA", "overlay": True}]},
+                 pins=[pin(0, "CH1", -40, -40), pin(1, "CH2", -40, 40)])
 components += [scope_v, scope_i, scope_vc, scope_arm]
+
+# ---- Scope signal wiring (visible GOTO/FROM pairs) -------------------------
+# Each probe's measurement reaches its scope channel through a SIG_* net-label
+# pair: GOTO at the probe's signal pin, FROM at the scope channel pin. Merge is
+# by label text (geometry-independent), so the schematic shows what feeds every
+# scope without long routed signal wires shorting nets on load. The cap-voltage
+# scope stays on direct signals — v_C is L0 observer telemetry with no pin.
+sig_links: list[tuple] = []  # (probe, sig_pin, scope, ch_idx, goto, from)
+
+
+def _sig(probe, sig_pin, scope, ch_idx, text, goto_xy, from_xy):
+    g = comp(type="GOTO_LABEL", name=f"GOTO_{text}", x=goto_xy[0], y=goto_xy[1],
+             parameters={"net_label": text}, pins=[pin(0, "NET", 0, 0)])
+    fr = comp(type="FROM_LABEL", name=f"FROM_{text}", x=from_xy[0], y=from_xy[1],
+              parameters={"net_label": text}, pins=[pin(0, "NET", 0, 0)])
+    components.extend([g, fr])
+    sig_links.append((probe, sig_pin, scope, ch_idx, g, fr))
+
+
+SCOPE_V_CH_Y = (-420, -380, -340)
+SCOPE_I_CH_Y = (-200, -160, -120)
+SCOPE_ARM_CH_Y = (280, 360)
+for i, ph in enumerate(("A", "B", "C")):
+    _sig(vp_phase[i], 1, scope_v, i, f"SIG_VPH{ph}",
+         (660, VP_Y[i]), (740, SCOPE_V_CH_Y[i]))               # V_ph OUT → scope_v
+    _py = Y_PHASE_TAP + (i - 1) * 80
+    _sig(ip_phase[i], 2, scope_i, i, f"SIG_IPH{ph}",
+         (160, _py - 40), (740, SCOPE_I_CH_Y[i]))              # I_ph MEAS (up) → scope_i
+_sig(ip_arm_uA, 2, scope_arm, 0, "SIG_IARMUA",
+     (X_PHASE[0] - 80, Y_L_UPPER + 80), (740, SCOPE_ARM_CH_Y[0]))
+_sig(ip_arm_lA, 2, scope_arm, 1, "SIG_IARMLA",
+     (X_PHASE[0] - 80, Y_L_LOWER - 80), (740, SCOPE_ARM_CH_Y[1]))
 
 # ---------------------------------------------------------------------------
 # Wires
@@ -326,15 +368,16 @@ for i, ph in enumerate(("A", "B", "C")):
     au = arm_upper[i]
     wires.append(wire_direct(au["id"], 1, goto_ph[i]["id"], 0, comp_by_id))          # tap → PH_x
     wires.append(wire_direct(ip_phase[i]["id"], 0, from_ph[i]["id"], 0, comp_by_id))  # PH_x → load
-    wires.append(wire_direct(vp_phase[i]["id"], 0, from_ph[i]["id"], 0, comp_by_id))  # PH_x → V_ph
+    wires.append(wire_direct(vp_phase[i]["id"], 0, vp_sense_from[i]["id"], 0, comp_by_id))  # V_ph sense → PH_x
     w(ip_phase[i], 1, load_r[i], 0, node_name=f"LOAD_{ph}_PRE")
     w(load_r[i], 1, load_l[i], 0, node_name=f"LOAD_{ph}_MID")
     w(load_l[i], 1, gnd_n, 0, node_name="NEUTRAL")
 
-# No scope wires: every scope channel reads its probe by signal name (direct
-# signal), exactly like the cap-voltage scope. Routed probe→scope signal
-# wires otherwise span the whole sheet, share corridors, and merge nets on
-# the scene's junction pass.
+# Scope signal wiring: each probe's signal pin → GOTO, each scope channel → FROM
+# (the matching SIG_* label text joins them). Short, isolated stubs only.
+for probe, sig_pin, scope, ch_idx, g, fr in sig_links:
+    wires.append(wire_direct(probe["id"], sig_pin, g["id"], 0, comp_by_id))
+    wires.append(wire_direct(scope["id"], ch_idx, fr["id"], 0, comp_by_id))
 
 # ---------------------------------------------------------------------------
 sim_settings = {
