@@ -77,6 +77,28 @@ _COMMON_PARAMETER_HELP: dict[str, ParameterHelp] = {
         "Time-domain source definition (DC, sine, pulse, PWL, etc.).",
         "Source specification in system requirements or bench stimulus profile.",
     ),
+    "model_fidelity": ParameterHelp(
+        "MMC arm model fidelity — how much switching detail the arm reproduces, "
+        "from a smooth average source (L0) up to every submodule (L3). The "
+        "controller, wiring and telemetry are identical at every level; only "
+        "the arm internals change.",
+        "Pick by what you're studying. All four are cheap because the switching "
+        "is computed inside the arm (not added as extra circuit switches), so "
+        "the matrix stays the same size and even L3 runs close to L0 — the only "
+        "cost difference is the per-arm bookkeeping.",
+        "L0 Average — one controlled source v = m·v_C over a single equivalent "
+        "cap. NO switching: smooth waveforms, fastest. Use for energy / control-"
+        "loop design where switching ripple is irrelevant.   "
+        "L1 Multilevel — the N+1 discrete arm-voltage levels (the switching "
+        "staircase) over an aggregate cap. Adds the real switching ripple.   "
+        "L2 Equivalent — Thevenin-equivalent switching arm that also models "
+        "dead-time / minimum on-time.   "
+        "L3 Detailed — every submodule (N caps + switches) with sort-and-select "
+        "balancing. Adds per-submodule cap dynamics + the V_C_SPRD balance "
+        "telemetry. Most accurate; use to verify switching, cap balancing and "
+        "losses. (Verify it changed: L0 gives a smooth V(phase); L1–L3 a "
+        "switched staircase.)",
+    ),
     "is_": ParameterHelp(
         "Saturation current of the exponential junction model.",
         "Estimate from reverse leakage/current-temperature data in datasheet curves.",

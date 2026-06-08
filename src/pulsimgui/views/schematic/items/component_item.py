@@ -4132,10 +4132,13 @@ class MMCArmItem(ComponentItem):
     """MMC arm block. Visually a tall rectangle representing a chain
     of N sub-modules; the model-fidelity badge (L0/L1/L2/L3) sits in
     the top-right corner, the N submodule count + SM type in the
-    bottom-left, and the M_REF input pin sticks out on the right.
+    bottom-left, and the M_REF input + telemetry pins stick out on
+    the right.
 
-    Pin layout: TOP / BOT (chain endpoints, on the LEFT) + M_REF
-    (modulation input, on the RIGHT).
+    Pin layout: TOP / BOT (chain endpoints, on the LEFT) + three
+    signal pins on the RIGHT — M_REF (modulation input) and the
+    V_C / V_C_SPRD telemetry outputs (aggregate cap voltage and, for
+    L3, the submodule-cap spread — wire either to a scope).
     """
 
     def _fidelity_short(self) -> str:
@@ -4153,7 +4156,8 @@ class MMCArmItem(ComponentItem):
         return self._with_pin_bounds(QRectF(-38, -52, 76, 104))
 
     def _draw_symbol(self, painter: QPainter) -> None:
-        # Post-snap pin layout: TOP/BOT on the left (y=±40), M_REF on the right.
+        # Post-snap pin layout: TOP/BOT on the left (y=±40); M_REF input +
+        # V_C / V_C_SPRD telemetry outputs on the right.
         top = self._pin_position_by_name("TOP", QPointF(-40, -40))
         bot = self._pin_position_by_name("BOT", QPointF(-40, 40))
         mref = self._pin_position_by_name("M_REF", QPointF(40, 0))
@@ -4173,9 +4177,14 @@ class MMCArmItem(ComponentItem):
         painter.setPen(self._lead_pen(style.STROKE_LEAD))
         painter.drawLine(top, QPointF(body.left(), top.y()))
         painter.drawLine(bot, QPointF(body.left(), bot.y()))
-        # M_REF input on the RIGHT (muted, signal-style)
+        # M_REF input + V_C / V_C_SPRD telemetry outputs on the RIGHT
+        # (muted, signal-style leads).
         painter.setPen(self._symbol_pen(style.STROKE_DETAIL, muted))
         painter.drawLine(QPointF(body.right(), mref.y()), mref)
+        vc = self._pin_position_by_name("V_C", QPointF(40, -40))
+        vcs = self._pin_position_by_name("V_C_SPRD", QPointF(40, 20))
+        painter.drawLine(QPointF(body.right(), vc.y()), vc)
+        painter.drawLine(QPointF(body.right(), vcs.y()), vcs)
 
         # Render the chain as N stacked sub-module mini-boxes inside
         # the body. We cap the visual count at 6 so very long chains
