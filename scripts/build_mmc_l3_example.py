@@ -11,16 +11,16 @@ to ``model_fidelity = "L3 Detailed"`` — real submodules (N caps + half-bridge
 switches, PSC-PWM at f_carrier, sort-and-select submodule balancing) instead of
 the L0 average source.
 
-The same closed-loop controller (arm-energy balancing + circulating-current
-suppression + soft-start) drives it unchanged: the L3 arm exposes the same
-aggregate ``v_C`` and ``source_branch_id`` the L0 arm does, so the control law
-transfers directly. The submodule-level balancing is handled *inside* each L3
-arm (the modulator's sort-and-select), and the per-arm ``v_C_spread`` telemetry
-reports how tightly the submodule caps track each other.
+The full closed-loop controller drives it unchanged: arm-energy balancing +
+circulating-current suppression + soft-start, AND the dq output-current loop
+(``current_control=True``, ``id_ref=15 A``) regulating the load current. The L3
+arm exposes the same aggregate ``v_C`` and ``source_branch_id`` the L0 arm does,
+so the control law transfers directly. Submodule-level balancing is handled
+*inside* each L3 arm (the modulator's sort-and-select), and the per-arm
+``v_C_spread`` telemetry reports how tightly the submodule caps track.
 
-L3 switches every submodule every step, so it's much heavier than L0 — the
-window is kept short (20 ms ≈ 1.2 cycles) to keep the run quick while still
-showing stable caps + balanced AC.
+L3 switches every submodule every step, but the pulsim detailed step is cheap
+enough to run a few cycles (50 ms ≈ 3 cycles) and watch the current loop settle.
 """
 from __future__ import annotations
 
@@ -37,26 +37,34 @@ def main() -> None:
     project = json.loads(SRC.read_text())
     circuits = list(project["circuits"].values())
 
-    n_arm = 0
+    n_arm = n_ctrl = 0
     for circ in circuits:
         for comp in circ.get("components", []):
             if comp.get("type") == "MMC_ARM":
                 comp.setdefault("parameters", {})["model_fidelity"] = "L3 Detailed"
                 n_arm += 1
+            elif comp.get("type") == "MMC_CONTROLLER":
+                comp.setdefault("parameters", {}).update({
+                    "current_control": True,   # dq output-current loop
+                    "id_ref": 15.0,            # d-axis load-current reference [A]
+                    "iq_ref": 0.0,
+                })
+                n_ctrl += 1
     if not n_arm:
         raise SystemExit("No MMC_ARM found in example 25 — build it first.")
 
     now = datetime.now().isoformat(timespec="seconds")
-    project["name"] = "26 MMC 3-Phase Closed-Loop — DETAILED L3 arms (switching)"
+    project["name"] = "26 MMC 3-Phase Closed-Loop L3 — dq current control (switching)"
     project["modified"] = now
 
-    # L3 switches every submodule each step → keep the window short.
+    # A few cycles so the dq current loop visibly settles.
     sim = project["simulation_settings"]
-    sim["tstop"] = 0.02
-    sim["output_points"] = 10000
+    sim["tstop"] = 0.05
+    sim["output_points"] = 25000
 
     DST.write_text(json.dumps(project, indent=2))
-    print(f"wrote {DST.name}: {n_arm} arms → L3 Detailed, tstop={sim['tstop']}s")
+    print(f"wrote {DST.name}: {n_arm} arms → L3 Detailed, {n_ctrl} controller → dq "
+          f"current control (id_ref=15 A), tstop={sim['tstop']}s")
 
 
 if __name__ == "__main__":
