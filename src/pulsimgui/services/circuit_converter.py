@@ -4122,11 +4122,16 @@ class CircuitConverter:
             arm_l=f(params.get("arm_inductance"), default=5.0e-3),
             arm_r=f(params.get("arm_resistance"), default=0.1),
             control_dt=f(params.get("sample_time"), default=1.0e-5) or 1.0e-5,
+            soft_start_time=f(params.get("soft_start_time"), default=5.0e-3),
+            per_phase_energy=bool(params.get("per_phase_energy", False)),
             current_control=current_control,
             id_ref=f(params.get("id_ref"), default=0.0),
             iq_ref=f(params.get("iq_ref"), default=0.0),
             load_l=f(params.get("load_inductance"), default=10.0e-3),
             load_r=f(params.get("load_resistance"), default=15.0),
+            f_bw_ccsc=f(params.get("bw_ccsc_hz"), default=500.0) or 500.0,
+            f_bw_energy=f(params.get("bw_energy_hz"), default=15.0) or 15.0,
+            f_bw_curr=f(params.get("bw_current_hz"), default=300.0) or 300.0,
         )
 
     def _infer_shared_heatsink_loops(

@@ -71,6 +71,13 @@ class MmcClosedLoopController:
     arm_l: float = 5.0e-3                # per-arm inductance (H)
     arm_r: float = 0.1                   # per-arm resistance (Ω)
     control_dt: float = 1.0e-5           # controller sample period (s)
+    soft_start_time: float = 5.0e-3      # ramp the output 0→full over this (s)
+
+    # Per-phase arm-energy balancing. Off (total energy) by default: it's the
+    # right call for a balanced load and keeps the full output (a per-phase
+    # loop injects a fundamental circulating current that trims the AC swing).
+    # Turn it on for asymmetric loads / per-leg drift.
+    per_phase_energy: bool = False
 
     # Output-current (dq) loop — off by default (open-loop voltage).
     current_control: bool = False
@@ -103,7 +110,7 @@ class MmcClosedLoopController:
 
     # ---- internal state (not user inputs) ----
     _m_ref: dict[str, float] = field(default_factory=dict, init=False)
-    _int_energy: float = field(default=0.0, init=False)
+    _int_energy: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0], init=False)
     _int_ccsc: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0], init=False)
     _int_d: float = field(default=0.0, init=False)
     _int_q: float = field(default=0.0, init=False)
@@ -178,21 +185,36 @@ class MmcClosedLoopController:
         dt = self.control_dt
         theta = _TWO_PI * self.freq * t
 
-        # --- 1. arm-energy balancing → DC circulating-current reference ---
+        # --- 1. per-phase arm-energy balancing → per-phase DC circulating ref ---
+        # Each phase regulates its OWN mean cap voltage, so an asymmetric load
+        # (or arm drift) can't pull the legs apart the way a single total-energy
+        # loop allows. pulsim's average arm charges its caps with +m·i_b, so a
+        # positive DC circulating current pulls bus energy in; a sagging phase
+        # (e_w>0) therefore commands a positive i_circ_ref to recharge it.
         vc_vals = [v_cap.get(n, self.vc_ref) for ph in self.phase_arms for n in ph]
-        vc_avg = sum(vc_vals) / len(vc_vals)
-        self.last_vc_avg = vc_avg
-        # pulsim's average arm charges its caps with +m·i_b, so a *positive* DC
-        # circulating current pulls energy from the bus into the arms. A sagging
-        # average (e_w>0) therefore commands a positive i_circ_ref to recharge.
-        e_w = self.vc_ref - vc_avg
-        i_circ_ref = self._kp_energy * e_w + self._ki_energy * self._int_energy
-        # integrate with conditional anti-windup (freeze when clamped & pushing)
-        i_circ_ref_clamped = _clamp(i_circ_ref, -self.i_circ_max, self.i_circ_max)
-        if i_circ_ref == i_circ_ref_clamped or (e_w * i_circ_ref) < 0.0:
-            self._int_energy += e_w * dt
-        i_circ_ref = i_circ_ref_clamped
-        self.last_i_circ_ref = i_circ_ref
+        self.last_vc_avg = sum(vc_vals) / len(vc_vals)
+        i_circ_ref = [0.0, 0.0, 0.0]
+        if self.per_phase_energy:
+            for j, (up, lo) in enumerate(self.phase_arms):
+                w_j = 0.5 * (v_cap.get(up, self.vc_ref) + v_cap.get(lo, self.vc_ref))
+                e_w = self.vc_ref - w_j
+                icr = self._kp_energy * e_w + self._ki_energy * self._int_energy[j]
+                icr_c = _clamp(icr, -self.i_circ_max, self.i_circ_max)
+                if icr == icr_c or (e_w * icr) < 0.0:  # conditional anti-windup
+                    self._int_energy[j] += e_w * dt
+                i_circ_ref[j] = icr_c
+        else:
+            e_w = self.vc_ref - self.last_vc_avg
+            icr = self._kp_energy * e_w + self._ki_energy * self._int_energy[0]
+            icr_c = _clamp(icr, -self.i_circ_max, self.i_circ_max)
+            if icr == icr_c or (e_w * icr) < 0.0:
+                self._int_energy[0] += e_w * dt
+            i_circ_ref = [icr_c, icr_c, icr_c]
+        self.last_i_circ_ref = i_circ_ref[0]
+
+        # Soft-start: ramp the commanded output 0→full so the arms aren't
+        # slammed at t=0 (energy + CCSC stay active to hold v_C during the ramp).
+        ramp = 1.0 if self.soft_start_time <= 0.0 else min(1.0, t / self.soft_start_time)
 
         # --- 3. output voltage reference (open-loop or dq current loop) ---
         if self.current_control:
@@ -201,8 +223,8 @@ class MmcClosedLoopController:
                 for (up, lo) in self.phase_arms
             ]
             i_d, i_q = self._park(i_out, theta)
-            e_d = self.id_ref - i_d
-            e_q = self.iq_ref - i_q
+            e_d = self.id_ref * ramp - i_d
+            e_q = self.iq_ref * ramp - i_q
             self._int_d += e_d * dt
             self._int_q += e_q * dt
             w = _TWO_PI * self.freq
@@ -210,13 +232,13 @@ class MmcClosedLoopController:
             v_q = self._kp_curr * e_q + self._ki_curr * self._int_q + w * self.load_l * i_d
             v_out = self._inv_park(v_d, v_q, theta)
         else:
-            amp = self.mod_index * self.vdc_half
+            amp = self.mod_index * self.vdc_half * ramp
             v_out = [amp * math.sin(theta + self._phi[j]) for j in range(3)]
 
         # --- 2. per-phase CCSC + insertion indices ---
         for j, (up, lo) in enumerate(self.phase_arms):
             i_z = 0.5 * (currents.get(up, 0.0) + currents.get(lo, 0.0))
-            e_z = i_circ_ref - i_z
+            e_z = i_circ_ref[j] - i_z
             self._int_ccsc[j] += e_z * dt
             v_z = self._kp_ccsc * e_z + self._ki_ccsc * self._int_ccsc[j]
 
@@ -227,7 +249,7 @@ class MmcClosedLoopController:
 
         if self.debug:
             self.debug_history.append((
-                t, vc_avg, i_circ_ref,
+                t, self.last_vc_avg, list(i_circ_ref),
                 dict(currents), dict(v_cap), dict(self._m_ref),
             ))
 

@@ -104,3 +104,27 @@ def test_current_control_mode_runs_and_holds_valid_duty() -> None:
             assert 0.0 <= c.m_ref(up) <= 1.0
             assert 0.0 <= c.m_ref(lo) <= 1.0
         t += c.control_dt
+
+
+def test_soft_start_holds_output_near_zero_at_t0() -> None:
+    # At t≈0 the soft-start ramp is ~0, so with healthy caps both arms insert
+    # ~0.5 (no AC swing yet); past the ramp the modulation is complementary.
+    c = _ctrl(soft_start_time=0.01)
+    c.update(0.0, _zero_i(), _all_vc(800.0))
+    assert abs(c.m_ref("ARM_uA") - 0.5) < 0.05
+    assert abs(c.m_ref("ARM_lA") - 0.5) < 0.05
+    c2 = _ctrl(soft_start_time=0.001)
+    c2.update(0.25 / 60.0, _zero_i(), _all_vc(800.0))  # quarter period, ramp done
+    assert c2.m_ref("ARM_uA") < c2.m_ref("ARM_lA")
+
+
+def test_per_phase_energy_mode_runs_and_holds_valid_duty() -> None:
+    c = _ctrl(per_phase_energy=True, soft_start_time=0.0)
+    t = 0.0
+    while t < 2.0 / 60.0:
+        c.update(t, _zero_i(), _all_vc(750.0))  # sagging caps exercise the loop
+        for up, lo in c.phase_arms:
+            assert 0.0 <= c.m_ref(up) <= 1.0
+            assert 0.0 <= c.m_ref(lo) <= 1.0
+        t += c.control_dt
+    assert c.last_i_circ_ref > 0.0  # low caps → positive recharge ref

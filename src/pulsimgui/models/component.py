@@ -2046,6 +2046,13 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "load_inductance": 10.0e-3,    # load L [H] (current-loop feed-forward)
         "load_resistance": 15.0,       # load R [Ω]
         "sample_time": 1.0e-5,         # controller tick [s]
+        "soft_start_time": 5.0e-3,     # ramp output 0→full over this [s]
+        "per_phase_energy": False,     # per-phase energy balance (asym. loads)
+        # Loop bandwidths — the PI gains are auto-tuned from these + the arm /
+        # load values, so tuning is "pick a response speed", not "guess gains".
+        "bw_ccsc_hz": 500.0,           # circulating-current loop bandwidth [Hz]
+        "bw_energy_hz": 15.0,          # arm-energy loop bandwidth [Hz]
+        "bw_current_hz": 300.0,        # dq output-current loop bandwidth [Hz]
     },
 
     # Three-phase / vector control (Pulsim Phase 28)
