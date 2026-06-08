@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import logging
 import math
-import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -764,7 +763,6 @@ class PulsimBackend(SimulationBackend):
         self._controllers: dict[int, Any] = {}
         self._lock = threading.Lock()
         self._cached_capabilities: set[str] | None = None
-        self._cblock_autobuild_cache: dict[tuple[str, int, tuple[str, ...]], str] = {}
 
     @property
     def capabilities(self) -> set[str]:
@@ -864,15 +862,15 @@ class PulsimBackend(SimulationBackend):
             result.statistics["cblock_strict_mode"] = True
             result.statistics["execution_note"] = "cblock_blocked_legacy_backend"
             return result
-        if has_cblock:
-            prepared_data, prepare_error = self._prepare_cblock_runtime_payload(
-                circuit_data,
-                callbacks,
-            )
-            if prepare_error:
-                result.error_message = prepare_error
-                return result
-            circuit_data = prepared_data
+        # Pre-pulsim-1.8 we auto-compiled inline ``source`` file paths
+        # via ``self._module.compile_cblock`` and patched ``params``
+        # in-place so the legacy ``add_virtual_component("c_block",
+        # ...)`` path could consume a shared library. Pulsim 1.8 retired
+        # ``compile_cblock`` and owns the compile via ``add_c_block(...,
+        # code=...)``, so this pre-pass is dead code on the only
+        # supported backend. The Path-B post-pass in
+        # ``_register_c_blocks_via_pulsim_18`` reads the ``source`` file
+        # off disk and passes its contents to ``add_c_block`` directly.
         prefer_nonblocking_run = self._should_prefer_nonblocking_transient(
             settings,
             base_dt,
@@ -3350,116 +3348,6 @@ class PulsimBackend(SimulationBackend):
             except ValueError:
                 return False
         return parsed_version.is_compatible_with(_CBLOCK_MODERN_TRANSIENT_MIN_BACKEND)
-
-    @staticmethod
-    def _safe_cblock_build_name(raw_name: str) -> str:
-        name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw_name.strip())
-        name = name.strip("_")
-        return name or "cblock"
-
-    def _prepare_cblock_runtime_payload(
-        self,
-        circuit_data: dict[str, Any],
-        callbacks: BackendCallbacks,
-    ) -> tuple[dict[str, Any], str | None]:
-        """Auto-compile C-Block ``source`` into ``lib_path`` when compile API exists."""
-        compile_fn = getattr(self._module, "compile_cblock", None)
-        if compile_fn is None:
-            return circuit_data, None
-        if not isinstance(circuit_data, dict):
-            return circuit_data, None
-        components = circuit_data.get("components")
-        if not isinstance(components, list):
-            return circuit_data, None
-
-        prepared = copy.deepcopy(circuit_data)
-        prepared_components = prepared.get("components")
-        if not isinstance(prepared_components, list):
-            return circuit_data, None
-
-        compiled_any = False
-        cache_root = Path(tempfile.gettempdir()).resolve() / "pulsimgui-cblock-build-cache"
-
-        for comp in prepared_components:
-            if not isinstance(comp, dict):
-                continue
-            if str(comp.get("type", "")).strip().upper() != "C_BLOCK":
-                continue
-
-            params = comp.get("parameters")
-            if not isinstance(params, dict):
-                continue
-            source = str(params.get("source", "") or "").strip()
-            lib_path = str(params.get("lib_path", "") or "").strip()
-            if not source or lib_path:
-                continue
-
-            source_path = Path(source).expanduser()
-            if not source_path.exists():
-                # Contract validator already raises a clear file-not-found error.
-                continue
-            try:
-                resolved_source = source_path.resolve()
-                source_mtime = resolved_source.stat().st_mtime_ns
-            except OSError:
-                continue
-
-            flags_raw = params.get("extra_cflags", [])
-            flags: list[str] = []
-            if isinstance(flags_raw, list):
-                flags = [str(item).strip() for item in flags_raw if str(item).strip()]
-            elif isinstance(flags_raw, str):
-                flags = [token for token in flags_raw.split() if token]
-            cache_key = (
-                resolved_source.as_posix(),
-                int(source_mtime),
-                tuple(flags),
-            )
-
-            cached_lib = self._cblock_autobuild_cache.get(cache_key, "")
-            built_lib_path: Path
-            if cached_lib and Path(cached_lib).exists():
-                built_lib_path = Path(cached_lib)
-            else:
-                try:
-                    cache_root.mkdir(parents=True, exist_ok=True)
-                except OSError:
-                    pass
-                try:
-                    built_lib = compile_fn(
-                        resolved_source,
-                        output_dir=cache_root,
-                        name=self._safe_cblock_build_name(str(comp.get("name") or "cblock")),
-                        extra_cflags=flags or None,
-                    )
-                    built_lib_path = Path(built_lib).expanduser().resolve()
-                except Exception as exc:
-                    details: list[str] = [str(exc)]
-                    compiler_path = str(getattr(exc, "compiler_path", "") or "").strip()
-                    stderr_output = str(getattr(exc, "stderr_output", "") or "").strip()
-                    if compiler_path:
-                        details.append(f"Compiler: {compiler_path}")
-                    if stderr_output:
-                        details.append(stderr_output)
-                    return prepared, (
-                        "C-Block auto-compilation failed; install a supported C compiler "
-                        "or provide 'lib_path'.\n"
-                        + "\n".join(details)
-                    )
-
-                self._cblock_autobuild_cache[cache_key] = built_lib_path.as_posix()
-
-            params["lib_path"] = built_lib_path.as_posix()
-            params["source"] = ""
-            params["implementation"] = "library"
-            compiled_any = True
-
-        if compiled_any:
-            callbacks.progress(
-                2.5,
-                "C-Block source detected: auto-compiling with host toolchain...",
-            )
-        return prepared, None
 
     def _should_prefer_nonblocking_transient(
         self,

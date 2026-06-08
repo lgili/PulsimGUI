@@ -4900,7 +4900,14 @@ class CircuitConverter:
             normalized["source"] = source.replace("\\", "/")
             normalized["lib_path"] = lib_path.replace("\\", "/")
             normalized.pop("implementation", None)
-            normalized.pop("source_code", None)
+            # ``source_code`` (inline C body, pulsim 1.8 ``add_c_block(...,
+            # code=...)`` mode) is now snapshotted by
+            # ``_collect_c_block_records`` and consumed by the backend's
+            # Path-B post-pass — no longer stripped here. On pulsim 1.8
+            # the legacy ``add_virtual_component("c_block", ...)`` entry
+            # is dropped by ``_pop_legacy_c_block_record`` before the
+            # kernel sees it, so it makes no difference what extra
+            # metadata it carries.
 
         if "lower_limit" in normalized and "output_min" not in normalized:
             normalized["output_min"] = normalized["lower_limit"]
