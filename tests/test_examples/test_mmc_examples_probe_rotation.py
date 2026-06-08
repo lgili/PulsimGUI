@@ -29,8 +29,20 @@ from pathlib import Path
 import pytest
 
 from pulsimgui.models.circuit import _heal_double_rotated_components
-from pulsimgui.models.component import ComponentType
+from pulsimgui.models.component import DEFAULT_PINS, ComponentType
 from pulsimgui.models.project import Project
+
+# Two-terminal parts whose body symbol is drawn on a fixed canonical axis.
+# Authoring pins off that axis (e.g. a vertical inductor at rotation=0) draws
+# the body on one axis with diagonal leads to the pins — i.e. deformed. The
+# loaded RAW pins must therefore equal the canonical DEFAULT_PINS; orientation
+# comes from the rotation field alone.
+_CANONICAL_PIN_TYPES = (
+    ComponentType.VOLTAGE_SOURCE,
+    ComponentType.INDUCTOR,
+    ComponentType.RESISTOR,
+    ComponentType.CURRENT_PROBE,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples"
 MMC_EXAMPLES = [
@@ -129,3 +141,26 @@ def test_heal_pass_is_idempotent_noop(filename: str) -> None:
     nothing — the shipped geometry is already correct (no false positives)."""
     circuit = _load_circuit(filename)
     assert _heal_double_rotated_components(circuit) == 0
+
+
+@pytest.mark.parametrize("filename", MMC_EXAMPLES)
+def test_two_terminal_parts_use_canonical_pins(filename: str) -> None:
+    """Sources / inductors / resistors / probes must load with their canonical
+    DEFAULT_PINS (rotation orients them). Off-axis pin coords at rotation=0 draw
+    the body on one axis with diagonal leads to the pins — the deformation the
+    user reported for the DC sources and arm inductors."""
+    circuit = _load_circuit(filename)
+    for comp in circuit.components.values():
+        if comp.type not in _CANONICAL_PIN_TYPES:
+            continue
+        canonical = {p.name: (p.x, p.y) for p in DEFAULT_PINS[comp.type]}
+        assert len(comp.pins) == len(canonical), (
+            f"{filename}:{comp.name}: pin count drifted from canonical"
+        )
+        for pin in comp.pins:
+            cx, cy = canonical[pin.name]
+            assert abs(pin.x - cx) < 1.0 and abs(pin.y - cy) < 1.0, (
+                f"{filename}:{comp.name}: pin {pin.name} at ({pin.x},{pin.y}) "
+                f"≠ canonical ({cx},{cy}) — body will draw deformed. Author "
+                "canonical pins + a rotation field instead."
+            )

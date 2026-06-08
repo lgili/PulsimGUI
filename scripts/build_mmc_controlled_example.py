@@ -146,19 +146,23 @@ v_dcp = comp(
     type="VOLTAGE_SOURCE", name="V_DCp", x=-960, y=-200,
     parameters={"waveform": {"type": "dc", "value": VDC_HALF, "amplitude": 0.0,
                              "frequency": 0.0, "offset": VDC_HALF, "phase": 0.0}},
-    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
+    pins=[pin(0, "+", 0, -20), pin(1, "-", 0, 20)],
 )
 v_dcn = comp(
     type="VOLTAGE_SOURCE", name="V_DCn", x=-960, y=120,
     parameters={"waveform": {"type": "dc", "value": VDC_HALF, "amplitude": 0.0,
                              "frequency": 0.0, "offset": VDC_HALF, "phase": 0.0}},
-    pins=[pin(0, "+", -25, 0), pin(1, "-", 25, 0)],
+    pins=[pin(0, "+", 0, -20), pin(1, "-", 0, 20)],
 )
 gnd_mid = comp(type="GROUND", name="GND_mid", x=-900, y=-40, parameters={},
                pins=[pin(0, "gnd", 0, -20)])
 components += [v_dcp, v_dcn, gnd_mid]
 
 # ---- 6 MMC arms (L0 Average) + 6 arm inductors ----
+# Arm inductors sit in the vertical legs: author the CANONICAL horizontal pin
+# layout (±40) + rotation=90 so the GUI rotates body + pins together. Vertical
+# pin coords at rotation=0 draw the coil horizontally with diagonal leads to the
+# vertical pins — i.e. deformed.
 ARM_DEFAULTS = {
     "model_fidelity": "L0 Average", "submodule_type": "Half-Bridge",
     "n_submodules": N_SM, "c_sm": C_SM, "v_c0": VC0, "r_arm": ARM_R,
@@ -167,9 +171,9 @@ ARM_DEFAULTS = {
 }
 arm_upper, arm_lower, L_upper, L_lower = [], [], [], []
 for ph, col_x in zip(("A", "B", "C"), X_PHASE):
-    lu = comp(type="INDUCTOR", name=f"L_u{ph}", x=col_x, y=Y_L_UPPER,
+    lu = comp(type="INDUCTOR", name=f"L_u{ph}", x=col_x, y=Y_L_UPPER, rotation=90,
               parameters={"inductance": ARM_L, "initial_current": 0.0},
-              pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)])
+              pins=[pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     au = comp(type="MMC_ARM", name=f"ARM_u{ph}", x=col_x, y=Y_ARM_UPPER,
               parameters={**ARM_DEFAULTS},
               pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
@@ -178,9 +182,9 @@ for ph, col_x in zip(("A", "B", "C"), X_PHASE):
               parameters={**ARM_DEFAULTS},
               pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
                     pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 20)])
-    ll = comp(type="INDUCTOR", name=f"L_l{ph}", x=col_x, y=Y_L_LOWER,
+    ll = comp(type="INDUCTOR", name=f"L_l{ph}", x=col_x, y=Y_L_LOWER, rotation=90,
               parameters={"inductance": ARM_L, "initial_current": 0.0},
-              pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)])
+              pins=[pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     components += [lu, au, al, ll]
     L_upper.append(lu); arm_upper.append(au); arm_lower.append(al); L_lower.append(ll)
 
@@ -227,10 +231,10 @@ for i, (ph, col_x) in enumerate(zip(("A", "B", "C"), X_PHASE)):
                parameters={"display_name": f"I_ph{ph}", "scale": 1.0},
                pins=[pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0), pin(2, "MEAS", 0, -20)])
     rx = comp(type="RESISTOR", name=f"R_{ph}", x=300, y=py,
-              parameters={"resistance": R_LOAD}, pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)])
+              parameters={"resistance": R_LOAD}, pins=[pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     lx = comp(type="INDUCTOR", name=f"L_{ph}", x=440, y=py,
               parameters={"inductance": L_LOAD, "initial_current": 0.0},
-              pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)])
+              pins=[pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     components += [ipx, rx, lx]
     ip_phase.append(ipx); load_r.append(rx); load_l.append(lx)
 gnd_n = comp(type="GROUND", name="GND_n", x=580, y=80, parameters={}, pins=[pin(0, "gnd", 0, -20)])
