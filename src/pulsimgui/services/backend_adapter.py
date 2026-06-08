@@ -6461,6 +6461,60 @@ class PulsimBackend(SimulationBackend):
             circuit, builder, step_observer, t_start,
             external_switch_fn=switch_fn,
         )
+
+        # Pulsim 1.8 — ``SwitchMaskRecorder`` wraps the ``switch_fn`` so
+        # the post-sim thermal / loss summaries replay the REAL per-step
+        # mask history (recorded as ``simulate`` calls ``switch_fn(t)``)
+        # instead of re-evaluating a possibly-stateful closed-loop
+        # ``switch_fn`` whose controller has converged by the time the
+        # summary runs. The 1.7 path re-evaluated post-hoc and the
+        # closed-loop cold-start window returned masks that disagreed
+        # with what actually fired — Q_boost in ex 23 reported
+        # ``v_SW²·g_on`` ≈ 10⁵ W during cold-start → 130 000 °C T_j.
+        # We MUST pass the SAME recorder instance to both ``simulate``
+        # and ``device_thermal_summary`` — the summary detects the
+        # recorder via ``recorded_mask_trace`` and bypasses the
+        # re-evaluation path entirely.
+        #
+        # Feature-detected: when running against pulsim 1.7 (no
+        # recorder class) the wrap is a no-op and the GUI degrades
+        # gracefully — thermal accuracy reverts to the 1.7 behaviour
+        # (post-hoc switch_fn re-evaluation with the converged controller
+        # state) but the sim still runs end-to-end.
+        recorder_cls = getattr(self._module, "SwitchMaskRecorder", None)
+        thermal_summary_switch_fn: Any
+        if recorder_cls is not None:
+            if composed_loop is not None:
+                # Closed-loop path: wrap ``composed_loop.switch_fn`` in
+                # place and rebuild the loop namespace so simulate sees
+                # the recorder, and stash the recorder for the summary.
+                from types import SimpleNamespace
+                inner_switch_fn = composed_loop.switch_fn
+                recorder = recorder_cls(inner_switch_fn)
+                composed_loop = SimpleNamespace(
+                    switch_fn=recorder,
+                    step_observer=composed_loop.step_observer,
+                )
+                thermal_summary_switch_fn = recorder
+            elif switch_fn is not None:
+                # Static path: wrap the composed ``switch_fn`` once.
+                # Both ``simulate`` and the thermal summary receive the
+                # same recorder instance.
+                switch_fn = recorder_cls(switch_fn)
+                thermal_summary_switch_fn = switch_fn
+            else:
+                thermal_summary_switch_fn = None
+        else:
+            # Legacy path (pulsim < 1.8): the summary will re-evaluate
+            # ``switch_fn(t)`` post-hoc with the converged controller
+            # state — accuracy degraded near cold-start, see the bug
+            # documented above. Keeps the GUI runnable on stale installs.
+            thermal_summary_switch_fn = (
+                composed_loop.switch_fn
+                if composed_loop is not None
+                else switch_fn
+            )
+
         simulate_kwargs: dict[str, Any] = {"t_start": t_start}
         if composed_loop is not None:
             simulate_kwargs["closed_loops"] = [composed_loop]
@@ -6609,15 +6663,15 @@ class PulsimBackend(SimulationBackend):
         # ``result.signals`` — thermal_service can then build per-
         # device ThermalDeviceResult entries instead of the legacy
         # single "system" lump.
-        composed_switch_fn = (
-            composed_loop.switch_fn
-            if composed_loop is not None
-            else switch_fn
-        )
+        # ``thermal_summary_switch_fn`` is the SwitchMaskRecorder we
+        # wrapped above (pulsim 1.8+) — the summary detects the
+        # recorder and replays the historical mask. On pulsim 1.7 it's
+        # the bare ``switch_fn`` and the summary re-evaluates the
+        # controller post-hoc (legacy, accuracy-degraded path).
         electrothermal_rows = self._compute_per_device_electrothermal(
             builder=builder,
             sim_result=res,
-            switch_fn=composed_switch_fn,
+            switch_fn=thermal_summary_switch_fn,
             t_amb_celsius=25.0,
         )
 

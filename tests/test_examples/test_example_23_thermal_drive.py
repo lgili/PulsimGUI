@@ -229,37 +229,42 @@ def test_hs_inv_devices_all_use_cauer_topology(converted_circuit) -> None:
 
 
 def test_t_amb_is_warm_compressor_value(converted_circuit) -> None:
-    """The schematic is set to T_amb = 40 °C (warm sealed compressor
-    housing). Was 50 °C originally — dropped after the v1.7 stability
-    fix because the demo's tempco feedback gain combined with 50 °C
-    pushed devices into the bad-sample band; 40 °C leaves headroom
-    while staying realistic for a working compressor housing."""
+    """The schematic is set to T_amb = 50 °C (warm sealed compressor
+    housing — the realistic value for a working hermetic compressor).
+    Pulsim 1.8's ``SwitchMaskRecorder`` (wired in the GUI backend)
+    eliminates the cold-start loss-reconstruction artifact that
+    forced the temporary 40 °C drop in the v1.7 era; the demo is back
+    on its original 50 °C ambient."""
     descs = list(converted_circuit.shared_heatsink_descriptors)
     for d in descs:
-        assert d["T_amb_C"] == 40.0, (
-            f"{d['name']} has T_amb_C={d['T_amb_C']}, expected 40.0 (compressor housing)."
+        assert d["T_amb_C"] == 50.0, (
+            f"{d['name']} has T_amb_C={d['T_amb_C']}, expected 50.0 (compressor housing)."
         )
 
 
 def test_simulation_settings_target_thermal_window(example_circuit_data) -> None:
     """The schematic's ``simulation_settings`` must request the
-    50 ms-wide stable window with ``start_from_dc_op=True``. Longer
-    runs trip pulsim's PWM-switch loss reconstruction artifact on
-    Q_boost (see the build script's tstop comment for the full story);
-    the short window + DC-OP start keeps the demo numerically clean."""
+    1-second full-thermal-time-constant window with
+    ``start_from_dc_op=True``. The 1 s window lets the slow τ ≈ 80 ms
+    Foster pole on Q_boost fully charge so the demo shows the complete
+    cold-start → warm-up → steady-state arc. Pulsim 1.8's
+    ``SwitchMaskRecorder`` (wired in the backend adapter) keeps the
+    cold-start window numerically clean — the v1.7-era 50 ms cap is no
+    longer needed."""
     project = example_circuit_data["_raw_project"]
     settings = project.simulation_settings
-    assert settings.tstop == pytest.approx(0.05), (
-        f"tstop={settings.tstop}; ex 23 targets the 50 ms stable window."
+    assert settings.tstop == pytest.approx(1.0), (
+        f"tstop={settings.tstop}; ex 23 targets the 1 s full-thermal window."
     )
-    assert settings.thermal_ambient == pytest.approx(40.0), (
-        f"thermal_ambient={settings.thermal_ambient}; ex 23 targets 40 °C."
+    assert settings.thermal_ambient == pytest.approx(50.0), (
+        f"thermal_ambient={settings.thermal_ambient}; ex 23 targets 50 °C."
     )
     assert settings.enable_losses is True
-    # pulsim 1.7 — ``start_from_dc_op`` is the critical setting that
-    # keeps the simulation out of the cold-start transient where the
-    # PWM-switch loss reconstruction explodes. Without it, the demo's
-    # Q_boost reads 100+ kW of fake conduction loss.
+    # ``start_from_dc_op`` is no longer required for thermal correctness
+    # (pulsim 1.8 made it orthogonal) but it remains the right default
+    # — skipping the LC ringing gives cleaner electrical waveforms and
+    # converges the closed loops in a few PWM cycles instead of a
+    # couple of line cycles.
     assert settings.start_from_dc_op is True, (
-        "ex 23 needs start_from_dc_op=True for numerical stability."
+        "ex 23 keeps start_from_dc_op=True as an electrical-stability win."
     )

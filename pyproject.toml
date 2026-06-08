@@ -60,7 +60,22 @@ dependencies = [
     #           per-device Foster ``compute_temperature``) is
     #           untouched (back-compat preserved); the new features
     #           are upgrade opportunities for later GUI exposure.
-    "pulsim>=1.7.0",
+    #   1.8.0 — ``SwitchMaskRecorder`` (drop-in ``switch_fn`` wrapper
+    #           that records the actual per-step mask history so
+    #           ``device_thermal_summary`` replays the REAL switch
+    #           state instead of re-evaluating a closed-loop controller
+    #           whose post-sim state has converged — fixes the
+    #           ex 23 ``Q_boost`` ~130 000 °C cold-start artifact) and
+    #           ``add_c_block`` accepting ``code=`` (inline C/C++
+    #           auto-compiled) and ``lib=`` (pre-built shared library)
+    #           alongside the existing ``fn=`` (Python callable). The
+    #           GUI's transient adapter wraps the simulate-time
+    #           ``switch_fn`` in ``SwitchMaskRecorder`` and passes the
+    #           same recorder to the thermal summary so the historical
+    #           mask is honoured; a feature-detect keeps the GUI
+    #           runnable on stale pulsim 1.7 (bare ``switch_fn`` —
+    #           thermal accuracy degraded but the sim still runs).
+    "pulsim>=1.8.0",
     # scipy is NOT needed for the native C++ DSED engine (the headline
     # ~24× path) — pulsim 1.6.2 reaches that without it. It IS used by
     # the pure-Python BDF2 fallback for the rare circuit the native
@@ -84,7 +99,7 @@ dev = [
 # extra so `pip install pulsimgui[fast]` lights up both layers.
 fast = [
     "numba>=0.58",
-    "pulsim[fast]>=1.7.0",
+    "pulsim[fast]>=1.8.0",
 ]
 build = [
     # PyInstaller for creating standalone executables
@@ -94,7 +109,7 @@ build = [
     # macOS DMG creation
     "dmgbuild>=1.6.0;sys_platform=='darwin'",
     # Ensure pulsim backend is available for bundling
-    "pulsim>=1.7.0",
+    "pulsim>=1.8.0",
 ]
 
 [project.scripts]

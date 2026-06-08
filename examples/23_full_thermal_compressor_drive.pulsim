@@ -2,10 +2,10 @@
   "version": "1.0",
   "name": "23 Full Thermal Compressor Drive \u2014 1800 W PFC + FOC VSI with shared heatsinks (HS_BR + HS_INV), TempCo losses, T_jmax monitoring, Cauer + Foster networks",
   "created": "2026-06-04T00:00:00",
-  "modified": "2026-06-07T17:40:36.521812",
+  "modified": "2026-06-07T21:43:31.544976",
   "active_circuit": "main",
   "simulation_settings": {
-    "tstop": 0.05,
+    "tstop": 1.0,
     "dt": 5e-07,
     "max_step": 2e-06,
     "tstart": 0.0,
@@ -27,7 +27,7 @@
     "dc_source_steps": 10,
     "transient_robust_mode": true,
     "transient_auto_regularize": true,
-    "thermal_ambient": 40.0,
+    "thermal_ambient": 50.0,
     "thermal_include_switching_losses": true,
     "thermal_include_conduction_losses": true,
     "thermal_network": "foster",
@@ -79,7 +79,7 @@
             "thermal_cth": 0.1,
             "thermal_rth_stages": "0.6, 0.8, 0.4",
             "thermal_cth_stages": "0.00833, 0.0625, 0.625",
-            "thermal_temp_init": 40.0,
+            "thermal_temp_init": 50.0,
             "thermal_temp_ref": 25.0,
             "thermal_alpha": 0.004,
             "thermal_shared_sink_id": "",
@@ -213,7 +213,7 @@
             "thermal_cth": 0.1,
             "thermal_rth_stages": "0.24, 0.32, 0.24",
             "thermal_cth_stages": "0.00417, 0.0313, 0.333",
-            "thermal_temp_init": 40.0,
+            "thermal_temp_init": 50.0,
             "thermal_temp_ref": 25.0,
             "thermal_alpha": 0.004,
             "thermal_shared_sink_id": "",
@@ -280,7 +280,7 @@
             "thermal_cth": 0.1,
             "thermal_rth_stages": "0.18, 0.24, 0.18",
             "thermal_cth_stages": "0.00556, 0.0417, 0.444",
-            "thermal_temp_init": 40.0,
+            "thermal_temp_init": 50.0,
             "thermal_temp_ref": 25.0,
             "thermal_alpha": 0.004,
             "thermal_shared_sink_id": "",
@@ -288,8 +288,8 @@
             "thermal_shared_sink_cth": 0.0,
             "thermal_t_max_C": 150.0,
             "thermal_t_max_hysteresis_C": 5.0,
-            "loss_a_cond_per_C": 0.004,
-            "loss_a_sw_per_C": 0.0005
+            "loss_a_cond_per_C": 0.006,
+            "loss_a_sw_per_C": 0.001
           },
           "pins": [
             {
@@ -475,7 +475,7 @@
             "thermal_cth": 0.05,
             "thermal_rth_stages": "0.15, 0.20, 0.15",
             "thermal_cth_stages": "0.00667, 0.05, 0.533",
-            "thermal_temp_init": 40.0,
+            "thermal_temp_init": 50.0,
             "thermal_temp_ref": 25.0,
             "thermal_alpha": 0.004,
             "thermal_shared_sink_id": "",
@@ -1189,9 +1189,9 @@
           "mirrored_v": false,
           "parameters": {
             "n_devices": 1,
-            "R_th_sink_to_amb_K_per_W": 0.35,
+            "R_th_sink_to_amb_K_per_W": 0.4,
             "C_th_sink_J_per_K": 50.0,
-            "T_amb_C": 40.0,
+            "T_amb_C": 50.0,
             "case_to_sink_R_th_csv": "0.0180",
             "thermal_network": "foster"
           },
@@ -1221,9 +1221,9 @@
           "mirrored_v": false,
           "parameters": {
             "n_devices": 3,
-            "R_th_sink_to_amb_K_per_W": 0.2,
+            "R_th_sink_to_amb_K_per_W": 0.25,
             "C_th_sink_J_per_K": 50.0,
-            "T_amb_C": 40.0,
+            "T_amb_C": 50.0,
             "case_to_sink_R_th_csv": "0.0360, 0.0360, 0.025",
             "thermal_network": "cauer"
           },
