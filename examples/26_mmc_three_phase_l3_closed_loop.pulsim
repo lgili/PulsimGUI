@@ -2,7 +2,7 @@
   "version": "1.0",
   "name": "26 MMC 3-Phase Closed-Loop L3 \u2014 dq current control (switching)",
   "created": "2026-06-07T21:46:19",
-  "modified": "2026-06-07T23:21:01",
+  "modified": "2026-06-07T23:29:24",
   "active_circuit": "main",
   "simulation_settings": {
     "engine": "pwl",
@@ -161,7 +161,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -205,7 +206,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -305,7 +307,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -349,7 +352,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -449,7 +453,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -493,7 +498,8 @@
             "modulation_scheme": "PSC",
             "t_dead": 1e-06,
             "t_min": 1e-07,
-            "balancing": "sort_and_select"
+            "balancing": "sort_and_select",
+            "v_c0_spread": 60.0
           },
           "pins": [
             {
@@ -2035,6 +2041,89 @@
               "name": "NET",
               "x": 0.0,
               "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "9b4432d8-9b23-4f4c-b676-7d59c5aa3179",
+          "type": "ELECTRICAL_SCOPE",
+          "name": "Scope_SMBalance",
+          "x": 820.0,
+          "y": 560.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "channel_count": 6,
+            "channels": [
+              {
+                "signal": "ARM_uA.v_C_spread",
+                "label": "spread uA",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lA.v_C_spread",
+                "label": "spread lA",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_uB.v_C_spread",
+                "label": "spread uB",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lB.v_C_spread",
+                "label": "spread lB",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_uC.v_C_spread",
+                "label": "spread uC",
+                "overlay": true
+              },
+              {
+                "signal": "ARM_lC.v_C_spread",
+                "label": "spread lC",
+                "overlay": true
+              }
+            ]
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "CH1",
+              "x": -40.0,
+              "y": -50.0
+            },
+            {
+              "index": 1,
+              "name": "CH2",
+              "x": -40.0,
+              "y": -30.0
+            },
+            {
+              "index": 2,
+              "name": "CH3",
+              "x": -40.0,
+              "y": -10.0
+            },
+            {
+              "index": 3,
+              "name": "CH4",
+              "x": -40.0,
+              "y": 10.0
+            },
+            {
+              "index": 4,
+              "name": "CH5",
+              "x": -40.0,
+              "y": 30.0
+            },
+            {
+              "index": 5,
+              "name": "CH6",
+              "x": -40.0,
+              "y": 50.0
             }
           ]
         }

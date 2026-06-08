@@ -1737,6 +1737,19 @@ class CircuitConverter:
             mref_overrides = getattr(circuit, "mmc_mref_overrides", None) or {}
             mod_value = mref_overrides.get(name, m_ref_const)
             mod_kw = {"m_b" if level == "L0" else "m_ref": mod_value}
+            # Optional initial submodule-cap imbalance (L3 only): seed the N
+            # submodule voltages spread ``v_c0_spread`` apart (sum still v_c0)
+            # so the sort-and-select balancing is visible converging to 0 on a
+            # ``v_C_spread`` scope. Default 0 ⇒ all submodules start equal.
+            extra_kw: dict[str, Any] = {}
+            if level == "L3":
+                spread = self._as_float(params.get("v_c0_spread"), default=0.0)
+                if spread > 0.0 and n_sm >= 2:
+                    import numpy as np
+                    per_sm = v_c0 / n_sm
+                    extra_kw["initial_v_C_per_sm"] = (
+                        per_sm + np.linspace(-spread / 2.0, spread / 2.0, n_sm)
+                    )
             arm_handle = helper(
                 circuit._builder,
                 name=name,
@@ -1744,6 +1757,7 @@ class CircuitConverter:
                 node_b=bot_name,
                 params=mmc_p,
                 **mod_kw,
+                **extra_kw,
             )
             # Record the arm so the backend can attach pulsim's observer
             # (which advances the capacitor-voltage dynamics each step) and

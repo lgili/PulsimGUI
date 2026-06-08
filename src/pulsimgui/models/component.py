@@ -2020,6 +2020,9 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "t_min": 1.0e-7,
         # L3-only (cap-voltage balancing strategy)
         "balancing": "sort_and_select",         # "sort_and_select" | "none"
+        "v_c0_spread": 0.0,                      # initial submodule-cap imbalance
+                                                 # [V] (L3) — sort_and_select
+                                                 # drives it to 0; 0 = balanced
     },
     ComponentType.MMC_CONTROLLER: {
         # Open-loop sinusoidal modulation (each phase 120° apart; the
