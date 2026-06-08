@@ -6270,6 +6270,27 @@ class PulsimBackend(SimulationBackend):
         vsi_switch_fns = (
             list(vsi_switch_fns) + list(foc_switch_fns) + list(sixstep_switch_fns)
         )
+
+        # Pulsim 1.8 path-B gate drive: when the converter detected one
+        # or more MOSFETs whose gate net is stamped by a C_BLOCK output
+        # (``circuit.cblock_gate_drive_descriptors``), synthesise a
+        # ``switch_fn(t)`` that closes over the live
+        # ``CBlockHandle.outputs`` buffer (kept alive by
+        # ``circuit._c_block_handles_by_id``) and thresholds each gate
+        # voltage against the MOSFET's ``v_th``. The callable returns a
+        # full-width SwitchStateMask touching ONLY the gate-driven
+        # switch bits, so OR'ing it with the base / VSI switch_fns
+        # preserves every other bit.
+        #
+        # No-op on circuits where the descriptor list is empty (path A
+        # SISO chains, open-loop circuits, etc.) — the existing
+        # composition is untouched.
+        cblock_gate_drive_fn = self._build_cblock_gate_drive_switch_fn(
+            circuit, builder,
+        )
+        if cblock_gate_drive_fn is not None:
+            vsi_switch_fns.append(cblock_gate_drive_fn)
+
         if vsi_switch_fns:
             num_switches = int(getattr(builder.graph, "num_switches", 0))
             make_combined = getattr(
@@ -8572,6 +8593,15 @@ class PulsimBackend(SimulationBackend):
             if isinstance(d, dict) and str(d.get("cblock_name") or "").strip()
         }
 
+        # Path-B gate-drive descriptors need a stable handle lookup so
+        # the switch_fn closure can read the live ``CBlockHandle.outputs``
+        # buffer. We stash handles keyed by component_id (preferred) +
+        # name (back-compat) on the circuit so a later post-pass
+        # (``_register_cblock_gate_drives``) can assemble the switch_fn
+        # against the same instances pulsim is updating each step.
+        handles_by_id: dict[str, Any] = {}
+        handles_by_name: dict[str, Any] = {}
+
         registered = 0
         for rec in records:
             if not isinstance(rec, dict):
@@ -8617,6 +8647,7 @@ class PulsimBackend(SimulationBackend):
 
             impl = str(rec.get("implementation", "") or "").strip().lower()
             try:
+                handle: Any = None
                 if impl in {"python_numba", "python", "fast_block"}:
                     py_source = str(rec.get("python_source") or "")
                     if not py_source.strip():
@@ -8643,12 +8674,12 @@ class PulsimBackend(SimulationBackend):
                         n_inputs=len(inputs),
                         n_outputs=len(outputs),
                     )
-                    add_c_block(builder, fn=shim, **common_kwargs)
+                    handle = add_c_block(builder, fn=shim, **common_kwargs)
                 elif impl in {"lib", "library"}:
                     lib_path = str(rec.get("lib_path") or "").strip()
                     if not lib_path:
                         continue
-                    add_c_block(builder, lib=lib_path, **common_kwargs)
+                    handle = add_c_block(builder, lib=lib_path, **common_kwargs)
                 elif impl == "source":
                     source_code = str(rec.get("source_code") or "")
                     if not source_code.strip():
@@ -8666,7 +8697,7 @@ class PulsimBackend(SimulationBackend):
                     extra_flags = [
                         str(item) for item in extra_flags_raw if str(item).strip()
                     ] or None
-                    add_c_block(
+                    handle = add_c_block(
                         builder,
                         code=source_code,
                         lang="c",
@@ -8678,10 +8709,182 @@ class PulsimBackend(SimulationBackend):
             except Exception:  # noqa: BLE001 — one bad block must not kill the sim
                 continue
 
+            # Stash the live handle so the gate-drive post-pass can
+            # close over ``handle.outputs`` for switch_fn synthesis.
+            # Both id + name lookups so the downstream pass can match
+            # whichever the converter recorded on the descriptor.
+            if handle is not None:
+                comp_id = str(rec.get("component_id") or "").strip()
+                if comp_id:
+                    handles_by_id[comp_id] = handle
+                if name:
+                    handles_by_name[name] = handle
+
             self._pop_legacy_c_block_record(circuit, name)
             registered += 1
 
+        # Expose the handle map on the circuit so
+        # ``_register_cblock_gate_drives`` (called immediately after
+        # this method) can build the switch_fn closure. Keep the
+        # handles alive by storing them on the circuit — pulsim's
+        # ``add_c_block`` registers a ``weakref.finalize`` for the
+        # native teardown, so a GC'd handle would call ``term()`` on
+        # the still-live block. The circuit attribute keeps a strong
+        # ref for the rest of the simulation.
+        existing_id = getattr(circuit, "_c_block_handles_by_id", None)
+        if isinstance(existing_id, dict):
+            existing_id.update(handles_by_id)
+        else:
+            setattr(circuit, "_c_block_handles_by_id", handles_by_id)
+        existing_name = getattr(circuit, "_c_block_handles_by_name", None)
+        if isinstance(existing_name, dict):
+            existing_name.update(handles_by_name)
+        else:
+            setattr(circuit, "_c_block_handles_by_name", handles_by_name)
+
         return registered
+
+    def _build_cblock_gate_drive_switch_fn(
+        self,
+        circuit: Any,
+        builder: Any,
+    ) -> Callable[[float], Any] | None:
+        """Synthesise a ``switch_fn(t)`` from
+        ``circuit.cblock_gate_drive_descriptors``.
+
+        Topology: a C_BLOCK whose outputs are ground-referenced
+        controlled voltage sources stamped onto MOSFET gate nets. The
+        v1.3+ MOSFET model is a 2-terminal switch driven by
+        ``switch_fn(t) -> SwitchStateMask``, so the gate-net voltage
+        is invisible to the switch-decision path — we must close over
+        the live ``CBlockHandle.outputs`` buffer (the same numpy array
+        ``add_c_block``'s ``step_observer`` mutates in place each
+        block fire) and threshold each gate voltage against the
+        MOSFET's ``v_th`` per simulation step.
+
+        Composes safely with the existing ``switch_fn`` / VSI
+        switch_fns through ``make_combined_switch_fn`` (OR of masks):
+        the returned callable touches ONLY the switch bits the
+        gate-drive descriptors claim, leaving every other bit at OFF
+        for the OR to layer the other paths' decisions.
+
+        Returns ``None`` when:
+          * No gate-drive descriptors exist (the converter found no
+            C_BLOCK-driven MOSFETs — every other path is untouched).
+          * No C_BLOCK handles were registered (pulsim < 1.8 / the
+            post-pass was a no-op — degrades to all-OFF, same as the
+            legacy behaviour for this topology).
+          * ``SwitchStateMask`` is unavailable on the host pulsim
+            module (extremely old kernel — we can't synthesise the
+            mask without it).
+        """
+        descriptors = list(
+            getattr(circuit, "cblock_gate_drive_descriptors", []) or []
+        )
+        if not descriptors:
+            return None
+
+        handles_by_id = dict(
+            getattr(circuit, "_c_block_handles_by_id", {}) or {}
+        )
+        handles_by_name = dict(
+            getattr(circuit, "_c_block_handles_by_name", {}) or {}
+        )
+        if not handles_by_id and not handles_by_name:
+            # The post-pass didn't register anything — pulsim < 1.8 or
+            # all blocks failed to register. Either way the user-side
+            # ``handle.outputs`` buffer doesn't exist; nothing to
+            # threshold.
+            return None
+
+        mask_cls = getattr(self._module, "SwitchStateMask", None)
+        if mask_cls is None:
+            return None
+
+        try:
+            num_switches = int(builder.graph.num_switches)
+        except Exception:  # noqa: BLE001
+            num_switches = int(getattr(circuit, "num_switches", 0))
+        if num_switches <= 0:
+            return None
+
+        switch_indices = dict(getattr(circuit, "switch_indices", {}) or {})
+
+        # Pre-resolve every descriptor into a tight (switch_idx,
+        # outputs_buffer, output_index, threshold) tuple. Resolving up
+        # front avoids per-step dict lookups in the closure — the
+        # closure becomes a flat loop over arrays.
+        resolved: list[tuple[int, Any, int, float]] = []
+        for desc in descriptors:
+            if not isinstance(desc, dict):
+                continue
+            mosfet_name = str(desc.get("mosfet_name") or "").strip()
+            if not mosfet_name:
+                continue
+            switch_idx = switch_indices.get(mosfet_name)
+            if switch_idx is None:
+                # MOSFET wasn't registered as a switch (the device
+                # might have been suppressed for an unrelated reason).
+                # Skip without failing — the rest of the descriptors
+                # still bind.
+                continue
+
+            handle = None
+            cb_id = str(desc.get("c_block_component_id") or "").strip()
+            cb_name = str(desc.get("c_block_name") or "").strip()
+            if cb_id:
+                handle = handles_by_id.get(cb_id)
+            if handle is None and cb_name:
+                handle = handles_by_name.get(cb_name)
+            if handle is None:
+                continue
+            outputs = getattr(handle, "outputs", None)
+            if outputs is None:
+                continue
+
+            try:
+                out_idx = int(desc.get("c_block_output_index", 0))
+            except (TypeError, ValueError):
+                continue
+            if out_idx < 0:
+                continue
+            # Defensive: the handle's buffer length is fixed at
+            # add_c_block time; skip descriptors that point past the
+            # end (would IndexError every step otherwise).
+            try:
+                if out_idx >= len(outputs):
+                    continue
+            except TypeError:
+                continue
+
+            try:
+                threshold = float(desc.get("v_threshold", 3.0))
+            except (TypeError, ValueError):
+                threshold = 3.0
+
+            resolved.append((int(switch_idx), outputs, out_idx, threshold))
+
+        if not resolved:
+            return None
+
+        # Cache the closed-over locals — Python attribute lookups are
+        # not cheap when this fires every sim step.
+        _mask_cls = mask_cls
+        _num = int(num_switches)
+        _bindings = tuple(resolved)
+
+        def cblock_gate_drive_switch_fn(t: float) -> Any:  # noqa: ARG001
+            mask = _mask_cls(_num)
+            for switch_idx, outputs, out_idx, threshold in _bindings:
+                # Read the live, in-place ZOH buffer pulsim mutates
+                # each block fire. ``step_observer`` runs before
+                # ``switch_fn`` on the same sim step, so the value is
+                # one block-tick fresh.
+                if float(outputs[out_idx]) > threshold:
+                    mask.set(switch_idx, True)
+            return mask
+
+        return cblock_gate_drive_switch_fn
 
     @staticmethod
     def _make_c_block_python_shim(
