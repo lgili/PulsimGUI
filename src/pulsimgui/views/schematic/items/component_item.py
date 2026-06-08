@@ -1456,6 +1456,31 @@ class PFCBoostControllerItem(BlockComponentItem):
             return f"{mode} · PFC"
 
 
+class MMCControllerItem(BlockComponentItem):
+    """Item for the 3-phase MMC controller block.
+
+    Six modulation outputs (A/B/C × upper/lower) on the right edge. Without a
+    dedicated item it fell back to the plain ``ComponentItem`` whose fixed body
+    is shorter than the 120-px pin span, leaving the output pins floating
+    outside the card. As a block its body grows to the pin extent.
+    """
+
+    ACCENT_COLOR = QColor(90, 170, 110)  # Green — distinct from FOC / PFC
+
+    def block_label(self) -> str:
+        return "MMC"
+
+    def _get_value_text(self) -> str:
+        params = self._component.parameters or {}
+        mode = str(params.get("control_mode", "open_loop") or "open_loop").lower()
+        if mode.startswith("closed"):
+            return "closed-loop · dq" if params.get("current_control") else "closed-loop"
+        try:
+            return f"open-loop · {float(params.get('frequency', 60.0) or 60.0):g} Hz"
+        except (TypeError, ValueError):
+            return "open-loop"
+
+
 class HeatsinkItem(BlockComponentItem):
     """Block item for the SharedHeatsink component (pulsim 1.7).
 
@@ -4279,6 +4304,7 @@ def create_component_item(component: Component) -> ComponentItem:
         ComponentType.FOC_CONTROLLER: FOCControllerItem,
         ComponentType.PFC_BOOST_CONTROLLER: PFCBoostControllerItem,
         ComponentType.SIXSTEP_CONTROLLER: SixStepControllerItem,
+        ComponentType.MMC_CONTROLLER: MMCControllerItem,
         ComponentType.HEATSINK: HeatsinkItem,
         ComponentType.GAIN: GainItem,
         ComponentType.SUM: SumItem,
