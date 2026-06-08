@@ -249,8 +249,14 @@ class CircuitConverter:
         # arm passes m_ref to pulsim at construction time). Empty map ⇒
         # constant-modulation MMCs are untouched.
         try:
-            mmc_overrides = self._infer_mmc_arm_mref_overrides(components, node_map)
+            mmc_overrides, mmc_controller = self._infer_mmc_arm_mref_overrides(
+                components, node_map,
+            )
             setattr(circuit, "mmc_mref_overrides", mmc_overrides)
+            # A non-None controller means closed-loop mode: stash it so the
+            # backend can attach the control step-observer (it reads arm
+            # currents + v_C and writes the insertion indices each tick).
+            setattr(circuit, "_mmc_controller", mmc_controller)
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
@@ -1673,8 +1679,16 @@ class CircuitConverter:
                 "c_sm": c_sm,
                 "sm_type": sm_type_value,
                 "v_c0": v_c0,
-                "r_p": r_arm,
             }
+            # ``r_p`` in pulsim's arm models is the capacitor's PARALLEL
+            # leakage resistance, NOT the series arm resistance. Feeding the
+            # (small) series ``r_arm`` here bleeds the L0 average-arm caps dry
+            # in ~r_arm·C_arm seconds (e.g. 0.1 Ω · 1.2 mF ≈ 120 µs) — which
+            # makes any open-loop or closed-loop MMC inverter cap-collapse.
+            # Leave the L0 cap lossless (pulsim default r_p=None); the
+            # switching models keep the historical mapping for now.
+            if level != "L0":
+                mmc_kwargs["r_p"] = r_arm
             # L1/L2/L3 take a carrier frequency and modulation scheme
             if level in {"L1", "L2", "L3"}:
                 mmc_kwargs["f_carrier"] = f_carrier
@@ -3939,9 +3953,16 @@ class CircuitConverter:
         self,
         components: list[dict[str, Any]],
         node_map: dict[str, list[str]],
-    ) -> dict[str, Any]:
-        """Map each MMC_ARM name → an open-loop ``m_ref(t)`` callable when an
-        MMC_CONTROLLER output pin is wired to that arm's ``M_REF`` pin.
+    ) -> tuple[dict[str, Any], Any]:
+        """Map each MMC_ARM name → an ``m_ref`` source when an MMC_CONTROLLER
+        output pin is wired to that arm's ``M_REF`` pin.
+
+        Returns ``(overrides, controller)``. ``controller`` is a
+        :class:`~pulsimgui.services.mmc_control.MmcClosedLoopController` when the
+        wired controller's ``control_mode`` is ``closed_loop`` and all six arms
+        resolve (the per-arm override then just reads its live insertion index);
+        otherwise it is ``None`` and the overrides are open-loop ``m_ref(t)``
+        callables.
 
         The controller exposes six semantic outputs (phase A/B/C × upper/
         lower). For a pin wired to an arm we build::
@@ -3967,7 +3988,7 @@ class CircuitConverter:
         ctrls = by_type.get(ComponentType.MMC_CONTROLLER, [])
         arms = by_type.get(ComponentType.MMC_ARM, [])
         if not ctrls or not arms:
-            return {}
+            return {}, None
 
         def _pin_nodes_of(comp: dict[str, Any]) -> list[Any]:
             local = comp.get("pin_nodes")
@@ -3997,6 +4018,28 @@ class CircuitConverter:
                 )
 
         overrides: dict[str, Any] = {}
+
+        # Closed-loop: if a controller requests it and all six arms resolve,
+        # build one shared MmcClosedLoopController. The per-arm override just
+        # reads its held insertion index — the backend control observer drives
+        # the actual law from measured arm currents + capacitor voltages.
+        for ctrl in ctrls:
+            params = ctrl.get("parameters")
+            params = params if isinstance(params, dict) else {}
+            mode = str(params.get("control_mode", "open_loop")).strip().lower()
+            if mode not in ("closed_loop", "closed-loop", "closed"):
+                continue
+            controller = self._build_mmc_closed_loop_controller(
+                params, _pin_nodes_of(ctrl), pin_role, arm_net_to_name,
+            )
+            if controller is None:
+                continue
+            for upper, lower in controller.phase_arms:
+                overrides[upper] = self._make_mref_reader(controller, upper)
+                overrides[lower] = self._make_mref_reader(controller, lower)
+            return overrides, controller
+
+        # Open-loop: fixed sinusoidal modulation (the default).
         for ctrl in ctrls:
             params = ctrl.get("parameters")
             params = params if isinstance(params, dict) else {}
@@ -4027,7 +4070,64 @@ class CircuitConverter:
                     return _off + _s * _amp * math.sin(_w * t + _phi)
 
                 overrides[arm_name] = _mref
-        return overrides
+        return overrides, None
+
+    @staticmethod
+    def _make_mref_reader(controller: Any, arm_name: str):
+        """A pulsim ``m_b(t)`` callable reading the controller's held index."""
+        def _reader(_t: float, _c=controller, _n=arm_name) -> float:
+            return float(_c.m_ref(_n))
+        return _reader
+
+    def _build_mmc_closed_loop_controller(
+        self,
+        params: dict[str, Any],
+        ctrl_nodes: list[Any],
+        pin_role: dict[int, tuple[int, bool]],
+        arm_net_to_name: dict[str, str],
+    ) -> Any:
+        """Build an :class:`MmcClosedLoopController` from a controller block,
+        or ``None`` if the six arms don't all resolve from its output pins."""
+        # phase 0/1/2 → [upper_name, lower_name]
+        pairs: dict[int, list[str | None]] = {0: [None, None], 1: [None, None], 2: [None, None]}
+        for pin_idx, (phase_i, is_upper) in pin_role.items():
+            if pin_idx >= len(ctrl_nodes):
+                continue
+            out_net = str(ctrl_nodes[pin_idx] or "").strip()
+            arm_name = arm_net_to_name.get(out_net) if out_net else None
+            if arm_name:
+                pairs[phase_i][0 if is_upper else 1] = arm_name
+        phase_arms: list[tuple[str, str]] = []
+        for phase_i in (0, 1, 2):
+            upper, lower = pairs[phase_i]
+            if not upper or not lower:
+                return None  # incomplete wiring → fall back to open loop
+            phase_arms.append((upper, lower))
+
+        try:
+            from pulsimgui.services.mmc_control import MmcClosedLoopController
+        except Exception:  # noqa: BLE001 - missing module → open loop
+            return None
+
+        f = self._as_float
+        vdc_half = f(params.get("vdc_half"), default=400.0)
+        current_control = bool(params.get("current_control", False))
+        return MmcClosedLoopController(
+            phase_arms=phase_arms,
+            vdc_half=vdc_half,
+            vc_ref=f(params.get("vc_ref"), default=2.0 * vdc_half),
+            freq=f(params.get("frequency"), default=60.0),
+            mod_index=f(params.get("modulation_index"), default=0.6),
+            phase_deg=f(params.get("phase_deg"), default=0.0),
+            arm_l=f(params.get("arm_inductance"), default=5.0e-3),
+            arm_r=f(params.get("arm_resistance"), default=0.1),
+            control_dt=f(params.get("sample_time"), default=1.0e-5) or 1.0e-5,
+            current_control=current_control,
+            id_ref=f(params.get("id_ref"), default=0.0),
+            iq_ref=f(params.get("iq_ref"), default=0.0),
+            load_l=f(params.get("load_inductance"), default=10.0e-3),
+            load_r=f(params.get("load_resistance"), default=15.0),
+        )
 
     def _infer_shared_heatsink_loops(
         self,

@@ -270,8 +270,9 @@ def test_mmc_controller_drives_arm_mref_sinusoid() -> None:
 
     converter = CircuitConverter(_FakeBackend)
     components, node_map = _mmc_ctrl_and_arms()
-    ov = converter._infer_mmc_arm_mref_overrides(components, node_map)
+    ov, controller = converter._infer_mmc_arm_mref_overrides(components, node_map)
 
+    assert controller is None  # open-loop by default
     assert set(ov) == {"ARM_Au", "ARM_Al", "ARM_Bu", "ARM_Bl", "ARM_Cu", "ARM_Cl"}
     assert all(callable(f) for f in ov.values())
 
@@ -321,7 +322,7 @@ def test_mmc_arms_without_controller_keep_constant_mref() -> None:
     """No MMC_CONTROLLER ⇒ empty override map (arms keep ``m_ref_constant``)."""
     converter = CircuitConverter(_FakeBackend)
     arms = [{"id": "au", "name": "ARM_Au", "type": "MMC_ARM", "parameters": {}}]
-    ov = converter._infer_mmc_arm_mref_overrides(arms, {"au": ["dcp", "bot", "nAU"]})
+    ov, _ = converter._infer_mmc_arm_mref_overrides(arms, {"au": ["dcp", "bot", "nAU"]})
     assert ov == {}
 
 

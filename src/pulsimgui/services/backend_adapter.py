@@ -7760,11 +7760,41 @@ class PulsimBackend(SimulationBackend):
                 mmc_obs, mmc_b_extra = avg_maker(builder, handles, dt=float(dt))
             except Exception:  # noqa: BLE001 - one bad group shouldn't abort
                 mmc_obs = mmc_b_extra = None
+            arm_pairs = [(str(s.get("name") or "ARM"), s["handle"]) for s in avg_specs]
+
+            # Closed-loop control: a controller stashed by the converter drives
+            # the arms' insertion indices from measured state. Append its step
+            # observer BEFORE mmc_obs so it samples v_C(t) (the arm current is
+            # read from the converged solution vector x at this step's branch
+            # row; mmc_obs then advances v_C to t+dt). The arm m_b callables
+            # already read controller.m_ref, so the index it writes here lands
+            # on the *next* solve — a standard one-tick discrete-control delay.
+            controller = getattr(circuit, "_mmc_controller", None)
+            if controller is not None:
+                try:
+                    src_idx = {
+                        name: builder.pool.branch_var_id_for_source(
+                            h.source_branch_id, builder.graph,
+                        )
+                        for name, h in arm_pairs
+                    }
+                except Exception:  # noqa: BLE001 - no index map ⇒ skip control
+                    src_idx = None
+                if src_idx:
+                    def _mmc_control(
+                        t: float, x: Any,
+                        _ctrl=controller, _idx=src_idx, _pairs=arm_pairs,
+                    ) -> None:
+                        currents = {nm: float(x[_idx[nm]]) for nm, _ in _pairs}
+                        vcap = {nm: float(getattr(h, "v_C", 0.0)) for nm, h in _pairs}
+                        _ctrl.update(float(t), currents, vcap)
+
+                    step_observers.append(_mmc_control)
+
             if callable(mmc_obs):
                 step_observers.append(mmc_obs)
             if callable(mmc_b_extra):
                 b_extra_fns.append(mmc_b_extra)
-            arm_pairs = [(str(s.get("name") or "ARM"), s["handle"]) for s in avg_specs]
             mmc_trace: dict[str, Any] = {
                 "t": [], "v_C": {nm: [] for nm, _ in arm_pairs},
             }

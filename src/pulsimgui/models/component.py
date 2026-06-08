@@ -2030,6 +2030,22 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "modulation_index": 0.8,    # AC modulation depth (0..1, peak)
         "frequency": 60.0,          # output AC frequency [Hz]
         "phase_deg": 0.0,           # phase-A reference angle [deg]
+        # --- Closed-loop control (control_mode="closed_loop") ---
+        # Arm-energy balancing + circulating-current suppression keep the
+        # arm capacitors stable; with current_control the dq loop also
+        # regulates the load current to (id_ref, iq_ref). Gains are sized
+        # automatically from the arm/load values below.
+        "control_mode": "open_loop",   # "open_loop" | "closed_loop"
+        "vdc_half": 400.0,             # half DC-bus voltage [V]
+        "vc_ref": 800.0,               # target mean arm-cap voltage [V]
+        "arm_inductance": 5.0e-3,      # per-arm inductance [H] (gain sizing)
+        "arm_resistance": 0.1,         # per-arm resistance [Ω]
+        "current_control": False,      # enable dq output-current loop
+        "id_ref": 0.0,                 # d-axis current reference [A]
+        "iq_ref": 0.0,                 # q-axis current reference [A]
+        "load_inductance": 10.0e-3,    # load L [H] (current-loop feed-forward)
+        "load_resistance": 15.0,       # load R [Ω]
+        "sample_time": 1.0e-5,         # controller tick [s]
     },
 
     # Three-phase / vector control (Pulsim Phase 28)

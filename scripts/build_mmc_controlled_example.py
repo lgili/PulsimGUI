@@ -21,15 +21,16 @@ phase-A arm currents.
 
 NOTE — this is the OPEN-LOOP stepping stone. With fixed sinusoidal
 modulation and no circulating-current / energy control, the arm capacitor
-voltages are only marginally stable: the AC modulation pumps a net energy
-imbalance into the arms and v_C runs away (Scope_CapVoltages shows it
-collapse within a few ms), so the 3φ output is clean only at the very
-start and then sags/unbalances. That instability is the whole point of the
-*next* step — a closed-loop controller (dq output-current control +
-circulating-current suppression + arm-energy balancing) actively holds v_C
-and yields sustained balanced AC. This example exists to prove the
-end-to-end path (MMC_CONTROLLER → arm M_REF → L0 observer telemetry →
-scopes) and to motivate that controller.
+voltages are only *marginally* stable: they hold near 800 V but slowly
+drift and the phases gradually imbalance (Scope_CapVoltages /
+Scope_ACVoltages show one phase sag over a few cycles), because nothing
+actively regulates the internal energy. The closed-loop version —
+``examples/25_mmc_three_phase_closed_loop.pulsim`` (flip the
+MMC_CONTROLLER to ``control_mode="closed_loop"``) — adds arm-energy
+balancing + circulating-current suppression (and optional dq output-current
+control) to hold v_C tight and keep the 3φ output balanced and sustained.
+This example proves the end-to-end path (MMC_CONTROLLER → arm M_REF → L0
+observer telemetry → scopes) that the controller then closes around.
 """
 from __future__ import annotations
 
