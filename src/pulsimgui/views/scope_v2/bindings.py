@@ -288,6 +288,21 @@ def _resolve_node_signals(
                     node_label=probe_name,
                 )
             )
+        elif component.type == ComponentType.MMC_ARM and pin_name in ("V_C", "V_C_SPRD"):
+            # MMC arm telemetry outputs: V_C (aggregate cap voltage, all levels)
+            # and V_C_SPRD (L3 submodule-cap spread). Keys match the backend's
+            # ``<arm>.v_C`` / ``<arm>.v_C_spread`` observer signals.
+            expanded = True
+            arm_name = component.name or "ARM"
+            suffix = "v_C" if pin_name == "V_C" else "v_C_spread"
+            signals.append(
+                ScopeSignal(
+                    label=f"{arm_name} {suffix}",
+                    signal_key=f"{arm_name}.{suffix}",
+                    node_id=node_id,
+                    node_label=arm_name,
+                )
+            )
         elif is_motor_signal_bus_pin(component, pin_index):
             # Dynamic-machine signal bus (PMSM ``SIG``): expand to the ordered
             # list of observable channels. Wired straight to a scope channel

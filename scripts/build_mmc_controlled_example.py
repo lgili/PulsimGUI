@@ -152,10 +152,12 @@ for ph, col_x in zip(("A", "B", "C"), X_PHASE):
               pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)])
     au = comp(type="MMC_ARM", name=f"ARM_u{ph}", x=col_x, y=Y_ARM_UPPER,
               parameters={**ARM_DEFAULTS},
-              pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0)])
+              pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
+                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 40)])
     al = comp(type="MMC_ARM", name=f"ARM_l{ph}", x=col_x, y=Y_ARM_LOWER,
               parameters={**ARM_DEFAULTS},
-              pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0)])
+              pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
+                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 40)])
     ll = comp(type="INDUCTOR", name=f"L_l{ph}", x=col_x, y=Y_L_LOWER,
               parameters={"inductance": ARM_L, "initial_current": 0.0},
               pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)])
@@ -274,13 +276,9 @@ scope_i = comp(type="ELECTRICAL_SCOPE", name="Scope_PhaseCurrents", x=820, y=-16
 # L0 observer publishes; no wires needed for a direct-signal channel).
 scope_vc = comp(type="ELECTRICAL_SCOPE", name="Scope_CapVoltages", x=820, y=80,
                 parameters={"channel_count": 6, "channels": [
-                    {"signal": "ARM_uA.v_C", "label": "Vc uA", "overlay": True},
-                    {"signal": "ARM_lA.v_C", "label": "Vc lA", "overlay": True},
-                    {"signal": "ARM_uB.v_C", "label": "Vc uB", "overlay": True},
-                    {"signal": "ARM_lB.v_C", "label": "Vc lB", "overlay": True},
-                    {"signal": "ARM_uC.v_C", "label": "Vc uC", "overlay": True},
-                    {"signal": "ARM_lC.v_C", "label": "Vc lC", "overlay": True}]},
-                pins=[pin(i, f"CH{i+1}", -40, -50 + i * 20) for i in range(6)])
+                    {"label": f"Vc {a}", "overlay": True}
+                    for a in ("uA", "lA", "uB", "lB", "uC", "lC")]},
+                pins=[pin(i, f"CH{i+1}", -40, -100 + i * 40) for i in range(6)])
 scope_arm = comp(type="ELECTRICAL_SCOPE", name="Scope_ArmCurrentsA", x=820, y=320,
                  parameters={"channel_count": 2, "channels": [
                      {"label": "I_arm_uA", "overlay": True},
@@ -290,10 +288,11 @@ components += [scope_v, scope_i, scope_vc, scope_arm]
 
 # ---- Scope signal wiring (visible GOTO/FROM pairs) -------------------------
 # Each probe's measurement reaches its scope channel through a SIG_* net-label
-# pair: GOTO at the probe's signal pin, FROM at the scope channel pin. Merge is
+# pair: GOTO at the source signal pin, FROM at the scope channel pin. Merge is
 # by label text (geometry-independent), so the schematic shows what feeds every
-# scope without long routed signal wires shorting nets on load. The cap-voltage
-# scope stays on direct signals — v_C is L0 observer telemetry with no pin.
+# scope without long routed signal wires shorting nets on load. Every scope is
+# wired this way — the cap-voltage scope reads each arm's V_C telemetry pin, so
+# the whole example is reproducible in the GUI with no hidden direct signals.
 sig_links: list[tuple] = []  # (probe, sig_pin, scope, ch_idx, goto, from)
 
 
@@ -319,6 +318,16 @@ _sig(ip_arm_uA, 2, scope_arm, 0, "SIG_IARMUA",
      (X_PHASE[0] - 80, Y_L_UPPER + 80), (740, SCOPE_ARM_CH_Y[0]))
 _sig(ip_arm_lA, 2, scope_arm, 1, "SIG_IARMLA",
      (X_PHASE[0] - 80, Y_L_LOWER - 80), (740, SCOPE_ARM_CH_Y[1]))
+
+# Cap-voltage scope: each arm's V_C telemetry pin (index 3) → its channel. The
+# GOTO sits just right of the arm (arms are 300 px apart, so no merge); the
+# FROM at the grouped scope channels (40 px apart, full grid).
+_cap_arms = [arm_upper[0], arm_lower[0], arm_upper[1],
+             arm_lower[1], arm_upper[2], arm_lower[2]]
+for i, _arm in enumerate(_cap_arms):
+    _nm = _arm["name"][4:]  # "uA", "lA", ...
+    _sig(_arm, 3, scope_vc, i, f"SIG_VC_{_nm}",
+         (_arm["x"] + 90, _arm["y"] - 40), (740, 80 - 100 + i * 40))
 
 # ---------------------------------------------------------------------------
 # Wires

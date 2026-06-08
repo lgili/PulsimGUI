@@ -156,7 +156,9 @@ class _FakeBackend:
 # ---------------------------------------------------------------------------
 def test_mmc_arm_pins_and_default_parameters() -> None:
     pins = DEFAULT_PINS[ComponentType.MMC_ARM]
-    assert {p.name for p in pins} == {"TOP", "BOT", "M_REF"}
+    # TOP/BOT power terminals + M_REF modulation input + V_C / V_C_SPRD
+    # signal-domain telemetry outputs (wire to a scope).
+    assert {p.name for p in pins} == {"TOP", "BOT", "M_REF", "V_C", "V_C_SPRD"}
     params = DEFAULT_PARAMETERS[ComponentType.MMC_ARM]
     # Required keys (match pulsim 1.5 MmcArmDetailedParams surface)
     for key in ("model_fidelity", "submodule_type", "n_submodules",

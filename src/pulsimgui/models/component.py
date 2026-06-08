@@ -589,7 +589,7 @@ _CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
     ComponentType.THYRISTOR: {2},   # G
     ComponentType.TRIAC:     {2},   # G
     ComponentType.SWITCH:    {2},   # CTL
-    ComponentType.MMC_ARM:   {2},   # M_REF (signal-driven modulation ref)
+    ComponentType.MMC_ARM:   {2, 3, 4},  # M_REF (in), V_C + V_C_SPRD (telemetry out)
 }
 
 SIGNAL_DOMAIN_COMPONENT_TYPES: set[ComponentType] = {
@@ -1198,6 +1198,10 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         Pin(0, "TOP",  -40, -40),
         Pin(1, "BOT",  -40, 40),
         Pin(2, "M_REF", 40, 0),
+        # Signal-domain telemetry OUTPUTS (wire to a scope): the aggregate
+        # cap voltage, and (L3 only) the submodule-cap spread.
+        Pin(3, "V_C",      40, -40),
+        Pin(4, "V_C_SPRD", 40, 40),
     ],
     # 3-phase MMC controller: six modulation-reference outputs, one per
     # arm (phase A/B/C × upper/lower). Wire each to the matching
