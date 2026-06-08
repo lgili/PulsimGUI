@@ -226,9 +226,23 @@ def _route_wire_segments(wire: dict, comp_by_id: dict[str, dict]) -> None:
 # Pulsim 1.8 wraps this body in a generated step fn with ``t``, ``dt``,
 # ``in[i]``, ``out[j]``, ``state`` in scope, plus math.h.
 # ---------------------------------------------------------------------------
-CMC_PWM_SOURCE = r"""/* === Switched CMC, Venturini-PWM (9 gates) ===
+CMC_PWM_SOURCE = r"""/* === Switched CMC, Venturini-PWM, current-direction-aware (9 gates) ===
+ *
+ * The 9 matrix cells are true 4-quadrant BIDIRECTIONAL switches
+ * (pulsim ``add_switch`` — a symmetric conductance, NO body diode), so
+ * each cell blocks both polarities when OFF and conducts both
+ * directions when ON. That is what makes a safe Conventional Matrix
+ * Converter (CMC): there is no rectifier path to clamp the output.
  *
  * inputs  : in[0..2] = filtered input phase voltages v_a, v_b, v_c
+ *                      (from the 3 VOLTAGE_PROBE_GND on Va/Vb/Vc_FILT)
+ *           in[3..5] = output phase currents i_A, i_B, i_C
+ *                      (the user's "precisa da saida tambem" — the
+ *                      modulator must see the OUTPUT to commutate the
+ *                      inductive load safely). Each is delivered as the
+ *                      voltage across the load resistor referenced to
+ *                      ground (node LRMID_j = i_j * R_load), so
+ *                      sign(in[3+j]) == sign(i_out[j]).
  * outputs : out[0..8] = gate drives for the 9-switch matrix in
  *           ROW-MAJOR (input, output) order:
  *               out[0]=g_aA  out[1]=g_aB  out[2]=g_aC
@@ -237,19 +251,40 @@ CMC_PWM_SOURCE = r"""/* === Switched CMC, Venturini-PWM (9 gates) ===
  *
  * Algorithm: Venturini's optimum modulation. For each output phase j
  * we have three time-fractions m_aj, m_bj, m_cj summing to 1; within
- * each PWM period we connect output j to input a for m_aj * T_pwm
- * seconds, then to input b for m_bj * T_pwm, then to input c. That is,
- * exactly ONE MOSFET in column j conducts at any instant — the
- * "exactly one input per output" CMC constraint is enforced by
- * construction.
+ * each PWM period we connect output j to one input phase at a time —
+ * exactly ONE cell in column j conducts at any instant ("exactly one
+ * input per output" CMC constraint, enforced by construction).
  *
- *     m_ij(t) = (1/3) * [1 + 2*q*cos(theta_o - phi_j) * cos(theta_i - phi_i)]
+ *     m_ij(t) = (1/3) * [1 + 2*q*cos(theta_o - phi_out_j) * cos(theta_i - phi_in_i)]
  *
- * Here phi_a = 0, phi_b = -120 deg, phi_c = +120 deg (the standard
- * 3-phase reference). theta_i is the input voltage vector angle
- * (extracted via Clarke transform of the live measurements — robust
- * to grid frequency drift / unbalance) and theta_o = omega_o * t is
- * the user-set output reference angle.
+ * phi_out = {0, -120, +120} deg matches the positive-sequence load
+ * reference. phi_in = {0, +120, -120} deg is the CONJUGATE input
+ * reference required so that cos(theta_i - phi_in_i) tracks the
+ * physical positive-sequence grid voltage of phase i (a=0, b=-120,
+ * c=+120): with the naive phi_in = {0, -120, +120} the duty-weighted
+ * output collapses to ~0 V fundamental (the b/c references cancel the
+ * rotation). theta_i is the live input voltage vector angle (Clarke
+ * transform of in[0..2], robust to grid drift) and theta_o = omega_o*t.
+ *
+ * Current-direction-aware commutation
+ * -----------------------------------
+ * A matrix converter feeding an INDUCTIVE load must never open every
+ * cell in a column (the load current would have no path and the
+ * inductor voltage would spike). Because the cells are bidirectional
+ * we keep exactly one cell ON per column at all times, and we ORDER the
+ * segment sequence within each PWM period by the sign of the load
+ * current so the transition between two input phases hands the current
+ * off in a defined direction:
+ *
+ *   - i_out[j] >= 0 : sweep frac_t low->high as input a, b, c
+ *                     (ascending duty-cumsum order).
+ *   - i_out[j] <  0 : sweep the segments in the reverse order so the
+ *                     newly-closing cell takes over the (negative) load
+ *                     current cleanly before the old cell opens.
+ *
+ * The per-segment DURATIONS are identical either way (so the
+ * duty-weighted average — hence the 25 Hz output fundamental — is
+ * unchanged); only the WITHIN-PERIOD ORDER flips with current sign.
  *
  * The 5 us C_BLOCK firing rate is 10x finer than the 50 us PWM period,
  * so the within-period segment progression is correctly resolved.
@@ -260,7 +295,7 @@ const double DEG120   = 2.09439510239319549231;
 const double SQRT3_2  = 0.86602540378443864676;
 const double TWO_3    = 0.66666666666666666667;
 
-double q     = 0.5;          /* Venturini's max */
+double q     = 0.45;         /* modulation index (<= 0.5, Venturini max) */
 double f_o   = 25.0;
 double T_pwm = 5e-5;         /* 50 us = 20 kHz */
 double V_on  = 15.0;
@@ -270,6 +305,11 @@ double omega_o = TWO_PI * f_o;
 double theta_o = omega_o * t;
 
 double va = in[0], vb = in[1], vc = in[2];
+
+/* Output phase currents (sign carriers for current-direction-aware
+   commutation). in[3+j] is delivered as i_out[j] * R_load, so only its
+   SIGN matters here. */
+double i_out[3] = {in[3], in[4], in[5]};
 
 /* Clarke-transform the input vector to recover theta_i live (so the
    modulator self-adapts if the grid frequency drifts a bit). */
@@ -282,8 +322,8 @@ double frame  = fmod(t, T_pwm);
 if (frame < 0) frame += T_pwm;
 double frac_t = frame / T_pwm;
 
-double phi_in[3]  = {0.0,    -DEG120, +DEG120};
 double phi_out[3] = {0.0,    -DEG120, +DEG120};
+double phi_in[3]  = {0.0,    +DEG120, -DEG120};   /* CONJUGATE input ref */
 
 /* For each output phase j, compute the 3 Venturini duty fractions and
    pick which input phase is conducting RIGHT NOW based on frac_t. */
@@ -312,20 +352,36 @@ for (int j = 0; j < 3; j++) {
         m[2] = 0.0;
     }
 
-    /* Decide which input phase j is currently connected to. */
-    int conducting_input;
-    double cum = m[0];
-    if (frac_t < cum) {
-        conducting_input = 0;
-    } else if (frac_t < (cum += m[1])) {
-        conducting_input = 1;
+    /* Current-direction-aware segment order. Build the visiting order
+       of the 3 input phases for this column: ascending {a,b,c} when the
+       load current is >= 0, reversed {c,b,a} when it is negative. The
+       segment DURATIONS (m[]) are unchanged, so the duty-weighted
+       average output is identical — only the order in which the
+       BIDIRECTIONAL cells hand off the load current flips. */
+    int order[3];
+    if (i_out[j] >= 0.0) {
+        order[0] = 0; order[1] = 1; order[2] = 2;
     } else {
-        conducting_input = 2;
+        order[0] = 2; order[1] = 1; order[2] = 0;
+    }
+
+    /* Walk the ordered segments and find which input is conducting at
+       frac_t. */
+    int conducting_input = order[2];
+    double cum = 0.0;
+    for (int s = 0; s < 3; s++) {
+        cum += m[order[s]];
+        if (frac_t < cum) {
+            conducting_input = order[s];
+            break;
+        }
     }
 
     /* Set the 3 gates of column j: one on, two off. The CMC "exactly
        one input per output" constraint is enforced HERE — never two
-       gates in a column ON simultaneously. */
+       gates in a column ON simultaneously, and never zero (the
+       inductive load always has a defined path through a bidirectional
+       cell). */
     for (int i = 0; i < 3; i++) {
         out[i * 3 + j] = (i == conducting_input) ? V_on : V_off;
     }
@@ -493,16 +549,96 @@ def build() -> dict:
         ))
 
     # ------------------------------------------------------------------
-    # Voltage probes on the filtered nodes (C_BLOCK inputs).
+    # Damped input filter — parallel R_d + C_d leg across each main cap.
+    #
+    # The bare L_in (2 mH) + C_in (10 µF) tank resonates at
+    #   f_res = 1 / (2π√(L·C)) ≈ 1.13 kHz
+    # with essentially zero loss, so the 20 kHz PWM current
+    # discontinuities (and the inrush at t=0) ring the filter to
+    # ±900..±1015 V — a textbook undamped-LC pathology that corrupts the
+    # voltages the modulator reads.
+    #
+    # The standard CMC fix is a parallel damping branch: a series
+    # R_d + C_d leg in shunt with each main C_in. At DC / 60 Hz the
+    # damping cap is a high impedance so it passes negligible
+    # fundamental current (the main C_in dominates), but near f_res the
+    # damping cap is low-impedance and R_d burns the resonant energy.
+    # Sizing rule of thumb: C_d ≈ 3·C_in, R_d ≈ √(L/C_in) ≈ √(2e-3/1e-5)
+    # ≈ 14 Ω scaled down toward the characteristic impedance for a
+    # well-damped (ζ≈0.7) response → R_d = 5 Ω works well here.
+    R_D = 5.0          # damping resistor (Ω)
+    C_D = 30.0e-6      # damping cap = 3 × C_in (F)
+    for idx, (phase, y_phase) in enumerate(
+        (("a", Y_PHASE_A), ("b", Y_PHASE_B), ("c", Y_PHASE_C))
+    ):
+        rd_id = _uid(f"Rd_in_{phase}")
+        cd_id = _uid(f"Cd_in_{phase}")
+        components.append(_component(
+            comp_id=rd_id, comp_type="RESISTOR", name=f"Rd_in_{phase}",
+            x=X_CIN + 70, y=y_phase + 40,
+            parameters={"resistance": R_D, "enable_thermal_port": False},
+            pins=[_pin(0, "1", 0, -20), _pin(1, "2", 0, 20)],
+        ))
+        components.append(_component(
+            comp_id=cd_id, comp_type="CAPACITOR", name=f"Cd_in_{phase}",
+            x=X_CIN + 70, y=y_phase + 100,
+            parameters={
+                "capacitance": C_D,
+                "initial_voltage": 0.0,
+                "enable_thermal_port": False,
+            },
+            pins=[_pin(0, "+", 0, -20), _pin(1, "-", 0, 20)],
+        ))
+        # R_d top → V{x}_FILT (tap the main cap's + pin so the union-find
+        # merges onto the filter node).
+        wires.append(_wire(
+            wire_id=_uid(f"w-rd-cin-{phase}"),
+            from_id=C_in_ids[idx], from_pin=0,
+            to_id=rd_id, to_pin=0,
+            node_name=f"V{phase}_FILT",
+        ))
+        # R_d bottom → C_d top (series leg, internal node).
+        wires.append(_wire(
+            wire_id=_uid(f"w-rd-cd-{phase}"),
+            from_id=rd_id, from_pin=1,
+            to_id=cd_id, to_pin=0,
+            node_name=f"V{phase}_DAMP",
+        ))
+        # C_d bottom → GND_filt.
+        wires.append(_wire(
+            wire_id=_uid(f"w-cd-gnd-{phase}"),
+            from_id=cd_id, from_pin=1,
+            to_id=gnd_filt_id, to_pin=0,
+            node_name="GND",
+        ))
+
     # ------------------------------------------------------------------
+    # Voltage probes on the filtered nodes (C_BLOCK inputs in[0..2]).
+    #
+    # The OUT (signal) pin of each input probe is placed at EXACTLY the Y
+    # coordinate of its target C_BLOCK IN pin (see ``cb_in_y`` below) so
+    # the SIG_ wire to the C_BLOCK is a single straight horizontal
+    # segment — zero L-route corners, hence zero union-find collisions
+    # between the 6 input signal nets (an earlier draft merged
+    # SIG_isns_B into SIG_Vc_FILT through a shared corner).
+    # ------------------------------------------------------------------
+    # Absolute Y of each C_BLOCK IN pin (block at y=Y_PHASE_B, offsets
+    # below MUST match the IN pin offsets in the C_BLOCK component).
+    cb_in_y = [
+        Y_PHASE_B - 300,   # IN0  va_filt
+        Y_PHASE_B - 120,   # IN1  vb_filt
+        Y_PHASE_B + 60,    # IN2  vc_filt
+        Y_PHASE_B + 140,   # IN3  i_A sense
+        Y_PHASE_B + 220,   # IN4  i_B sense
+        Y_PHASE_B + 300,   # IN5  i_C sense
+    ]
     vprobe_in_ids: list[str] = []
-    vp_in_y = (Y_PHASE_A, Y_PHASE_B, Y_PHASE_C)
     for phase_idx, phase in enumerate(("a", "b", "c")):
         pid = _uid(f"VP_in_{phase}")
         vprobe_in_ids.append(pid)
         components.append(_component(
             comp_id=pid, comp_type="VOLTAGE_PROBE_GND", name=f"VP_in_{phase}",
-            x=X_VPROBE_I, y=vp_in_y[phase_idx] - 60,
+            x=X_VPROBE_I, y=cb_in_y[phase_idx],
             parameters={"display_name": f"V{phase}_FILT", "scale": 1.0},
             pins=[_pin(0, "IN", -20, 0), _pin(1, "OUT", 20, 0)],
         ))
@@ -540,11 +676,30 @@ def build() -> dict:
         -280, -210, -140, -70, 0, 70, 140, 210, 280,
     ]
 
+    # The 3 output-current sense probes (VP_iout_A/B/C) read the load
+    # resistor drop node LRMID_{A,B,C} = i_out * R_load (a ground-
+    # referenced voltage whose SIGN equals the load-current sign). They
+    # are defined here so the C_BLOCK input wiring can reference them;
+    # their measured nodes (LRMID_*) are created in the load section
+    # below. n_inputs = 6: in[0..2] = filtered Va/Vb/Vc, in[3..5] = the
+    # 3 output-current senses i_A/i_B/i_C.
+    iout_probe_ids: list[str] = []
+    for col_idx, out_phase in enumerate(("A", "B", "C")):
+        pid = _uid(f"VP_iout_{out_phase}")
+        iout_probe_ids.append(pid)
+        components.append(_component(
+            comp_id=pid, comp_type="VOLTAGE_PROBE_GND", name=f"VP_iout_{out_phase}",
+            # OUT pin aligned to C_BLOCK IN(3+col) Y for a straight wire.
+            x=X_VPROBE_I - 80, y=cb_in_y[3 + col_idx],
+            parameters={"display_name": f"isns_{out_phase}", "scale": 1.0},
+            pins=[_pin(0, "IN", -20, 0), _pin(1, "OUT", 20, 0)],
+        ))
+
     cblock = _component(
         comp_id=cblock_id, comp_type="C_BLOCK", name="CMC_PWM",
         x=X_CBLOCK, y=Y_PHASE_B,
         parameters={
-            "n_inputs": 3,
+            "n_inputs": 6,
             "n_outputs": 9,
             "implementation": "source",
             "source": "",
@@ -554,31 +709,48 @@ def build() -> dict:
             "sample_time": 5.0e-6,
             "n_states": 0,
             # Cosmetic metadata for the GUI's properties panel.
-            "inputs": ["VP_in_a", "VP_in_b", "VP_in_c"],
+            "inputs": [
+                "VP_in_a", "VP_in_b", "VP_in_c",
+                "VP_iout_A", "VP_iout_B", "VP_iout_C",
+            ],
             "outputs": gate_node_order,
         },
         pins=[
-            # IN0..IN2 stacked on the left at the 3 input-phase Y levels.
+            # IN0..IN2 = filtered input voltages (left, input-phase Y).
             _pin(0, "IN0", -40, -300),
-            _pin(1, "IN1", -40,    0),
-            _pin(2, "IN2", -40,  300),
+            _pin(1, "IN1", -40, -120),
+            _pin(2, "IN2", -40,   60),
+            # IN3..IN5 = output-phase current senses (left, lower).
+            _pin(3, "IN3", -40,  140),
+            _pin(4, "IN4", -40,  220),
+            _pin(5, "IN5", -40,  300),
             # OUT0..OUT8 stacked on the right (row-major: g_aA, g_aB, g_aC,
-            # g_bA, g_bB, g_bC, g_cA, g_cB, g_cC).
+            # g_bA, g_bB, g_bC, g_cA, g_cB, g_cC). Pin index = 6 + k so
+            # the converter resolves them as outputs (pin >= n_inputs).
             *[
-                _pin(3 + k, f"OUT{k}", 40, out_pin_y_offsets[k])
+                _pin(6 + k, f"OUT{k}", 40, out_pin_y_offsets[k])
                 for k in range(9)
             ],
         ],
     )
     components.append(cblock)
 
-    # Wire C_BLOCK inputs from voltage probes.
+    # Wire C_BLOCK voltage inputs (in[0..2]) from the filtered-voltage probes.
     for phase_idx in range(3):
         wires.append(_wire(
             wire_id=_uid(f"w-vp-cb-{phase_idx}"),
             from_id=vprobe_in_ids[phase_idx], from_pin=1,
             to_id=cblock_id, to_pin=phase_idx,
             node_name=f"SIG_V{('a','b','c')[phase_idx]}_FILT",
+        ))
+
+    # Wire C_BLOCK current inputs (in[3..5]) from the output-current senses.
+    for col_idx, out_phase in enumerate(("A", "B", "C")):
+        wires.append(_wire(
+            wire_id=_uid(f"w-iout-cb-{out_phase}"),
+            from_id=iout_probe_ids[col_idx], from_pin=1,
+            to_id=cblock_id, to_pin=3 + col_idx,
+            node_name=f"SIG_isns_{out_phase}",
         ))
 
     # GOTO_LABEL components on the C_BLOCK side — one per OUT pin.
@@ -598,7 +770,7 @@ def build() -> dict:
         # Wire C_BLOCK OUT to the GOTO_LABEL NET pin (short horizontal).
         wires.append(_wire(
             wire_id=_uid(f"w-cb-goto-{gate_name}"),
-            from_id=cblock_id, from_pin=3 + k,
+            from_id=cblock_id, from_pin=6 + k,
             to_id=goto_id, to_pin=0,
             node_name=gate_name,
         ))
@@ -636,41 +808,45 @@ def build() -> dict:
             mx = X_MOSFET + col_idx * X_MOSFET_COL_STEP
             my = y_phases[row_idx]
             components.append(_component(
-                comp_id=mid, comp_type="MOSFET_N", name=f"S_{in_phase}{out_phase}",
+                comp_id=mid, comp_type="BIDIRECTIONAL_SWITCH",
+                name=f"S_{in_phase}{out_phase}",
                 x=mx, y=my,
                 parameters={
-                    "vth": 3.0,
-                    "kp": 0.1,           # ignored by the resistive switch model
-                    "lambda_": 0.0,
-                    "rds_on": 0.05,      # 50 mΩ — clean bidirectional switch
-                    "g_off": 1.0e-9,     # R_off ≈ 1 GΩ
-                    "enable_thermal_port": False,
-                    "is_nmos": True,
-                    "R_on": 0.05,
-                    "R_off": 1.0e9,
-                    "v_th": 3.0,
+                    # Lowers to pulsim ``add_switch`` — a pure symmetric
+                    # conductance with NO body diode. THIS is what makes
+                    # it a true 4-quadrant matrix-converter cell: it
+                    # blocks both polarities OFF and conducts both
+                    # directions ON. A MOSFET_N here would (per the GUI
+                    # shim) carry an anti-parallel body diode, and 9 of
+                    # those form an uncontrolled rectifier that clamps
+                    # the output regardless of the gate commands.
+                    "R_on": 0.05,        # 50 mΩ on-conductance
+                    "R_off": 1.0e9,      # ≈ 1 GΩ off
+                    "v_th": 3.0,         # gate threshold for switch_fn
                 },
+                # Model DEFAULT_PINS layout: P1 left, P2 right, G bottom.
                 pins=[
-                    _pin(0, "D", 0, -25),
-                    _pin(1, "G", -25, 0),
-                    _pin(2, "S", 0, 25),
+                    _pin(0, "P1", -40, 0),
+                    _pin(1, "P2", 40, 0),
+                    _pin(2, "G", 0, 40),
                 ],
             ))
 
-            # FROM_LABEL on the gate pin — joins the gate net to the
-            # GOTO_LABEL of the same name on the C_BLOCK side.
+            # FROM_LABEL on the gate pin (G, index 2 — bottom). Joins the
+            # gate net to the GOTO_LABEL of the same name on the C_BLOCK
+            # side.
             from_gate_id = _uid(f"F_gate_{in_phase}{out_phase}")
             components.append(_component(
                 comp_id=from_gate_id, comp_type="FROM_LABEL",
                 name=f"F_gate_{in_phase}{out_phase}",
-                x=mx - 60, y=my,
+                x=mx, y=my + 70,
                 parameters={"net_label": f"gate_{in_phase}{out_phase}"},
-                pins=[_pin(0, "NET", 40, 0)],
+                pins=[_pin(0, "NET", 0, -40)],
             ))
             wires.append(_wire(
                 wire_id=_uid(f"w-from-mosfet-g-{in_phase}{out_phase}"),
                 from_id=from_gate_id, from_pin=0,
-                to_id=mid, to_pin=1,
+                to_id=mid, to_pin=2,
                 node_name=f"gate_{in_phase}{out_phase}",
             ))
 
@@ -700,14 +876,26 @@ def build() -> dict:
             ))
             wires.append(_wire(
                 wire_id=_uid(f"w-mosfet-s-{in_phase}{out_phase}"),
-                from_id=mid, from_pin=2,
+                from_id=mid, from_pin=1,
                 to_id=goto_src_id, to_pin=0,
                 node_name=f"V{out_phase}",
             ))
 
     # ------------------------------------------------------------------
     # Output stage — V{A,B,C} nodes (republished here via FROM_LABEL),
-    # R + L load, common neutral.
+    # L + R load, common neutral.
+    #
+    # IMPORTANT — load element order: each phase is wired
+    #     V{Y} ─ L_{Y} ─ (CP_out_{Y}) ─ LRMID_{Y} ─ R_{Y} ─ GND
+    # i.e. the INDUCTOR first, then the resistor to ground. Electrically
+    # this is the same series R-L load (10 Ω + 10 mH), but it makes the
+    # mid-node LRMID_{Y} carry exactly  i_out(Y) * R_load  referenced to
+    # ground. A VOLTAGE_PROBE_GND on LRMID_{Y} therefore delivers a
+    # ground-referenced, current-PROPORTIONAL signal (same SIGN as the
+    # load current) into the C_BLOCK's in[3..5] channels — the
+    # "precisa da saida tambem" current sensing the modulator needs for
+    # direction-aware commutation. (The C_BLOCK reads node voltages, so
+    # the load current is presented to it as the R-drop voltage.)
     # ------------------------------------------------------------------
     R_load_ids: list[str] = []
     L_load_ids: list[str] = []
@@ -725,7 +913,7 @@ def build() -> dict:
             pins=[_pin(0, "NET", 40, 0)],
         ))
 
-        # Voltage probe at the output node V{Y}.
+        # Voltage probe at the output node V{Y} (the switched PWM node).
         vp_id = _uid(f"VP_out_{out_phase}")
         vprobe_out_ids.append(vp_id)
         components.append(_component(
@@ -741,26 +929,7 @@ def build() -> dict:
             node_name=f"V{out_phase}",
         ))
 
-        # R_{Y}
-        rid = _uid(f"R_{out_phase}")
-        R_load_ids.append(rid)
-        components.append(_component(
-            comp_id=rid, comp_type="RESISTOR", name=f"R_{out_phase}",
-            x=X_R_LOAD, y=y_phase,
-            parameters={
-                "resistance": 10.0,
-                "enable_thermal_port": False,
-            },
-            pins=[_pin(0, "1", -40, 0), _pin(1, "2", 40, 0)],
-        ))
-        wires.append(_wire(
-            wire_id=_uid(f"w-vp-r-{out_phase}"),
-            from_id=vp_id, from_pin=0,
-            to_id=rid, to_pin=0,
-            node_name=f"V{out_phase}",
-        ))
-
-        # L_{Y}
+        # L_{Y} — inductor FIRST, from V{Y}.
         lid = _uid(f"L_{out_phase}")
         L_load_ids.append(lid)
         components.append(_component(
@@ -773,17 +942,40 @@ def build() -> dict:
             },
             pins=[_pin(0, "1", -40, 0), _pin(1, "2", 40, 0)],
         ))
-        # Direct wire R.2 → L.1 only on phase C (the unprobed output).
-        # Phases A and B route through a CURRENT_PROBE added later.
-        if out_phase == "C":
-            wires.append(_wire(
-                wire_id=_uid(f"w-r-l-{out_phase}"),
-                from_id=rid, from_pin=1,
-                to_id=lid, to_pin=0,
-                node_name=f"LMID_{out_phase}",
-            ))
+        wires.append(_wire(
+            wire_id=_uid(f"w-vp-l-{out_phase}"),
+            from_id=vp_id, from_pin=0,
+            to_id=lid, to_pin=0,
+            node_name=f"V{out_phase}",
+        ))
 
-    # GND_load — common load neutral.
+        # R_{Y} — resistor to ground. Its top pin sits on LRMID_{Y}.
+        rid = _uid(f"R_{out_phase}")
+        R_load_ids.append(rid)
+        components.append(_component(
+            comp_id=rid, comp_type="RESISTOR", name=f"R_{out_phase}",
+            x=X_R_LOAD, y=y_phase,
+            parameters={
+                "resistance": 10.0,
+                "enable_thermal_port": False,
+            },
+            pins=[_pin(0, "1", -40, 0), _pin(1, "2", 40, 0)],
+        ))
+        # All three phases (A, B, C) route L.2 → R.1 through a dedicated
+        # CURRENT_PROBE (added later), which carries the L→R splice while
+        # keeping the LRMID_{Y} node (= i*R) intact — so no direct L→R
+        # wire is emitted here.
+
+        # Output-current sense probe on LRMID_{Y} (= i_out * R_load) →
+        # the C_BLOCK in[3+col]. Tap the resistor's top pin (LRMID node).
+        wires.append(_wire(
+            wire_id=_uid(f"w-iout-probe-{out_phase}"),
+            from_id=rid, from_pin=0,
+            to_id=iout_probe_ids[col_idx], to_pin=0,
+            node_name=f"LRMID_{out_phase}",
+        ))
+
+    # GND_load — common load neutral (the resistors' bottom pins).
     gnd_load_id = _uid("GND_load")
     components.append(_component(
         comp_id=gnd_load_id, comp_type="GROUND", name="GND_load",
@@ -791,10 +983,10 @@ def build() -> dict:
         parameters={},
         pins=[_pin(0, "gnd", 0, -20)],
     ))
-    for col_idx, lid in enumerate(L_load_ids):
+    for col_idx, rid in enumerate(R_load_ids):
         wires.append(_wire(
-            wire_id=_uid(f"w-l-neutral-{col_idx}"),
-            from_id=lid, from_pin=1,
+            wire_id=_uid(f"w-r-neutral-{col_idx}"),
+            from_id=rid, from_pin=1,
             to_id=gnd_load_id, to_pin=0,
             node_name="GND",
         ))
@@ -832,13 +1024,21 @@ def build() -> dict:
             node_name=f"V{phase}_FILT",
         ))
 
+    # Output current probes on ALL three phases (A, B, C). Each splices
+    # between L_{Y}.2 and R_{Y}.1, so it measures the true load current
+    # AND keeps the LRMID_{Y} node (= i*R) intact (the probe is a 0 V
+    # source, so L.2 == R.1 electrically). Phase C now gets its own probe
+    # CP_out_C — the direct L→R wire for C is therefore NOT emitted (the
+    # probe carries the splice instead).
     cprobe_out_ids: list[str] = []
-    for phase, y_phase in (("A", Y_PHASE_A), ("B", Y_PHASE_B)):
+    for col_idx, (phase, y_phase) in enumerate(
+        (("A", Y_PHASE_A), ("B", Y_PHASE_B), ("C", Y_PHASE_C))
+    ):
         cpid = _uid(f"CP_out_{phase}")
         cprobe_out_ids.append(cpid)
         components.append(_component(
             comp_id=cpid, comp_type="CURRENT_PROBE", name=f"CP_out_{phase}",
-            x=X_R_LOAD + 80, y=y_phase - 40,
+            x=X_L_LOAD + 80, y=y_phase - 40,
             parameters={"display_name": f"I_R_{phase}", "scale": 1.0},
             pins=[
                 _pin(0, "IN",   -20, 0),
@@ -846,18 +1046,18 @@ def build() -> dict:
                 _pin(2, "MEAS",   0, -20),
             ],
         ))
-        idx = ("A", "B").index(phase)
+        # L_{Y}.2 → probe IN, probe OUT → R_{Y}.1 (the LRMID_{Y} node).
         wires.append(_wire(
-            wire_id=_uid(f"w-r-cp-out-{phase}"),
-            from_id=R_load_ids[idx], from_pin=1,
+            wire_id=_uid(f"w-l-cp-out-{phase}"),
+            from_id=L_load_ids[col_idx], from_pin=1,
             to_id=cpid, to_pin=0,
-            node_name=f"R_{phase}_OUT",
+            node_name=f"L_{phase}_OUT",
         ))
         wires.append(_wire(
-            wire_id=_uid(f"w-cp-out-l-{phase}"),
+            wire_id=_uid(f"w-cp-out-r-{phase}"),
             from_id=cpid, from_pin=1,
-            to_id=L_load_ids[idx], to_pin=0,
-            node_name=f"LMID_{phase}",
+            to_id=R_load_ids[col_idx], to_pin=0,
+            node_name=f"LRMID_{phase}",
         ))
 
     # ------------------------------------------------------------------
@@ -914,11 +1114,15 @@ def build() -> dict:
         x=X_SCOPE_OUT, y=Y_SCOPE_OUT,
         parameters={
             "channel_count": 4,
+            # CH1: switched output V(VA) (the 25 Hz PWM stripe). CH2..CH4:
+            # the 3 balanced output phase currents via the CURRENT_PROBE
+            # display channels (CP_out_{A,B,C} = the V/R-reconstructed
+            # phase current, which reports the true ±17 A / 25 Hz set).
             "channels": [
-                {"label": "V(vA)",  "overlay": False},
-                {"label": "V(vB)",  "overlay": False},
-                {"label": "I(R_A)", "overlay": False},
-                {"label": "I(R_B)", "overlay": False},
+                {"label": "V(VA)",      "overlay": False},
+                {"label": "CP_out_A",   "overlay": True},
+                {"label": "CP_out_B",   "overlay": True},
+                {"label": "CP_out_C",   "overlay": True},
             ],
         },
         pins=[
@@ -935,22 +1139,22 @@ def build() -> dict:
         node_name="SIG_vA",
     ))
     wires.append(_wire(
-        wire_id=_uid("w-sc-out-vpB"),
-        from_id=vprobe_out_ids[1], from_pin=1,
-        to_id=scope_out_id, to_pin=1,
-        node_name="SIG_vB",
-    ))
-    wires.append(_wire(
         wire_id=_uid("w-sc-out-cpA"),
         from_id=cprobe_out_ids[0], from_pin=2,
-        to_id=scope_out_id, to_pin=2,
+        to_id=scope_out_id, to_pin=1,
         node_name="SIG_I_R_A",
     ))
     wires.append(_wire(
         wire_id=_uid("w-sc-out-cpB"),
         from_id=cprobe_out_ids[1], from_pin=2,
-        to_id=scope_out_id, to_pin=3,
+        to_id=scope_out_id, to_pin=2,
         node_name="SIG_I_R_B",
+    ))
+    wires.append(_wire(
+        wire_id=_uid("w-sc-out-cpC"),
+        from_id=cprobe_out_ids[2], from_pin=2,
+        to_id=scope_out_id, to_pin=3,
+        node_name="SIG_I_R_C",
     ))
 
     # ------------------------------------------------------------------
@@ -1021,9 +1225,10 @@ def build() -> dict:
     project = {
         "version": "1.0",
         "name": (
-            "25 Switched CMC + Venturini-PWM (9 MOSFETs, inline-C C_BLOCK) "
-            "— 415 V/60 Hz → 25 Hz AC-AC, q=0.5, 20 kHz PWM, pulsim 1.8 path B "
-            "(high-fidelity counterpart to ex 24)"
+            "25 Switched CMC + Venturini-PWM (9 bidirectional switches, "
+            "current-direction-aware, inline-C C_BLOCK 6-in/9-out) "
+            "— 415 V/60 Hz → 25 Hz AC-AC, q=0.5, 20 kHz PWM, damped LC input "
+            "filter, pulsim 1.8 path B (high-fidelity counterpart to ex 24)"
         ),
         "created": now,
         "modified": now,
@@ -1109,7 +1314,7 @@ def _verify_via_gui_pipeline() -> None:
     print(f"    c_block_records: {len(records)}")
     assert len(records) == 1, "Expected exactly one C_BLOCK record"
     rec = records[0]
-    assert rec["n_inputs"] == 3, f"n_inputs={rec['n_inputs']} (want 3)"
+    assert rec["n_inputs"] == 6, f"n_inputs={rec['n_inputs']} (want 6)"
     assert rec["n_outputs"] == 9, f"n_outputs={rec['n_outputs']} (want 9)"
     assert rec["implementation"] == "source"
     assert abs(rec["sample_time"] - 5.0e-6) < 1e-12, (
@@ -1133,47 +1338,47 @@ def _verify_via_gui_pipeline() -> None:
     )
     print("    gate ordering: row-major (a/b/c × A/B/C)  PASS")
 
-    # Spot-check MOSFET pin assignments.
-    mosfet_pin_nodes: dict[tuple[str, str], tuple[str, str]] = {}
+    # Spot-check bidirectional-switch pin assignments.
+    sw_pin_nodes: dict[tuple[str, str], tuple[str, str]] = {}
     for c in components_list:
-        if c["type"] != "MOSFET_N":
+        if c["type"] != "BIDIRECTIONAL_SWITCH":
             continue
         name = c["name"]
         nodes = component_node_map[c["id"]]
-        # Pins: 0=D, 1=G, 2=S
-        mosfet_pin_nodes[(name, "D")] = (nodes[0], alias_map.get(nodes[0], nodes[0]))
-        mosfet_pin_nodes[(name, "G")] = (nodes[1], alias_map.get(nodes[1], nodes[1]))
-        mosfet_pin_nodes[(name, "S")] = (nodes[2], alias_map.get(nodes[2], nodes[2]))
-    # Confirm S_aA: D=Va_FILT, G=gate_aA, S=VA
-    assert mosfet_pin_nodes[("S_aA", "D")][1] == "Va_FILT"
-    assert mosfet_pin_nodes[("S_aA", "G")][1] == "gate_aA"
-    assert mosfet_pin_nodes[("S_aA", "S")][1] == "VA"
-    # S_cC: D=Vc_FILT, G=gate_cC, S=VC
-    assert mosfet_pin_nodes[("S_cC", "D")][1] == "Vc_FILT"
-    assert mosfet_pin_nodes[("S_cC", "G")][1] == "gate_cC"
-    assert mosfet_pin_nodes[("S_cC", "S")][1] == "VC"
-    print("    MOSFET pin topology: D=V{x}_FILT, G=gate_xY, S=V{Y}  PASS")
+        # Pins: 0=P1 (input filter), 1=P2 (output column), 2=G (gate)
+        sw_pin_nodes[(name, "P1")] = (nodes[0], alias_map.get(nodes[0], nodes[0]))
+        sw_pin_nodes[(name, "P2")] = (nodes[1], alias_map.get(nodes[1], nodes[1]))
+        sw_pin_nodes[(name, "G")] = (nodes[2], alias_map.get(nodes[2], nodes[2]))
+    # Confirm S_aA: P1=Va_FILT, P2=VA, G=gate_aA
+    assert sw_pin_nodes[("S_aA", "P1")][1] == "Va_FILT"
+    assert sw_pin_nodes[("S_aA", "P2")][1] == "VA"
+    assert sw_pin_nodes[("S_aA", "G")][1] == "gate_aA"
+    # S_cC: P1=Vc_FILT, P2=VC, G=gate_cC
+    assert sw_pin_nodes[("S_cC", "P1")][1] == "Vc_FILT"
+    assert sw_pin_nodes[("S_cC", "P2")][1] == "VC"
+    assert sw_pin_nodes[("S_cC", "G")][1] == "gate_cC"
+    print("    Bidirectional-switch topology: P1=V{x}_FILT, P2=V{Y}, G=gate_xY  PASS")
 
     # Confirm the path-B gate-drive inference emitted one descriptor
-    # per MOSFET (the structural invariant the new test file pins).
+    # per switch (the structural invariant the new test file pins).
     gate_descs = list(
         getattr(circuit_obj, "cblock_gate_drive_descriptors", []) or []
     )
     print(f"    cblock_gate_drive_descriptors: {len(gate_descs)}")
     assert len(gate_descs) == 9, (
-        f"Expected 9 gate-drive descriptors (one per MOSFET in the 3×3 "
+        f"Expected 9 gate-drive descriptors (one per cell in the 3×3 "
         f"matrix), got {len(gate_descs)}. The path-B inference is broken."
     )
-    mosfets_bound = sorted(d["mosfet_name"] for d in gate_descs)
-    expected_mosfets = sorted(
+    switches_bound = sorted(d["mosfet_name"] for d in gate_descs)
+    expected_switches = sorted(
         f"S_{ip}{op}"
         for ip in ("a", "b", "c") for op in ("A", "B", "C")
     )
-    assert mosfets_bound == expected_mosfets, (
+    assert switches_bound == expected_switches, (
         f"Gate-drive descriptors don't cover the 3×3 matrix:\n"
-        f"  expected {expected_mosfets}\n  got      {mosfets_bound}"
+        f"  expected {expected_switches}\n  got      {switches_bound}"
     )
-    print("    gate-drive coverage: every MOSFET bound to a C_BLOCK output  PASS")
+    print("    gate-drive coverage: every cell bound to a C_BLOCK output  PASS")
 
     # End-to-end smoke test: 5 ms transient under the GUI pipeline.
     # The handbuilt path (run below) produces 634 switching events over
@@ -1348,7 +1553,7 @@ def _verify_via_handbuilt_builder() -> None:
     print(f"    Switches (per add_mosfet): 9")
 
     F_OUT = 25.0
-    Q = 0.5
+    Q = 0.45
     T_PWM = 5e-5  # 50 us = 20 kHz
     SQRT3_2 = math.sqrt(3) / 2
     TWO_3 = 2.0 / 3.0
@@ -1362,8 +1567,8 @@ def _verify_via_handbuilt_builder() -> None:
         theta_i = math.atan2(v_beta, v_alpha)
         frame = t % T_PWM
         frac_t = frame / T_PWM
-        phi_in = (0.0, -DEG120, +DEG120)
         phi_out = (0.0, -DEG120, +DEG120)
+        phi_in = (0.0, +DEG120, -DEG120)   # conjugate input ref (see C src)
         mask_bits = [False] * 9
         for j in range(3):
             m_vec = []

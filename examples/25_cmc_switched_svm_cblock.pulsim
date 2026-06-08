@@ -1,8 +1,8 @@
 {
   "version": "1.0",
-  "name": "25 Switched CMC + Venturini-PWM (9 MOSFETs, inline-C C_BLOCK) \u2014 415 V/60 Hz \u2192 25 Hz AC-AC, q=0.5, 20 kHz PWM, pulsim 1.8 path B (high-fidelity counterpart to ex 24)",
-  "created": "2026-06-08T08:47:08",
-  "modified": "2026-06-08T08:47:08",
+  "name": "25 Switched CMC + Venturini-PWM (9 bidirectional switches, current-direction-aware, inline-C C_BLOCK 6-in/9-out) \u2014 415 V/60 Hz \u2192 25 Hz AC-AC, q=0.5, 20 kHz PWM, damped LC input filter, pulsim 1.8 path B (high-fidelity counterpart to ex 24)",
+  "created": "2026-06-08T20:04:04",
+  "modified": "2026-06-08T20:04:04",
   "active_circuit": "main",
   "simulation_settings": {
     "tstop": 0.05,
@@ -315,11 +315,182 @@
           ]
         },
         {
+          "id": "9d8af2eb-8675-5391-9800-fea94117dfef",
+          "type": "RESISTOR",
+          "name": "Rd_in_a",
+          "x": -590.0,
+          "y": -260.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 5.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "b146cf34-21bf-5961-b3cb-f3269e9b9393",
+          "type": "CAPACITOR",
+          "name": "Cd_in_a",
+          "x": -590.0,
+          "y": -200.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "capacitance": 3e-05,
+            "initial_voltage": 0.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "c1fa1b48-6bb7-5aff-8894-bf44021b2d2f",
+          "type": "RESISTOR",
+          "name": "Rd_in_b",
+          "x": -590.0,
+          "y": 40.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 5.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "b5135f57-a90c-558f-b4c5-881a0e7a32d7",
+          "type": "CAPACITOR",
+          "name": "Cd_in_b",
+          "x": -590.0,
+          "y": 100.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "capacitance": 3e-05,
+            "initial_voltage": 0.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "a0d38a8d-1bcc-59e3-8060-89d8059cab73",
+          "type": "RESISTOR",
+          "name": "Rd_in_c",
+          "x": -590.0,
+          "y": 340.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "resistance": 5.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "1",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "2",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
+          "id": "026825fe-f8b4-54dc-ab7a-dba078841017",
+          "type": "CAPACITOR",
+          "name": "Cd_in_c",
+          "x": -590.0,
+          "y": 400.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "capacitance": 3e-05,
+            "initial_voltage": 0.0,
+            "enable_thermal_port": false
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "+",
+              "x": 0.0,
+              "y": -20.0
+            },
+            {
+              "index": 1,
+              "name": "-",
+              "x": 0.0,
+              "y": 20.0
+            }
+          ]
+        },
+        {
           "id": "e4726a40-a0c7-513f-9edc-894fe9aa180b",
           "type": "VOLTAGE_PROBE_GND",
           "name": "VP_in_a",
           "x": -460.0,
-          "y": -360.0,
+          "y": -300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -347,7 +518,7 @@
           "type": "VOLTAGE_PROBE_GND",
           "name": "VP_in_b",
           "x": -460.0,
-          "y": -60.0,
+          "y": -120.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -375,12 +546,96 @@
           "type": "VOLTAGE_PROBE_GND",
           "name": "VP_in_c",
           "x": -460.0,
-          "y": 240.0,
+          "y": 60.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
             "display_name": "Vc_FILT",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "bb8c13dd-950f-5347-934e-cbbcadd6568f",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "VP_iout_A",
+          "x": -540.0,
+          "y": 140.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "isns_A",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "17019f7c-f4bc-5781-85b8-77c89673788a",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "VP_iout_B",
+          "x": -540.0,
+          "y": 220.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "isns_B",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            }
+          ]
+        },
+        {
+          "id": "43d6f043-effe-57d4-8b12-502206a50478",
+          "type": "VOLTAGE_PROBE_GND",
+          "name": "VP_iout_C",
+          "x": -540.0,
+          "y": 300.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "isns_C",
             "scale": 1.0
           },
           "pins": [
@@ -408,19 +663,22 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "n_inputs": 3,
+            "n_inputs": 6,
             "n_outputs": 9,
             "implementation": "source",
             "source": "",
             "lib_path": "",
-            "source_code": "/* === Switched CMC, Venturini-PWM (9 gates) ===\n *\n * inputs  : in[0..2] = filtered input phase voltages v_a, v_b, v_c\n * outputs : out[0..8] = gate drives for the 9-switch matrix in\n *           ROW-MAJOR (input, output) order:\n *               out[0]=g_aA  out[1]=g_aB  out[2]=g_aC\n *               out[3]=g_bA  out[4]=g_bB  out[5]=g_bC\n *               out[6]=g_cA  out[7]=g_cB  out[8]=g_cC\n *\n * Algorithm: Venturini's optimum modulation. For each output phase j\n * we have three time-fractions m_aj, m_bj, m_cj summing to 1; within\n * each PWM period we connect output j to input a for m_aj * T_pwm\n * seconds, then to input b for m_bj * T_pwm, then to input c. That is,\n * exactly ONE MOSFET in column j conducts at any instant \u2014 the\n * \"exactly one input per output\" CMC constraint is enforced by\n * construction.\n *\n *     m_ij(t) = (1/3) * [1 + 2*q*cos(theta_o - phi_j) * cos(theta_i - phi_i)]\n *\n * Here phi_a = 0, phi_b = -120 deg, phi_c = +120 deg (the standard\n * 3-phase reference). theta_i is the input voltage vector angle\n * (extracted via Clarke transform of the live measurements \u2014 robust\n * to grid frequency drift / unbalance) and theta_o = omega_o * t is\n * the user-set output reference angle.\n *\n * The 5 us C_BLOCK firing rate is 10x finer than the 50 us PWM period,\n * so the within-period segment progression is correctly resolved.\n */\nconst double PI       = 3.14159265358979323846;\nconst double TWO_PI   = 6.28318530717958647692;\nconst double DEG120   = 2.09439510239319549231;\nconst double SQRT3_2  = 0.86602540378443864676;\nconst double TWO_3    = 0.66666666666666666667;\n\ndouble q     = 0.5;          /* Venturini's max */\ndouble f_o   = 25.0;\ndouble T_pwm = 5e-5;         /* 50 us = 20 kHz */\ndouble V_on  = 15.0;\ndouble V_off = 0.0;\n\ndouble omega_o = TWO_PI * f_o;\ndouble theta_o = omega_o * t;\n\ndouble va = in[0], vb = in[1], vc = in[2];\n\n/* Clarke-transform the input vector to recover theta_i live (so the\n   modulator self-adapts if the grid frequency drifts a bit). */\ndouble v_alpha = TWO_3 * (va - 0.5 * vb - 0.5 * vc);\ndouble v_beta  = TWO_3 * (SQRT3_2 * vb - SQRT3_2 * vc);\ndouble theta_i = atan2(v_beta, v_alpha);\n\n/* Where are we in the current PWM period? Normalised to [0, 1). */\ndouble frame  = fmod(t, T_pwm);\nif (frame < 0) frame += T_pwm;\ndouble frac_t = frame / T_pwm;\n\ndouble phi_in[3]  = {0.0,    -DEG120, +DEG120};\ndouble phi_out[3] = {0.0,    -DEG120, +DEG120};\n\n/* For each output phase j, compute the 3 Venturini duty fractions and\n   pick which input phase is conducting RIGHT NOW based on frac_t. */\nfor (int j = 0; j < 3; j++) {\n    double m[3];\n    double sum = 0.0;\n    for (int i = 0; i < 3; i++) {\n        double m_ij = (1.0/3.0) * (1.0\n            + 2.0 * q * cos(theta_o - phi_out[j])\n                      * cos(theta_i - phi_in[i]));\n        if (m_ij < 0.0) m_ij = 0.0;\n        if (m_ij > 1.0) m_ij = 1.0;\n        m[i] = m_ij;\n        sum += m_ij;\n    }\n    /* Normalise (Venturini's formula sums to ~1 but rounding/clamping\n       can drift; renormalise so exactly one switch conducts per PWM\n       period). */\n    if (sum > 1e-9) {\n        m[0] /= sum;\n        m[1] /= sum;\n        m[2] /= sum;\n    } else {\n        m[0] = 1.0;  /* degenerate: bond output to input a */\n        m[1] = 0.0;\n        m[2] = 0.0;\n    }\n\n    /* Decide which input phase j is currently connected to. */\n    int conducting_input;\n    double cum = m[0];\n    if (frac_t < cum) {\n        conducting_input = 0;\n    } else if (frac_t < (cum += m[1])) {\n        conducting_input = 1;\n    } else {\n        conducting_input = 2;\n    }\n\n    /* Set the 3 gates of column j: one on, two off. The CMC \"exactly\n       one input per output\" constraint is enforced HERE \u2014 never two\n       gates in a column ON simultaneously. */\n    for (int i = 0; i < 3; i++) {\n        out[i * 3 + j] = (i == conducting_input) ? V_on : V_off;\n    }\n}\n",
+            "source_code": "/* === Switched CMC, Venturini-PWM, current-direction-aware (9 gates) ===\n *\n * The 9 matrix cells are true 4-quadrant BIDIRECTIONAL switches\n * (pulsim ``add_switch`` \u2014 a symmetric conductance, NO body diode), so\n * each cell blocks both polarities when OFF and conducts both\n * directions when ON. That is what makes a safe Conventional Matrix\n * Converter (CMC): there is no rectifier path to clamp the output.\n *\n * inputs  : in[0..2] = filtered input phase voltages v_a, v_b, v_c\n *                      (from the 3 VOLTAGE_PROBE_GND on Va/Vb/Vc_FILT)\n *           in[3..5] = output phase currents i_A, i_B, i_C\n *                      (the user's \"precisa da saida tambem\" \u2014 the\n *                      modulator must see the OUTPUT to commutate the\n *                      inductive load safely). Each is delivered as the\n *                      voltage across the load resistor referenced to\n *                      ground (node LRMID_j = i_j * R_load), so\n *                      sign(in[3+j]) == sign(i_out[j]).\n * outputs : out[0..8] = gate drives for the 9-switch matrix in\n *           ROW-MAJOR (input, output) order:\n *               out[0]=g_aA  out[1]=g_aB  out[2]=g_aC\n *               out[3]=g_bA  out[4]=g_bB  out[5]=g_bC\n *               out[6]=g_cA  out[7]=g_cB  out[8]=g_cC\n *\n * Algorithm: Venturini's optimum modulation. For each output phase j\n * we have three time-fractions m_aj, m_bj, m_cj summing to 1; within\n * each PWM period we connect output j to one input phase at a time \u2014\n * exactly ONE cell in column j conducts at any instant (\"exactly one\n * input per output\" CMC constraint, enforced by construction).\n *\n *     m_ij(t) = (1/3) * [1 + 2*q*cos(theta_o - phi_out_j) * cos(theta_i - phi_in_i)]\n *\n * phi_out = {0, -120, +120} deg matches the positive-sequence load\n * reference. phi_in = {0, +120, -120} deg is the CONJUGATE input\n * reference required so that cos(theta_i - phi_in_i) tracks the\n * physical positive-sequence grid voltage of phase i (a=0, b=-120,\n * c=+120): with the naive phi_in = {0, -120, +120} the duty-weighted\n * output collapses to ~0 V fundamental (the b/c references cancel the\n * rotation). theta_i is the live input voltage vector angle (Clarke\n * transform of in[0..2], robust to grid drift) and theta_o = omega_o*t.\n *\n * Current-direction-aware commutation\n * -----------------------------------\n * A matrix converter feeding an INDUCTIVE load must never open every\n * cell in a column (the load current would have no path and the\n * inductor voltage would spike). Because the cells are bidirectional\n * we keep exactly one cell ON per column at all times, and we ORDER the\n * segment sequence within each PWM period by the sign of the load\n * current so the transition between two input phases hands the current\n * off in a defined direction:\n *\n *   - i_out[j] >= 0 : sweep frac_t low->high as input a, b, c\n *                     (ascending duty-cumsum order).\n *   - i_out[j] <  0 : sweep the segments in the reverse order so the\n *                     newly-closing cell takes over the (negative) load\n *                     current cleanly before the old cell opens.\n *\n * The per-segment DURATIONS are identical either way (so the\n * duty-weighted average \u2014 hence the 25 Hz output fundamental \u2014 is\n * unchanged); only the WITHIN-PERIOD ORDER flips with current sign.\n *\n * The 5 us C_BLOCK firing rate is 10x finer than the 50 us PWM period,\n * so the within-period segment progression is correctly resolved.\n */\nconst double PI       = 3.14159265358979323846;\nconst double TWO_PI   = 6.28318530717958647692;\nconst double DEG120   = 2.09439510239319549231;\nconst double SQRT3_2  = 0.86602540378443864676;\nconst double TWO_3    = 0.66666666666666666667;\n\ndouble q     = 0.45;         /* modulation index (<= 0.5, Venturini max) */\ndouble f_o   = 25.0;\ndouble T_pwm = 5e-5;         /* 50 us = 20 kHz */\ndouble V_on  = 15.0;\ndouble V_off = 0.0;\n\ndouble omega_o = TWO_PI * f_o;\ndouble theta_o = omega_o * t;\n\ndouble va = in[0], vb = in[1], vc = in[2];\n\n/* Output phase currents (sign carriers for current-direction-aware\n   commutation). in[3+j] is delivered as i_out[j] * R_load, so only its\n   SIGN matters here. */\ndouble i_out[3] = {in[3], in[4], in[5]};\n\n/* Clarke-transform the input vector to recover theta_i live (so the\n   modulator self-adapts if the grid frequency drifts a bit). */\ndouble v_alpha = TWO_3 * (va - 0.5 * vb - 0.5 * vc);\ndouble v_beta  = TWO_3 * (SQRT3_2 * vb - SQRT3_2 * vc);\ndouble theta_i = atan2(v_beta, v_alpha);\n\n/* Where are we in the current PWM period? Normalised to [0, 1). */\ndouble frame  = fmod(t, T_pwm);\nif (frame < 0) frame += T_pwm;\ndouble frac_t = frame / T_pwm;\n\ndouble phi_out[3] = {0.0,    -DEG120, +DEG120};\ndouble phi_in[3]  = {0.0,    +DEG120, -DEG120};   /* CONJUGATE input ref */\n\n/* For each output phase j, compute the 3 Venturini duty fractions and\n   pick which input phase is conducting RIGHT NOW based on frac_t. */\nfor (int j = 0; j < 3; j++) {\n    double m[3];\n    double sum = 0.0;\n    for (int i = 0; i < 3; i++) {\n        double m_ij = (1.0/3.0) * (1.0\n            + 2.0 * q * cos(theta_o - phi_out[j])\n                      * cos(theta_i - phi_in[i]));\n        if (m_ij < 0.0) m_ij = 0.0;\n        if (m_ij > 1.0) m_ij = 1.0;\n        m[i] = m_ij;\n        sum += m_ij;\n    }\n    /* Normalise (Venturini's formula sums to ~1 but rounding/clamping\n       can drift; renormalise so exactly one switch conducts per PWM\n       period). */\n    if (sum > 1e-9) {\n        m[0] /= sum;\n        m[1] /= sum;\n        m[2] /= sum;\n    } else {\n        m[0] = 1.0;  /* degenerate: bond output to input a */\n        m[1] = 0.0;\n        m[2] = 0.0;\n    }\n\n    /* Current-direction-aware segment order. Build the visiting order\n       of the 3 input phases for this column: ascending {a,b,c} when the\n       load current is >= 0, reversed {c,b,a} when it is negative. The\n       segment DURATIONS (m[]) are unchanged, so the duty-weighted\n       average output is identical \u2014 only the order in which the\n       BIDIRECTIONAL cells hand off the load current flips. */\n    int order[3];\n    if (i_out[j] >= 0.0) {\n        order[0] = 0; order[1] = 1; order[2] = 2;\n    } else {\n        order[0] = 2; order[1] = 1; order[2] = 0;\n    }\n\n    /* Walk the ordered segments and find which input is conducting at\n       frac_t. */\n    int conducting_input = order[2];\n    double cum = 0.0;\n    for (int s = 0; s < 3; s++) {\n        cum += m[order[s]];\n        if (frac_t < cum) {\n            conducting_input = order[s];\n            break;\n        }\n    }\n\n    /* Set the 3 gates of column j: one on, two off. The CMC \"exactly\n       one input per output\" constraint is enforced HERE \u2014 never two\n       gates in a column ON simultaneously, and never zero (the\n       inductive load always has a defined path through a bidirectional\n       cell). */\n    for (int i = 0; i < 3; i++) {\n        out[i * 3 + j] = (i == conducting_input) ? V_on : V_off;\n    }\n}\n",
             "extra_cflags": [],
             "sample_time": 5e-06,
             "n_states": 0,
             "inputs": [
               "VP_in_a",
               "VP_in_b",
-              "VP_in_c"
+              "VP_in_c",
+              "VP_iout_A",
+              "VP_iout_B",
+              "VP_iout_C"
             ],
             "outputs": [
               "gate_aA",
@@ -445,64 +703,82 @@
               "index": 1,
               "name": "IN1",
               "x": -40.0,
-              "y": 0.0
+              "y": -120.0
             },
             {
               "index": 2,
               "name": "IN2",
               "x": -40.0,
-              "y": 300.0
+              "y": 60.0
             },
             {
               "index": 3,
+              "name": "IN3",
+              "x": -40.0,
+              "y": 140.0
+            },
+            {
+              "index": 4,
+              "name": "IN4",
+              "x": -40.0,
+              "y": 220.0
+            },
+            {
+              "index": 5,
+              "name": "IN5",
+              "x": -40.0,
+              "y": 300.0
+            },
+            {
+              "index": 6,
               "name": "OUT0",
               "x": 40.0,
               "y": -280.0
             },
             {
-              "index": 4,
+              "index": 7,
               "name": "OUT1",
               "x": 40.0,
               "y": -210.0
             },
             {
-              "index": 5,
+              "index": 8,
               "name": "OUT2",
               "x": 40.0,
               "y": -140.0
             },
             {
-              "index": 6,
+              "index": 9,
               "name": "OUT3",
               "x": 40.0,
               "y": -70.0
             },
             {
-              "index": 7,
+              "index": 10,
               "name": "OUT4",
               "x": 40.0,
               "y": 0.0
             },
             {
-              "index": 8,
+              "index": 11,
               "name": "OUT5",
               "x": 40.0,
               "y": 70.0
             },
             {
-              "index": 9,
+              "index": 12,
               "name": "OUT6",
               "x": 40.0,
               "y": 140.0
             },
             {
-              "index": 10,
+              "index": 13,
               "name": "OUT7",
               "x": 40.0,
               "y": 210.0
             },
             {
-              "index": 11,
+              "index": 14,
               "name": "OUT8",
               "x": 40.0,
               "y": 280.0
@@ -700,7 +976,7 @@
         },
         {
           "id": "d07e96c3-f9df-5e3c-9a17-dabf90b9d63a",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_aA",
           "x": 180.0,
           "y": -300.0,
@@ -708,13 +984,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -722,21 +991,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -744,8 +1013,8 @@
           "id": "d8308902-6993-5873-88fd-3e6edfea0427",
           "type": "FROM_LABEL",
           "name": "F_gate_aA",
-          "x": 120.0,
-          "y": -300.0,
+          "x": 180.0,
+          "y": -230.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -756,8 +1025,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -784,7 +1053,7 @@
         },
         {
           "id": "9c584b37-043c-5669-a7ef-3af1efa80f9e",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_bA",
           "x": 180.0,
           "y": 0.0,
@@ -792,13 +1061,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -806,21 +1068,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -828,8 +1090,8 @@
           "id": "7712b2b2-5011-5901-82e3-261c56b31a04",
           "type": "FROM_LABEL",
           "name": "F_gate_bA",
-          "x": 120.0,
-          "y": 0.0,
+          "x": 180.0,
+          "y": 70.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -840,8 +1102,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -868,7 +1130,7 @@
         },
         {
           "id": "5beb48bd-770e-5dd5-83dd-da3893ea129d",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_cA",
           "x": 180.0,
           "y": 300.0,
@@ -876,13 +1138,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -890,21 +1145,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -912,8 +1167,8 @@
           "id": "3e96dbcf-8d08-59e3-b124-ee0132d32fb5",
           "type": "FROM_LABEL",
           "name": "F_gate_cA",
-          "x": 120.0,
-          "y": 300.0,
+          "x": 180.0,
+          "y": 370.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -924,8 +1179,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -952,7 +1207,7 @@
         },
         {
           "id": "a7109495-3e24-5839-b7cd-81463fe66987",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_aB",
           "x": 420.0,
           "y": -300.0,
@@ -960,13 +1215,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -974,21 +1222,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -996,8 +1244,8 @@
           "id": "a8f9c3e8-2181-5ffe-9118-0c6a35fb53c2",
           "type": "FROM_LABEL",
           "name": "F_gate_aB",
-          "x": 360.0,
-          "y": -300.0,
+          "x": 420.0,
+          "y": -230.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1008,8 +1256,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1036,7 +1284,7 @@
         },
         {
           "id": "91e57415-7e87-54c0-a72e-2926a8f1d30d",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_bB",
           "x": 420.0,
           "y": 0.0,
@@ -1044,13 +1292,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -1058,21 +1299,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -1080,8 +1321,8 @@
           "id": "16c0236a-a8cd-5e7f-8bbe-54a8b536ede2",
           "type": "FROM_LABEL",
           "name": "F_gate_bB",
-          "x": 360.0,
-          "y": 0.0,
+          "x": 420.0,
+          "y": 70.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1092,8 +1333,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1120,7 +1361,7 @@
         },
         {
           "id": "c6622eb7-c04a-523b-9a3c-9ba1044c68f2",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_cB",
           "x": 420.0,
           "y": 300.0,
@@ -1128,13 +1369,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -1142,21 +1376,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -1164,8 +1398,8 @@
           "id": "9d519aca-32d8-5f12-855f-af17d66691b6",
           "type": "FROM_LABEL",
           "name": "F_gate_cB",
-          "x": 360.0,
-          "y": 300.0,
+          "x": 420.0,
+          "y": 370.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1176,8 +1410,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1204,7 +1438,7 @@
         },
         {
           "id": "06ccf756-9dac-5697-b526-c546ea2f3126",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_aC",
           "x": 660.0,
           "y": -300.0,
@@ -1212,13 +1446,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -1226,21 +1453,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -1248,8 +1475,8 @@
           "id": "783d038f-9c7b-5bfb-853a-6cfb1e0e8e2a",
           "type": "FROM_LABEL",
           "name": "F_gate_aC",
-          "x": 600.0,
-          "y": -300.0,
+          "x": 660.0,
+          "y": -230.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1260,8 +1487,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1288,7 +1515,7 @@
         },
         {
           "id": "6311347c-e340-5298-ad0e-9802e06e42ca",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_bC",
           "x": 660.0,
           "y": 0.0,
@@ -1296,13 +1523,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -1310,21 +1530,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -1332,8 +1552,8 @@
           "id": "9bfd30f0-98d6-5be4-8a98-51a462b1dba9",
           "type": "FROM_LABEL",
           "name": "F_gate_bC",
-          "x": 600.0,
-          "y": 0.0,
+          "x": 660.0,
+          "y": 70.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1344,8 +1564,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1372,7 +1592,7 @@
         },
         {
           "id": "f01fda19-0220-57cb-b57a-9e67fd1aea6c",
-          "type": "MOSFET_N",
+          "type": "BIDIRECTIONAL_SWITCH",
           "name": "S_cC",
           "x": 660.0,
           "y": 300.0,
@@ -1380,13 +1600,6 @@
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "vth": 3.0,
-            "kp": 0.1,
-            "lambda_": 0.0,
-            "rds_on": 0.05,
-            "g_off": 1e-09,
-            "enable_thermal_port": false,
-            "is_nmos": true,
             "R_on": 0.05,
             "R_off": 1000000000.0,
             "v_th": 3.0
@@ -1394,21 +1607,21 @@
           "pins": [
             {
               "index": 0,
-              "name": "D",
-              "x": 0.0,
-              "y": -25.0
+              "name": "P1",
+              "x": -40.0,
+              "y": 0.0
             },
             {
               "index": 1,
-              "name": "G",
-              "x": -25.0,
+              "name": "P2",
+              "x": 40.0,
               "y": 0.0
             },
             {
               "index": 2,
-              "name": "S",
+              "name": "G",
               "x": 0.0,
-              "y": 25.0
+              "y": 40.0
             }
           ]
         },
@@ -1416,8 +1629,8 @@
           "id": "6da7c7ca-45f1-5366-b6db-90338419f008",
           "type": "FROM_LABEL",
           "name": "F_gate_cC",
-          "x": 600.0,
-          "y": 300.0,
+          "x": 660.0,
+          "y": 370.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
@@ -1428,8 +1641,8 @@
             {
               "index": 0,
               "name": "NET",
-              "x": 40.0,
-              "y": 0.0
+              "x": 0.0,
+              "y": -40.0
             }
           ]
         },
@@ -1504,16 +1717,17 @@
           ]
         },
         {
-          "id": "aa82fa77-624f-5a9a-b836-72545a030c17",
-          "type": "RESISTOR",
-          "name": "R_A",
-          "x": 1140.0,
+          "id": "d748bb00-7d2e-51ce-81dc-4ee85db05200",
+          "type": "INDUCTOR",
+          "name": "L_A",
+          "x": 1300.0,
           "y": -300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 10.0,
+            "inductance": 0.01,
+            "initial_current": 0.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1532,17 +1746,16 @@
           ]
         },
         {
-          "id": "d748bb00-7d2e-51ce-81dc-4ee85db05200",
-          "type": "INDUCTOR",
-          "name": "L_A",
-          "x": 1300.0,
+          "id": "aa82fa77-624f-5a9a-b836-72545a030c17",
+          "type": "RESISTOR",
+          "name": "R_A",
+          "x": 1140.0,
           "y": -300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "inductance": 0.01,
-            "initial_current": 0.0,
+            "resistance": 10.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1610,16 +1823,17 @@
           ]
         },
         {
-          "id": "46d15851-4f44-5503-aa55-fd157f4c7493",
-          "type": "RESISTOR",
-          "name": "R_B",
-          "x": 1140.0,
+          "id": "d378479b-cd16-52cb-8691-5b94e6fcce0c",
+          "type": "INDUCTOR",
+          "name": "L_B",
+          "x": 1300.0,
           "y": 0.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 10.0,
+            "inductance": 0.01,
+            "initial_current": 0.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1638,17 +1852,16 @@
           ]
         },
         {
-          "id": "d378479b-cd16-52cb-8691-5b94e6fcce0c",
-          "type": "INDUCTOR",
-          "name": "L_B",
-          "x": 1300.0,
+          "id": "46d15851-4f44-5503-aa55-fd157f4c7493",
+          "type": "RESISTOR",
+          "name": "R_B",
+          "x": 1140.0,
           "y": 0.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "inductance": 0.01,
-            "initial_current": 0.0,
+            "resistance": 10.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1716,16 +1929,17 @@
           ]
         },
         {
-          "id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
-          "type": "RESISTOR",
-          "name": "R_C",
-          "x": 1140.0,
+          "id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
+          "type": "INDUCTOR",
+          "name": "L_C",
+          "x": 1300.0,
           "y": 300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "resistance": 10.0,
+            "inductance": 0.01,
+            "initial_current": 0.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1744,17 +1958,16 @@
           ]
         },
         {
-          "id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
-          "type": "INDUCTOR",
-          "name": "L_C",
-          "x": 1300.0,
+          "id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
+          "type": "RESISTOR",
+          "name": "R_C",
+          "x": 1140.0,
           "y": 300.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
-            "inductance": 0.01,
-            "initial_current": 0.0,
+            "resistance": 10.0,
             "enable_thermal_port": false
           },
           "pins": [
@@ -1863,7 +2076,7 @@
           "id": "b6de3874-f292-5836-a4ce-eeb25c9e0e1d",
           "type": "CURRENT_PROBE",
           "name": "CP_out_A",
-          "x": 1220.0,
+          "x": 1380.0,
           "y": -340.0,
           "rotation": 0,
           "mirrored_h": false,
@@ -1897,13 +2110,47 @@
           "id": "8af541e3-bc62-5fe6-bec3-f3bef30d257d",
           "type": "CURRENT_PROBE",
           "name": "CP_out_B",
-          "x": 1220.0,
+          "x": 1380.0,
           "y": -40.0,
           "rotation": 0,
           "mirrored_h": false,
           "mirrored_v": false,
           "parameters": {
             "display_name": "I_R_B",
+            "scale": 1.0
+          },
+          "pins": [
+            {
+              "index": 0,
+              "name": "IN",
+              "x": -20.0,
+              "y": 0.0
+            },
+            {
+              "index": 1,
+              "name": "OUT",
+              "x": 20.0,
+              "y": 0.0
+            },
+            {
+              "index": 2,
+              "name": "MEAS",
+              "x": 0.0,
+              "y": -20.0
+            }
+          ]
+        },
+        {
+          "id": "3b23ca62-30bc-5d1f-bfbe-3ec4fda2a2b4",
+          "type": "CURRENT_PROBE",
+          "name": "CP_out_C",
+          "x": 1380.0,
+          "y": 260.0,
+          "rotation": 0,
+          "mirrored_h": false,
+          "mirrored_v": false,
+          "parameters": {
+            "display_name": "I_R_C",
             "scale": 1.0
           },
           "pins": [
@@ -1997,20 +2244,20 @@
             "channel_count": 4,
             "channels": [
               {
-                "label": "V(vA)",
+                "label": "V(VA)",
                 "overlay": false
               },
               {
-                "label": "V(vB)",
-                "overlay": false
+                "label": "CP_out_A",
+                "overlay": true
               },
               {
-                "label": "I(R_A)",
-                "overlay": false
+                "label": "CP_out_B",
+                "overlay": true
               },
               {
-                "label": "I(R_B)",
-                "overlay": false
+                "label": "CP_out_C",
+                "overlay": true
               }
             ]
           },
@@ -2244,6 +2491,240 @@
           "alias": ""
         },
         {
+          "id": "f141e06f-cad8-505c-9fc2-5e1e7bc6598c",
+          "segments": [
+            {
+              "x1": -660.0,
+              "y1": -260.0,
+              "x2": -590.0,
+              "y2": -260.0
+            },
+            {
+              "x1": -590.0,
+              "y1": -260.0,
+              "x2": -590.0,
+              "y2": -280.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "55977833-eca0-55c9-b189-401617dd61ef",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "9d8af2eb-8675-5391-9800-fea94117dfef",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Va_FILT",
+          "alias": ""
+        },
+        {
+          "id": "6a397b1e-9cbb-55be-a48e-9f51e84be2db",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": -240.0,
+              "x2": -590.0,
+              "y2": -220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "9d8af2eb-8675-5391-9800-fea94117dfef",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "b146cf34-21bf-5961-b3cb-f3269e9b9393",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Va_DAMP",
+          "alias": ""
+        },
+        {
+          "id": "2352024b-d7ff-5528-be90-de869bebc411",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": -180.0,
+              "x2": -660.0,
+              "y2": -180.0
+            },
+            {
+              "x1": -660.0,
+              "y1": -180.0,
+              "x2": -660.0,
+              "y2": 480.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "b146cf34-21bf-5961-b3cb-f3269e9b9393",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0658abe5-3498-5f2b-9a79-cca6398a1837",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "GND",
+          "alias": ""
+        },
+        {
+          "id": "8da7d555-281e-5dab-9e46-22ccc61ef6ac",
+          "segments": [
+            {
+              "x1": -660.0,
+              "y1": 40.0,
+              "x2": -590.0,
+              "y2": 40.0
+            },
+            {
+              "x1": -590.0,
+              "y1": 40.0,
+              "x2": -590.0,
+              "y2": 20.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "984508ce-4e21-5b60-8b8b-f0c86036156f",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "c1fa1b48-6bb7-5aff-8894-bf44021b2d2f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Vb_FILT",
+          "alias": ""
+        },
+        {
+          "id": "f698b42e-8ffc-5a6f-8865-7faf718546ed",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": 60.0,
+              "x2": -590.0,
+              "y2": 80.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "c1fa1b48-6bb7-5aff-8894-bf44021b2d2f",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "b5135f57-a90c-558f-b4c5-881a0e7a32d7",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Vb_DAMP",
+          "alias": ""
+        },
+        {
+          "id": "5626ab7a-bd8e-5f5b-8069-f63448d1c9ab",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": 120.0,
+              "x2": -660.0,
+              "y2": 120.0
+            },
+            {
+              "x1": -660.0,
+              "y1": 120.0,
+              "x2": -660.0,
+              "y2": 480.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "b5135f57-a90c-558f-b4c5-881a0e7a32d7",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0658abe5-3498-5f2b-9a79-cca6398a1837",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "GND",
+          "alias": ""
+        },
+        {
+          "id": "c2997348-d458-562b-9bd4-6426b70138e8",
+          "segments": [
+            {
+              "x1": -660.0,
+              "y1": 340.0,
+              "x2": -590.0,
+              "y2": 340.0
+            },
+            {
+              "x1": -590.0,
+              "y1": 340.0,
+              "x2": -590.0,
+              "y2": 320.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "231fd428-5fe3-5a4b-a9cc-b3ae38255b5a",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "a0d38a8d-1bcc-59e3-8060-89d8059cab73",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Vc_FILT",
+          "alias": ""
+        },
+        {
+          "id": "63ddb842-fadc-5575-aff8-55ca914b4cd5",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": 360.0,
+              "x2": -590.0,
+              "y2": 380.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "a0d38a8d-1bcc-59e3-8060-89d8059cab73",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "026825fe-f8b4-54dc-ab7a-dba078841017",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "Vc_DAMP",
+          "alias": ""
+        },
+        {
+          "id": "81745a4c-754e-5b4d-96b7-a4dc9cabf8d9",
+          "segments": [
+            {
+              "x1": -590.0,
+              "y1": 420.0,
+              "x2": -660.0,
+              "y2": 420.0
+            },
+            {
+              "x1": -660.0,
+              "y1": 420.0,
+              "x2": -660.0,
+              "y2": 480.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "026825fe-f8b4-54dc-ab7a-dba078841017",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "0658abe5-3498-5f2b-9a79-cca6398a1837",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "GND",
+          "alias": ""
+        },
+        {
           "id": "365d855d-064a-5e2d-addc-09068fcf9e4c",
           "segments": [
             {
@@ -2256,7 +2737,7 @@
               "x1": -480.0,
               "y1": -260.0,
               "x2": -480.0,
-              "y2": -360.0
+              "y2": -300.0
             }
           ],
           "start_connection": {
@@ -2284,7 +2765,7 @@
               "x1": -480.0,
               "y1": 40.0,
               "x2": -480.0,
-              "y2": -60.0
+              "y2": -120.0
             }
           ],
           "start_connection": {
@@ -2312,7 +2793,7 @@
               "x1": -480.0,
               "y1": 340.0,
               "x2": -480.0,
-              "y2": 240.0
+              "y2": 60.0
             }
           ],
           "start_connection": {
@@ -2330,12 +2811,6 @@
         {
           "id": "c5482b72-c870-5f7d-9a43-a368923c536d",
           "segments": [
-            {
-              "x1": -440.0,
-              "y1": -360.0,
-              "x2": -440.0,
-              "y2": -300.0
-            },
             {
               "x1": -440.0,
               "y1": -300.0,
@@ -2360,15 +2835,9 @@
           "segments": [
             {
               "x1": -440.0,
-              "y1": -60.0,
-              "x2": -440.0,
-              "y2": 0.0
-            },
-            {
-              "x1": -440.0,
-              "y1": 0.0,
+              "y1": -120.0,
               "x2": -300.0,
-              "y2": 0.0
+              "y2": -120.0
             }
           ],
           "start_connection": {
@@ -2388,15 +2857,9 @@
           "segments": [
             {
               "x1": -440.0,
-              "y1": 240.0,
-              "x2": -440.0,
-              "y2": 300.0
-            },
-            {
-              "x1": -440.0,
-              "y1": 300.0,
+              "y1": 60.0,
               "x2": -300.0,
-              "y2": 300.0
+              "y2": 60.0
             }
           ],
           "start_connection": {
@@ -2412,6 +2875,72 @@
           "alias": ""
         },
         {
+          "id": "3f670e63-57c6-5d7b-96ee-80633f54dea8",
+          "segments": [
+            {
+              "x1": -520.0,
+              "y1": 140.0,
+              "x2": -300.0,
+              "y2": 140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "bb8c13dd-950f-5347-934e-cbbcadd6568f",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
+            "pin_index": 3
+          },
+          "junctions": [],
+          "node_name": "SIG_isns_A",
+          "alias": ""
+        },
+        {
+          "id": "da38b887-ea00-5578-966f-53043515873f",
+          "segments": [
+            {
+              "x1": -520.0,
+              "y1": 220.0,
+              "x2": -300.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "17019f7c-f4bc-5781-85b8-77c89673788a",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
+            "pin_index": 4
+          },
+          "junctions": [],
+          "node_name": "SIG_isns_B",
+          "alias": ""
+        },
+        {
+          "id": "5ae51fb5-f1bf-5992-8460-87794abec01e",
+          "segments": [
+            {
+              "x1": -520.0,
+              "y1": 300.0,
+              "x2": -300.0,
+              "y2": 300.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "43d6f043-effe-57d4-8b12-502206a50478",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
+            "pin_index": 5
+          },
+          "junctions": [],
+          "node_name": "SIG_isns_C",
+          "alias": ""
+        },
+        {
           "id": "fa63e79a-383e-5004-803f-0dafd21dcc26",
           "segments": [
             {
@@ -2423,7 +2952,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 3
+            "pin_index": 6
           },
           "end_connection": {
             "component_id": "38163673-aeb8-52ce-94fc-1722a3d5d8df",
@@ -2445,7 +2974,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 4
+            "pin_index": 7
           },
           "end_connection": {
             "component_id": "5ed5b6d4-c659-5139-8562-04c1a9adc914",
@@ -2467,7 +2996,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 5
+            "pin_index": 8
           },
           "end_connection": {
             "component_id": "c5331479-7477-5f08-8c80-12fbece998f7",
@@ -2489,7 +3018,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 6
+            "pin_index": 9
           },
           "end_connection": {
             "component_id": "81915988-d369-5c42-b8c8-2249eeeca93c",
@@ -2511,7 +3040,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 7
+            "pin_index": 10
           },
           "end_connection": {
             "component_id": "058955c9-a379-5084-8513-ab29310a97a1",
@@ -2533,7 +3062,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 8
+            "pin_index": 11
           },
           "end_connection": {
             "component_id": "aa29d2b7-6aaa-562b-91cf-a549b53d1394",
@@ -2555,7 +3084,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 9
+            "pin_index": 12
           },
           "end_connection": {
             "component_id": "8e6524e6-54bf-536e-9be7-ecc76d3ecfed",
@@ -2577,7 +3106,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 10
+            "pin_index": 13
           },
           "end_connection": {
             "component_id": "71f88547-d124-56fd-bc4d-af4f1cd0da88",
@@ -2599,7 +3128,7 @@
           ],
           "start_connection": {
             "component_id": "3939242f-b159-5134-97c3-f408c130eeb6",
-            "pin_index": 11
+            "pin_index": 14
           },
           "end_connection": {
             "component_id": "8bebc6a9-f4c9-531c-adc4-9f67fc58a4f1",
@@ -2613,10 +3142,10 @@
           "id": "19b092f9-4cd5-5460-9690-118e23829e96",
           "segments": [
             {
-              "x1": 160.0,
-              "y1": -300.0,
-              "x2": 155.0,
-              "y2": -300.0
+              "x1": 180.0,
+              "y1": -270.0,
+              "x2": 180.0,
+              "y2": -260.0
             }
           ],
           "start_connection": {
@@ -2625,7 +3154,7 @@
           },
           "end_connection": {
             "component_id": "d07e96c3-f9df-5e3c-9a17-dabf90b9d63a",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_aA",
@@ -2637,14 +3166,14 @@
             {
               "x1": -660.0,
               "y1": -260.0,
-              "x2": 180.0,
+              "x2": 140.0,
               "y2": -260.0
             },
             {
-              "x1": 180.0,
+              "x1": 140.0,
               "y1": -260.0,
-              "x2": 180.0,
-              "y2": -325.0
+              "x2": 140.0,
+              "y2": -300.0
             }
           ],
           "start_connection": {
@@ -2663,21 +3192,15 @@
           "id": "24880cd7-61b8-5551-b98e-0ad91ba8d35d",
           "segments": [
             {
-              "x1": 180.0,
-              "y1": -275.0,
-              "x2": 200.0,
-              "y2": -275.0
-            },
-            {
-              "x1": 200.0,
-              "y1": -275.0,
+              "x1": 220.0,
+              "y1": -300.0,
               "x2": 200.0,
               "y2": -300.0
             }
           ],
           "start_connection": {
             "component_id": "d07e96c3-f9df-5e3c-9a17-dabf90b9d63a",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "381c1cc7-3799-51b8-b3db-68f15e1fac0e",
@@ -2691,10 +3214,10 @@
           "id": "5b1c1e87-ec8c-5649-8c3e-6700a25debae",
           "segments": [
             {
-              "x1": 160.0,
-              "y1": 0.0,
-              "x2": 155.0,
-              "y2": 0.0
+              "x1": 180.0,
+              "y1": 30.0,
+              "x2": 180.0,
+              "y2": 40.0
             }
           ],
           "start_connection": {
@@ -2703,7 +3226,7 @@
           },
           "end_connection": {
             "component_id": "9c584b37-043c-5669-a7ef-3af1efa80f9e",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_bA",
@@ -2715,14 +3238,14 @@
             {
               "x1": -660.0,
               "y1": 40.0,
-              "x2": 180.0,
+              "x2": 140.0,
               "y2": 40.0
             },
             {
-              "x1": 180.0,
+              "x1": 140.0,
               "y1": 40.0,
-              "x2": 180.0,
-              "y2": -25.0
+              "x2": 140.0,
+              "y2": 0.0
             }
           ],
           "start_connection": {
@@ -2741,21 +3264,15 @@
           "id": "099f9ae3-2192-598d-8d97-3a479d133583",
           "segments": [
             {
-              "x1": 180.0,
-              "y1": 25.0,
-              "x2": 200.0,
-              "y2": 25.0
-            },
-            {
-              "x1": 200.0,
-              "y1": 25.0,
+              "x1": 220.0,
+              "y1": 0.0,
               "x2": 200.0,
               "y2": 0.0
             }
           ],
           "start_connection": {
             "component_id": "9c584b37-043c-5669-a7ef-3af1efa80f9e",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "4ab25c91-1d87-5e6b-b5b7-432c295c0ea8",
@@ -2769,10 +3286,10 @@
           "id": "ced3b239-e022-544c-890d-5611f9371dbd",
           "segments": [
             {
-              "x1": 160.0,
-              "y1": 300.0,
-              "x2": 155.0,
-              "y2": 300.0
+              "x1": 180.0,
+              "y1": 330.0,
+              "x2": 180.0,
+              "y2": 340.0
             }
           ],
           "start_connection": {
@@ -2781,7 +3298,7 @@
           },
           "end_connection": {
             "component_id": "5beb48bd-770e-5dd5-83dd-da3893ea129d",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_cA",
@@ -2793,14 +3310,14 @@
             {
               "x1": -660.0,
               "y1": 340.0,
-              "x2": 180.0,
+              "x2": 140.0,
               "y2": 340.0
             },
             {
-              "x1": 180.0,
+              "x1": 140.0,
               "y1": 340.0,
-              "x2": 180.0,
-              "y2": 275.0
+              "x2": 140.0,
+              "y2": 300.0
             }
           ],
           "start_connection": {
@@ -2819,21 +3336,15 @@
           "id": "7d962883-b5e3-58fd-b6c4-59fb77de2721",
           "segments": [
             {
-              "x1": 180.0,
-              "y1": 325.0,
-              "x2": 200.0,
-              "y2": 325.0
-            },
-            {
-              "x1": 200.0,
-              "y1": 325.0,
+              "x1": 220.0,
+              "y1": 300.0,
               "x2": 200.0,
               "y2": 300.0
             }
           ],
           "start_connection": {
             "component_id": "5beb48bd-770e-5dd5-83dd-da3893ea129d",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "c143300e-f85c-54ee-9cf5-5dea91158505",
@@ -2847,10 +3358,10 @@
           "id": "70a20138-2863-580d-b12d-340455056e90",
           "segments": [
             {
-              "x1": 400.0,
-              "y1": -300.0,
-              "x2": 395.0,
-              "y2": -300.0
+              "x1": 420.0,
+              "y1": -270.0,
+              "x2": 420.0,
+              "y2": -260.0
             }
           ],
           "start_connection": {
@@ -2859,7 +3370,7 @@
           },
           "end_connection": {
             "component_id": "a7109495-3e24-5839-b7cd-81463fe66987",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_aB",
@@ -2871,14 +3382,14 @@
             {
               "x1": -660.0,
               "y1": -260.0,
-              "x2": 420.0,
+              "x2": 380.0,
               "y2": -260.0
             },
             {
-              "x1": 420.0,
+              "x1": 380.0,
               "y1": -260.0,
-              "x2": 420.0,
-              "y2": -325.0
+              "x2": 380.0,
+              "y2": -300.0
             }
           ],
           "start_connection": {
@@ -2897,21 +3408,15 @@
           "id": "407070ab-d641-5bcb-8dd6-929ffdc6ef39",
           "segments": [
             {
-              "x1": 420.0,
-              "y1": -275.0,
-              "x2": 440.0,
-              "y2": -275.0
-            },
-            {
-              "x1": 440.0,
-              "y1": -275.0,
+              "x1": 460.0,
+              "y1": -300.0,
               "x2": 440.0,
               "y2": -300.0
             }
           ],
           "start_connection": {
             "component_id": "a7109495-3e24-5839-b7cd-81463fe66987",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "3779be5f-14b4-53a8-a785-244d5f327eb9",
@@ -2925,10 +3430,10 @@
           "id": "46ec6844-7558-53eb-935e-f14c2a7e8d7a",
           "segments": [
             {
-              "x1": 400.0,
-              "y1": 0.0,
-              "x2": 395.0,
-              "y2": 0.0
+              "x1": 420.0,
+              "y1": 30.0,
+              "x2": 420.0,
+              "y2": 40.0
             }
           ],
           "start_connection": {
@@ -2937,7 +3442,7 @@
           },
           "end_connection": {
             "component_id": "91e57415-7e87-54c0-a72e-2926a8f1d30d",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_bB",
@@ -2949,14 +3454,14 @@
             {
               "x1": -660.0,
               "y1": 40.0,
-              "x2": 420.0,
+              "x2": 380.0,
               "y2": 40.0
             },
             {
-              "x1": 420.0,
+              "x1": 380.0,
               "y1": 40.0,
-              "x2": 420.0,
-              "y2": -25.0
+              "x2": 380.0,
+              "y2": 0.0
             }
           ],
           "start_connection": {
@@ -2975,21 +3480,15 @@
           "id": "b75cdc1a-0a5a-566a-b4a2-13d7a3bd8f88",
           "segments": [
             {
-              "x1": 420.0,
-              "y1": 25.0,
-              "x2": 440.0,
-              "y2": 25.0
-            },
-            {
-              "x1": 440.0,
-              "y1": 25.0,
+              "x1": 460.0,
+              "y1": 0.0,
               "x2": 440.0,
               "y2": 0.0
             }
           ],
           "start_connection": {
             "component_id": "91e57415-7e87-54c0-a72e-2926a8f1d30d",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "c24ba47d-f0da-5fff-84c6-a0067ec89b3b",
@@ -3003,10 +3502,10 @@
           "id": "48c945ae-5a54-579c-8864-0cf422a5480f",
           "segments": [
             {
-              "x1": 400.0,
-              "y1": 300.0,
-              "x2": 395.0,
-              "y2": 300.0
+              "x1": 420.0,
+              "y1": 330.0,
+              "x2": 420.0,
+              "y2": 340.0
             }
           ],
           "start_connection": {
@@ -3015,7 +3514,7 @@
           },
           "end_connection": {
             "component_id": "c6622eb7-c04a-523b-9a3c-9ba1044c68f2",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_cB",
@@ -3027,14 +3526,14 @@
             {
               "x1": -660.0,
               "y1": 340.0,
-              "x2": 420.0,
+              "x2": 380.0,
               "y2": 340.0
             },
             {
-              "x1": 420.0,
+              "x1": 380.0,
               "y1": 340.0,
-              "x2": 420.0,
-              "y2": 275.0
+              "x2": 380.0,
+              "y2": 300.0
             }
           ],
           "start_connection": {
@@ -3053,21 +3552,15 @@
           "id": "04b82366-9259-5f1b-9f14-ff27cd196814",
           "segments": [
             {
-              "x1": 420.0,
-              "y1": 325.0,
-              "x2": 440.0,
-              "y2": 325.0
-            },
-            {
-              "x1": 440.0,
-              "y1": 325.0,
+              "x1": 460.0,
+              "y1": 300.0,
               "x2": 440.0,
               "y2": 300.0
             }
           ],
           "start_connection": {
             "component_id": "c6622eb7-c04a-523b-9a3c-9ba1044c68f2",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "9ca4e057-5415-50af-803a-f7be9a18e8c5",
@@ -3081,10 +3574,10 @@
           "id": "d4a66bd5-9dfa-5ad2-8db3-813f70167a5f",
           "segments": [
             {
-              "x1": 640.0,
-              "y1": -300.0,
-              "x2": 635.0,
-              "y2": -300.0
+              "x1": 660.0,
+              "y1": -270.0,
+              "x2": 660.0,
+              "y2": -260.0
             }
           ],
           "start_connection": {
@@ -3093,7 +3586,7 @@
           },
           "end_connection": {
             "component_id": "06ccf756-9dac-5697-b526-c546ea2f3126",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_aC",
@@ -3105,14 +3598,14 @@
             {
               "x1": -660.0,
               "y1": -260.0,
-              "x2": 660.0,
+              "x2": 620.0,
               "y2": -260.0
             },
             {
-              "x1": 660.0,
+              "x1": 620.0,
               "y1": -260.0,
-              "x2": 660.0,
-              "y2": -325.0
+              "x2": 620.0,
+              "y2": -300.0
             }
           ],
           "start_connection": {
@@ -3131,21 +3624,15 @@
           "id": "1def9fe5-8114-5660-a8be-1b2e742784ec",
           "segments": [
             {
-              "x1": 660.0,
-              "y1": -275.0,
-              "x2": 680.0,
-              "y2": -275.0
-            },
-            {
-              "x1": 680.0,
-              "y1": -275.0,
+              "x1": 700.0,
+              "y1": -300.0,
               "x2": 680.0,
               "y2": -300.0
             }
           ],
           "start_connection": {
             "component_id": "06ccf756-9dac-5697-b526-c546ea2f3126",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "0718058c-5e84-55b0-89b3-13d5b5762db8",
@@ -3159,10 +3646,10 @@
           "id": "5482e9ed-c23e-5e8f-b237-47761fb4ff0b",
           "segments": [
             {
-              "x1": 640.0,
-              "y1": 0.0,
-              "x2": 635.0,
-              "y2": 0.0
+              "x1": 660.0,
+              "y1": 30.0,
+              "x2": 660.0,
+              "y2": 40.0
             }
           ],
           "start_connection": {
@@ -3171,7 +3658,7 @@
           },
           "end_connection": {
             "component_id": "6311347c-e340-5298-ad0e-9802e06e42ca",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_bC",
@@ -3183,14 +3670,14 @@
             {
               "x1": -660.0,
               "y1": 40.0,
-              "x2": 660.0,
+              "x2": 620.0,
               "y2": 40.0
             },
             {
-              "x1": 660.0,
+              "x1": 620.0,
               "y1": 40.0,
-              "x2": 660.0,
-              "y2": -25.0
+              "x2": 620.0,
+              "y2": 0.0
             }
           ],
           "start_connection": {
@@ -3209,21 +3696,15 @@
           "id": "3dd86ed5-9512-53e9-989e-324b2217fd98",
           "segments": [
             {
-              "x1": 660.0,
-              "y1": 25.0,
-              "x2": 680.0,
-              "y2": 25.0
-            },
-            {
-              "x1": 680.0,
-              "y1": 25.0,
+              "x1": 700.0,
+              "y1": 0.0,
               "x2": 680.0,
               "y2": 0.0
             }
           ],
           "start_connection": {
             "component_id": "6311347c-e340-5298-ad0e-9802e06e42ca",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "87ef35cd-ce8b-544a-b1dc-b87af8aec236",
@@ -3237,10 +3718,10 @@
           "id": "7d8366b9-fb46-5664-8c33-85683c6487fc",
           "segments": [
             {
-              "x1": 640.0,
-              "y1": 300.0,
-              "x2": 635.0,
-              "y2": 300.0
+              "x1": 660.0,
+              "y1": 330.0,
+              "x2": 660.0,
+              "y2": 340.0
             }
           ],
           "start_connection": {
@@ -3249,7 +3730,7 @@
           },
           "end_connection": {
             "component_id": "f01fda19-0220-57cb-b57a-9e67fd1aea6c",
-            "pin_index": 1
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "gate_cC",
@@ -3261,14 +3742,14 @@
             {
               "x1": -660.0,
               "y1": 340.0,
-              "x2": 660.0,
+              "x2": 620.0,
               "y2": 340.0
             },
             {
-              "x1": 660.0,
+              "x1": 620.0,
               "y1": 340.0,
-              "x2": 660.0,
-              "y2": 275.0
+              "x2": 620.0,
+              "y2": 300.0
             }
           ],
           "start_connection": {
@@ -3287,21 +3768,15 @@
           "id": "b7e70975-240b-5183-8e05-c6579d77f69b",
           "segments": [
             {
-              "x1": 660.0,
-              "y1": 325.0,
-              "x2": 680.0,
-              "y2": 325.0
-            },
-            {
-              "x1": 680.0,
-              "y1": 325.0,
+              "x1": 700.0,
+              "y1": 300.0,
               "x2": 680.0,
               "y2": 300.0
             }
           ],
           "start_connection": {
             "component_id": "f01fda19-0220-57cb-b57a-9e67fd1aea6c",
-            "pin_index": 2
+            "pin_index": 1
           },
           "end_connection": {
             "component_id": "e322f878-7c35-5c4f-8f5d-e0ea72251103",
@@ -3340,18 +3815,18 @@
           "alias": ""
         },
         {
-          "id": "ce1cb332-eaf5-5a51-a9e4-33cd697a57cc",
+          "id": "e5489c0f-84e8-5fe1-844a-0ef55db2abe3",
           "segments": [
             {
               "x1": 960.0,
               "y1": -340.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": -340.0
             },
             {
-              "x1": 1100.0,
+              "x1": 1260.0,
               "y1": -340.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": -300.0
             }
           ],
@@ -3360,11 +3835,39 @@
             "pin_index": 0
           },
           "end_connection": {
-            "component_id": "aa82fa77-624f-5a9a-b836-72545a030c17",
+            "component_id": "d748bb00-7d2e-51ce-81dc-4ee85db05200",
             "pin_index": 0
           },
           "junctions": [],
           "node_name": "VA",
+          "alias": ""
+        },
+        {
+          "id": "b77ea2f9-e02f-55d5-be21-11850649ade0",
+          "segments": [
+            {
+              "x1": 1100.0,
+              "y1": -300.0,
+              "x2": -560.0,
+              "y2": -300.0
+            },
+            {
+              "x1": -560.0,
+              "y1": -300.0,
+              "x2": -560.0,
+              "y2": 140.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "aa82fa77-624f-5a9a-b836-72545a030c17",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "bb8c13dd-950f-5347-934e-cbbcadd6568f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LRMID_A",
           "alias": ""
         },
         {
@@ -3396,18 +3899,18 @@
           "alias": ""
         },
         {
-          "id": "81c1d338-7360-591c-9519-8f1926fea063",
+          "id": "d195d85f-27d1-5aa3-9e9c-ad71010dc182",
           "segments": [
             {
               "x1": 960.0,
               "y1": -40.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": -40.0
             },
             {
-              "x1": 1100.0,
+              "x1": 1260.0,
               "y1": -40.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": 0.0
             }
           ],
@@ -3416,11 +3919,39 @@
             "pin_index": 0
           },
           "end_connection": {
-            "component_id": "46d15851-4f44-5503-aa55-fd157f4c7493",
+            "component_id": "d378479b-cd16-52cb-8691-5b94e6fcce0c",
             "pin_index": 0
           },
           "junctions": [],
           "node_name": "VB",
+          "alias": ""
+        },
+        {
+          "id": "f974f159-d964-597d-8b22-14aaaf7af2eb",
+          "segments": [
+            {
+              "x1": 1100.0,
+              "y1": 0.0,
+              "x2": -560.0,
+              "y2": 0.0
+            },
+            {
+              "x1": -560.0,
+              "y1": 0.0,
+              "x2": -560.0,
+              "y2": 220.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "46d15851-4f44-5503-aa55-fd157f4c7493",
+            "pin_index": 0
+          },
+          "end_connection": {
+            "component_id": "17019f7c-f4bc-5781-85b8-77c89673788a",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LRMID_B",
           "alias": ""
         },
         {
@@ -3452,18 +3983,18 @@
           "alias": ""
         },
         {
-          "id": "bb860c8a-bb39-5078-a24f-9222e55e282d",
+          "id": "3babe832-e83b-5c8f-9c81-728b25a4f2c6",
           "segments": [
             {
               "x1": 960.0,
               "y1": 260.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": 260.0
             },
             {
-              "x1": 1100.0,
+              "x1": 1260.0,
               "y1": 260.0,
-              "x2": 1100.0,
+              "x2": 1260.0,
               "y2": 300.0
             }
           ],
@@ -3472,7 +4003,7 @@
             "pin_index": 0
           },
           "end_connection": {
-            "component_id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
+            "component_id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
             "pin_index": 0
           },
           "junctions": [],
@@ -3480,32 +4011,32 @@
           "alias": ""
         },
         {
-          "id": "f9b5c4ac-7244-58e0-b462-1b04d227ffe2",
+          "id": "0b47713d-11f5-5865-9515-7b5637c1e674",
           "segments": [
             {
-              "x1": 1180.0,
+              "x1": 1100.0,
               "y1": 300.0,
-              "x2": 1260.0,
+              "x2": -560.0,
               "y2": 300.0
             }
           ],
           "start_connection": {
             "component_id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
-            "pin_index": 1
+            "pin_index": 0
           },
           "end_connection": {
-            "component_id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
+            "component_id": "43d6f043-effe-57d4-8b12-502206a50478",
             "pin_index": 0
           },
           "junctions": [],
-          "node_name": "LMID_C",
+          "node_name": "LRMID_C",
           "alias": ""
         },
         {
-          "id": "52b9e988-b955-5fa6-a2f7-7511f6b2c587",
+          "id": "ff8cc7dc-b30f-5ca9-8ed0-91f9a1bd498c",
           "segments": [
             {
-              "x1": 1340.0,
+              "x1": 1180.0,
               "y1": -300.0,
               "x2": 1460.0,
               "y2": -300.0
@@ -3518,7 +4049,7 @@
             }
           ],
           "start_connection": {
-            "component_id": "d748bb00-7d2e-51ce-81dc-4ee85db05200",
+            "component_id": "aa82fa77-624f-5a9a-b836-72545a030c17",
             "pin_index": 1
           },
           "end_connection": {
@@ -3530,10 +4061,10 @@
           "alias": ""
         },
         {
-          "id": "8f782857-afb2-54cf-8f9a-e201c8466641",
+          "id": "1fa5723e-8f46-5426-ad22-064380c2cfd3",
           "segments": [
             {
-              "x1": 1340.0,
+              "x1": 1180.0,
               "y1": 0.0,
               "x2": 1460.0,
               "y2": 0.0
@@ -3546,7 +4077,7 @@
             }
           ],
           "start_connection": {
-            "component_id": "d378479b-cd16-52cb-8691-5b94e6fcce0c",
+            "component_id": "46d15851-4f44-5503-aa55-fd157f4c7493",
             "pin_index": 1
           },
           "end_connection": {
@@ -3558,10 +4089,10 @@
           "alias": ""
         },
         {
-          "id": "d65d85f6-dc80-5e46-979e-ed86f1f6d583",
+          "id": "52869e29-543f-5060-a2a8-9e5beba93953",
           "segments": [
             {
-              "x1": 1340.0,
+              "x1": 1180.0,
               "y1": 300.0,
               "x2": 1460.0,
               "y2": 300.0
@@ -3574,7 +4105,7 @@
             }
           ],
           "start_connection": {
-            "component_id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
+            "component_id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
             "pin_index": 1
           },
           "end_connection": {
@@ -3698,115 +4229,171 @@
           "alias": ""
         },
         {
-          "id": "4651d78c-255d-5512-ad98-731d720564f4",
+          "id": "4fa73439-d9b4-51ee-9d4b-9be7871cbf91",
           "segments": [
             {
-              "x1": 1180.0,
+              "x1": 1340.0,
               "y1": -300.0,
-              "x2": 1200.0,
+              "x2": 1360.0,
               "y2": -300.0
             },
             {
-              "x1": 1200.0,
+              "x1": 1360.0,
               "y1": -300.0,
-              "x2": 1200.0,
+              "x2": 1360.0,
               "y2": -340.0
             }
           ],
           "start_connection": {
-            "component_id": "aa82fa77-624f-5a9a-b836-72545a030c17",
-            "pin_index": 1
-          },
-          "end_connection": {
-            "component_id": "b6de3874-f292-5836-a4ce-eeb25c9e0e1d",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "R_A_OUT",
-          "alias": ""
-        },
-        {
-          "id": "94191f6a-3bc5-517e-a88d-6d5d7a715d40",
-          "segments": [
-            {
-              "x1": 1240.0,
-              "y1": -340.0,
-              "x2": 1260.0,
-              "y2": -340.0
-            },
-            {
-              "x1": 1260.0,
-              "y1": -340.0,
-              "x2": 1260.0,
-              "y2": -300.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "b6de3874-f292-5836-a4ce-eeb25c9e0e1d",
-            "pin_index": 1
-          },
-          "end_connection": {
             "component_id": "d748bb00-7d2e-51ce-81dc-4ee85db05200",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "b6de3874-f292-5836-a4ce-eeb25c9e0e1d",
             "pin_index": 0
           },
           "junctions": [],
-          "node_name": "LMID_A",
+          "node_name": "L_A_OUT",
           "alias": ""
         },
         {
-          "id": "d40e5430-784e-5a03-9808-d681a347b4b5",
+          "id": "29099e90-809a-53f2-8427-6721aa3fb763",
           "segments": [
             {
-              "x1": 1180.0,
+              "x1": 1400.0,
+              "y1": -340.0,
+              "x2": 1100.0,
+              "y2": -340.0
+            },
+            {
+              "x1": 1100.0,
+              "y1": -340.0,
+              "x2": 1100.0,
+              "y2": -300.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "b6de3874-f292-5836-a4ce-eeb25c9e0e1d",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "aa82fa77-624f-5a9a-b836-72545a030c17",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LRMID_A",
+          "alias": ""
+        },
+        {
+          "id": "633ab5c6-41e5-56cf-869d-98ca627bd0d5",
+          "segments": [
+            {
+              "x1": 1340.0,
               "y1": 0.0,
-              "x2": 1200.0,
+              "x2": 1360.0,
               "y2": 0.0
             },
             {
-              "x1": 1200.0,
+              "x1": 1360.0,
               "y1": 0.0,
-              "x2": 1200.0,
+              "x2": 1360.0,
               "y2": -40.0
             }
           ],
           "start_connection": {
-            "component_id": "46d15851-4f44-5503-aa55-fd157f4c7493",
-            "pin_index": 1
-          },
-          "end_connection": {
-            "component_id": "8af541e3-bc62-5fe6-bec3-f3bef30d257d",
-            "pin_index": 0
-          },
-          "junctions": [],
-          "node_name": "R_B_OUT",
-          "alias": ""
-        },
-        {
-          "id": "cb456573-4ef2-55a0-8d98-ad6c3a0615ee",
-          "segments": [
-            {
-              "x1": 1240.0,
-              "y1": -40.0,
-              "x2": 1260.0,
-              "y2": -40.0
-            },
-            {
-              "x1": 1260.0,
-              "y1": -40.0,
-              "x2": 1260.0,
-              "y2": 0.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "8af541e3-bc62-5fe6-bec3-f3bef30d257d",
-            "pin_index": 1
-          },
-          "end_connection": {
             "component_id": "d378479b-cd16-52cb-8691-5b94e6fcce0c",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "8af541e3-bc62-5fe6-bec3-f3bef30d257d",
             "pin_index": 0
           },
           "junctions": [],
-          "node_name": "LMID_B",
+          "node_name": "L_B_OUT",
+          "alias": ""
+        },
+        {
+          "id": "91513686-4192-5113-9e76-f2a0b940d6a1",
+          "segments": [
+            {
+              "x1": 1400.0,
+              "y1": -40.0,
+              "x2": 1100.0,
+              "y2": -40.0
+            },
+            {
+              "x1": 1100.0,
+              "y1": -40.0,
+              "x2": 1100.0,
+              "y2": 0.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "8af541e3-bc62-5fe6-bec3-f3bef30d257d",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "46d15851-4f44-5503-aa55-fd157f4c7493",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LRMID_B",
+          "alias": ""
+        },
+        {
+          "id": "3b773872-e9a6-54f7-87d5-fa491c82e631",
+          "segments": [
+            {
+              "x1": 1340.0,
+              "y1": 300.0,
+              "x2": 1360.0,
+              "y2": 300.0
+            },
+            {
+              "x1": 1360.0,
+              "y1": 300.0,
+              "x2": 1360.0,
+              "y2": 260.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "f74e0ba6-9a55-5a12-9b67-76526222f9d1",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "3b23ca62-30bc-5d1f-bfbe-3ec4fda2a2b4",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "L_C_OUT",
+          "alias": ""
+        },
+        {
+          "id": "b910271b-7859-5bbf-84ba-f7309834b90b",
+          "segments": [
+            {
+              "x1": 1400.0,
+              "y1": 260.0,
+              "x2": 1100.0,
+              "y2": 260.0
+            },
+            {
+              "x1": 1100.0,
+              "y1": 260.0,
+              "x2": 1100.0,
+              "y2": 300.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3b23ca62-30bc-5d1f-bfbe-3ec4fda2a2b4",
+            "pin_index": 1
+          },
+          "end_connection": {
+            "component_id": "8d2db7cd-6f83-5702-91e2-5e304ca00a6f",
+            "pin_index": 0
+          },
+          "junctions": [],
+          "node_name": "LRMID_C",
           "alias": ""
         },
         {
@@ -3814,7 +4401,7 @@
           "segments": [
             {
               "x1": -440.0,
-              "y1": -360.0,
+              "y1": -300.0,
               "x2": -440.0,
               "y2": -590.0
             },
@@ -3842,7 +4429,7 @@
           "segments": [
             {
               "x1": -440.0,
-              "y1": -60.0,
+              "y1": -120.0,
               "x2": -440.0,
               "y2": -570.0
             },
@@ -3950,47 +4537,19 @@
           "alias": ""
         },
         {
-          "id": "b78ec2da-4cbd-5684-90de-9e81075c7520",
-          "segments": [
-            {
-              "x1": 1000.0,
-              "y1": -40.0,
-              "x2": 1000.0,
-              "y2": 550.0
-            },
-            {
-              "x1": 1000.0,
-              "y1": 550.0,
-              "x2": 1260.0,
-              "y2": 550.0
-            }
-          ],
-          "start_connection": {
-            "component_id": "32ab5133-e4a7-58a5-87a8-6fa751efac43",
-            "pin_index": 1
-          },
-          "end_connection": {
-            "component_id": "7c2a89e0-24e3-5c1d-824f-8488d0b27f9e",
-            "pin_index": 1
-          },
-          "junctions": [],
-          "node_name": "SIG_vB",
-          "alias": ""
-        },
-        {
           "id": "0b27fdf5-60bd-5616-9d63-8fc8578cba24",
           "segments": [
             {
-              "x1": 1220.0,
+              "x1": 1380.0,
               "y1": -360.0,
-              "x2": 1220.0,
-              "y2": 570.0
+              "x2": 1380.0,
+              "y2": 550.0
             },
             {
-              "x1": 1220.0,
-              "y1": 570.0,
+              "x1": 1380.0,
+              "y1": 550.0,
               "x2": 1260.0,
-              "y2": 570.0
+              "y2": 550.0
             }
           ],
           "start_connection": {
@@ -3999,7 +4558,7 @@
           },
           "end_connection": {
             "component_id": "7c2a89e0-24e3-5c1d-824f-8488d0b27f9e",
-            "pin_index": 2
+            "pin_index": 1
           },
           "junctions": [],
           "node_name": "SIG_I_R_A",
@@ -4009,16 +4568,16 @@
           "id": "51042d9c-edac-55ae-9e99-620bca7faeee",
           "segments": [
             {
-              "x1": 1220.0,
+              "x1": 1380.0,
               "y1": -60.0,
-              "x2": 1220.0,
-              "y2": 590.0
+              "x2": 1380.0,
+              "y2": 570.0
             },
             {
-              "x1": 1220.0,
-              "y1": 590.0,
+              "x1": 1380.0,
+              "y1": 570.0,
               "x2": 1260.0,
-              "y2": 590.0
+              "y2": 570.0
             }
           ],
           "start_connection": {
@@ -4027,10 +4586,38 @@
           },
           "end_connection": {
             "component_id": "7c2a89e0-24e3-5c1d-824f-8488d0b27f9e",
-            "pin_index": 3
+            "pin_index": 2
           },
           "junctions": [],
           "node_name": "SIG_I_R_B",
+          "alias": ""
+        },
+        {
+          "id": "8cb417ba-cbb1-53be-a149-97b2949ed369",
+          "segments": [
+            {
+              "x1": 1380.0,
+              "y1": 240.0,
+              "x2": 1380.0,
+              "y2": 590.0
+            },
+            {
+              "x1": 1380.0,
+              "y1": 590.0,
+              "x2": 1260.0,
+              "y2": 590.0
+            }
+          ],
+          "start_connection": {
+            "component_id": "3b23ca62-30bc-5d1f-bfbe-3ec4fda2a2b4",
+            "pin_index": 2
+          },
+          "end_connection": {
+            "component_id": "7c2a89e0-24e3-5c1d-824f-8488d0b27f9e",
+            "pin_index": 3
+          },
+          "junctions": [],
+          "node_name": "SIG_I_R_C",
           "alias": ""
         }
       ]
