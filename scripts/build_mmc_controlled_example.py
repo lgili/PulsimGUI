@@ -60,15 +60,37 @@ def pin(index, name, x, y):
     return {"index": index, "name": name, "x": float(x), "y": float(y)}
 
 
+def _pin_world(c, pin_index):
+    """Absolute scene position of a component pin, applying mirroring + rotation
+    EXACTLY like ``Component.get_pin_position`` (mirror first, then 90° steps of
+    ``(px,py) -> (-py,px)``).
+
+    Wire/route endpoints MUST be computed at the *rotated* pin position. If a
+    rotated component's endpoints are left at the unrotated pin coords, the
+    load-time double-rotation healer (``Circuit._heal_double_rotated_components``)
+    treats the unrotated coords as ground truth and un-rotates the pins to meet
+    them — silently cancelling the rotation (a vertical arm probe loads as a
+    horizontal one). Matching the rotated pin keeps legitimately-rotated parts
+    untouched.
+    """
+    px = next(p["x"] for p in c["pins"] if p["index"] == pin_index)
+    py = next(p["y"] for p in c["pins"] if p["index"] == pin_index)
+    if c.get("mirrored_h"):
+        px = -px
+    if c.get("mirrored_v"):
+        py = -py
+    for _ in range((int(c.get("rotation", 0) or 0) // 90) % 4):
+        px, py = -py, px
+    return c["x"] + px, c["y"] + py
+
+
 def wire_direct(a_id, a_pin, b_id, b_pin, components_by_id, *, node_name=""):
     """A single-segment wire — no router. Connectivity is by endpoint
     (component_id, pin_index), so geometry never merges it with other nets."""
     ca = components_by_id[a_id]
     cb = components_by_id[b_id]
-    ax = ca["x"] + next(p["x"] for p in ca["pins"] if p["index"] == a_pin)
-    ay = ca["y"] + next(p["y"] for p in ca["pins"] if p["index"] == a_pin)
-    bx = cb["x"] + next(p["x"] for p in cb["pins"] if p["index"] == b_pin)
-    by = cb["y"] + next(p["y"] for p in cb["pins"] if p["index"] == b_pin)
+    ax, ay = _pin_world(ca, a_pin)
+    bx, by = _pin_world(cb, b_pin)
     return {
         "id": uid(), "segments": [{"x1": ax, "y1": ay, "x2": bx, "y2": by}],
         "start_connection": {"component_id": a_id, "pin_index": a_pin},
@@ -81,10 +103,8 @@ def wire(a_id, a_pin, b_id, b_pin, components_by_id, router, *,
          node_name="", alias=""):
     ca = components_by_id[a_id]
     cb = components_by_id[b_id]
-    ax = ca["x"] + next(p["x"] for p in ca["pins"] if p["index"] == a_pin)
-    ay = ca["y"] + next(p["y"] for p in ca["pins"] if p["index"] == a_pin)
-    bx = cb["x"] + next(p["x"] for p in cb["pins"] if p["index"] == b_pin)
-    by = cb["y"] + next(p["y"] for p in cb["pins"] if p["index"] == b_pin)
+    ax, ay = _pin_world(ca, a_pin)
+    bx, by = _pin_world(cb, b_pin)
     raw = router.route(ax, ay, bx, by)
     segments = [{"x1": x1, "y1": y1, "x2": x2, "y2": y2}
                 for (x1, y1, x2, y2) in raw]
@@ -199,9 +219,13 @@ for i, arm in enumerate(mref_targets):
 load_r, load_l, ip_phase = [], [], []
 for i, (ph, col_x) in enumerate(zip(("A", "B", "C"), X_PHASE)):
     py = Y_PHASE_TAP + (i - 1) * 80
+    # Canonical CURRENT_PROBE pin layout (IN left, OUT right, MEAS top). The
+    # probe-pin sync force-resets measurement probes to this layout on load, so
+    # authoring non-canonical names (the old "1"/"2"/"OUT") collided with the
+    # canonical "OUT" and corrupted the geometry — keep it canonical.
     ipx = comp(type="CURRENT_PROBE", name=f"I_ph{ph}", x=160, y=py,
                parameters={"display_name": f"I_ph{ph}", "scale": 1.0},
-               pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0), pin(2, "OUT", 0, 25)])
+               pins=[pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0), pin(2, "MEAS", 0, -20)])
     rx = comp(type="RESISTOR", name=f"R_{ph}", x=300, y=py,
               parameters={"resistance": R_LOAD}, pins=[pin(0, "1", -25, 0), pin(1, "2", 25, 0)])
     lx = comp(type="INDUCTOR", name=f"L_{ph}", x=440, y=py,
@@ -243,17 +267,20 @@ for i, ph in enumerate(("A", "B", "C")):
     vp_phase.append(vp); vp_sense_from.append(sf)
 
 # ---- Phase-A arm current probes ----
-# Rotated 90°: CURRENT_PROBE's canonical pins are horizontal (IN/OUT left-right),
-# but these sit in a vertical arm leg. Rotating makes IN/OUT vertical so the
-# series wires run straight down the leg; a horizontal probe here forces the
-# OUT→arm wire back across the IN pin, shorting the ammeter (singular matrix).
-# Full-grid Y (±80) so the body never snap-shifts on load.
+# These sit in a vertical arm leg, so rotation=90 orients the probe with IN/OUT
+# running top↔bottom and the series wires straight down the leg. CRITICAL: the
+# pins are authored in the CANONICAL (unrotated) frame — IN left, OUT right,
+# MEAS top — and the `rotation` field rotates body+pins together on load (the
+# scene re-snaps each wire endpoint to its rotated pin position via the
+# connection metadata). Authoring already-rotated pin coords here AND setting
+# rotation=90 (the old "1"(0,-25)/"2"(0,25)/"OUT"(30,0)) double-rotates and
+# corrupts the layout — that was the "rotated examples load distorted" bug.
 ip_arm_uA = comp(type="CURRENT_PROBE", name="I_arm_uA", x=X_PHASE[0], y=Y_L_UPPER + 80, rotation=90,
                  parameters={"display_name": "I_arm_uA", "scale": 1.0},
-                 pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25), pin(2, "OUT", 30, 0)])
+                 pins=[pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0), pin(2, "MEAS", 0, -20)])
 ip_arm_lA = comp(type="CURRENT_PROBE", name="I_arm_lA", x=X_PHASE[0], y=Y_L_LOWER - 80, rotation=90,
                  parameters={"display_name": "I_arm_lA", "scale": 1.0},
-                 pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25), pin(2, "OUT", 30, 0)])
+                 pins=[pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0), pin(2, "MEAS", 0, -20)])
 components += [ip_arm_uA, ip_arm_lA]
 
 # ---- Scopes ----
