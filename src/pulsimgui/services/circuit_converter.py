@@ -332,6 +332,22 @@ class CircuitConverter:
         except Exception:  # noqa: BLE001 - detection must never break a build
             pass
 
+        # Snapshot every standalone C_BLOCK's electrical wiring for the
+        # pulsim 1.8 ``pulsim.add_c_block`` post-pass ("Path B"). The
+        # backend reads ``circuit.c_block_records`` and, when the modern
+        # ``add_c_block`` API is available, drops the legacy virtual-
+        # component registration and re-registers each block natively.
+        # Path A (``cblock_loop_descriptors``) is still emitted above so
+        # python_numba blocks wired into a closed PWM loop continue to
+        # run through the existing duty/PWM machinery.
+        try:
+            c_block_records = self._collect_c_block_records(
+                components, node_map, alias_map,
+            )
+            setattr(circuit, "c_block_records", c_block_records)
+        except Exception:  # noqa: BLE001 - detection must never break a build
+            pass
+
         # Detect a Field-Oriented-Control marker (a C_BLOCK carrying
         # ``control_kind="foc"``) co-resident with a native 3φ VSI + a
         # dynamic PMSM, and attach a ``foc_loop_descriptors`` entry. The
@@ -3405,6 +3421,141 @@ class CircuitConverter:
             })
 
         return descriptors
+
+    def _collect_c_block_records(
+        self,
+        components: list[dict[str, Any]],
+        node_map: dict[str, list[str]],
+        alias_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Snapshot every standalone C_BLOCK's electrical wiring + body.
+
+        This is the converter-side preparation for the pulsim 1.8
+        ``pulsim.add_c_block`` migration ("Path B"). For each C_BLOCK
+        component that is NOT a descriptor-only marker (FOC), we:
+
+          * Resolve the ``n_inputs`` input-pin nodes and
+            ``n_outputs`` output-pin nodes from the schematic
+            (the same wiring the user drew in the GUI).
+          * Carry through the authoring fields the backend needs to
+            pick the right ``add_c_block`` mode: ``implementation``,
+            ``source_code``, ``lib_path``, ``source`` file path,
+            ``python_source``, plus block sizing
+            (``n_inputs/n_outputs/n_states``), ``sample_time``, and
+            ``extra_cflags``.
+
+        Each output pin becomes ``(<output_node>, "0")`` — i.e. a
+        ground-referenced controlled source unless wiring elsewhere
+        specifies otherwise. SISO control blocks (one output) follow
+        this convention today; multi-output blocks each get their own
+        independent ground-referenced injection.
+
+        The legacy ``circuit.add_virtual_component("c_block", ...)``
+        path is left intact; the backend's Path-B post-pass reads
+        ``circuit.c_block_records`` and (when ``pulsim.add_c_block`` is
+        available) drops the legacy entry and re-registers via the
+        native ``add_c_block`` call. Returns an empty list when no
+        C_BLOCK is present.
+        """
+        def _raw_nodes(component: dict[str, Any]) -> list[str]:
+            comp_id = str(component.get("id") or "")
+            pin_nodes = component.get("pin_nodes")
+            if isinstance(pin_nodes, list) and pin_nodes:
+                return [str(node or "").strip() for node in pin_nodes]
+            return [str(node or "").strip() for node in node_map.get(comp_id, [])]
+
+        records: list[dict[str, Any]] = []
+        for component in components:
+            try:
+                comp_type = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            if comp_type != ComponentType.C_BLOCK:
+                continue
+
+            params = component.get("parameters") if isinstance(
+                component.get("parameters"), dict
+            ) else {}
+            # FOC markers carry no electrical wiring + no control law —
+            # consumed by ``_infer_foc_loops`` only.
+            if self._is_foc_marker(params):
+                continue
+
+            try:
+                n_inputs = max(1, int(params.get("n_inputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_inputs = 1
+            try:
+                n_outputs = max(1, int(params.get("n_outputs", 1) or 1))
+            except (TypeError, ValueError):
+                n_outputs = 1
+            try:
+                n_states = max(0, int(params.get("n_states", 1) or 1))
+            except (TypeError, ValueError):
+                n_states = 1
+
+            try:
+                sample_time = float(params.get("sample_time", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                sample_time = 0.0
+
+            raw_nodes = _raw_nodes(component)
+
+            input_nodes: list[str] = []
+            for input_index in range(n_inputs):
+                if input_index < len(raw_nodes):
+                    raw = raw_nodes[input_index]
+                    input_nodes.append(self._node_label(raw, alias_map) if raw else "")
+                else:
+                    input_nodes.append("")
+
+            output_pairs: list[tuple[str, str]] = []
+            for output_index in range(n_outputs):
+                pin_index = n_inputs + output_index
+                if pin_index < len(raw_nodes):
+                    raw = raw_nodes[pin_index]
+                    out_label = self._node_label(raw, alias_map) if raw else ""
+                else:
+                    out_label = ""
+                output_pairs.append((out_label, "0"))
+
+            implementation = str(params.get("implementation", "") or "").strip().lower()
+            source_code = str(params.get("source_code", "") or "")
+            source_path = str(params.get("source", "") or "").strip()
+            lib_path = str(params.get("lib_path", "") or "").strip()
+            python_source = str(params.get("python_source", "") or "")
+
+            flags_raw = params.get("extra_cflags", [])
+            if isinstance(flags_raw, list):
+                extra_cflags = [str(item).strip() for item in flags_raw if str(item).strip()]
+            elif isinstance(flags_raw, str):
+                tokens = (
+                    [part.strip() for part in flags_raw.split(",")]
+                    if "," in flags_raw
+                    else flags_raw.split()
+                )
+                extra_cflags = [token for token in tokens if token]
+            else:
+                extra_cflags = []
+
+            name = self._component_name(component, ComponentType.C_BLOCK)
+            records.append({
+                "name": name,
+                "implementation": implementation,
+                "source_code": source_code,
+                "source": source_path,
+                "lib_path": lib_path,
+                "python_source": python_source,
+                "n_inputs": n_inputs,
+                "n_outputs": n_outputs,
+                "n_states": n_states,
+                "sample_time": sample_time,
+                "input_nodes": input_nodes,
+                "output_node_pairs": output_pairs,
+                "extra_cflags": extra_cflags,
+            })
+
+        return records
 
     @staticmethod
     def _is_foc_marker(params: Any) -> bool:
