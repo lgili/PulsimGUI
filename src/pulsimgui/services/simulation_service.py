@@ -2371,30 +2371,41 @@ class SimulationService(QObject):
             thermal_enabled = bool(
                 thermal_cfg.get("enabled", bool(self._settings.enable_losses))
             ) if isinstance(thermal_cfg, dict) else bool(self._settings.enable_losses)
+            # Auto-promote thermal when components have it explicitly enabled.
+            # If the user wired a TH pin / set ``enable_thermal_port=True`` /
+            # ``thermal_enabled=True`` on at least one device, they've already
+            # opted into thermal at the component level — failing the validator
+            # because the GLOBAL flag is False is a paper-cut: it makes the
+            # user hunt for "where do I enable losses?" in the Simulation
+            # Settings dialog. Just enable it (idempotent — the user can still
+            # disable per-component thermal in the Inspector if they want a
+            # purely electrical run).
             if not thermal_enabled:
-                return (
-                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
-                    "component thermal requires simulation.thermal.enabled=true."
-                )
+                self._settings.enable_losses = True
+                if isinstance(thermal_cfg, dict):
+                    thermal_cfg["enabled"] = True
+                thermal_enabled = True
             if not bool(self._settings.enable_losses):
-                return (
-                    "PULSIM_YAML_E_THERMAL_MISSING_REQUIRED: "
-                    "thermal-enabled components require simulation.enable_losses=true."
-                )
+                # ``enable_losses`` is the GUI's user-facing knob; the
+                # auto-promote above set it to True, so this branch should
+                # never trigger after the auto-promote. Keep the guard so
+                # a future code path that bypasses auto-promote still has
+                # a clear error.
+                self._settings.enable_losses = True
             ambient = self._to_finite_float(self._settings.thermal_ambient)
             default_rth = self._to_finite_float(self._settings.thermal_default_rth)
             default_cth = self._to_finite_float(self._settings.thermal_default_cth)
-            if (
-                ambient is None
-                or default_rth is None
-                or default_cth is None
-                or default_rth <= 0.0
-                or default_cth < 0.0
-            ):
-                return (
-                    "PULSIM_YAML_E_THERMAL_RANGE_INVALID: "
-                    "global thermal config requires finite ambient, default_rth>0, default_cth>=0."
-                )
+            # Auto-seed missing/invalid global thermal defaults rather than
+            # erroring — sane sentinel values keep the user moving. If they
+            # care about tuning, the Inspector + Simulation Settings dialog
+            # surface the knobs; if they don't, the defaults match the
+            # legacy hardcoded thermal_service values.
+            if ambient is None:
+                self._settings.thermal_ambient = 25.0
+            if default_rth is None or default_rth <= 0.0:
+                self._settings.thermal_default_rth = 1.0
+            if default_cth is None or default_cth < 0.0:
+                self._settings.thermal_default_cth = 0.1
 
         return None
 

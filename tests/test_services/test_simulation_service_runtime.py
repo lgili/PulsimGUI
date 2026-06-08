@@ -709,36 +709,46 @@ def test_run_transient_project_syncs_project_settings_before_worker(monkeypatch)
     assert captured["control_sample_time"] == 2e-6
 
 
-def test_prevalidate_blocks_component_thermal_when_global_thermal_disabled(monkeypatch) -> None:
+def test_prevalidate_auto_promotes_global_thermal_when_components_opt_in(monkeypatch) -> None:
+    """User-facing fix: when at least one component has thermal modeling
+    explicitly enabled (TH pin / ``thermal_enabled`` / ``enable_thermal_port``)
+    but the GLOBAL ``simulation.thermal.enabled`` is False, the validator
+    auto-promotes the global flag rather than aborting with
+    ``PULSIM_YAML_E_THERMAL_MISSING_REQUIRED``. The component-level opt-in
+    is the user's clear intent; making them hunt down the global knob in
+    Simulation Settings → Thermal & Losses is a paper-cut they shouldn't
+    have to chase down."""
     monkeypatch.setattr("pulsimgui.services.simulation_service.BackendLoader", _DummyLoader)
     service = SimulationService()
     service.settings = SimulationSettings(enable_losses=True)
 
-    issue = service._prevalidate_runtime_contract(
-        {
-            "simulation": {
-                "thermal": {"enabled": False},
-            },
-            "components": [
-                {
-                    "type": "mosfet",
-                    "name": "M1",
-                    "thermal": {
-                        "enabled": True,
-                        "rth": 1.0,
-                        "cth": 0.1,
-                        "temp_init": 25.0,
-                        "temp_ref": 25.0,
-                        "alpha": 0.004,
-                    },
-                    "parameters": {},
-                }
-            ],
-        }
-    )
+    circuit_data = {
+        "simulation": {
+            "thermal": {"enabled": False},  # GLOBAL says off…
+        },
+        "components": [
+            {
+                "type": "mosfet",
+                "name": "M1",
+                "thermal": {
+                    "enabled": True,          # …but the COMPONENT opted in.
+                    "rth": 1.0,
+                    "cth": 0.1,
+                    "temp_init": 25.0,
+                    "temp_ref": 25.0,
+                    "alpha": 0.004,
+                },
+                "parameters": {},
+            }
+        ],
+    }
+    issue = service._prevalidate_runtime_contract(circuit_data)
 
-    assert issue is not None
-    assert "simulation.thermal.enabled=true" in issue
+    # No error — auto-promoted silently.
+    assert issue is None
+    # The global flag was flipped to True so the rest of the pipeline
+    # honours the component's opt-in.
+    assert circuit_data["simulation"]["thermal"]["enabled"] is True
 
 
 def test_prevalidate_accepts_staged_component_thermal_network(monkeypatch) -> None:
