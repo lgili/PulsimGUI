@@ -327,8 +327,9 @@ def test_mmc_arms_without_controller_keep_constant_mref() -> None:
 
 
 def test_arm_params_carry_common_fields() -> None:
-    """n_sm, c_sm, v_c0, r_p, sm_type must propagate to the params
-    instance handed to the pulsim helper."""
+    """n_sm, c_sm, v_c0, sm_type must propagate to the params instance handed
+    to the pulsim helper — and the series ``r_arm`` must NOT be mapped onto the
+    capacitor's parallel leakage ``r_p`` (which would bleed the arm caps dry)."""
     converter = CircuitConverter(_FakeBackend)
     circuit = converter.build({
         "components": [_arm_component(
@@ -344,7 +345,7 @@ def test_arm_params_carry_common_fields() -> None:
     assert p.n_sm == 8
     assert p.c_sm == pytest.approx(2.0e-3)
     assert p.v_c0 == pytest.approx(400.0)
-    assert p.r_p == pytest.approx(0.05)
+    assert p.r_p != pytest.approx(0.05)  # series r_arm is not the cap leakage
     # sm_type is a Literal string in pulsim 1.5
     assert p.sm_type == "full_bridge"
 

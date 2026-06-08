@@ -1188,6 +1188,18 @@ class PulsimBackend(SimulationBackend):
                 key = f"{nm}.v_C"
                 result.signals[key] = np.interp(t_out, t_b[:n], arr[:n]).tolist()
                 published.append(key)
+            # L3 arms also expose the submodule-cap spread (balance indicator).
+            for nm, vals in (mmc_trace.get("v_C_spread") or {}).items():
+                try:
+                    arr = np.asarray(vals, dtype=np.float64)
+                except (TypeError, ValueError):
+                    continue
+                n = min(arr.size, t_b.size)
+                if n < 2:
+                    continue
+                key = f"{nm}.v_C_spread"
+                result.signals[key] = np.interp(t_out, t_b[:n], arr[:n]).tolist()
+                published.append(key)
 
         if published:
             result.statistics["motor_observer_signals"] = sorted(set(published))
@@ -6277,6 +6289,18 @@ class PulsimBackend(SimulationBackend):
         # do this).
         builder = getattr(circuit, "builder", circuit)
 
+        # Pulsim 1.8 C_BLOCK path-B migration: re-register every
+        # standalone C_BLOCK (lib= / code= / python_numba modes) via
+        # the native ``pulsim.add_c_block`` API and pop the matching
+        # legacy ``add_virtual_component("c_block", ...)`` entry.
+        # Closed-loop python_numba blocks driving a PWM (path A) are
+        # excluded inside the helper because ``add_c_block`` produces a
+        # controlled V/I source, not a duty mask. No-op on pulsim < 1.8.
+        try:
+            self._register_c_blocks_via_pulsim_18(circuit, builder, sim_dt=dt)
+        except Exception:  # noqa: BLE001 — never let the post-pass break the run
+            pass
+
         # ``import`` lazily to avoid module-import time penalty.
         from pulsimgui.services.switch_fn_builder import (
             assemble_switch_fn,
@@ -7792,37 +7816,52 @@ class PulsimBackend(SimulationBackend):
             if kind == "pmsm":
                 spec["bundle"] = obs
 
-        # MMC arms — average (L0) model. pulsim's observer maker is
-        # *plural* (takes the list of arms, returns one (step_observer,
-        # b_extra_fn) for the whole group) and exposes no trace bundle, so
-        # we also append a lightweight recorder that snapshots each arm's
-        # live ``v_C`` (total submodule-capacitor voltage) per step for
-        # scope telemetry. L1/L2/L3 observers differ (switching) and are
-        # wired separately later — their arms stay static for now, which
-        # matches today's behaviour (no regression).
-        avg_specs = [
-            s for s in specs
-            if str(s.get("kind") or "") == "mmc_arm"
-            and str(s.get("level") or "") == "L0"
-            and s.get("handle") is not None
-        ]
+        # MMC arms — average (L0) AND detailed (L3) models. Both expose
+        # ``v_C`` + ``source_branch_id`` and integrate as a controlled source
+        # via ``(step_observer, b_extra_fn)``, so a single closed-loop control
+        # observer drives them all (the L3 step internally switches its
+        # submodules + balances them, exposing the aggregate ``v_C`` and the
+        # ``v_C_spread``). We also append a lightweight recorder that snapshots
+        # each arm's live ``v_C`` (and ``v_C_spread`` where present) per step
+        # for scope telemetry. L1/L2 still advance statically (pending their
+        # switching observers).
         mmc_mod = getattr(ps, "mmc", None)
-        avg_maker = getattr(mmc_mod, "make_mmc_arms_observer", None) if mmc_mod else None
-        if avg_specs and callable(avg_maker):
-            handles = [s["handle"] for s in avg_specs]
-            try:
-                mmc_obs, mmc_b_extra = avg_maker(builder, handles, dt=float(dt))
-            except Exception:  # noqa: BLE001 - one bad group shouldn't abort
-                mmc_obs = mmc_b_extra = None
-            arm_pairs = [(str(s.get("name") or "ARM"), s["handle"]) for s in avg_specs]
 
+        def _mmc_specs(level: str) -> list[dict[str, Any]]:
+            return [
+                s for s in specs
+                if str(s.get("kind") or "") == "mmc_arm"
+                and str(s.get("level") or "") == level
+                and s.get("handle") is not None
+            ]
+
+        avg_maker = getattr(mmc_mod, "make_mmc_arms_observer", None) if mmc_mod else None
+        det_maker = getattr(mmc_mod, "make_mmc_arm_detailed_observers", None) if mmc_mod else None
+
+        arm_pairs: list[tuple[str, Any]] = []  # (name, handle) — every controller-driven arm
+        arm_obs: list[Any] = []                # the arm step observers (advance the caps)
+        for grp_specs, maker in ((_mmc_specs("L0"), avg_maker), (_mmc_specs("L3"), det_maker)):
+            if not (grp_specs and callable(maker)):
+                continue
+            handles = [s["handle"] for s in grp_specs]
+            try:
+                grp_obs, grp_b_extra = maker(builder, handles, dt=float(dt))
+            except Exception:  # noqa: BLE001 - one bad group shouldn't abort
+                grp_obs = grp_b_extra = None
+            if callable(grp_obs):
+                arm_obs.append(grp_obs)
+            if callable(grp_b_extra):
+                b_extra_fns.append(grp_b_extra)
+            arm_pairs += [(str(s.get("name") or "ARM"), s["handle"]) for s in grp_specs]
+
+        if arm_pairs:
             # Closed-loop control: a controller stashed by the converter drives
             # the arms' insertion indices from measured state. Append its step
-            # observer BEFORE mmc_obs so it samples v_C(t) (the arm current is
-            # read from the converged solution vector x at this step's branch
-            # row; mmc_obs then advances v_C to t+dt). The arm m_b callables
-            # already read controller.m_ref, so the index it writes here lands
-            # on the *next* solve — a standard one-tick discrete-control delay.
+            # observer BEFORE the arm observers so it samples v_C(t) (the arm
+            # current is read from the converged solution vector x at this
+            # step's branch row; the arm observers then advance v_C to t+dt).
+            # The arm m_ref callables already read controller.m_ref, so the
+            # index it writes lands on the *next* solve — a one-tick delay.
             controller = getattr(circuit, "_mmc_controller", None)
             if controller is not None:
                 try:
@@ -7845,19 +7884,21 @@ class PulsimBackend(SimulationBackend):
 
                     step_observers.append(_mmc_control)
 
-            if callable(mmc_obs):
-                step_observers.append(mmc_obs)
-            if callable(mmc_b_extra):
-                b_extra_fns.append(mmc_b_extra)
+            step_observers.extend(arm_obs)
+
             mmc_trace: dict[str, Any] = {
-                "t": [], "v_C": {nm: [] for nm, _ in arm_pairs},
+                "t": [],
+                "v_C": {nm: [] for nm, _ in arm_pairs},
+                "v_C_spread": {nm: [] for nm, h in arm_pairs if hasattr(h, "v_C_spread")},
             }
 
             def _mmc_recorder(t: float, _x: Any, _pairs=arm_pairs, _tr=mmc_trace) -> None:
-                # Runs AFTER mmc_obs (appended earlier) so v_C is fresh.
+                # Runs AFTER the arm observers (appended earlier) so v_C is fresh.
                 _tr["t"].append(float(t))
                 for nm, h in _pairs:
                     _tr["v_C"][nm].append(float(getattr(h, "v_C", 0.0)))
+                    if nm in _tr["v_C_spread"]:
+                        _tr["v_C_spread"][nm].append(float(getattr(h, "v_C_spread", 0.0)))
 
             step_observers.append(_mmc_recorder)
             try:
@@ -8565,6 +8606,278 @@ class PulsimBackend(SimulationBackend):
             ))
 
         return loops
+
+    def _register_c_blocks_via_pulsim_18(
+        self,
+        circuit: Any,
+        builder: Any,
+        sim_dt: float | None,
+    ) -> int:
+        """Re-register standalone C_BLOCKs via ``pulsim.add_c_block`` (1.8+).
+
+        For every record the converter stashed on
+        ``circuit.c_block_records`` (one entry per C_BLOCK component that
+        is NOT a FOC marker), this:
+
+          1. Skips Path-A blocks (those whose name also appears in
+             ``circuit.cblock_loop_descriptors`` — they regulate a PWM
+             duty mask and are handled by ``_build_cblock_closed_loops``,
+             which ``add_c_block`` cannot replace).
+          2. Picks one of the three pulsim 1.8 modes by inspecting
+             ``implementation``:
+
+             * ``python_numba`` / ``python`` / ``fast_block`` —
+               compile via :class:`FastBlockService` and pass through a
+               shim that adapts the ``(*scalars, state)`` signature to
+               ``add_c_block``'s ``(t, dt, inp, out, state)``.
+             * ``lib`` / ``library`` — pass ``lib=<path>`` and let
+               pulsim ctypes-load the shared library.
+             * ``source`` — when the user authored inline C in
+               ``source_code``, pass ``code=<source>, lang="c"``
+               directly. When the user only set a file path
+               (``source``), read it from disk and pass it the same
+               way. Pulsim 1.8 owns the compile/cache via
+               ``code=``.
+          3. Drops the legacy ``add_virtual_component("c_block", ...)``
+             entry for the same block from
+             ``circuit.virtual_component_records`` so the C++ kernel
+             doesn't try to instantiate a second copy.
+
+        A pure no-op when ``pulsim.add_c_block`` is unavailable (pre-
+        1.8). Failure for one block is local — we skip that block and
+        leave its legacy entry in place so the existing path still
+        produces *some* output (it was producing nothing anyway for the
+        broken cases this migration fixes, so this is strictly better).
+
+        Returns the number of blocks that were re-registered (used by
+        tests + diagnostics).
+
+        Performance note: the Python ``step_observer`` fires every sim
+        step but the internal ZOH guard short-circuits at controller
+        rates >> sim_dt, so typical use is unchanged. Hot-loop blocks
+        at dt ≈ sim_dt see ~50× overhead per call — an acceptable
+        trade for unlocking the ``lib=`` / ``code=`` paths that were
+        silently broken before.
+        """
+        add_c_block = getattr(self._module, "add_c_block", None)
+        if add_c_block is None:
+            return 0
+        records = list(getattr(circuit, "c_block_records", []) or [])
+        if not records:
+            return 0
+
+        # Path-A names: blocks driving a PWM closed loop. Skip them
+        # here so we don't double-register against the duty-mask path.
+        path_a_names: set[str] = {
+            str(d.get("cblock_name") or "").strip()
+            for d in (getattr(circuit, "cblock_loop_descriptors", []) or [])
+            if isinstance(d, dict) and str(d.get("cblock_name") or "").strip()
+        }
+
+        registered = 0
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            name = str(rec.get("name") or "").strip()
+            if not name or name in path_a_names:
+                continue
+
+            input_nodes = rec.get("input_nodes") or []
+            output_pairs = rec.get("output_node_pairs") or []
+            inputs = [
+                ("v", str(node))
+                for node in input_nodes
+                if str(node or "").strip()
+            ]
+            outputs = [
+                ("v", str(pair[0]), str(pair[1]) or "0")
+                for pair in output_pairs
+                if isinstance(pair, (list, tuple))
+                and str(pair[0] or "").strip()
+            ]
+            if not inputs or not outputs:
+                continue
+
+            try:
+                sample_time = float(rec.get("sample_time", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                sample_time = 0.0
+            # add_c_block requires dt > 0; fall back to the sim dt when
+            # the user left ``sample_time`` at the default 0.
+            dt_block = sample_time
+            if dt_block <= 0.0:
+                dt_block = float(sim_dt) if sim_dt and sim_dt > 0.0 else 1.0e-6
+
+            common_kwargs: dict[str, Any] = {
+                "inputs": inputs,
+                "outputs": outputs,
+                "dt": dt_block,
+                "name": name,
+            }
+            if sim_dt and sim_dt > 0.0:
+                common_kwargs["sim_dt"] = float(sim_dt)
+
+            impl = str(rec.get("implementation", "") or "").strip().lower()
+            try:
+                if impl in {"python_numba", "python", "fast_block"}:
+                    py_source = str(rec.get("python_source") or "")
+                    if not py_source.strip():
+                        continue
+                    from pulsimgui.services.fast_block_service import (
+                        FastBlockCompileError,
+                        FastBlockService,
+                    )
+                    try:
+                        n_states = max(0, int(rec.get("n_states", 1) or 1))
+                    except (TypeError, ValueError):
+                        n_states = 1
+                    try:
+                        law = FastBlockService().compile_control_law(
+                            py_source, n_states=n_states,
+                        )
+                    except FastBlockCompileError:
+                        # Bad user code → keep going; downstream
+                        # validation surfaces the error in the
+                        # Properties panel.
+                        continue
+                    shim = self._make_c_block_python_shim(
+                        law=law,
+                        n_inputs=len(inputs),
+                        n_outputs=len(outputs),
+                    )
+                    add_c_block(builder, fn=shim, **common_kwargs)
+                elif impl in {"lib", "library"}:
+                    lib_path = str(rec.get("lib_path") or "").strip()
+                    if not lib_path:
+                        continue
+                    add_c_block(builder, lib=lib_path, **common_kwargs)
+                elif impl == "source":
+                    source_code = str(rec.get("source_code") or "")
+                    if not source_code.strip():
+                        path = str(rec.get("source") or "").strip()
+                        if path:
+                            try:
+                                source_code = Path(path).expanduser().read_text(
+                                    encoding="utf-8",
+                                )
+                            except OSError:
+                                source_code = ""
+                    if not source_code.strip():
+                        continue
+                    extra_flags_raw = rec.get("extra_cflags") or []
+                    extra_flags = [
+                        str(item) for item in extra_flags_raw if str(item).strip()
+                    ] or None
+                    add_c_block(
+                        builder,
+                        code=source_code,
+                        lang="c",
+                        extra_compile_args=extra_flags,
+                        **common_kwargs,
+                    )
+                else:
+                    continue
+            except Exception:  # noqa: BLE001 — one bad block must not kill the sim
+                continue
+
+            self._pop_legacy_c_block_record(circuit, name)
+            registered += 1
+
+        return registered
+
+    @staticmethod
+    def _make_c_block_python_shim(
+        law: Any,
+        n_inputs: int,
+        n_outputs: int,
+    ) -> Callable[[float, float, Any, Any, dict], None]:
+        """Adapt a :class:`CompiledControlLaw` to pulsim 1.8's
+        ``fn(t, dt, inp, out, state)`` C-block step signature.
+
+        :class:`FastBlockService` produces callables shaped like
+        ``law(*scalars, state)`` where ``state`` is a persistent
+        ``np.ndarray[float64]`` mutated in place. ``add_c_block`` calls
+        the step fn with two numpy buffers (``inp``, ``out``) and a
+        Python dict for ``state``. We bridge them here:
+
+          * Persistent numpy state is closed over the shim (one
+            allocation; subsequent calls reuse it).
+          * The first ``law.arg_count`` slots of ``inp`` feed the
+            scalar args, padded with zeros if the user's function
+            asks for more scalars than there are input wires.
+          * The scalar return value (FastBlockService's SISO contract)
+            drives ``out[0]``; the remaining outputs are zero. Multi-
+            output blocks should use ``code=`` / ``lib=`` modes
+            instead.
+        """
+        arg_count = int(getattr(law, "arg_count", 1))
+        state_vec = law.make_state()
+        # Local refs for the closure to avoid attribute lookups per step.
+        _law = law
+
+        def shim(
+            t: float,
+            dt: float,
+            inp: Any,
+            out: Any,
+            _state_dict: dict,
+        ) -> None:
+            if arg_count <= 0:
+                scalars: list[float] = []
+            elif arg_count <= len(inp):
+                scalars = [float(inp[k]) for k in range(arg_count)]
+            else:
+                scalars = [float(inp[k]) for k in range(len(inp))]
+                scalars.extend([0.0] * (arg_count - len(inp)))
+            try:
+                value = float(_law(*scalars, state_vec))
+            except Exception:  # noqa: BLE001
+                return
+            if len(out) > 0:
+                out[0] = value
+            for k in range(1, len(out)):
+                out[k] = 0.0
+
+        return shim
+
+    @staticmethod
+    def _pop_legacy_c_block_record(circuit: Any, name: str) -> bool:
+        """Remove a C_BLOCK entry from ``circuit.virtual_component_records``.
+
+        The converter still emits ``add_virtual_component("c_block",
+        ...)`` for back-compat, so once we've taken over the block via
+        ``pulsim.add_c_block`` we drop the matching legacy entry —
+        otherwise the C++ kernel would try to instantiate a second copy
+        and the two would fight for the same node injection.
+
+        Returns ``True`` when a record was removed.
+        """
+        records = getattr(circuit, "virtual_component_records", None)
+        if not isinstance(records, list):
+            return False
+        target = str(name).strip()
+        if not target:
+            return False
+        kept: list[Any] = []
+        removed = False
+        for entry in records:
+            if isinstance(entry, dict):
+                meta = entry.get("metadata")
+                meta_dict = meta if isinstance(meta, dict) else {}
+                comp_type = str(
+                    meta_dict.get("component_type", "") or entry.get("kind", "")
+                ).strip().upper()
+                entry_name = str(entry.get("name") or "").strip()
+                if (
+                    entry_name == target
+                    and (comp_type == "C_BLOCK" or str(entry.get("kind") or "").lower() == "c_block")
+                ):
+                    removed = True
+                    continue
+            kept.append(entry)
+        if removed:
+            records[:] = kept
+        return removed
 
     def _build_pfc_loops(
         self,

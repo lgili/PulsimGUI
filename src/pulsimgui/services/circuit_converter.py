@@ -1696,15 +1696,15 @@ class CircuitConverter:
                 "sm_type": sm_type_value,
                 "v_c0": v_c0,
             }
-            # ``r_p`` in pulsim's arm models is the capacitor's PARALLEL
-            # leakage resistance, NOT the series arm resistance. Feeding the
-            # (small) series ``r_arm`` here bleeds the L0 average-arm caps dry
-            # in ~r_arm·C_arm seconds (e.g. 0.1 Ω · 1.2 mF ≈ 120 µs) — which
-            # makes any open-loop or closed-loop MMC inverter cap-collapse.
-            # Leave the L0 cap lossless (pulsim default r_p=None); the
-            # switching models keep the historical mapping for now.
-            if level != "L0":
-                mmc_kwargs["r_p"] = r_arm
+            # ``r_p`` is the submodule capacitor's PARALLEL leakage resistance,
+            # NOT the series arm resistance. Feeding the (small) series ``r_arm``
+            # here bleeds the arm caps dry in ~r_arm·C seconds (0.1 Ω · 1.2 mF
+            # ≈ 120 µs), collapsing any MMC inverter (average L0 OR detailed L3)
+            # the moment the controller saturates. So every level keeps its caps
+            # lossless (pulsim default r_p=None); the series arm resistance, if
+            # wanted, belongs in the external arm inductor branch. ``r_arm`` is
+            # still read above for forward compatibility.
+            _ = r_arm
             # L1/L2/L3 take a carrier frequency and modulation scheme
             if level in {"L1", "L2", "L3"}:
                 mmc_kwargs["f_carrier"] = f_carrier
@@ -3436,7 +3436,24 @@ class CircuitConverter:
 
           * Resolve the ``n_inputs`` input-pin nodes and
             ``n_outputs`` output-pin nodes from the schematic
-            (the same wiring the user drew in the GUI).
+            (the same wiring the user drew in the GUI). C_BLOCK inputs
+            are typically driven by SIGNAL-domain outputs
+            (VOLTAGE_PROBE / CURRENT_PROBE / CONSTANT / PI / PWM /
+            ...); ``add_c_block`` wants real ELECTRICAL nodes from the
+            underlying MNA graph, so we chase each input back through
+            its driver:
+
+            * VOLTAGE_PROBE / VOLTAGE_PROBE_GND signal node → use the
+              probe's positive electrical input node (the same trick
+              ``_infer_cblock_control_loops`` uses for feedback
+              resolution).
+            * CONSTANT — the converter stamps a ground-referenced DC
+              voltage source on its output node via
+              ``_add_constant_as_probe_channel``, so the signal node
+              IS already an electrical node we can sample directly.
+            * Pin that already lives on an electrical node (e.g. the
+              user wired the C_BLOCK input straight to a power
+              node) — pass through as-is.
           * Carry through the authoring fields the backend needs to
             pick the right ``add_c_block`` mode: ``implementation``,
             ``source_code``, ``lib_path``, ``source`` file path,
@@ -3463,6 +3480,24 @@ class CircuitConverter:
             if isinstance(pin_nodes, list) and pin_nodes:
                 return [str(node or "").strip() for node in pin_nodes]
             return [str(node or "").strip() for node in node_map.get(comp_id, [])]
+
+        # Probe signal node → measured electrical node (positive side).
+        # Mirrors the chase in ``_infer_cblock_control_loops`` so feedback
+        # resolution is consistent across Path A and Path B.
+        probe_signal_to_electrical: dict[str, str] = {}
+        for component in components:
+            try:
+                ct = self._component_type(component.get("type"))
+            except CircuitConversionError:
+                continue
+            if ct == ComponentType.VOLTAGE_PROBE:
+                nodes = _raw_nodes(component)
+                if len(nodes) >= 3 and nodes[2]:
+                    probe_signal_to_electrical[nodes[2]] = nodes[0]
+            elif ct == ComponentType.VOLTAGE_PROBE_GND:
+                nodes = _raw_nodes(component)
+                if len(nodes) >= 2 and nodes[1]:
+                    probe_signal_to_electrical[nodes[1]] = nodes[0]
 
         records: list[dict[str, Any]] = []
         for component in components:
@@ -3505,7 +3540,11 @@ class CircuitConverter:
             for input_index in range(n_inputs):
                 if input_index < len(raw_nodes):
                     raw = raw_nodes[input_index]
-                    input_nodes.append(self._node_label(raw, alias_map) if raw else "")
+                    # Chase the signal node back to an electrical node
+                    # when a probe drives this input.
+                    electrical_raw = probe_signal_to_electrical.get(raw, raw)
+                    label = self._node_label(electrical_raw, alias_map) if electrical_raw else ""
+                    input_nodes.append(label)
                 else:
                     input_nodes.append("")
 
