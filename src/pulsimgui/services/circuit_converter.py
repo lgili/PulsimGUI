@@ -1511,6 +1511,31 @@ class CircuitConverter:
             )
             return
 
+        if comp_type == ComponentType.BIDIRECTIONAL_SWITCH:
+            # Pins: P1 (0), P2 (1), G (2). P1/P2 are the symmetric power
+            # terminals; G is the signal-domain gate (recorded for the
+            # C_BLOCK / controller switch_fn, not an electrical node).
+            # Lowers to the shim's ``add_bidirectional_switch`` →
+            # pulsim ``add_switch`` (pure conductance, NO body diode).
+            p1, p2, gate = self._require_nodes(name, nodes, 3)
+            try:
+                r_on = float(params.get("R_on", 0.05) or 0.05)
+            except (TypeError, ValueError):
+                r_on = 0.05
+            try:
+                r_off = float(params.get("R_off", 1e9) or 1e9)
+            except (TypeError, ValueError):
+                r_off = 1e9
+            circuit.add_bidirectional_switch(
+                name,
+                self._node_index(circuit, gate, node_cache),
+                self._node_index(circuit, p1, node_cache),
+                self._node_index(circuit, p2, node_cache),
+                r_on,
+                r_off,
+            )
+            return
+
         if comp_type == ComponentType.TRANSFORMER:
             p1, p2, s1, s2 = self._require_nodes(name, nodes, 4)
             circuit.add_transformer(
@@ -3820,6 +3845,7 @@ class CircuitConverter:
             ComponentType.MOSFET_N,
             ComponentType.MOSFET_P,
             ComponentType.IGBT,
+            ComponentType.BIDIRECTIONAL_SWITCH,
         )
 
         descriptors: list[dict[str, Any]] = []
@@ -3839,11 +3865,27 @@ class CircuitConverter:
                 continue
 
             pin_nodes = _raw_nodes(component)
-            # MOSFET_N / MOSFET_P: gate pin is index 1 (D, G, S).
-            # IGBT: gate pin is index 1 (C, G, E).
-            if len(pin_nodes) < 2:
+            # Resolve the gate by PIN NAME rather than a hardcoded index:
+            # MOSFET_N/MOSFET_P gate "G" is pin 1 (D,G,S), IGBT "G" is
+            # pin 1 (C,G,E), but a BIDIRECTIONAL_SWITCH "G" is pin 2
+            # (P1,P2,G). Finding the pin named "G" handles all of them.
+            gate_pin_idx = 1
+            comp_pins = component.get("pins")
+            if isinstance(comp_pins, list):
+                for _pi, pin in enumerate(comp_pins):
+                    pname = (
+                        pin.get("name") if isinstance(pin, dict) else None
+                    )
+                    if pname == "G":
+                        idx = pin.get("index", _pi) if isinstance(pin, dict) else _pi
+                        try:
+                            gate_pin_idx = int(idx)
+                        except (TypeError, ValueError):
+                            gate_pin_idx = _pi
+                        break
+            if gate_pin_idx < 0 or gate_pin_idx >= len(pin_nodes):
                 continue
-            raw_gate = pin_nodes[1]
+            raw_gate = pin_nodes[gate_pin_idx]
             if not raw_gate:
                 continue
 

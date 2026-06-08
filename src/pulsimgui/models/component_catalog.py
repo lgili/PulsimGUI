@@ -23,6 +23,7 @@ COMPONENT_LIBRARY = {
         {"type": ComponentType.MOSFET_P, "name": "PMOS", "shortcut": "Shift+M"},
         {"type": ComponentType.IGBT, "name": "IGBT", "shortcut": "B"},
         {"type": ComponentType.SWITCH, "name": "Switch", "shortcut": "S"},
+        {"type": ComponentType.BIDIRECTIONAL_SWITCH, "name": "Bidir Switch", "shortcut": ""},
         {"type": ComponentType.SNUBBER_RC, "name": "Snubber", "shortcut": ""},
     ],
     "Signal & Control": [
@@ -114,6 +115,9 @@ QUICK_ADD_COMPONENTS = [
     (ComponentType.MOSFET_P, "P-Channel MOSFET", ["pmos", "pfet"]),
     (ComponentType.IGBT, "IGBT", ["igbt", "transistor"]),
     (ComponentType.SWITCH, "Switch", ["sw", "switch"]),
+    (ComponentType.BIDIRECTIONAL_SWITCH, "Bidirectional Switch",
+     ["bidi", "bidirectional", "4-quadrant", "four-quadrant", "matrix", "ac switch",
+      "chave bidirecional", "chave"]),
     (ComponentType.TRANSFORMER, "Transformer", ["xfmr", "transformer", "trafo"]),
     (ComponentType.SATURABLE_INDUCTOR, "Saturable Inductor", ["sat", "saturable", "nonlinear", "magnetic", "core", "lsat"]),
     (ComponentType.COUPLED_INDUCTOR, "Coupled Inductor", ["coupled", "coupling", "mutual", "lm"]),

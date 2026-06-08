@@ -1000,6 +1000,54 @@ class Circuit:
             "switch_idx": switch_idx,
         })
 
+    def add_bidirectional_switch(
+        self,
+        name: str,
+        gate: int,
+        p1: int,
+        p2: int,
+        R_on: float = 0.05,
+        R_off: float = 1e9,
+    ) -> None:
+        """4-quadrant bidirectional switch — delegates to the bare
+        ``add_switch`` (a pure symmetric conductance), NOT to
+        ``add_mosfet_with_body_diode``.
+
+        This is the whole point of the device: a single pulsim switch
+        ``i = (V_p1 - V_p2) * G`` conducts in BOTH directions when ON
+        (``G = 1/R_on``) and blocks BOTH polarities when OFF
+        (``G = 1/R_off``), with NO anti-parallel body diode. A MOSFET_N
+        in this GUI always gets a body diode (the shim's ``add_mosfet``
+        above forces ``add_mosfet_with_body_diode`` to keep the half-
+        bridge "off" mask non-singular), which is exactly wrong for a
+        matrix-converter cell: 9 such body diodes form an uncontrolled
+        3-phase rectifier that clamps the output regardless of gate
+        commands. A matrix converter's output node always has a load
+        path (R+L to neutral), so the bare switch's "all-off" mask is
+        NOT singular here — verified by the switched-CMC example.
+
+        Consumes ONE switch-mask bit (no hidden diode bit). The gate
+        node is recorded on ``pending_gate_signals`` so the backend's
+        C_BLOCK gate-drive ``switch_fn`` can threshold-drive it by name,
+        identically to a MOSFET.
+        """
+        switch_idx = self._next_switch_idx()
+        g_on = 1.0 / float(R_on) if float(R_on) > 0.0 else 1e6
+        g_off = 1.0 / float(R_off) if float(R_off) > 0.0 else 1e-9
+        self._builder.add_switch(
+            name,
+            self._name_of(p1),
+            self._name_of(p2),
+            g_on,
+            g_off,
+        )
+        self.pending_gate_signals.append({
+            "device": name,
+            "kind": "bidirectional_switch",
+            "gate_node": self._name_of(gate),
+            "switch_idx": switch_idx,
+        })
+
     def add_igbt(
         self,
         name: str,

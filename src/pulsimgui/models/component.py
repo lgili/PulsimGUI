@@ -37,6 +37,10 @@ class ComponentType(Enum):
 
     # Switching
     SWITCH = auto()
+    # 4-quadrant bidirectional switch (true symmetric add_switch — NO body
+    # diode). Two power terminals (P1/P2) conduct/block both polarities; a
+    # signal-domain gate (G) is threshold-driven by switch_fn at sim-time.
+    BIDIRECTIONAL_SWITCH = auto()
 
     # Transformers
     TRANSFORMER = auto()
@@ -589,6 +593,7 @@ _CONTROL_PIN_INDICES: dict[ComponentType, set[int]] = {
     ComponentType.THYRISTOR: {2},   # G
     ComponentType.TRIAC:     {2},   # G
     ComponentType.SWITCH:    {2},   # CTL
+    ComponentType.BIDIRECTIONAL_SWITCH: {2},  # G (gate, signal-domain)
     ComponentType.MMC_ARM:   {2, 3, 4},  # M_REF (in), V_C + V_C_SPRD (telemetry out)
 }
 
@@ -948,6 +953,15 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
 
     # Switching
     ComponentType.SWITCH: [Pin(0, "1", -20, 0), Pin(1, "2", 20, 0), Pin(2, "CTL", 0, -20)],
+    # 4-quadrant bidirectional switch. P1/P2 are the two SYMMETRIC power
+    # terminals (no drain/source asymmetry — it conducts and blocks both
+    # polarities), G is the signal-domain gate driven by a controller /
+    # C_BLOCK output. Lowers to pulsim ``add_switch`` (pure conductance,
+    # no body diode), unlike MOSFET_N which the kernel shim always gives
+    # an anti-parallel body diode.
+    ComponentType.BIDIRECTIONAL_SWITCH: [
+        Pin(0, "P1", -40, 0), Pin(1, "P2", 40, 0), Pin(2, "G", 0, 40),
+    ],
 
     # Transformer
     ComponentType.TRANSFORMER: [
@@ -1509,6 +1523,15 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "initial_state": False,
         **DEFAULT_SWITCHING_ENERGY_PARAMS,
         **DEFAULT_THERMAL_DEVICE_PARAMS,
+    },
+    # 4-quadrant bidirectional switch (lowers to pulsim ``add_switch``).
+    # ``R_on``/``R_off`` set the on/off conductances (g = 1/R); ``v_th`` is
+    # the gate threshold the C_BLOCK / controller output is compared against
+    # to decide ON vs OFF at simulate time.
+    ComponentType.BIDIRECTIONAL_SWITCH: {
+        "R_on": 0.05,
+        "R_off": 1e9,
+        "v_th": 3.0,
     },
 
     # Transformer

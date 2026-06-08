@@ -1,6 +1,7 @@
 """Schematic item graphics."""
 
 from pulsimgui.views.schematic.items.component_item import (
+    BidirectionalSwitchItem,
     CapacitorItem,
     ComponentItem,
     CurrentSourceItem,
@@ -42,6 +43,7 @@ __all__ = [
     "MOSFETItem",
     "IGBTItem",
     "SwitchItem",
+    "BidirectionalSwitchItem",
     "TransformerItem",
     "PIControllerItem",
     "PIDControllerItem",

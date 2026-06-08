@@ -888,6 +888,52 @@ class SwitchItem(ComponentItem):
             painter.drawLine(QPointF(-4, -10), QPointF(4, -10))
 
 
+class BidirectionalSwitchItem(ComponentItem):
+    """Graphics item for a 4-quadrant bidirectional switch.
+
+    Drawn as a box with two opposing horizontal arrows (signalling
+    conduction in BOTH directions) and a gate lead dropping from the
+    bottom — visually distinct from a MOSFET so the user never mistakes
+    it for a one-way device.
+    """
+
+    def boundingRect(self) -> QRectF:
+        """Return the local-space rectangle used for painting and hit-testing."""
+        return QRectF(-44, -22, 88, 66)
+
+    def _draw_symbol(self, painter: QPainter) -> None:
+        # Power leads P1 (left) — P2 (right).
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(QPointF(-40, 0), QPointF(-16, 0))
+        painter.drawLine(QPointF(16, 0), QPointF(40, 0))
+
+        # Body box.
+        painter.setPen(self._symbol_pen(style.STROKE_BODY))
+        painter.setBrush(self._surface_color())
+        painter.drawRect(QRectF(-16, -12, 32, 24))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Two opposing arrows = bidirectional conduction.
+        arrow_color = self._line_color()
+        painter.setPen(self._symbol_pen(style.STROKE_DETAIL, arrow_color))
+        painter.setBrush(arrow_color)
+        # Rightward arrow (upper).
+        painter.drawLine(QPointF(-10, -5), QPointF(8, -5))
+        painter.drawPolygon(QPolygonF([
+            QPointF(8, -8), QPointF(13, -5), QPointF(8, -2),
+        ]))
+        # Leftward arrow (lower).
+        painter.drawLine(QPointF(10, 5), QPointF(-8, 5))
+        painter.drawPolygon(QPolygonF([
+            QPointF(-8, 2), QPointF(-13, 5), QPointF(-8, 8),
+        ]))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Gate lead drops from the bottom edge to the G pin at (0, 40).
+        painter.setPen(self._lead_pen(style.STROKE_LEAD))
+        painter.drawLine(QPointF(0, 12), QPointF(0, 40))
+
+
 class IGBTItem(ComponentItem):
     """Graphics item for IGBT."""
 
@@ -4291,6 +4337,7 @@ def create_component_item(component: Component) -> ComponentItem:
 
         # Switching
         ComponentType.SWITCH: SwitchItem,
+        ComponentType.BIDIRECTIONAL_SWITCH: BidirectionalSwitchItem,
 
         # Transformer
         ComponentType.TRANSFORMER: TransformerItem,
