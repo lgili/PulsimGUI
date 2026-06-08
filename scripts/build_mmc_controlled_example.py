@@ -153,11 +153,11 @@ for ph, col_x in zip(("A", "B", "C"), X_PHASE):
     au = comp(type="MMC_ARM", name=f"ARM_u{ph}", x=col_x, y=Y_ARM_UPPER,
               parameters={**ARM_DEFAULTS},
               pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
-                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 40)])
+                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 20)])
     al = comp(type="MMC_ARM", name=f"ARM_l{ph}", x=col_x, y=Y_ARM_LOWER,
               parameters={**ARM_DEFAULTS},
               pins=[pin(0, "TOP", -35, -40), pin(1, "BOT", -35, 40), pin(2, "M_REF", 35, 0),
-                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 40)])
+                    pin(3, "V_C", 35, -40), pin(4, "V_C_SPRD", 35, 20)])
     ll = comp(type="INDUCTOR", name=f"L_l{ph}", x=col_x, y=Y_L_LOWER,
               parameters={"inductance": ARM_L, "initial_current": 0.0},
               pins=[pin(0, "1", 0, -25), pin(1, "2", 0, 25)])
@@ -284,7 +284,15 @@ scope_arm = comp(type="ELECTRICAL_SCOPE", name="Scope_ArmCurrentsA", x=820, y=32
                      {"label": "I_arm_uA", "overlay": True},
                      {"label": "I_arm_lA", "overlay": True}]},
                  pins=[pin(0, "CH1", -40, -40), pin(1, "CH2", -40, 40)])
-components += [scope_v, scope_i, scope_vc, scope_arm]
+# Submodule-cap balance (each arm's V_C_SPRD telemetry). Only the L3 detailed
+# arm publishes a non-zero spread; on L0/L1/L2 these channels sit flat (the
+# scope is still wired so the example is GUI-reproducible at any fidelity).
+scope_smb = comp(type="ELECTRICAL_SCOPE", name="Scope_SMBalance", x=820, y=560,
+                 parameters={"channel_count": 6, "channels": [
+                     {"label": f"spread {a}", "overlay": True}
+                     for a in ("uA", "lA", "uB", "lB", "uC", "lC")]},
+                 pins=[pin(i, f"CH{i+1}", -40, -100 + i * 40) for i in range(6)])
+components += [scope_v, scope_i, scope_vc, scope_arm, scope_smb]
 
 # ---- Scope signal wiring (visible GOTO/FROM pairs) -------------------------
 # Each probe's measurement reaches its scope channel through a SIG_* net-label
@@ -328,6 +336,9 @@ for i, _arm in enumerate(_cap_arms):
     _nm = _arm["name"][4:]  # "uA", "lA", ...
     _sig(_arm, 3, scope_vc, i, f"SIG_VC_{_nm}",
          (_arm["x"] + 90, _arm["y"] - 40), (740, 80 - 100 + i * 40))
+    # V_C_SPRD pin (index 4) → submodule-balance scope (L3 telemetry).
+    _sig(_arm, 4, scope_smb, i, f"SIG_VCS_{_nm}",
+         (_arm["x"] + 90, _arm["y"] + 20), (740, 560 - 100 + i * 40))
 
 # ---------------------------------------------------------------------------
 # Wires

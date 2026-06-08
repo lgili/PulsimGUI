@@ -1201,7 +1201,7 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
         # Signal-domain telemetry OUTPUTS (wire to a scope): the aggregate
         # cap voltage, and (L3 only) the submodule-cap spread.
         Pin(3, "V_C",      40, -40),
-        Pin(4, "V_C_SPRD", 40, 40),
+        Pin(4, "V_C_SPRD", 40, 20),
     ],
     # 3-phase MMC controller: six modulation-reference outputs, one per
     # arm (phase A/B/C × upper/lower). Wire each to the matching
