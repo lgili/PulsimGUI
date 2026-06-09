@@ -4472,7 +4472,7 @@ class CircuitConverter:
         self,
         ctrl: dict[str, Any],
         arms: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], Any]:
         """Build the nine open-loop feed-forward ``m_ref(t)`` callables for an
         M3C (Modular Multilevel Matrix Converter).
 
@@ -4513,6 +4513,32 @@ class CircuitConverter:
         arm_names = {
             self._component_name(a, ComponentType.MMC_ARM) for a in arms
         }
+
+        # Closed-loop: build the M3C controller; each per-arm override just
+        # reads its held modulation index (the backend control observer runs
+        # the law from measured branch currents + capacitor voltages, exactly
+        # like the closed-loop MMC). Enabled by control_mode="closed_loop".
+        mode = str(params.get("control_mode", "open_loop")).strip().lower()
+        if mode in ("closed_loop", "closed-loop", "closed"):
+            from pulsimgui.services.m3c_control import M3CClosedLoopController
+            branches = [f"M_{X}{y}" for X in "ABC" for y in "abc"]
+            controller = M3CClosedLoopController(
+                branches=branches, f_in=f_in, f_out=f_out,
+                v_in_pk=v_in_pk, v_out_pk=v_out_pk, v_c_ref=v_c_nom,
+                l_branch=l_branch, r_branch=r_branch,
+                id_out=self._as_float(params.get("id_ref"), default=i_out_pk),
+                iq_out=self._as_float(params.get("iq_ref"), default=0.0),
+                control_dt=self._as_float(params.get("sample_time"), default=1.0e-5),
+                soft_start_time=self._as_float(
+                    params.get("soft_start_time"), default=1.0e-2),
+            )
+            overrides_cl = {
+                name: self._make_mref_reader(controller, name)
+                for name in branches if name in arm_names
+            }
+            self._m3c_mref_boxes = {}
+            return overrides_cl, controller
+
         overrides: dict[str, Any] = {}
         boxes: dict[str, list[Any]] = {}
         for i, X in enumerate("ABC"):
@@ -4538,7 +4564,7 @@ class CircuitConverter:
                 boxes[name] = box
 
         self._m3c_mref_boxes = boxes
-        return overrides
+        return overrides, None
 
     def _infer_mmc_arm_mref_overrides(
         self,
@@ -4592,7 +4618,7 @@ class CircuitConverter:
             None,
         )
         if m3c_ctrl is not None:
-            return self._build_m3c_overrides(m3c_ctrl, arms), None
+            return self._build_m3c_overrides(m3c_ctrl, arms)
 
         def _pin_nodes_of(comp: dict[str, Any]) -> list[Any]:
             local = comp.get("pin_nodes")
