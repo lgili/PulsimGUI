@@ -2083,6 +2083,23 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "bw_ccsc_hz": 500.0,           # circulating-current loop bandwidth [Hz]
         "bw_energy_hz": 15.0,          # arm-energy loop bandwidth [Hz]
         "bw_current_hz": 300.0,        # dq output-current loop bandwidth [Hz]
+        # --- M3C (Modular Multilevel Matrix Converter) open-loop modulation ---
+        # topology="m3c" repurposes this controller as the M3C modulator: it
+        # drives the nine 3×3-matrix arms (named M_<X><y>, X∈ABC input phase,
+        # y∈abc output phase) with the feed-forward
+        #   m_Xy(t) = (v_in_X − v_out_y − L·di_ref/dt) / v_C_live
+        # synthesizing the direct AC↔AC conversion. No pin wiring needed — the
+        # arms are matched by name. See scripts/build_m3c_example.py.
+        "topology": "mmc",             # "mmc" | "m3c"
+        "m3c_power": 2.0e6,            # rated power [VA] (sets current amplitudes)
+        "m3c_v_in_line": 13800.0,     # input (Sistema 1) line voltage [V]
+        "m3c_f_in": 50.0,             # input frequency [Hz]
+        "m3c_v_out_line": 11000.0,    # output (Sistema 2) line voltage [V]
+        "m3c_f_out": 45.0,            # output frequency [Hz]
+        "m3c_v_c": 24000.0,           # nominal aggregate branch cap voltage [V]
+        "m3c_l_branch": 0.025,        # per-branch inductance [H]
+        "m3c_r_branch": 0.5,          # per-branch resistance [Ω] (damps the
+                                      # open-loop DC circulating current)
     },
 
     # Three-phase / vector control (Pulsim Phase 28)

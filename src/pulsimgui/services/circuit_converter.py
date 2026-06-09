@@ -249,6 +249,7 @@ class CircuitConverter:
         # arm passes m_ref to pulsim at construction time). Empty map ⇒
         # constant-modulation MMCs are untouched.
         try:
+            self._m3c_mref_boxes = {}  # arm_name -> [arm_handle] (M3C live v_C)
             mmc_overrides, mmc_controller = self._infer_mmc_arm_mref_overrides(
                 components, node_map,
             )
@@ -1827,6 +1828,13 @@ class CircuitConverter:
                 **mod_kw,
                 **extra_kw,
             )
+            # M3C: hand the freshly-built arm to its feed-forward closure so the
+            # modulation can normalize by the LIVE aggregate capacitor voltage.
+            _m3c_box = getattr(self, "_m3c_mref_boxes", None)
+            if _m3c_box:
+                _box = _m3c_box.get(name)
+                if _box is not None:
+                    _box.append(arm_handle)
             # Record the arm so the backend can attach pulsim's observer
             # (which advances the capacitor-voltage dynamics each step) and
             # publish ``<name>.v_C`` telemetry for scopes. Without this the
@@ -4460,6 +4468,78 @@ class CircuitConverter:
 
         return descriptors
 
+    def _build_m3c_overrides(
+        self,
+        ctrl: dict[str, Any],
+        arms: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build the nine open-loop feed-forward ``m_ref(t)`` callables for an
+        M3C (Modular Multilevel Matrix Converter).
+
+        Each of the nine 3×3-matrix arms, named ``M_<X><y>`` (X∈ABC = input
+        phase, y∈abc = output phase), synthesizes the bipolar branch voltage
+        ``v_in_X − v_out_y`` minus the branch-inductor drop, normalized by the
+        LIVE aggregate capacitor voltage so the realized voltage tracks the
+        target despite (open-loop) capacitor drift::
+
+            m_Xy(t) = ( v_in_X(t) − v_out_y(t) − L·di_ref/dt ) / v_C_live
+            i_ref_Xy = ( I_in_X + I_out_y ) / 3      (balanced distribution)
+
+        The arm handle does not exist yet (arms are built later), so each
+        closure reads its handle from a one-element ``box`` filled in the
+        arm-build loop; the boxes are stashed on ``self._m3c_mref_boxes``.
+        Returns the ``{arm_name: callable}`` override map.
+        """
+        import math
+
+        params = ctrl.get("parameters") if isinstance(ctrl.get("parameters"), dict) else {}
+        power = self._as_float(params.get("m3c_power"), default=2.0e6)
+        v_in_line = self._as_float(params.get("m3c_v_in_line"), default=13800.0)
+        f_in = self._as_float(params.get("m3c_f_in"), default=50.0)
+        v_out_line = self._as_float(params.get("m3c_v_out_line"), default=11000.0)
+        f_out = self._as_float(params.get("m3c_f_out"), default=45.0)
+        v_c_nom = self._as_float(params.get("m3c_v_c"), default=24000.0)
+        l_branch = self._as_float(params.get("m3c_l_branch"), default=0.025)
+        r_branch = self._as_float(params.get("m3c_r_branch"), default=0.5)
+
+        v_in_pk = v_in_line * math.sqrt(2.0 / 3.0)
+        v_out_pk = v_out_line * math.sqrt(2.0 / 3.0)
+        i_in_pk = 2.0 * power / (3.0 * v_in_pk) if v_in_pk else 0.0
+        i_out_pk = 2.0 * power / (3.0 * v_out_pk) if v_out_pk else 0.0
+        w_in = 2.0 * math.pi * f_in
+        w_out = 2.0 * math.pi * f_out
+        ph = (0.0, -2.0 * math.pi / 3.0, 2.0 * math.pi / 3.0)
+
+        arm_names = {
+            self._component_name(a, ComponentType.MMC_ARM) for a in arms
+        }
+        overrides: dict[str, Any] = {}
+        boxes: dict[str, list[Any]] = {}
+        for i, X in enumerate("ABC"):
+            for j, y in enumerate("abc"):
+                name = f"M_{X}{y}"
+                if name not in arm_names:
+                    continue
+                box: list[Any] = []
+
+                def m_ref(t, _i=i, _j=j, _box=box, _vip=v_in_pk, _vop=v_out_pk,
+                          _iip=i_in_pk, _iop=i_out_pk, _wi=w_in, _wo=w_out,
+                          _l=l_branch, _r=r_branch, _vc=v_c_nom):
+                    vc = _box[0].v_C if _box else _vc
+                    vin = _vip * math.sin(_wi * t + ph[_i])
+                    vout = _vop * math.sin(_wo * t + ph[_j])
+                    iref = (_iip * math.sin(_wi * t + ph[_i])
+                            + _iop * math.sin(_wo * t + ph[_j])) / 3.0
+                    di = (_wi * _iip * math.cos(_wi * t + ph[_i])
+                          + _wo * _iop * math.cos(_wo * t + ph[_j])) / 3.0
+                    return (vin - vout - _l * di - _r * iref) / max(vc, 1.0)
+
+                overrides[name] = m_ref
+                boxes[name] = box
+
+        self._m3c_mref_boxes = boxes
+        return overrides
+
     def _infer_mmc_arm_mref_overrides(
         self,
         components: list[dict[str, Any]],
@@ -4500,6 +4580,19 @@ class CircuitConverter:
         arms = by_type.get(ComponentType.MMC_ARM, [])
         if not ctrls or not arms:
             return {}, None
+
+        # M3C: when a controller is configured as the matrix-converter
+        # modulator (topology="m3c"), drive the nine named 3×3-matrix arms with
+        # the open-loop feed-forward and return (no pin wiring — arms matched by
+        # name). Falls through to the MMC logic for ordinary topology="mmc".
+        m3c_ctrl = next(
+            (c for c in ctrls
+             if str((c.get("parameters") or {}).get("topology", "mmc"))
+             .strip().lower() == "m3c"),
+            None,
+        )
+        if m3c_ctrl is not None:
+            return self._build_m3c_overrides(m3c_ctrl, arms), None
 
         def _pin_nodes_of(comp: dict[str, Any]) -> list[Any]:
             local = comp.get("pin_nodes")
