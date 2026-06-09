@@ -35,6 +35,43 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
+def insertion_vector(m: float, t: float, arm: Any, *, f_carrier: float = 2000.0,
+                     phase: float = 0.0, pwm: bool = True):
+    """Convert a modulation index ``m ∈ [−1, 1]`` into a per-submodule insertion
+    vector for ``arm`` (Etapas 3/5/6, reusable by any modulator).
+
+    Level quantisation ``|m|·N`` + per-arm carrier PWM realises the staircase;
+    an external sort-and-select on the arm's live ``v_C_per_sm`` (insert the
+    lowest caps when the insertion will charge them, the highest when it will
+    discharge them — judged from ``arm.i_b``) does the intra-module balancing.
+    Returns ``(s, n_insert)`` with ``s ∈ {−1,0,+1}^N`` (the arm clips to its
+    half-/full-bridge range).
+    """
+    n = arm.params.n_sm
+    m = _clamp(m, -1.0, 1.0)
+    if abs(m) < 1e-12:
+        return [0.0] * n, 0
+    level = abs(m) * n
+    n_insert = int(math.floor(level))
+    frac = level - n_insert
+    if pwm and frac > 1e-9:
+        carrier = ((t * f_carrier) + phase) % 1.0
+        if carrier < frac:
+            n_insert += 1
+    n_insert = min(n_insert, n)
+    if n_insert == 0:
+        return [0.0] * n, 0
+    sign = 1.0 if m > 0.0 else -1.0
+    charging = (sign * float(getattr(arm, "i_b", 0.0))) > 0.0
+    v = arm.v_C_per_sm
+    order = sorted(range(n), key=lambda k: v[k])
+    picks = order[:n_insert] if charging else order[n - n_insert:]
+    s = [0.0] * n
+    for k in picks:
+        s[k] = sign
+    return s, n_insert
+
+
 @dataclass
 class M3CSvmGateModulator:
     """Wraps an Etapas-1-4 controller and emits per-submodule gates (Etapa 5-6).
@@ -77,34 +114,11 @@ class M3CSvmGateModulator:
         """Etapa 5-6: convert the held ``m_ref`` for ``arm`` into a per-SM
         insertion vector ``s ∈ {−1, 0, +1}^N`` via level quantisation, carrier
         PWM and an external sort-and-select on the arm's live per-SM caps."""
-        n = arm.params.n_sm
-        m = _clamp(self._m_ref.get(arm.name, 0.0), -1.0, 1.0)
-        if abs(m) < 1e-12:
-            self.last_n_insert[arm.name] = 0
-            return [0.0] * n
-
-        level = abs(m) * n
-        n_insert = int(math.floor(level))
-        frac = level - n_insert
-        if self.pwm and frac > 1e-9:
-            carrier = ((t * self.f_carrier) + self._phase.get(arm.name, 0.0)) % 1.0
-            if carrier < frac:
-                n_insert += 1
-        n_insert = min(n_insert, n)
+        m = self._m_ref.get(arm.name, 0.0)
+        s, n_insert = insertion_vector(
+            m, t, arm, f_carrier=self.f_carrier,
+            phase=self._phase.get(arm.name, 0.0), pwm=self.pwm)
         self.last_n_insert[arm.name] = n_insert
-        if n_insert == 0:
-            return [0.0] * n
-
-        sign = 1.0 if m > 0.0 else -1.0
-        # An inserted SM (state ``sign``) charges when ``sign·i_b > 0``. To
-        # balance, charge the LOWEST caps / discharge the HIGHEST.
-        charging = (sign * float(getattr(arm, "i_b", 0.0))) > 0.0
-        v = arm.v_C_per_sm
-        order = sorted(range(n), key=lambda k: v[k])
-        picks = order[:n_insert] if charging else order[n - n_insert:]
-        s = [0.0] * n
-        for k in picks:
-            s[k] = sign
         return s
 
     # ------------------------------------------------------------------

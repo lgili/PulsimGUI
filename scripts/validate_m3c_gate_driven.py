@@ -132,6 +132,7 @@ def simulate_gate_driven_m3c(model: GateM3CModel, t_end: float = 0.08) -> dict:
     rec_t: list[float] = []
     rec_vc: list[list[float]] = []
     rec_spread: list[list[float]] = []
+    rec_vb: list[float] = []          # M_Aa switched arm voltage (bipolar)
 
     def observer(t, x):
         currents = {n: float(x[src_idx[n]]) for n in arm_names}
@@ -141,6 +142,7 @@ def simulate_gate_driven_m3c(model: GateM3CModel, t_end: float = 0.08) -> dict:
         rec_t.append(t)
         rec_vc.append([model.arms[n].v_C for n in arm_names])
         rec_spread.append([model.arms[n].v_C_spread for n in arm_names])
+        rec_vb.append(model.arms["M_Aa"].v_b)
 
     result = p.simulate(b, t_end=t_end, dt=dt, b_extra_fn=b_extra,
                         step_observer=observer)
@@ -155,7 +157,8 @@ def simulate_gate_driven_m3c(model: GateM3CModel, t_end: float = 0.08) -> dict:
              for j in range(3)]
     return dict(times=times, i_in=i_in, i_out=i_out,
                 v_c=np.asarray(rec_vc), vc_t=np.asarray(rec_t),
-                spread=np.asarray(rec_spread), result=result)
+                spread=np.asarray(rec_spread), vb_aa=np.asarray(rec_vb),
+                result=result)
 
 
 def analyze(model: GateM3CModel, sim: dict) -> dict:
@@ -193,21 +196,35 @@ def plot(model: GateM3CModel, sim: dict, path: str) -> None:
     import matplotlib.pyplot as plt
     t = sim["times"] * 1e3
     tc = sim["vc_t"] * 1e3
-    fig, ax = plt.subplots(2, 2, figsize=(12, 7))
+    fig, ax = plt.subplots(2, 3, figsize=(16, 7))
     for k, X in enumerate(INPUT_PHASES):
         ax[0, 0].plot(t, sim["i_in"][k], label=f"I_{X}")
-    ax[0, 0].set_title("Input currents"); ax[0, 0].legend(); ax[0, 0].grid(True)
+    ax[0, 0].set_title("Input currents (50 Hz)"); ax[0, 0].set_ylabel("A")
+    ax[0, 0].legend(loc="upper right"); ax[0, 0].grid(True)
     for k, y in enumerate(OUTPUT_PHASES):
         ax[0, 1].plot(t, sim["i_out"][k], label=f"I_{y}")
-    ax[0, 1].set_title("Output currents"); ax[0, 1].legend(); ax[0, 1].grid(True)
+    ax[0, 1].set_title("Output currents (45 Hz)"); ax[0, 1].set_ylabel("A")
+    ax[0, 1].legend(loc="upper right"); ax[0, 1].grid(True)
+    ax[0, 2].plot(tc, sim["vb_aa"] / 1e3, lw=0.6, color="#c0392b")
+    ax[0, 2].set_title("Branch M_Aa voltage (switched, bipolar full-bridge)")
+    ax[0, 2].set_ylabel("kV"); ax[0, 2].set_xlabel("ms"); ax[0, 2].grid(True)
     for k in range(9):
         ax[1, 0].plot(tc, sim["v_c"][:, k] / 1e3, lw=0.8)
     ax[1, 0].set_title("Branch cap voltages (inter-module, cost function)")
     ax[1, 0].set_ylabel("kV"); ax[1, 0].set_xlabel("ms"); ax[1, 0].grid(True)
     for k in range(9):
         ax[1, 1].plot(tc, sim["spread"][:, k], lw=0.8)
-    ax[1, 1].set_title("Submodule spread per branch (intra, ext. sort-and-select)")
+    ax[1, 1].set_title("Submodule spread (intra, ext. sort-and-select)")
     ax[1, 1].set_ylabel("V"); ax[1, 1].set_xlabel("ms"); ax[1, 1].grid(True)
+    ax[1, 2].axis("off")
+    ax[1, 2].text(0.0, 0.5,
+                  "Gate-driven M3C\n\nControl 100% EXTERNAL:\n"
+                  "• Etapas 1-4  → m_ref\n"
+                  "• Etapa 3/6   → level + PWM\n"
+                  "• Etapa 5     → ext. sort-and-select\n\n"
+                  "The arm only integrates its\nsubmodule capacitors under\n"
+                  "the gates it is handed.",
+                  fontsize=11, va="center", family="monospace")
     fig.tight_layout(); fig.savefig(path, dpi=90)
     print(f"  saved plot → {path}")
 
