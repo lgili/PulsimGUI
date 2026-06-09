@@ -1736,6 +1736,48 @@ class CircuitConverter:
                 else "ipd"
             )
 
+            # --- External Gates: gate-driven arm (control fully external) -----
+            # The arm does NO internal modulation/balancing — the wired
+            # controller's modulation index is turned into per-submodule
+            # insertion gates (level quantisation + carrier PWM + EXTERNAL
+            # sort-and-select on the arm's live caps), and the arm only
+            # integrates its capacitors. See services/gate_driven_arm.py.
+            if level.startswith("EXTERNAL"):
+                from pulsimgui.services.gate_driven_arm import (
+                    GateDrivenArmParams, add_gate_driven_arm)
+                from pulsimgui.services.m3c_gate_modulator import insertion_vector
+                g_overrides = getattr(circuit, "mmc_mref_overrides", None) or {}
+                g_modval = g_overrides.get(name, m_ref_const)
+                per_sm = (v_c0 / n_sm) if n_sm else v_c0
+
+                def _gate_src(t, arm, _ov=g_modval, _fc=f_carrier):
+                    m = float(_ov(t)) if callable(_ov) else float(_ov)
+                    return insertion_vector(m, t, arm, f_carrier=_fc, pwm=True)[0]
+
+                g_seed = None
+                g_spread = self._as_float(params.get("v_c0_spread"), default=0.0)
+                if g_spread > 0.0 and n_sm >= 2:
+                    import numpy as np
+                    g_seed = list(per_sm + np.linspace(
+                        -g_spread / 2.0, g_spread / 2.0, n_sm))
+
+                arm_handle = add_gate_driven_arm(
+                    circuit._builder, name=name, node_a=top_name,
+                    node_b=bot_name,
+                    params=GateDrivenArmParams(n_sm=n_sm, c_sm=c_sm,
+                                               v_c0=per_sm,
+                                               sm_type=sm_type_value),
+                    gate_source=_gate_src, v_c0_per_sm=g_seed)
+                # Let any M3C feed-forward override read this arm's LIVE v_C.
+                _m3c_box = getattr(self, "_m3c_mref_boxes", None)
+                if _m3c_box and _m3c_box.get(name) is not None:
+                    _m3c_box[name].append(arm_handle)
+                obs_specs = getattr(circuit, "nonlinear_observer_specs", None)
+                if isinstance(obs_specs, list):
+                    obs_specs.append({"kind": "mmc_arm", "name": name,
+                                      "handle": arm_handle, "level": "GATE"})
+                return
+
             # Pick the helper + params class per fidelity level
             level_table = {
                 "L0": ("add_mmc_arm_average",    "MmcArmAverageParams"),

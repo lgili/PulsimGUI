@@ -7835,6 +7835,28 @@ class PulsimBackend(SimulationBackend):
                 b_extra_fns.append(grp_b_extra)
             arm_pairs += [(str(s.get("name") or "ARM"), s["handle"]) for s in grp_specs]
 
+        # Gate-driven arms (level "GATE") use our own behavioural observer maker
+        # (services/gate_driven_arm.py), not a pulsim.mmc helper: the arm's
+        # gate_source — wired by the converter from the controller's modulation
+        # index — emits the per-submodule insertion each step.
+        gate_specs = _mmc_specs("GATE")
+        if gate_specs:
+            try:
+                from pulsimgui.services.gate_driven_arm import (
+                    make_gate_driven_arm_observers,
+                )
+                g_handles = [s["handle"] for s in gate_specs]
+                g_obs, g_b_extra = make_gate_driven_arm_observers(
+                    builder, g_handles, dt=float(dt))
+                if callable(g_obs):
+                    arm_obs.append(g_obs)
+                if callable(g_b_extra):
+                    b_extra_fns.append(g_b_extra)
+                arm_pairs += [(str(s.get("name") or "ARM"), s["handle"])
+                              for s in gate_specs]
+            except Exception:  # noqa: BLE001 - bad group shouldn't abort the run
+                pass
+
         if arm_pairs:
             # Closed-loop control: a controller stashed by the converter drives
             # the arms' insertion indices from measured state. Append its step

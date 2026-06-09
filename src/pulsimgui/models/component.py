@@ -2029,6 +2029,11 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     #   L1 Multilevel→ add_mmc_arm_multilevel (per-level voltage steps)
     #   L2 Equivalent→ add_mmc_arm_equivalent (SM-equivalent model)
     #   L3 Detailed  → add_mmc_arm_detailed   (every switch + cap)
+    #   External Gates → gate-driven arm (services/gate_driven_arm.py): the arm
+    #     does NO internal modulation/balancing — the wired controller emits the
+    #     per-submodule insertion gates (level + PWM + EXTERNAL sort-and-select)
+    #     and the arm only integrates its capacitors. Shows the switched signals
+    #     with the control fully external (the HIL/Simulink workflow).
     ComponentType.MMC_ARM: {
         "model_fidelity": "L3 Detailed",
         "submodule_type": "Half-Bridge",       # or "Full-Bridge"
@@ -2299,6 +2304,7 @@ PARAM_OPTIONS: dict[str, list[str]] = {
         "L1 Multilevel",
         "L2 Equivalent",
         "L3 Detailed",
+        "External Gates",
     ],
     # MMC arm sub-module flavor (passed to pulsim's SubmoduleType
     # Literal[..]). Maps to 'half_bridge' / 'full_bridge'.
