@@ -30,6 +30,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from pulsimgui.services.m3c_svm import CostSelector, tree_module_currents
+
 _TWO_PI = 2.0 * math.pi
 _PHASE_OFFSETS = (0.0, -_TWO_PI / 3.0, +_TWO_PI / 3.0)  # A/a, B/b, C/c
 
@@ -160,27 +162,9 @@ class M3CClosedLoopController:
         # current sums, so none disturbs the regulated phase currents. WITHOUT
         # the row/column terms the input/output-phase energy modes are
         # uncontrolled and slowly diverge (the long-run "caps lose themselves").
-        i_circ = [0.0] * 9
-        if self.balance:
-            sin_in = [math.sin(th_in + _PHASE_OFFSETS[i]) for i in range(3)]
-            sin_out = [math.sin(th_out + _PHASE_OFFSETS[j]) for j in range(3)]
-            err = [vc_mean - vc[k] for k in range(9)]          # +ve ⇒ low ⇒ charge
-            row = [sum(err[3 * i + j] for j in range(3)) / 3.0 for i in range(3)]
-            col = [sum(err[3 * i + j] for i in range(3)) / 3.0 for j in range(3)]
-            tot = sum(err) / 9.0
-            for i in range(3):
-                for j in range(3):
-                    k = 3 * i + j
-                    ec = err[k] - row[i] - col[j] + tot        # interaction
-                    cmd = self.k_balance * ec + self.ki_balance * self._int_bal[k]
-                    inj = (cmd * (sin_in[i] - sin_out[j])       # interaction
-                           - self.k_row * row[i] * sin_out[j]   # row (input) mode
-                           + self.k_col * col[j] * sin_in[i])   # column (output) mode
-                    inj_c = _clamp(inj, -self.i_circ_max, self.i_circ_max)
-                    # Conditional anti-windup: stop integrating into saturation.
-                    if inj == inj_c:
-                        self._int_bal[k] += ec * dt
-                    i_circ[k] = inj_c
+        i_circ = ([0.0] * 9 if not self.balance
+                  else self._balancing_law(t, th_in, th_out, vc, vc_mean, dt,
+                                           currents))
         self.last_i_circ = list(i_circ)
 
         # --- per-branch current loop on m (with grid + L·di/dt + R·i FF) ---
@@ -209,9 +193,138 @@ class M3CClosedLoopController:
                 (t, vc_mean, id_in_c, dict(self._m_ref)))
 
     # ------------------------------------------------------------------
+    def _balancing_law(self, t: float, th_in: float, th_out: float,
+                       vc: list[float], vc_mean: float, dt: float,
+                       currents: dict) -> list[float]:
+        """Per-branch balancing → circulating-current pattern (default law).
+
+        The branch-cap imbalance splits into three controllable mode groups
+        (besides the total, handled by the energy loop):
+
+        * interaction (4 DOF) — the doubly-centred error, injected in phase with
+          ``v_arm = v_in_X − v_out_y`` (both input and output frequency);
+        * row modes (input-phase energy, 2 DOF) — transferred between input
+          phases by a circulating current along the OUTPUT voltage pattern;
+        * column modes (output-phase energy, 2 DOF) — transferred between output
+          phases along the INPUT voltage pattern.
+
+        Each injection keeps zero input-phase (row) and output-phase (column)
+        current sums, so none disturbs the regulated phase currents. WITHOUT the
+        row/column terms the input/output-phase energy modes are uncontrolled
+        and slowly diverge (the long-run "caps lose themselves").
+
+        Subclasses (e.g. the thesis Fast-SVM controller) override this hook to
+        substitute a different selection of the same constraint-clean injection.
+        """
+        i_circ = [0.0] * 9
+        sin_in = [math.sin(th_in + _PHASE_OFFSETS[i]) for i in range(3)]
+        sin_out = [math.sin(th_out + _PHASE_OFFSETS[j]) for j in range(3)]
+        err = [vc_mean - vc[k] for k in range(9)]          # +ve ⇒ low ⇒ charge
+        row = [sum(err[3 * i + j] for j in range(3)) / 3.0 for i in range(3)]
+        col = [sum(err[3 * i + j] for i in range(3)) / 3.0 for j in range(3)]
+        tot = sum(err) / 9.0
+        for i in range(3):
+            for j in range(3):
+                k = 3 * i + j
+                ec = err[k] - row[i] - col[j] + tot        # interaction
+                cmd = self.k_balance * ec + self.ki_balance * self._int_bal[k]
+                inj = (cmd * (sin_in[i] - sin_out[j])       # interaction
+                       - self.k_row * row[i] * sin_out[j]   # row (input) mode
+                       + self.k_col * col[j] * sin_in[i])   # column (output) mode
+                inj_c = _clamp(inj, -self.i_circ_max, self.i_circ_max)
+                # Conditional anti-windup: stop integrating into saturation.
+                if inj == inj_c:
+                    self._int_bal[k] += ec * dt
+                i_circ[k] = inj_c
+        return i_circ
+
+    # ------------------------------------------------------------------
     @staticmethod
     def id_in_abc(d: float, q: float, theta: float, idx: int) -> float:
         """One phase of the inverse Park current (d aligned with the sin grid
         voltage): I_x(t) = d·sin(θ+φ) − q·cos(θ+φ)."""
         ang = theta + _PHASE_OFFSETS[idx]
         return d * math.sin(ang) - q * math.cos(ang)
+
+
+@dataclass
+class M3CSvmController(M3CClosedLoopController):
+    """M3C controller whose capacitor balancing is the **thesis Fast-SVM cost
+    function** (Etapas 3-4) instead of the default heuristic modal law.
+
+    Everything else is inherited unchanged — the dq energy loop (Etapa 1), the
+    per-branch input/output current loops (Etapa 2) and the grid + L·di/dt + R·i
+    feed-forward. Only :meth:`_balancing_law` is overridden.
+
+    Each switching period ``Ts = 1/f_switch`` it runs the thesis selection on
+    the live state:
+
+    1. lg-transform the reference input/output phase voltages and apply the
+       Etapa-3 reduction (tie the smallest input phase to the smallest output
+       phase), leaving 45 candidate connections.
+    2. For each candidate (a spanning tree of K₃,₃) predict the per-module
+       cap-voltage change ``ΔV_xy = Sn·I_xy·Ts/C`` from the live terminal
+       currents routed through that tree, and evaluate the cost
+       ``J = Σ_xy (ε_xy + ΔV_xy)²``.
+    3. Apply the argmin connection for the whole ``Ts``.
+
+    The chosen connection routes the terminal currents through five branches; in
+    the GUI's always-connected modular-M3C mesh this is realised as the
+    circulating-current pattern ``i_circ = k_svm·(I_tree − I_balanced)`` (zero
+    input/output-phase sums, so it never disturbs the regulated phase currents).
+    ``k_svm`` scales the discrete matrix-converter routing into a continuous
+    circulating injection for the behavioural arms; the *selection* (which caps
+    to charge/discharge) is the thesis's predictive cost function verbatim.
+    """
+
+    f_switch: float = 2000.0             # switching frequency [Hz] → Ts
+    svm_capacitance: float = 680.0e-6    # submodule capacitance C [F]
+    svm_sn: float = 6.0                  # active submodules per branch Sn
+    k_svm: float = 0.25                  # discrete-routing → circulating gain
+
+    _cost: CostSelector = field(default=None, init=False)  # type: ignore[assignment]
+    _next_sel_t: float = field(default=0.0, init=False)
+    _svm_conn: tuple = field(default=(), init=False)
+    last_connection: tuple = field(default=(), init=False)
+    last_short: tuple = field(default=(), init=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        ts = 1.0 / max(self.f_switch, 1.0)
+        self._cost = CostSelector(sn=self.svm_sn,
+                                  capacitance=self.svm_capacitance, ts=ts)
+
+    def _balancing_law(self, t: float, th_in: float, th_out: float,
+                       vc: list[float], vc_mean: float, dt: float,
+                       currents: dict) -> list[float]:
+        # Live terminal currents from the nine branch currents: input phase
+        # current = row sum, output phase current = column sum.
+        ib = [currents.get(self.branches[k], 0.0) for k in range(9)]
+        i_in = tuple(sum(ib[3 * i + j] for j in range(3)) for i in range(3))
+        i_out = tuple(sum(ib[3 * i + j] for i in range(3)) for j in range(3))
+        # Reference phase voltages (for the Etapa-3 smallest-in/out reduction).
+        v_in = tuple(self.v_in_pk * math.sin(th_in + _PHASE_OFFSETS[i])
+                     for i in range(3))
+        v_out = tuple(self.v_out_pk * math.sin(th_out + _PHASE_OFFSETS[j])
+                      for j in range(3))
+
+        # Re-select the connection once per switching period (held over Ts, as
+        # in the thesis); re-evaluate the injection magnitude every control tick.
+        if not self._svm_conn or t + 1e-15 >= self._next_sel_t:
+            self._next_sel_t = t + self._cost.ts
+            conn, short = self._cost.select(v_in, v_out, i_in, i_out, vc)
+            self._svm_conn = conn
+            self.last_connection = conn
+            self.last_short = short
+
+        tree_i = tree_module_currents(self._svm_conn, i_in, i_out)
+        balanced = [(i_in[i] + i_out[j]) / 3.0
+                    for i in range(3) for j in range(3)]
+        i_circ = [0.0] * 9
+        for i in range(3):
+            for j in range(3):
+                k = 3 * i + j
+                target = tree_i.get((i, j), 0.0)
+                inj = self.k_svm * (target - balanced[k])
+                i_circ[k] = _clamp(inj, -self.i_circ_max, self.i_circ_max)
+        return i_circ
