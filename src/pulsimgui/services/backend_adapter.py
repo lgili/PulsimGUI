@@ -889,6 +889,19 @@ class PulsimBackend(SimulationBackend):
             retry_profiles = self._build_transient_retry_profiles(settings)
         retry_errors: list[str] = []
 
+        # Remember the FIRST attempt's error verbatim. Finer-dt retries
+        # can fail with a ``PwlStateSpaceCache: numerically singular``
+        # error that is a STRUCTURAL ARTIFACT of the smaller timestep
+        # (the discretized companion conductances shrink until the
+        # switch-mask state-space is ill-conditioned), NOT a real
+        # diagnostic of the user's circuit. Surfacing that retry
+        # artifact as the final error is misleading — a switched matrix
+        # converter that runs fine at the configured dt would report a
+        # bizarre "singular at dt=5e-07" the user never asked for. When
+        # the final error is such an artifact, we fall back to the
+        # original (configured-dt) attempt's error instead.
+        first_attempt_error: str = ""
+
         for retry_index, profile in enumerate(retry_profiles):
             if retry_index > 0:
                 callbacks.progress(2.0, f"Retrying convergence with profile '{profile.name}'...")
@@ -938,6 +951,24 @@ class PulsimBackend(SimulationBackend):
             if "cancel" in error_text.lower():
                 return attempt_result
 
+            if retry_index == 0:
+                first_attempt_error = error_text
+
+            # If this is a finer-dt RETRY that died on a singular PWL
+            # cache, that error is a structural artifact of the smaller
+            # timestep — not informative. Prefer the original
+            # configured-dt error so the user sees the real diagnostic
+            # instead of a confusing "singular at dt=5e-07".
+            surfaced_error = error_text
+            if (
+                retry_index > 0
+                and self._is_pwl_cache_singular_error(error_text)
+                and first_attempt_error
+                and not self._is_pwl_cache_singular_error(first_attempt_error)
+            ):
+                surfaced_error = first_attempt_error
+                attempt_result.error_message = surfaced_error
+
             if has_cblock:
                 retry_errors.append(error_text)
                 is_last_profile = retry_index >= len(retry_profiles) - 1
@@ -958,7 +989,16 @@ class PulsimBackend(SimulationBackend):
                 return attempt_result
 
         if retry_errors:
-            result.error_message = retry_errors[-1]
+            # Prefer the first non-cache-singular error over a later
+            # finer-dt cache artifact (see the comment on
+            # ``first_attempt_error`` above).
+            final_error = retry_errors[-1]
+            if self._is_pwl_cache_singular_error(final_error):
+                for candidate in retry_errors:
+                    if not self._is_pwl_cache_singular_error(candidate):
+                        final_error = candidate
+                        break
+            result.error_message = final_error
         return result
 
     def _resolve_signal_names(self, circuit: Any) -> list[str]:
@@ -3496,6 +3536,28 @@ class PulsimBackend(SimulationBackend):
             "timestep too small",
         )
         return any(indicator in lowered for indicator in indicators)
+
+    @staticmethod
+    def _is_pwl_cache_singular_error(error_message: str) -> bool:
+        """True for the ``PwlStateSpaceCache: numerically singular for
+        mask … (dt=…)`` family.
+
+        This fires when pulsim's PWL state-space cache, enumerating
+        switch-mask combinations at a given timestep, finds the
+        discretized network ill-conditioned. It is acutely
+        timestep-sensitive: a circuit with ideal switches whose nodes
+        reference ground only through reactances (e.g. a matrix
+        converter — load/filter inductors isolate the output/input
+        nodes) builds cleanly at the configured dt but goes singular at
+        a much finer dt because the companion conductances shrink. When
+        a convergence RETRY shrinks the timestep and trips this, the
+        message is a retry artifact rather than the real fault, so the
+        caller prefers the original configured-dt error."""
+        lowered = (error_message or "").lower()
+        return (
+            "pwlstatespacecache" in lowered
+            or ("numerically singular" in lowered and "mask" in lowered)
+        )
 
     @staticmethod
     def _unpack_streaming_transient_result(
