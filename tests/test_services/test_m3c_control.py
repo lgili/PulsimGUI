@@ -80,6 +80,26 @@ def test_balancing_is_zero_sum_per_row_and_column() -> None:
     assert centred[4] == max(centred)
 
 
+def test_row_col_injection_zero_phase_sums() -> None:
+    """The row/column energy-mode injection (the part that arrests the long-run
+    divergence) has EXACTLY zero input-phase (row) and output-phase (column)
+    current sums, so it transfers energy between phases without disturbing the
+    regulated phase currents. Use a pure input-phase (row) imbalance so the
+    interaction term — which carries a small cross-frequency disturbance — is
+    zero and only the constraint-clean row injection is active."""
+    c = _make(balance=True, soft_start_time=0.0)
+    vcap = {n: 24000.0 for n in BRANCHES}
+    for n in ("M_Aa", "M_Ab", "M_Ac"):       # all of input phase A sags equally
+        vcap[n] = 23700.0
+    c.update(0.004, {n: 0.0 for n in BRANCHES}, vcap)
+    ic = c.last_i_circ
+    assert any(abs(v) > 1e-6 for v in ic)               # injection is active
+    for i in range(3):                                   # input phase rows
+        assert abs(sum(ic[3 * i + j] for j in range(3))) < 1e-9
+    for j in range(3):                                   # output phase columns
+        assert abs(sum(ic[3 * i + j] for i in range(3))) < 1e-9
+
+
 def test_balancing_integral_accumulates() -> None:
     """A sustained branch-cap sag accumulates the integral most on that branch
     (the integral term that arrests the switched-model drift)."""

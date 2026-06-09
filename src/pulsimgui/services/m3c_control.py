@@ -72,6 +72,8 @@ class M3CClosedLoopController:
                                          # stops (≈1.8 kV spread, +0.06 kV/5 s
                                          # vs +0.44 kV/5 s for the original
                                          # input-frequency P-only law)
+    k_row: float = 0.04                  # input-phase (row) energy-mode gain [A/V]
+    k_col: float = 0.04                  # output-phase (col) energy-mode gain [A/V]
     i_circ_max: float = 60.0             # per-branch circulating-current clamp [A]
     i_in_max: float = 400.0              # input active-current ref clamp [A]
 
@@ -98,6 +100,7 @@ class M3CClosedLoopController:
     # diagnostics
     last_id_in: float = field(default=0.0, init=False)
     last_vc_mean: float = field(default=0.0, init=False)
+    last_i_circ: list[float] = field(default_factory=lambda: [0.0] * 9, init=False)
     debug: bool = False
     debug_history: list = field(default_factory=list, init=False)
 
@@ -145,14 +148,22 @@ class M3CClosedLoopController:
         self.last_id_in = id_in_c
 
         # --- per-branch capacitor balancing → circulating current pattern ---
-        # PI on the doubly-centred branch-cap error, injected in phase with BOTH
-        # the input voltage (transfers input-side power) AND the output voltage
-        # (output-side power) for full balancing authority. Double-centring (zero
-        # row + column sums) keeps the circulating injection from disturbing the
-        # input/output phase currents; the integral term zeroes the residual
-        # spread the switching disturbance otherwise sustains.
+        # The branch-cap imbalance splits into three controllable mode groups
+        # (besides the total, handled by the energy loop):
+        #   • interaction (4 DOF) — the doubly-centred error, injected in phase
+        #     with v_arm = v_in_X − v_out_y (both input and output frequency);
+        #   • row modes (input-phase energy, 2 DOF) — transferred between input
+        #     phases by a circulating current along the OUTPUT voltage pattern;
+        #   • column modes (output-phase energy, 2 DOF) — transferred between
+        #     output phases along the INPUT voltage pattern.
+        # Each injection keeps zero input-phase (row) and output-phase (column)
+        # current sums, so none disturbs the regulated phase currents. WITHOUT
+        # the row/column terms the input/output-phase energy modes are
+        # uncontrolled and slowly diverge (the long-run "caps lose themselves").
         i_circ = [0.0] * 9
         if self.balance:
+            sin_in = [math.sin(th_in + _PHASE_OFFSETS[i]) for i in range(3)]
+            sin_out = [math.sin(th_out + _PHASE_OFFSETS[j]) for j in range(3)]
             err = [vc_mean - vc[k] for k in range(9)]          # +ve ⇒ low ⇒ charge
             row = [sum(err[3 * i + j] for j in range(3)) / 3.0 for i in range(3)]
             col = [sum(err[3 * i + j] for i in range(3)) / 3.0 for j in range(3)]
@@ -160,19 +171,17 @@ class M3CClosedLoopController:
             for i in range(3):
                 for j in range(3):
                     k = 3 * i + j
-                    ec = err[k] - row[i] - col[j] + tot
+                    ec = err[k] - row[i] - col[j] + tot        # interaction
                     cmd = self.k_balance * ec + self.ki_balance * self._int_bal[k]
-                    # In phase with v_arm = v_in_X − v_out_y, so BOTH terms
-                    # charge a low branch (the output term needs the MINUS to
-                    # align with −v_out_y; a + would make the two transfers
-                    # partly cancel).
-                    inj = cmd * (math.sin(th_in + _PHASE_OFFSETS[i])
-                                 - math.sin(th_out + _PHASE_OFFSETS[j]))
+                    inj = (cmd * (sin_in[i] - sin_out[j])       # interaction
+                           - self.k_row * row[i] * sin_out[j]   # row (input) mode
+                           + self.k_col * col[j] * sin_in[i])   # column (output) mode
                     inj_c = _clamp(inj, -self.i_circ_max, self.i_circ_max)
                     # Conditional anti-windup: stop integrating into saturation.
                     if inj == inj_c:
                         self._int_bal[k] += ec * dt
                     i_circ[k] = inj_c
+        self.last_i_circ = list(i_circ)
 
         # --- per-branch current loop on m (with grid + L·di/dt + R·i FF) ---
         for i in range(3):
