@@ -6264,6 +6264,26 @@ class PulsimBackend(SimulationBackend):
         configs = configs_from_pwm_records(circuit)
         switch_fn = assemble_switch_fn(circuit, configs, self._module)
 
+        # MMC rank-deficiency regulariser. MMC arms are ideal controlled
+        # voltage sources; a three-phase MMC's reactive leg loop leaves the
+        # conductance matrix rank-deficient by one (the operating point floats)
+        # — which the converter's connectivity-based ghost-resistor healing
+        # cannot see (every node looks "grounded" through the sources), and the
+        # observer-path ``p.simulate`` (b_extra) bypasses the Simulator's
+        # transient-gmin fallback. Drop a 1 GΩ shunt from every node to ground
+        # (≈µA at kV — invisible) so the PWL cache build is non-singular. Done
+        # BEFORE the observers so their b_extra state size matches the final
+        # graph. Harmless for already-well-posed MMC/M3C circuits.
+        if any(str(s.get("kind") or "") == "mmc_arm"
+               for s in (getattr(circuit, "nonlinear_observer_specs", []) or [])):
+            try:
+                for _nd in list(builder.graph.nodes):
+                    builder.add_resistor(
+                        f"__mmc_gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
+            except Exception:  # noqa: BLE001 - regulariser must never abort a run
+                log.debug("MMC gmin shunt injection failed; continuing",
+                          exc_info=True)
+
         # Nonlinear-device observers FIRST (before the VSI switch_fns):
         # the dynamic-PMSM observer build also stashes the live
         # ``MotorObserverBundle`` on its spec, which the FOC loop below
