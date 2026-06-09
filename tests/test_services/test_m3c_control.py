@@ -78,3 +78,22 @@ def test_balancing_is_zero_sum_per_row_and_column() -> None:
         assert abs(sum(centred[3 * i + j] for i in range(3))) < 1e-9
     # The sagging branch keeps the largest positive (charge) centred error.
     assert centred[4] == max(centred)
+
+
+def test_balancing_integral_accumulates() -> None:
+    """A sustained branch-cap sag accumulates the integral most on that branch
+    (the integral term that arrests the switched-model drift)."""
+    c = _make(balance=True, control_dt=1e-4, soft_start_time=0.0)
+    vcap = {n: 24000.0 for n in BRANCHES}
+    vcap["M_Bb"] = 23800.0           # branch index 4 sags 200 V (no clamp)
+    for k in range(30):
+        c.update(k * c.control_dt, {n: 0.0 for n in BRANCHES}, vcap)
+    assert c._int_bal[4] == max(c._int_bal)   # sagging branch integrates most
+    assert c._int_bal[4] > 0                  # +ve ⇒ commands charging
+    # Integral state stays doubly-centred (zero row/column sums ⇒ never
+    # disturbs the input/output phase currents).
+    ib = c._int_bal
+    for i in range(3):
+        assert abs(sum(ib[3 * i + j] for j in range(3))) < 1e-9
+    for j in range(3):
+        assert abs(sum(ib[3 * i + j] for i in range(3))) < 1e-9

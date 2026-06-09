@@ -62,7 +62,17 @@ class M3CClosedLoopController:
     soft_start_time: float = 1.0e-2      # ramp the commands 0→full over this [s]
 
     balance: bool = True                 # per-branch capacitor balancing
-    k_balance: float = 0.02              # balancing gain [A/V]
+    k_balance: float = 0.04              # balancing proportional gain [A/V]
+    ki_balance: float = 0.6              # balancing integral gain [A/(V·s)] —
+                                         # drives the steady-state branch-cap
+                                         # spread toward zero (a P-only law
+                                         # leaves a residual the switching
+                                         # disturbance keeps re-opening). Tuned
+                                         # so the switched-model drift nearly
+                                         # stops (≈1.8 kV spread, +0.06 kV/5 s
+                                         # vs +0.44 kV/5 s for the original
+                                         # input-frequency P-only law)
+    i_circ_max: float = 60.0             # per-branch circulating-current clamp [A]
     i_in_max: float = 400.0              # input active-current ref clamp [A]
 
     # Loop bandwidths → default PI gains (Hz).
@@ -80,6 +90,7 @@ class M3CClosedLoopController:
     _ki_w: float = field(default=0.0, init=False)
     _int_i: list[float] = field(default_factory=lambda: [0.0] * 9, init=False)
     _int_w: float = field(default=0.0, init=False)
+    _int_bal: list[float] = field(default_factory=lambda: [0.0] * 9, init=False)
     _iref_prev: list[float] = field(default_factory=lambda: [0.0] * 9, init=False)
     _m_ref: dict[str, float] = field(default_factory=dict, init=False)
     _next_t: float = field(default=0.0, init=False)
@@ -134,20 +145,34 @@ class M3CClosedLoopController:
         self.last_id_in = id_in_c
 
         # --- per-branch capacitor balancing → circulating current pattern ---
+        # PI on the doubly-centred branch-cap error, injected in phase with BOTH
+        # the input voltage (transfers input-side power) AND the output voltage
+        # (output-side power) for full balancing authority. Double-centring (zero
+        # row + column sums) keeps the circulating injection from disturbing the
+        # input/output phase currents; the integral term zeroes the residual
+        # spread the switching disturbance otherwise sustains.
         i_circ = [0.0] * 9
         if self.balance:
             err = [vc_mean - vc[k] for k in range(9)]          # +ve ⇒ low ⇒ charge
-            # Double-centre so row sums (input phases) and column sums (output
-            # phases) of the circulating injection are zero.
             row = [sum(err[3 * i + j] for j in range(3)) / 3.0 for i in range(3)]
             col = [sum(err[3 * i + j] for i in range(3)) / 3.0 for j in range(3)]
             tot = sum(err) / 9.0
             for i in range(3):
                 for j in range(3):
-                    ec = err[3 * i + j] - row[i] - col[j] + tot
-                    # Inject in phase with v_in_X (transfers input-side power).
-                    i_circ[3 * i + j] = (self.k_balance * ec
-                                         * math.sin(th_in + _PHASE_OFFSETS[i]))
+                    k = 3 * i + j
+                    ec = err[k] - row[i] - col[j] + tot
+                    cmd = self.k_balance * ec + self.ki_balance * self._int_bal[k]
+                    # In phase with v_arm = v_in_X − v_out_y, so BOTH terms
+                    # charge a low branch (the output term needs the MINUS to
+                    # align with −v_out_y; a + would make the two transfers
+                    # partly cancel).
+                    inj = cmd * (math.sin(th_in + _PHASE_OFFSETS[i])
+                                 - math.sin(th_out + _PHASE_OFFSETS[j]))
+                    inj_c = _clamp(inj, -self.i_circ_max, self.i_circ_max)
+                    # Conditional anti-windup: stop integrating into saturation.
+                    if inj == inj_c:
+                        self._int_bal[k] += ec * dt
+                    i_circ[k] = inj_c
 
         # --- per-branch current loop on m (with grid + L·di/dt + R·i FF) ---
         for i in range(3):
