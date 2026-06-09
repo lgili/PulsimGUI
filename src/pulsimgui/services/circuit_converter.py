@@ -4519,10 +4519,12 @@ class CircuitConverter:
         # the law from measured branch currents + capacitor voltages, exactly
         # like the closed-loop MMC). Enabled by control_mode="closed_loop".
         mode = str(params.get("control_mode", "open_loop")).strip().lower()
-        if mode in ("closed_loop", "closed-loop", "closed"):
-            from pulsimgui.services.m3c_control import M3CClosedLoopController
+        is_svm = mode in ("svm", "fast_svm", "thesis_svm", "thesis-svm")
+        if is_svm or mode in ("closed_loop", "closed-loop", "closed"):
+            from pulsimgui.services.m3c_control import (
+                M3CClosedLoopController, M3CSvmController)
             branches = [f"M_{X}{y}" for X in "ABC" for y in "abc"]
-            controller = M3CClosedLoopController(
+            common = dict(
                 branches=branches, f_in=f_in, f_out=f_out,
                 v_in_pk=v_in_pk, v_out_pk=v_out_pk, v_c_ref=v_c_nom,
                 l_branch=l_branch, r_branch=r_branch,
@@ -4532,6 +4534,21 @@ class CircuitConverter:
                 soft_start_time=self._as_float(
                     params.get("soft_start_time"), default=1.0e-2),
             )
+            if is_svm:
+                # Thesis Fast-SVM cost-function balancing (Etapas 3-4). The
+                # switching frequency / submodule count / capacitance feed the
+                # predictive ΔV = Sn·I·Ts/C term.
+                controller = M3CSvmController(
+                    **common,
+                    f_switch=self._as_float(
+                        params.get("m3c_f_switch"), default=2000.0),
+                    svm_capacitance=self._as_float(
+                        params.get("m3c_sm_capacitance"), default=680.0e-6),
+                    svm_sn=self._as_float(params.get("m3c_n_sm"), default=6.0),
+                    k_svm=self._as_float(params.get("m3c_k_svm"), default=0.25),
+                )
+            else:
+                controller = M3CClosedLoopController(**common)
             overrides_cl = {
                 name: self._make_mref_reader(controller, name)
                 for name in branches if name in arm_names

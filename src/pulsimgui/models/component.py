@@ -2100,6 +2100,15 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
         "m3c_l_branch": 0.025,        # per-branch inductance [H]
         "m3c_r_branch": 0.5,          # per-branch resistance [Ω] (damps the
                                       # open-loop DC circulating current)
+        # control_mode: "open_loop" (feed-forward) | "closed_loop" (dq current
+        # + energy + modal balancing) | "svm" (thesis Fast-SVM cost-function
+        # balancing — Etapas 3-4, see services/m3c_svm.py).
+        "control_mode": "open_loop",
+        # --- thesis Fast-SVM modulation (control_mode="svm") ---
+        "m3c_f_switch": 2000.0,       # switching frequency [Hz] → Ts=1/f_switch
+        "m3c_sm_capacitance": 680.0e-6,  # submodule capacitance C [F] (Eq. 162)
+        "m3c_n_sm": 6.0,              # active submodules per branch Sn (Eq. 162)
+        "m3c_k_svm": 0.25,            # discrete-routing → circulating gain
     },
 
     # Three-phase / vector control (Pulsim Phase 28)
