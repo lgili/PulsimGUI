@@ -280,11 +280,41 @@ class M3CSvmController(M3CClosedLoopController):
     f_switch: float = 2000.0             # switching frequency [Hz] → Ts
     svm_capacitance: float = 680.0e-6    # submodule capacitance C [F]
     svm_sn: float = 6.0                  # active submodules per branch Sn
-    k_svm: float = 0.25                  # discrete-routing → circulating gain
+    k_svm: float = 0.6                   # discrete-routing → circulating gain
+    ki_svm: float = 6.0                  # integral gain on the module error fed
+                                         # to the cost function [1/s]. The bare
+                                         # cost function is predictive but
+                                         # one-step (no memory), so it leaves a
+                                         # residual spread the switching keeps
+                                         # re-opening; the integral biases the
+                                         # connection choice toward persistently
+                                         # imbalanced modules and converges it.
+    svm_blend: int = 6                   # blend the best N connections (cost-
+                                         # weighted). The thesis applies a duty-
+                                         # weighted vector sequence per Ts, not a
+                                         # single connection, so blending is both
+                                         # more faithful and far smoother than a
+                                         # bang-bang argmin.
+    svm_temp: float = 1.0                # softmax temperature (× median cost)
+    svm_stabilize: bool = True           # add explicit input/output-phase
+                                         # (row/column) energy-mode control on
+                                         # top of the cost function. The pure
+                                         # cost function controls the interaction
+                                         # modes well but, in the scaled
+                                         # always-connected adaptation, under-
+                                         # drives the row/column energy modes,
+                                         # which slowly diverge long-run (the
+                                         # "caps lose themselves" seen in HIL /
+                                         # Simulink). In the real matrix
+                                         # converter the full current routing
+                                         # transfers that energy; here we add it
+                                         # back with the same k_row/k_col terms
+                                         # the modal law uses (Kammerer 2012).
 
     _cost: CostSelector = field(default=None, init=False)  # type: ignore[assignment]
     _next_sel_t: float = field(default=0.0, init=False)
-    _svm_conn: tuple = field(default=(), init=False)
+    _svm_target: list[float] = field(default_factory=list, init=False)
+    _int_svm: list[float] = field(default_factory=lambda: [0.0] * 9, init=False)
     last_connection: tuple = field(default=(), init=False)
     last_short: tuple = field(default=(), init=False)
 
@@ -308,23 +338,58 @@ class M3CSvmController(M3CClosedLoopController):
         v_out = tuple(self.v_out_pk * math.sin(th_out + _PHASE_OFFSETS[j])
                       for j in range(3))
 
-        # Re-select the connection once per switching period (held over Ts, as
-        # in the thesis); re-evaluate the injection magnitude every control tick.
-        if not self._svm_conn or t + 1e-15 >= self._next_sel_t:
-            self._next_sel_t = t + self._cost.ts
-            conn, short = self._cost.select(v_in, v_out, i_in, i_out, vc)
-            self._svm_conn = conn
-            self.last_connection = conn
+        # Re-select once per switching period (held over Ts, as in the thesis);
+        # re-evaluate the injection magnitude every control tick.
+        if not self._svm_target or t + 1e-15 >= self._next_sel_t:
+            ts = self._cost.ts
+            self._next_sel_t = t + ts
+            # Integral-augmented module error ε_xy = (V_xy − mean) + ki·∫(…)dt.
+            # ``err`` already has zero mean, so its integral stays in the
+            # balancing (zero-total) subspace — the row/column structure the
+            # connection choice can act on is preserved.
+            err = [vc[k] - vc_mean for k in range(9)]
+            eps = [0.0] * 9
+            for k in range(9):
+                self._int_svm[k] += err[k] * ts
+                eps[k] = err[k] + self.ki_svm * self._int_svm[k]
+
+            ranked, short = self._cost.rank(v_in, v_out, i_in, i_out, eps)
+            top = ranked[:max(1, self.svm_blend)]
+            # Cost-weighted (softmax) blend of the best connections' current
+            # routings. A convex blend still satisfies the terminal KCL, so the
+            # circulating part keeps zero input/output-phase sums.
+            j0 = top[0][1]
+            temp = self.svm_temp * (top[len(top) // 2][1] - j0 + 1.0)
+            weights = [math.exp(-(j - j0) / max(temp, 1e-9)) for _, j in top]
+            wsum = sum(weights) or 1.0
+            blend = [0.0] * 9
+            for (conn, _), w in zip(top, weights):
+                cur = tree_module_currents(conn, i_in, i_out)
+                for i in range(3):
+                    for j in range(3):
+                        blend[3 * i + j] += (w / wsum) * cur.get((i, j), 0.0)
+            self._svm_target = blend
+            self.last_connection = top[0][0]
             self.last_short = short
 
-        tree_i = tree_module_currents(self._svm_conn, i_in, i_out)
         balanced = [(i_in[i] + i_out[j]) / 3.0
                     for i in range(3) for j in range(3)]
-        i_circ = [0.0] * 9
-        for i in range(3):
-            for j in range(3):
-                k = 3 * i + j
-                target = tree_i.get((i, j), 0.0)
-                inj = self.k_svm * (target - balanced[k])
-                i_circ[k] = _clamp(inj, -self.i_circ_max, self.i_circ_max)
-        return i_circ
+        i_circ = [self.k_svm * (self._svm_target[k] - balanced[k])
+                  for k in range(9)]
+
+        # Explicit row/column energy-mode control (the modes the scaled cost
+        # function under-drives) to guarantee long-run boundedness. Same
+        # constraint-clean form as the modal law: each term has zero input-phase
+        # (row) and output-phase (column) current sums.
+        if self.svm_stabilize:
+            sin_in = [math.sin(th_in + _PHASE_OFFSETS[i]) for i in range(3)]
+            sin_out = [math.sin(th_out + _PHASE_OFFSETS[j]) for j in range(3)]
+            ec = [vc_mean - vc[k] for k in range(9)]        # +ve ⇒ low ⇒ charge
+            row = [sum(ec[3 * i + j] for j in range(3)) / 3.0 for i in range(3)]
+            col = [sum(ec[3 * i + j] for i in range(3)) / 3.0 for j in range(3)]
+            for i in range(3):
+                for j in range(3):
+                    i_circ[3 * i + j] += (-self.k_row * row[i] * sin_out[j]
+                                          + self.k_col * col[j] * sin_in[i])
+
+        return [_clamp(v, -self.i_circ_max, self.i_circ_max) for v in i_circ]

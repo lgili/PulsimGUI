@@ -283,15 +283,19 @@ class CostSelector:
         i_in: tuple[float, float, float],
         i_out: tuple[float, float, float],
         v_module: list[float],
+        eps: list[float] | None = None,
     ) -> tuple[tuple[tuple[int, int], ...], tuple[int, int]]:
         """Pick the cost-minimising connection for this switching period.
 
-        ``v_module[k]`` is module k's present total capacitor voltage. Returns
-        ``(best_connection, short_edge)``.
+        ``v_module[k]`` is module k's present total capacitor voltage and the
+        cost uses ``ε_xy = V_xy − mean(V_xy)`` (Eq. 161). Callers may pass an
+        explicit ``eps`` (e.g. with integral action added) to override it.
+        Returns ``(best_connection, short_edge)``.
         """
         short, candidates = self.reduced_set(v_in, v_out)
-        v_mean = sum(v_module) / 9.0
-        eps = [v_module[k] - v_mean for k in range(9)]      # Eq. 161
+        if eps is None:
+            v_mean = sum(v_module) / 9.0
+            eps = [v_module[k] - v_mean for k in range(9)]      # Eq. 161
         scale = self.sn * self.ts / self.capacitance
 
         best = None
@@ -309,3 +313,33 @@ class CostSelector:
                 best_j = j_cost
                 best = conn
         return best if best is not None else candidates[0], short
+
+    def rank(
+        self,
+        v_in: tuple[float, float, float],
+        v_out: tuple[float, float, float],
+        i_in: tuple[float, float, float],
+        i_out: tuple[float, float, float],
+        eps: list[float],
+    ) -> tuple[list[tuple[tuple[tuple[int, int], ...], float]], tuple[int, int]]:
+        """Cost ``J`` for every surviving connection, ascending by ``J``.
+
+        Used to *blend* the best few connections — the thesis applies a
+        duty-weighted sequence of vectors within one ``Ts``, not a single one,
+        so a cost-weighted blend of the lowest-``J`` connections is both closer
+        to that and far smoother than a single bang-bang argmin. Returns
+        ``(ranked, short_edge)`` with ``ranked = [(connection, J), …]``.
+        """
+        short, candidates = self.reduced_set(v_in, v_out)
+        scale = self.sn * self.ts / self.capacitance
+        ranked = []
+        for conn in candidates:
+            currents = tree_module_currents(conn, i_in, i_out)
+            j_cost = 0.0
+            for k in range(9):
+                i, j = divmod(k, 3)
+                term = eps[k] + scale * currents.get((i, j), 0.0)
+                j_cost += term * term
+            ranked.append((conn, j_cost))
+        ranked.sort(key=lambda cj: cj[1])
+        return ranked, short
