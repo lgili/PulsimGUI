@@ -73,6 +73,7 @@ from pulsimgui.models.subcircuit import (
 from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.backend_types import ACSettings
+from pulsimgui.services.error_translation import format_user_error
 from pulsimgui.services.export_service import ExportService
 from pulsimgui.services.hierarchy_service import HierarchyService
 from pulsimgui.services.settings_service import SettingsService
@@ -4147,7 +4148,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Thermal Viewer",
-                f"Thermal analysis failed:\n{result.error_message}",
+                format_user_error(result.error_message,
+                                  context="Thermal analysis"),
             )
             return
 
@@ -4376,7 +4378,8 @@ class MainWindow(QMainWindow):
                 pill.set_state(state)
         else:
             QMessageBox.warning(
-                self, "Simulation Error", f"Simulation failed:\n{result.error_message}"
+                self, "Simulation Error",
+                format_user_error(result.error_message, context="Simulation"),
             )
             self._latest_electrical_result = None
             if pill is not None:
@@ -4743,7 +4746,8 @@ class MainWindow(QMainWindow):
             dialog.exec()
         else:
             QMessageBox.warning(
-                self, "DC Analysis Error", f"DC analysis failed:\n{result.error_message}"
+                self, "DC Analysis Error",
+                format_user_error(result.error_message, context="DC analysis")
             )
 
     def _on_ac_finished(self, result) -> None:
@@ -4754,7 +4758,8 @@ class MainWindow(QMainWindow):
             dialog.exec()
         else:
             QMessageBox.warning(
-                self, "AC Analysis Error", f"AC analysis failed:\n{result.error_message}"
+                self, "AC Analysis Error",
+                format_user_error(result.error_message, context="AC analysis")
             )
 
     def _on_frequency_analysis_finished(self, result) -> None:
