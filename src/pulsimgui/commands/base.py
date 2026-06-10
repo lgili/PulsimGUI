@@ -37,6 +37,32 @@ class Command(ABC):
         _ = other
 
 
+class CompositeCommand(Command):
+    """A batch of commands executed together and undone as ONE step.
+
+    Used for multi-item operations (paste/duplicate of a whole selection with
+    its wiring) so a single Ctrl+Z removes the entire pasted group instead of
+    leaving the user to unwind it piece by piece.
+    """
+
+    def __init__(self, commands: list["Command"],
+                 description: str = "Batch edit") -> None:
+        self._commands = list(commands)
+        self._description = description
+
+    def execute(self) -> None:
+        for command in self._commands:
+            command.execute()
+
+    def undo(self) -> None:
+        for command in reversed(self._commands):
+            command.undo()
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+
 class CommandStack(QObject):
     """
     Stack of commands supporting undo/redo.

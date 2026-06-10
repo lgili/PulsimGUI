@@ -233,6 +233,7 @@ class MainWindow(QMainWindow):
         self._schematic_view.mouse_moved.connect(self.update_coordinates)
         self._schematic_view.component_dropped.connect(self._on_component_dropped)
         self._schematic_view.component_pasted.connect(self._on_component_pasted)
+        self._schematic_view.selection_pasted.connect(self._on_selection_pasted)
         self._schematic_view.wire_created.connect(self._on_wire_created)
         self._schematic_view.component_delete_requested.connect(
             self._on_component_delete_requested
@@ -3071,6 +3072,25 @@ class MainWindow(QMainWindow):
         orphan."""
         self._execute_schematic_command(
             AddComponentCommand(self._current_circuit(), component),
+            refresh_scene=True,
+            merge=False,
+        )
+
+    def _on_selection_pasted(self, components, wires) -> None:
+        """Add a pasted/duplicated SELECTION (components + their internal
+        wires, already re-id'd and shifted by the view) to the active circuit
+        as ONE undoable step."""
+        from pulsimgui.commands.base import CompositeCommand
+
+        circuit = self._current_circuit()
+        commands = [AddComponentCommand(circuit, c) for c in components]
+        commands += [AddWireCommand(circuit, w) for w in wires]
+        if not commands:
+            return
+        label = (f"Paste {len(components)} component(s)"
+                 + (f" + {len(wires)} wire(s)" if wires else ""))
+        self._execute_schematic_command(
+            CompositeCommand(commands, label),
             refresh_scene=True,
             merge=False,
         )

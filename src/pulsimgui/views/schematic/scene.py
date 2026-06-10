@@ -198,8 +198,15 @@ class SchematicScene(QGraphicsScene):
             self.COMPONENT_COLLISION_PADDING,
         )
 
+        # During a group drag every selected item moves by the same delta, so
+        # checking the mover against its co-moving neighbours would make
+        # adjacent selected components "collide" with each other's mid-drag
+        # rects and freeze the whole group. Skip co-selected items.
+        moving_with_group = component_item.isSelected()
         for item in self.items():
             if not isinstance(item, ComponentItem) or item is component_item:
+                continue
+            if moving_with_group and item.isSelected():
                 continue
             other_rect = self._component_body_rect(item)
             if candidate_rect.intersects(other_rect):

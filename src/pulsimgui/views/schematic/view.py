@@ -236,6 +236,7 @@ class SchematicView(QGraphicsView):
     tool_changed = Signal(Tool)
     component_dropped = Signal(str, float, float)  # component_type_name, x, y
     component_pasted = Signal(object)  # full Component built from clipboard (preserves edits)
+    selection_pasted = Signal(list, list)  # ([Component], [Wire]) — multi-paste with wiring
     wire_created = Signal(list)  # list of (x1, y1, x2, y2) segments
     wire_alias_changed = Signal(object)  # Wire model reference
     grid_toggle_requested = Signal()  # emitted when G key is pressed
@@ -281,8 +282,12 @@ class SchematicView(QGraphicsView):
         # Alignment guides for component dragging
         self._alignment_guides: AlignmentGuidesItem | None = None
 
-        # Clipboard for copy/paste operations
-        self._clipboard_component_data: dict | None = None
+        # Clipboard for copy/paste operations: the full selection — every
+        # selected component (serialized with its edited parameters) plus the
+        # wires whose BOTH endpoints land on selected components, so pasting
+        # reproduces a whole stage with its internal wiring.
+        self._clipboard_components_data: list[dict] = []
+        self._clipboard_wires_data: list[dict] = []
 
         # Set up view
         self.setScene(scene or SchematicScene())
@@ -930,14 +935,8 @@ class SchematicView(QGraphicsView):
                 self.cut_selected()
                 return
             elif key == Qt.Key.Key_D:
-                # Duplicate selected component
-                from pulsimgui.views.schematic.items import ComponentItem
-                scene = self.scene()
-                if scene:
-                    for item in scene.selectedItems():
-                        if isinstance(item, ComponentItem):
-                            self._duplicate_component(item)
-                            break
+                # Duplicate the whole selection (params + wiring preserved)
+                self.duplicate_selected()
                 return
 
         # Tool shortcuts (without modifiers)
@@ -1144,11 +1143,21 @@ class SchematicView(QGraphicsView):
             elif chosen == delete_action:
                 self._delete_component(item)
             elif chosen == duplicate_action:
-                self._duplicate_component(item)
+                # Multi-selection: duplicate the whole group with its wiring.
+                if item.isSelected() and len(self.scene().selectedItems()) > 1:
+                    self.duplicate_selected()
+                else:
+                    self._duplicate_component(item)
             elif chosen == cut_action:
-                self._cut_component(item)
+                if item.isSelected() and len(self.scene().selectedItems()) > 1:
+                    self.cut_selected()
+                else:
+                    self._cut_component(item)
             elif chosen == copy_action:
-                self._copy_component(item)
+                if item.isSelected() and len(self.scene().selectedItems()) > 1:
+                    self.copy_selected()
+                else:
+                    self._copy_component(item)
             elif chosen == paste_action:
                 self._paste_component(QPointF(item.pos().x() + 40, item.pos().y() + 40))
             event.accept()
@@ -1217,94 +1226,172 @@ class SchematicView(QGraphicsView):
         self.component_flip_requested.emit(str(comp_item.component.id), bool(horizontal))
 
     def _duplicate_component(self, comp_item) -> None:
-        """Duplicate a component at a slight offset."""
+        """Duplicate one component at a slight offset, PRESERVING its edited
+        parameters (serialize → re-id → paste), not a fresh default instance."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
-        # Get original component data
-        orig = comp_item.component
-        # Create offset position
-        new_x = orig.x + 40
-        new_y = orig.y + 40
-        # Emit signal to create new component (handled by main window)
-        self.component_dropped.emit(orig.type.name, new_x, new_y)
+        self._emit_paste(
+            [comp_item.component.to_dict()], [], position=None,
+        )
+
+    def duplicate_selected(self) -> None:
+        """Duplicate the whole selection (components + internal wires) at a
+        +40/+40 offset, preserving every edited parameter. Does not touch the
+        clipboard."""
+        components_data, wires_data = self._snapshot_selection()
+        if components_data:
+            self._emit_paste(components_data, wires_data, position=None)
+
+    def _snapshot_selection(self) -> tuple[list[dict], list[dict]]:
+        """Serialize the selected components plus every wire whose BOTH
+        endpoints are on selected components (the stage's internal wiring)."""
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+
+        scene = self.scene()
+        if scene is None:
+            return [], []
+
+        components_data: list[dict] = []
+        selected_ids: set[str] = set()
+        for item in scene.selectedItems():
+            if isinstance(item, ComponentItem):
+                components_data.append(item.component.to_dict())
+                selected_ids.add(str(item.component.id))
+
+        wires_data: list[dict] = []
+        if selected_ids:
+            for item in scene.items():
+                if not isinstance(item, WireItem):
+                    continue
+                wire = item.wire
+                start = getattr(wire, "start_connection", None)
+                end = getattr(wire, "end_connection", None)
+                if start is None or end is None:
+                    continue
+                if (str(start.component_id) in selected_ids
+                        and str(end.component_id) in selected_ids):
+                    wires_data.append(wire.to_dict())
+        return components_data, wires_data
 
     def _copy_component(self, comp_item) -> None:
-        """Copy a component to clipboard with all its configuration."""
+        """Copy a single component to the clipboard with its configuration."""
         from pulsimgui.views.schematic.items import ComponentItem
 
         if not isinstance(comp_item, ComponentItem):
             return
+        self._clipboard_components_data = [comp_item.component.to_dict()]
+        self._clipboard_wires_data = []
 
-        # Serialize the component data
-        self._clipboard_component_data = comp_item.component.to_dict()
+    def _unique_name(self, base_name: str, existing_names: set[str]) -> str:
+        """Pick a fresh name from ``base_name`` (R3 → R4, R5, …)."""
+        import re
 
-    def _paste_component(self, position: QPointF | None = None) -> None:
-        """Paste a component from clipboard at the given position."""
+        new_name = base_name
+        counter = 1
+        while new_name in existing_names:
+            match = re.match(r"^(.+?)(\d+)$", base_name)
+            if match:
+                new_name = f"{match.group(1)}{int(match.group(2)) + counter}"
+            else:
+                new_name = f"{base_name}{counter}"
+            counter += 1
+        return new_name
+
+    def _emit_paste(
+        self,
+        components_data: list[dict],
+        wires_data: list[dict],
+        position: QPointF | None,
+    ) -> None:
+        """Rebuild Components + Wires from serialized data with fresh IDs,
+        unique names and a uniform position shift, then hand the batch to the
+        model layer (one undoable step).
+
+        The whole group moves by ONE delta so relative placement (and the
+        wires' segment geometry) is preserved: anchored at ``position`` when
+        given (paste-at-cursor), else offset +40/+40 (duplicate / blind paste).
+        We must NOT scene.addItem() here — the model layer adds through the
+        undo stack and rebuilds the scene (a scene-only item would be an
+        orphan that vanishes on reload/save/simulate).
+        """
         from copy import deepcopy
         from uuid import uuid4
 
         from pulsimgui.models.component import Component
-
-        if self._clipboard_component_data is None:
-            return
+        from pulsimgui.models.wire import Wire
+        from pulsimgui.views.schematic.items import ComponentItem
 
         scene = self.scene()
-        if scene is None:
+        if scene is None or not components_data:
             return
 
-        # Make a deep copy of the clipboard data
-        data = deepcopy(self._clipboard_component_data)
+        components_data = deepcopy(components_data)
+        wires_data = deepcopy(wires_data)
 
-        # Generate new ID
-        data["id"] = str(uuid4())
-
-        # Generate new name (increment number suffix)
-        base_name = data["name"]
-        existing_names = set()
-        for item in scene.items():
-            from pulsimgui.views.schematic.items import ComponentItem
-            if isinstance(item, ComponentItem):
-                existing_names.add(item.component.name)
-
-        # Find unique name
-        new_name = base_name
-        counter = 1
-        while new_name in existing_names:
-            # Try to extract base and increment
-            import re
-            match = re.match(r"^(.+?)(\d+)$", base_name)
-            if match:
-                prefix = match.group(1)
-                num = int(match.group(2)) + counter
-                new_name = f"{prefix}{num}"
-            else:
-                new_name = f"{base_name}{counter}"
-            counter += 1
-
-        data["name"] = new_name
-
-        # Determine paste position
+        # One uniform shift for the whole group.
+        min_x = min(d.get("x", 0.0) for d in components_data)
+        min_y = min(d.get("y", 0.0) for d in components_data)
         if position is not None:
-            # Snap position to grid
             snapped = scene.snap_to_grid(position)
-            data["x"] = snapped.x()
-            data["y"] = snapped.y()
+            dx = snapped.x() - min_x
+            dy = snapped.y() - min_y
         else:
-            # Offset from original position
-            data["x"] = data["x"] + 40
-            data["y"] = data["y"] + 40
+            dx = dy = 40.0
 
-        # Create the component from the data
-        component = Component.from_dict(data)
+        existing_names = {
+            item.component.name
+            for item in scene.items()
+            if isinstance(item, ComponentItem)
+        }
 
-        # Hand the fully-built component (edited properties intact) to the
-        # model layer, which adds it through the undo stack and rebuilds the
-        # scene from the model. We must NOT scene.addItem() it here — doing
-        # so produced a scene-only orphan that was never in circuit.components
-        # and silently vanished on the next scene reload / save / simulate.
-        self.component_pasted.emit(component)
+        id_map: dict[str, str] = {}
+        components: list = []
+        for data in components_data:
+            old_id = str(data.get("id"))
+            new_id = str(uuid4())
+            id_map[old_id] = new_id
+            data["id"] = new_id
+            new_name = self._unique_name(str(data.get("name") or "X"), existing_names)
+            existing_names.add(new_name)   # keep names unique WITHIN the batch
+            data["name"] = new_name
+            data["x"] = float(data.get("x", 0.0)) + dx
+            data["y"] = float(data.get("y", 0.0)) + dy
+            components.append(Component.from_dict(data))
+
+        wires: list = []
+        for wd in wires_data:
+            start = wd.get("start_connection")
+            end = wd.get("end_connection")
+            if not start or not end:
+                continue
+            if (start.get("component_id") not in id_map
+                    or end.get("component_id") not in id_map):
+                continue          # endpoint outside the batch ⇒ would dangle
+            wd["id"] = str(uuid4())
+            start["component_id"] = id_map[start["component_id"]]
+            end["component_id"] = id_map[end["component_id"]]
+            for seg in wd.get("segments", []) or []:
+                seg["x1"] = float(seg["x1"]) + dx
+                seg["y1"] = float(seg["y1"]) + dy
+                seg["x2"] = float(seg["x2"]) + dx
+                seg["y2"] = float(seg["y2"]) + dy
+            wd["junctions"] = [
+                (float(jx) + dx, float(jy) + dy)
+                for jx, jy in (wd.get("junctions") or [])
+            ]
+            wires.append(Wire.from_dict(wd))
+
+        self.selection_pasted.emit(components, wires)
+
+    def _paste_component(self, position: QPointF | None = None) -> None:
+        """Paste the clipboard (selection + wiring) at the given position."""
+        self._emit_paste(
+            self._clipboard_components_data,
+            self._clipboard_wires_data,
+            position,
+        )
 
     def _cut_component(self, comp_item) -> None:
         """Cut a component (copy to clipboard and delete)."""
@@ -1320,37 +1407,27 @@ class SchematicView(QGraphicsView):
         self._delete_component(comp_item)
 
     def copy_selected(self) -> None:
-        """Copy selected component(s) to clipboard."""
-        from pulsimgui.views.schematic.items import ComponentItem
-
-        scene = self.scene()
-        if scene is None:
-            return
-
-        selected = scene.selectedItems()
-        for item in selected:
-            if isinstance(item, ComponentItem):
-                self._copy_component(item)
-                break  # Only copy first selected component for now
+        """Copy the WHOLE selection (components + internal wires) to the
+        clipboard."""
+        components_data, wires_data = self._snapshot_selection()
+        if components_data:
+            self._clipboard_components_data = components_data
+            self._clipboard_wires_data = wires_data
 
     def paste_at_cursor(self) -> None:
-        """Paste component at current cursor position."""
+        """Paste the clipboard at the current cursor position."""
         cursor_pos = self.mapToScene(self.mapFromGlobal(self.cursor().pos()))
         self._paste_component(cursor_pos)
 
     def cut_selected(self) -> None:
-        """Cut selected component(s) to clipboard."""
-        from pulsimgui.views.schematic.items import ComponentItem
-
-        scene = self.scene()
-        if scene is None:
+        """Cut the whole selection: copy (with wiring) then delete every
+        selected item."""
+        components_data, wires_data = self._snapshot_selection()
+        if not components_data:
             return
-
-        selected = scene.selectedItems()
-        for item in selected:
-            if isinstance(item, ComponentItem):
-                self._cut_component(item)
-                break  # Only cut first selected component for now
+        self._clipboard_components_data = components_data
+        self._clipboard_wires_data = wires_data
+        self.delete_selected_items()
 
     def select_all_items(self) -> None:
         """Select all selectable items in the schematic scene."""
