@@ -855,6 +855,13 @@ class MainWindow(QMainWindow):
         )
         self.action_fra.triggered.connect(self._on_show_fra)
 
+        self.action_ss_check = QAction("Steady-State Check…", self)
+        self.action_ss_check.setToolTip(
+            "Did the last transient reach periodic steady state? "
+            "Cycle-to-cycle residual check on the captured waveforms."
+        )
+        self.action_ss_check.triggered.connect(self._on_steady_state_check)
+
         self.action_periodic_ss = QAction("Periodic Steady-State…", self)
         self.action_periodic_ss.setToolTip(
             "Find the periodic orbit of a switching converter via shooting"
@@ -969,6 +976,7 @@ class MainWindow(QMainWindow):
         sim_menu.addSeparator()
         # Wave-4 sub-B — new analysis modes.
         sim_menu.addAction(self.action_fra)
+        sim_menu.addAction(self.action_ss_check)
         sim_menu.addAction(self.action_periodic_ss)
         sim_menu.addAction(self.action_harmonic_balance)
         sim_menu.addSeparator()
@@ -4217,6 +4225,52 @@ class MainWindow(QMainWindow):
         from pulsimgui.views.dialogs.analysis_modes_dialogs import FraDialog
 
         FraDialog(self._simulation_service, self._project, parent=self).exec()
+
+    def _on_steady_state_check(self) -> None:
+        """Post-processing steady-state check on the LAST transient result:
+        slice into fundamental cycles, report cycle-to-cycle residuals and a
+        converged/not-converged verdict (always available — no backend
+        capability needed)."""
+        result = self._latest_electrical_result
+        if result is None or not getattr(result, "time", None):
+            QMessageBox.information(
+                self, "Steady-State Check",
+                "Run a transient simulation first — the check post-processes "
+                "the captured waveforms.")
+            return
+        from pulsimgui.views.dialogs.steady_state_dialog import (
+            SteadyStateDialog,
+        )
+
+        # Pre-fill the fundamental from the slowest source in the circuit.
+        freq = 50.0
+        circuit = self._current_circuit()
+        if circuit is not None:
+            freqs = []
+            for comp in circuit.components.values():
+                params = getattr(comp, "parameters", {}) or {}
+                wf = params.get("waveform")
+                if isinstance(wf, dict) and wf.get("frequency"):
+                    try:
+                        f = float(wf["frequency"])
+                        if f > 0:
+                            freqs.append(f)
+                    except (TypeError, ValueError):
+                        pass
+                for key in ("frequency", "f_out", "m3c_f_out"):
+                    try:
+                        f = float(params.get(key) or 0)
+                        if f > 0:
+                            freqs.append(f)
+                    except (TypeError, ValueError):
+                        pass
+            if freqs:
+                freq = min(freqs)
+
+        SteadyStateDialog(
+            result.time, dict(result.signals or {}),
+            parent=self, default_frequency=freq,
+        ).exec()
 
     def _on_show_periodic_ss(self) -> None:
         """Open the Periodic Steady-State dialog (wave-4 sub-B 2.2)."""
