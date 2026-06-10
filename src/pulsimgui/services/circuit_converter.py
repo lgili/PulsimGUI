@@ -459,6 +459,28 @@ class CircuitConverter:
         except Exception:  # noqa: BLE001 — lookup is convenience, not load-bearing
             pass
 
+        # Singular-mask gmin regulariser. Matrix converters (bidirectional
+        # switches) and ideal-arm three-phase MMCs leave pulsim's PWL cache
+        # singular for masks it PRE-ENUMERATES at build time — a matrix converter
+        # is singular for any mask that opens an output column (incl. all-OFF);
+        # an MMC's reactive leg loop is rank-deficient by one. The connectivity-
+        # based ghost-resistor healing above can't see it (every node looks
+        # grounded through the sources). Drop a 1 GΩ shunt from every node to
+        # ground here — in the conversion itself, so EVERY backend entry
+        # (transient / DC / streaming / preview) inherits a buildable cache.
+        # ≈µA at kV; the masks the modulation actually uses are untouched.
+        try:
+            needs_gmin = bool(getattr(circuit, "_needs_gmin_regularise", False)) or any(
+                str(s.get("kind") or "") == "mmc_arm"
+                for s in (getattr(circuit, "nonlinear_observer_specs", []) or []))
+            builder = getattr(circuit, "_builder", None)
+            if needs_gmin and builder is not None:
+                for _nd in list(builder.graph.nodes):
+                    builder.add_resistor(
+                        f"__gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
+        except Exception:  # noqa: BLE001 — regulariser must never abort a build
+            pass
+
         return circuit
 
     # ------------------------------------------------------------------

@@ -914,7 +914,9 @@ class PulsimBackend(SimulationBackend):
                 result.error_message = str(exc)
                 return result
 
-            self._apply_singular_mask_regulariser(circuit)
+            # (The singular-mask gmin regulariser for matrix converters / MMCs
+            # is applied inside the converter's build() now, so it is shared by
+            # every backend entry — transient, DC, streaming and preview alike.)
 
             attempt_settings = self._apply_transient_retry_profile(settings, profile)
             dt = base_dt * profile.dt_scale
@@ -2643,44 +2645,6 @@ class PulsimBackend(SimulationBackend):
                     fp.trace_retries = True
 
         return opts
-
-    def _apply_singular_mask_regulariser(self, circuit: Any) -> None:
-        """Drop a 1 GΩ shunt from every node to ground for converter families
-        whose PWL-cache mask PRE-ENUMERATION hits singular masks at build time.
-
-        pulsim's PWL cache factorises switch-mask state-spaces it enumerates
-        BEFORE any time-step — so it crashes on a singular mask the modulation
-        may never even use:
-
-        * a direct matrix converter (bidirectional switches) is singular for any
-          mask that opens an output column (and for the all-OFF mask), and
-        * a three-phase MMC of ideal controlled-source arms is rank-deficient by
-          one (the reactive leg loop floats).
-
-        The converter's connectivity-based ghost-resistor healing can't see
-        either (every node looks "grounded" through the sources). A 1 GΩ shunt
-        per node (≈µA at kV — invisible) makes every enumerated mask buildable
-        while leaving the valid masks the modulation actually uses untouched.
-
-        Run ONCE right after conversion in :meth:`run_transient` so every
-        simulate path (streaming / shared / chunked / via-simulator / v13)
-        shares it. Idempotent: the ``__gmin_*`` names are stable, so a second
-        call (e.g. a convergence-retry rebuild gives a fresh circuit) is safe.
-        """
-        try:
-            needs = bool(getattr(circuit, "_needs_gmin_regularise", False)) or any(
-                str(s.get("kind") or "") == "mmc_arm"
-                for s in (getattr(circuit, "nonlinear_observer_specs", []) or []))
-            if not needs:
-                return
-            builder = getattr(circuit, "_builder", None)
-            if builder is None:
-                return
-            for _nd in list(builder.graph.nodes):
-                builder.add_resistor(f"__gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
-        except Exception:  # noqa: BLE001 - the regulariser must never abort a run
-            log.debug("singular-mask gmin regulariser failed; continuing",
-                      exc_info=True)
 
     def _run_transient_via_simulator(
         self,
