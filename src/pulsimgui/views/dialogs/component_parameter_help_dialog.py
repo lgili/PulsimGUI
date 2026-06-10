@@ -300,10 +300,275 @@ _COMMON_PARAMETER_HELP: dict[str, ParameterHelp] = {
         "Reverse-recovery related energy per event (J), when applicable.",
         "Datasheet Err/Erec for diode or body-diode recovery behavior.",
     ),
+    # ── shared across many components ───────────────────────────────────
+    "sample_time": ParameterHelp(
+        "Discrete execution period Ts of this control block (s). 0 = run "
+        "every simulation step (continuous).",
+        "Match the real controller's interrupt rate (e.g. 100 µs for a 10 kHz "
+        "loop). Must be ≥ the simulation dt.",
+    ),
+    "frequency": ParameterHelp(
+        "Fundamental frequency of the source / carrier (Hz).",
+        "Grid frequency (50/60 Hz) or the designed switching frequency.",
+    ),
+    "turns_ratio": ParameterHelp(
+        "Transformer turns ratio N1/N2 (primary:secondary). 2.0 steps a 10 V "
+        "primary DOWN to 5 V; 0.5 steps it UP to 20 V.",
+        "Winding design or nameplate voltage ratio Vp/Vs.",
+    ),
+    "n_secondaries": ParameterHelp(
+        "Number of secondary windings (1–3). Changing it regenerates the "
+        "pins (S1_1/S1_2, S2_1/S2_2, …).",
+        "Topology requirement — e.g. 2 for a flyback with auxiliary supply.",
+        "Each extra winding has its own turns_ratio_2 / turns_ratio_3.",
+    ),
+    "lm": ParameterHelp(
+        "Magnetizing inductance seen from the primary (H). The transformer "
+        "is a coupled-inductor model, so too-small lm loads the source at "
+        "low frequency.",
+        "Datasheet open-circuit inductance, or pick ωLm ≥ 10× the reflected "
+        "load impedance at the operating frequency.",
+    ),
+    "g_on": ParameterHelp(
+        "Switch ON conductance (S) — 1/R_on.",
+        "Datasheet R_DS(on) / V_CE(sat): g_on = 1/R_on.",
+    ),
+    "g_off": ParameterHelp(
+        "Switch OFF conductance (S) — the leakage path while blocking.",
+        "Keep small but non-zero (1e-9…1e-6 S) so the matrix stays "
+        "well-conditioned.",
+    ),
+    "n_submodules": ParameterHelp(
+        "Number of series submodules N in the arm chain — sets the N+1 "
+        "voltage levels and divides the arm voltage per capacitor.",
+        "Topology design: N = V_arm / V_sm with margin.",
+    ),
+    "c_sm": ParameterHelp(
+        "Per-submodule capacitance (F). Larger C ⇒ less voltage ripple but "
+        "slower balancing.",
+        "Sizing rule of thumb: 30–50 kJ/MVA stored energy; or from the "
+        "allowed ripple ΔV = S·T/(N·C·V).",
+    ),
+    "v_c0": ParameterHelp(
+        "Initial submodule/arm capacitor voltage at t = 0 (V).",
+        "Nominal operating point (V_dc/N for an MMC arm) so the run starts "
+        "near steady state.",
+    ),
+    "f_carrier": ParameterHelp(
+        "PWM carrier frequency of the arm modulation (Hz).",
+        "The design switching frequency per submodule.",
+    ),
+    "balancing": ParameterHelp(
+        "Intra-arm capacitor balancing strategy. 'sort_and_select' inserts "
+        "the lowest-voltage submodules when charging and the highest when "
+        "discharging; 'none' disables it (caps drift apart).",
+        "Keep sort_and_select unless you are studying the imbalance itself.",
+    ),
+    "v_c0_spread": ParameterHelp(
+        "Initial submodule voltage imbalance (V) seeded across the chain so "
+        "the balancing is visible converging on the V_C_SPRD telemetry.",
+        "0 for clean starts; a few % of v_c0 to demo/verify balancing.",
+    ),
+    "duty_from_channel": ParameterHelp(
+        "Name of the control channel that drives this PWM's duty cycle "
+        "(e.g. a PI controller or C-Block name). Empty = fixed duty.",
+        "Pick from the dropdown — it lists the circuit's bindable channels.",
+    ),
 }
 
 
 _COMPONENT_PARAMETER_OVERRIDES: dict[ComponentType, dict[str, ParameterHelp]] = {
+    ComponentType.MMC_ARM: {
+        "submodule_type": ParameterHelp(
+            "Half-bridge cells output 0…+V_C (DC-AC MMC); full-bridge cells "
+            "output ±V_C (needed for direct AC-AC / M3C branches).",
+            "Topology requirement: MMC legs → half-bridge; matrix-converter "
+            "branches → full-bridge.",
+        ),
+        "m_ref_constant": ParameterHelp(
+            "Fallback modulation index used when no MMC_CONTROLLER drives "
+            "the M_REF pin.",
+            "0.5 holds the arm at half insertion (DC validation); wire a "
+            "controller for real operation.",
+        ),
+        "r_arm": ParameterHelp(
+            "Arm series resistance (Ω).",
+            "Conduction-loss estimate per arm.",
+            "Currently NOT applied by the converter (it would belong in "
+            "series with the external arm inductor) — kept for forward "
+            "compatibility.",
+        ),
+    },
+    ComponentType.MMC_CONTROLLER: {
+        "topology": ParameterHelp(
+            "'mmc' drives the six arms of a DC-AC MMC by pin wiring; 'm3c' "
+            "repurposes the block as the 3×3 matrix-converter modulator "
+            "driving nine arms named M_Aa…M_Cc (matched by NAME, no wires).",
+            "Set by the converter family you built.",
+        ),
+        "control_mode": ParameterHelp(
+            "'open_loop' = sinusoidal feed-forward modulation; "
+            "'closed_loop' = dq current + energy + balancing loops; "
+            "'svm' (M3C) = the thesis Fast-SVM cost-function modulation.",
+            "Start open-loop to validate the topology, then close the loop.",
+        ),
+        "soft_start_time": ParameterHelp(
+            "Ramp 0→full of the current commands over this time (s) so the "
+            "transient doesn't slam the capacitors at t = 0.",
+            "A few fundamental periods.",
+        ),
+    },
+    ComponentType.IGBT: {
+        "v_ce_sat": ParameterHelp(
+            "Collector-emitter saturation voltage in conduction (V).",
+            "Datasheet V_CE(sat) at rated current and 25 °C/125 °C.",
+        ),
+        "vth": ParameterHelp(
+            "Gate threshold voltage that turns the device on (V).",
+            "Datasheet V_GE(th).",
+        ),
+    },
+    ComponentType.DIODE: {
+        "is_": ParameterHelp(
+            "Reverse saturation current of the exponential model (A).",
+            "Datasheet or SPICE model IS.",
+        ),
+        "n": ParameterHelp(
+            "Emission (ideality) coefficient of the exponential model.",
+            "SPICE model N — 1.0…2.0 typical.",
+        ),
+        "rs": ParameterHelp(
+            "Ohmic series resistance (Ω).",
+            "Datasheet forward-curve slope above the knee.",
+        ),
+    },
+    ComponentType.PMSM: {
+        "rs": ParameterHelp(
+            "Stator phase resistance (Ω).",
+            "Motor datasheet / phase-to-phase measurement ÷ 2.",
+        ),
+        "ld": ParameterHelp(
+            "d-axis inductance (H).",
+            "Datasheet Ld; equals Lq for surface-magnet motors.",
+        ),
+        "lq": ParameterHelp(
+            "q-axis inductance (H).",
+            "Datasheet Lq; > Ld on interior-magnet (salient) motors.",
+        ),
+        "flux_linkage": ParameterHelp(
+            "Permanent-magnet flux linkage λ_m (V·s) — sets back-EMF "
+            "Ke = p·λ_m.",
+            "From the back-EMF constant: λ_m = V_LL_peak/(√3·p·ω_mech).",
+        ),
+        "pole_pairs": ParameterHelp(
+            "Number of pole PAIRS p (not poles).",
+            "Motor datasheet — electrical speed = p × mechanical speed.",
+        ),
+        "inertia": ParameterHelp(
+            "Rotor + load inertia J (kg·m²).",
+            "Datasheet rotor inertia plus the reflected load.",
+        ),
+    },
+    ComponentType.PLL: {
+        "kp": ParameterHelp(
+            "Proportional gain of the phase-tracking PI.",
+            "From the desired PLL bandwidth: kp ≈ 2ζω_n/V_pk.",
+        ),
+        "ki": ParameterHelp(
+            "Integral gain of the phase-tracking PI.",
+            "ki ≈ ω_n²/V_pk for the chosen natural frequency.",
+        ),
+        "f_nominal": ParameterHelp(
+            "Centre frequency the PLL starts from (Hz).",
+            "Grid nominal: 50 or 60 Hz.",
+        ),
+    },
+    ComponentType.HEATSINK: {
+        "r_th_sa": ParameterHelp(
+            "Sink-to-ambient thermal resistance (K/W) SHARED by every "
+            "device on this sink — the ΣP·R_th cross-coupling term.",
+            "Heatsink datasheet at the working airflow.",
+        ),
+        "c_th": ParameterHelp(
+            "Sink thermal capacitance (J/K) — sets the heating time "
+            "constant τ = R_th·C_th.",
+            "Mass × specific heat of the sink (aluminium ≈ 0.9 J/g·K).",
+        ),
+        "t_amb": ParameterHelp(
+            "Ambient temperature (°C).",
+            "Worst-case enclosure temperature, not room temperature.",
+        ),
+    },
+    ComponentType.OP_AMP: {
+        "open_loop_gain": ParameterHelp(
+            "DC open-loop gain A_OL (V/V).",
+            "Datasheet A_VOL — 1e5…1e7 typical.",
+        ),
+        "gbw": ParameterHelp(
+            "Gain-bandwidth product (Hz) — single-pole roll-off.",
+            "Datasheet GBW.",
+        ),
+        "slew_rate": ParameterHelp(
+            "Maximum output slope (V/s).",
+            "Datasheet SR (convert V/µs → V/s).",
+        ),
+    },
+    ComponentType.COMPARATOR: {
+        "threshold": ParameterHelp(
+            "Switching threshold the IN+/IN− difference is compared "
+            "against (V).",
+            "Design trip point.",
+        ),
+        "hysteresis": ParameterHelp(
+            "Hysteresis band around the threshold (V) — prevents output "
+            "chatter near the trip point.",
+            "Noise amplitude estimate × 2 margin.",
+        ),
+    },
+    ComponentType.BIDIRECTIONAL_SWITCH: {
+        "R_on": ParameterHelp(
+            "Conducting resistance of the 4-quadrant switch (Ω).",
+            "Two devices in series: 2 × R_DS(on).",
+        ),
+        "R_off": ParameterHelp(
+            "Blocking resistance (Ω). Finite (1e6…1e9) keeps the matrix "
+            "well-conditioned.",
+            "Leave the default unless studying leakage.",
+        ),
+        "v_th": ParameterHelp(
+            "Gate threshold: gate voltages above this close the switch.",
+            "Match the gate-drive amplitude of the driving block.",
+        ),
+    },
+    ComponentType.C_BLOCK: {
+        "n_inputs": ParameterHelp(
+            "Number of input pins (regenerates the pin layout).",
+            "One per measured signal the code reads as in[k].",
+        ),
+        "n_outputs": ParameterHelp(
+            "Number of output pins (regenerates the pin layout).",
+            "One per actuation signal the code writes as out[k].",
+        ),
+        "source_code": ParameterHelp(
+            "The C body executed each sample: read in[0..n-1], write "
+            "out[0..n-1]; t and the sample period are pre-declared.",
+            "Type it inline — the backend compiles on the fly (pulsim 1.8+).",
+        ),
+    },
+    ComponentType.DC_MOTOR: {
+        "ra": ParameterHelp(
+            "Armature resistance (Ω).",
+            "Datasheet terminal resistance.",
+        ),
+        "ke": ParameterHelp(
+            "Back-EMF constant (V·s/rad).",
+            "Datasheet Ke; numerically equals Kt in SI units.",
+        ),
+        "kt": ParameterHelp(
+            "Torque constant (N·m/A).",
+            "Datasheet Kt.",
+        ),
+    },
     ComponentType.MOSFET_N: {
         "kp": ParameterHelp(
             "MOSFET transconductance factor of the square-law channel model.",
