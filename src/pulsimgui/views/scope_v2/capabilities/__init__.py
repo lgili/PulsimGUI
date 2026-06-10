@@ -11,6 +11,7 @@ from .export import ExportCapability
 from .fft import FFTCapability
 from .live_stream import LiveSignalSpec, LiveStreamCapability
 from .math_signals import MathSignalsCapability
+from .measurements import MeasurementsCapability
 from .post_sim import PostSimCapability
 from .smps_macros import SMPSMacrosCapability
 from .trigger import TriggerCapability
@@ -22,6 +23,7 @@ __all__ = [
     "LiveSignalSpec",
     "LiveStreamCapability",
     "MathSignalsCapability",
+    "MeasurementsCapability",
     "PostSimCapability",
     "SMPSMacrosCapability",
     "TriggerCapability",

@@ -16,6 +16,7 @@ from .capabilities import (
     LiveSignalSpec,
     LiveStreamCapability,
     MathSignalsCapability,
+    MeasurementsCapability,
     PostSimCapability,
     SMPSMacrosCapability,
     TriggerCapability,
@@ -24,6 +25,7 @@ from .plot_canvas import DEFAULT_PALETTE, PlotCanvas
 from .shell import BaseScopeWindow
 
 __all__ = [
+    "MeasurementsCapability",
     "BaseScopeWindow",
     "DEFAULT_PALETTE",
     "LiveSignalSpec",

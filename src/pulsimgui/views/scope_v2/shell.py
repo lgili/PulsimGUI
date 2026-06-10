@@ -957,16 +957,27 @@ class _PlotPaneStack(QFrame):
 
 
 class _ScopeDrawer(QFrame):
-    """Bottom drawer — collapses to a single-line summary by default."""
+    """Bottom drawer — collapses to a single-line summary by default.
+
+    Expanded, it reveals ``extra_host``: a vertical area capabilities can
+    drop widgets into (e.g. the measurement table).
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ScopeDrawer")
         self.setFixedHeight(32)
 
-        layout = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        summary_row = QWidget(self)
+        summary_row.setFixedHeight(32)
+        layout = QHBoxLayout(summary_row)
         layout.setContentsMargins(14, 0, 14, 0)
         layout.setSpacing(10)
+        outer.addWidget(summary_row)
 
         # Status dot — capabilities can flip its colour to signal Idle /
         # Running / Completed / Warning by toggling the ``state`` property
@@ -994,6 +1005,14 @@ class _ScopeDrawer(QFrame):
         self.expand_btn.setFlat(True)
         self.expand_btn.setFixedHeight(22)
         layout.addWidget(self.expand_btn)
+
+        # Capability host — hidden while collapsed.
+        self.extra_host = QWidget(self)
+        self.extra_layout = QVBoxLayout(self.extra_host)
+        self.extra_layout.setContentsMargins(14, 0, 14, 6)
+        self.extra_layout.setSpacing(4)
+        self.extra_host.setVisible(False)
+        outer.addWidget(self.extra_host, 1)
 
 
 # ── Timeline + actions ─────────────────────────────────────────────────────
@@ -1465,12 +1484,13 @@ class BaseScopeWindow(QWidget):
                 return
 
     def _timeline_add_measure(self) -> None:
-        """Drawer-summary placeholder for the ``+ Measure`` button.
-
-        Full measurement palette is a larger feature (per-signal RMS /
-        peak / dV across the visible window). For now just surface a
-        hint in the drawer so the click reads as acknowledged.
-        """
+        """``+ Measure`` — delegate to the measurements capability when one
+        registered itself (``self.measure_handler``); otherwise keep the old
+        drawer hint so the click reads as acknowledged."""
+        handler = getattr(self, "measure_handler", None)
+        if callable(handler):
+            handler()
+            return
         self.set_drawer_status(
             "idle",
             "Measure: use SMPS panel (Tsw + Fsw / Duty / Ripple) — "
@@ -1567,8 +1587,12 @@ class BaseScopeWindow(QWidget):
         the long backend-keys message room to wrap.
         """
         self._drawer_expanded = not self._drawer_expanded
-        new_h = 140 if self._drawer_expanded else 32
+        # A bit more room when a capability dropped widgets into the host
+        # (e.g. the measurement table).
+        has_extra = self.drawer.extra_layout.count() > 0
+        new_h = (220 if has_extra else 140) if self._drawer_expanded else 32
         self.drawer.setFixedHeight(new_h)
+        self.drawer.extra_host.setVisible(self._drawer_expanded)
         self.drawer.expand_btn.setText(
             "Collapse" if self._drawer_expanded else "Expand"
         )

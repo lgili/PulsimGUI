@@ -3530,6 +3530,7 @@ class MainWindow(QMainWindow):
             FFTCapability,
             LiveStreamCapability,
             MathSignalsCapability,
+            MeasurementsCapability,
             PostSimCapability,
             SMPSMacrosCapability,
             TriggerCapability,
@@ -3584,6 +3585,7 @@ class MainWindow(QMainWindow):
         # in the Inspector. Code is kept; re-enable by uncommenting.
         # capabilities.append(TriggerCapability())
         capabilities.append(SMPSMacrosCapability())
+        capabilities.append(MeasurementsCapability())
         capabilities.append(ExportCapability())
         capabilities.append(FFTCapability())
 
