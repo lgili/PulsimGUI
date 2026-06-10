@@ -40,6 +40,7 @@ from pulsimgui import __version__ as APP_VERSION
 from pulsimgui.commands.base import CommandStack
 from pulsimgui.commands.component_commands import (
     AddComponentCommand,
+    ChangeParameterCommand,
     DeleteComponentCommand,
     FlipComponentCommand,
     MoveComponentCommand,
@@ -1259,6 +1260,22 @@ class MainWindow(QMainWindow):
         # Keep schematic-first startup layout: waveform panel opens on demand.
         self.waveform_dock.hide()
 
+        # Parameter Tuner (right) — bench-style sliders with auto-rerun.
+        from pulsimgui.views.tuning_panel import TuningPanel
+
+        self.tuner_dock = QDockWidget("Parameter Tuner", self)
+        self.tuner_dock.setObjectName("TunerDock")
+        self.tuner_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self._tuning_panel = TuningPanel(
+            circuit_provider=self._current_circuit)
+        self._tuning_panel.parameter_changed.connect(self._on_tuner_parameter)
+        self._tuning_panel.run_requested.connect(self._on_tuner_run)
+        self.tuner_dock.setWidget(self._tuning_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.tuner_dock)
+        self.tuner_dock.hide()                    # opt-in via View → Panels
+
         # Add explicit toggle actions so hidden docks can always be restored reliably.
         self.action_toggle_component_library = self._create_dock_toggle_action(
             "Component Library",
@@ -1268,8 +1285,42 @@ class MainWindow(QMainWindow):
             "Waveform Viewer",
             self.waveform_dock,
         )
+        self.action_toggle_tuner = self._create_dock_toggle_action(
+            "Parameter Tuner",
+            self.tuner_dock,
+        )
         self.panels_menu.addAction(self.action_toggle_component_library)
         self.panels_menu.addAction(self.action_toggle_waveform_panel)
+        self.panels_menu.addAction(self.action_toggle_tuner)
+
+    def _on_tuner_parameter(self, component_id: str, param: str,
+                            value: float) -> None:
+        """Apply a tuner slider change to the model (undoable, merged so a
+        drag is one history entry)."""
+        from uuid import UUID
+
+        circuit = self._current_circuit()
+        if circuit is None:
+            return
+        try:
+            cid = UUID(component_id)
+        except ValueError:
+            return
+        self._execute_schematic_command(
+            ChangeParameterCommand(circuit, cid, param, value),
+            refresh_scene=False,
+            merge=True,
+        )
+
+    def _on_tuner_run(self) -> None:
+        """Debounced auto-rerun behind the tuner sliders."""
+        service = getattr(self, "_simulation_service", None)
+        state = getattr(service, "state", None)
+        running = bool(getattr(state, "name", "")) and (
+            getattr(state, "name", "") == "RUNNING")
+        if running:
+            return                       # never stack runs behind a drag
+        self._on_run_simulation()
 
     def _connect_signals(self) -> None:
         """Connect signals and slots."""
