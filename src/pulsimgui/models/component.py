@@ -198,6 +198,8 @@ class ComponentType(Enum):
 
     # Pre-configured networks
     SNUBBER_RC = auto()
+    PV_PANEL = auto()
+    BATTERY = auto()
 
     # Diode bridges — composite rectifiers that the circuit_converter
     # expands into individual ``add_diode`` calls. The kernel has no
@@ -935,6 +937,8 @@ DEFAULT_PINS: dict[ComponentType, list[Pin]] = {
     # Sources
     ComponentType.VOLTAGE_SOURCE: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
     ComponentType.CURRENT_SOURCE: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
+    ComponentType.PV_PANEL: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
+    ComponentType.BATTERY: [Pin(0, "+", 0, -20), Pin(1, "-", 0, 20)],
     ComponentType.GROUND: [Pin(0, "gnd", 0, -20)],
 
     # Diodes
@@ -1542,6 +1546,15 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
                                 "n_secondaries": 1,
                                 "turns_ratio_2": 1.0,
                                 "turns_ratio_3": 1.0},
+
+    # PV panel — classic two-segment approximation: irradiance-scaled
+    # photocurrent in parallel with a knee-clamp diode (+Rsh), series Rs.
+    # I = isc·irradiance below the knee; V clamps near voc above it.
+    ComponentType.PV_PANEL: {"isc": 8.0, "voc": 37.0, "rs": 0.3,
+                             "rsh": 300.0, "irradiance": 1.0},
+    # Battery — Thevenin model: open-circuit voltage + internal resistance.
+    ComponentType.BATTERY: {"voltage": 48.0, "r_internal": 0.05,
+                            "capacity_ah": 10.0},
 
     # Analog
     ComponentType.OP_AMP: {

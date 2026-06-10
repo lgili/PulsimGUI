@@ -1567,6 +1567,47 @@ class CircuitConverter:
             setattr(circuit, "_needs_gmin_regularise", True)
             return
 
+        if comp_type == ComponentType.PV_PANEL:
+            # Two-segment PV: irradiance-scaled photocurrent ∥ knee-clamp
+            # diode (+R_shunt), series R_s. I = isc·G below the knee; the
+            # diode clamps V near voc above it (PSIM's simple PV likewise).
+            pos, neg = self._require_nodes(name, nodes, 2)
+            isc = self._as_float(params.get("isc"), default=8.0)
+            voc = max(self._as_float(params.get("voc"), default=37.0), 0.1)
+            rs = max(self._as_float(params.get("rs"), default=0.3), 1e-6)
+            rsh = max(self._as_float(params.get("rsh"), default=300.0), 1e-3)
+            irr = max(self._as_float(params.get("irradiance"), default=1.0), 0.0)
+            n_pos = self._node_index(circuit, pos, node_cache)
+            n_neg = self._node_index(circuit, neg, node_cache)
+            n_int = self._node_index(circuit, f"__{name}_cell", node_cache)
+            n_mid = self._node_index(circuit, f"__{name}_knee", node_cache)
+            # photocurrent pushes current INTO the cell node (out of the +
+            # terminal through Rs): add_current_source(a, b, I) injects at a.
+            circuit.add_current_source(f"{name}_Iph", n_int, n_neg, isc * irr)
+            # knee clamp: diode in SERIES with a Voc source (the kernel diode
+            # applies no series drop itself — V_th is only the switching
+            # decision), so the cell node clamps just above voc once the
+            # photocurrent has nowhere else to go.
+            circuit.add_diode(f"{name}_D", n_int, n_mid,
+                              max(isc / (0.02 * voc), 1.0), 1e-9, 0.0)
+            circuit.add_voltage_source(f"{name}_Vknee", n_mid, n_neg, voc)
+            circuit.add_resistor(f"{name}_Rsh", n_int, n_neg, rsh)
+            circuit.add_resistor(f"{name}_Rs", n_int, n_pos, rs)
+            return
+
+        if comp_type == ComponentType.BATTERY:
+            # Thevenin battery: OCV source behind the internal resistance.
+            pos, neg = self._require_nodes(name, nodes, 2)
+            v_oc = self._as_float(params.get("voltage"), default=48.0)
+            r_int = max(self._as_float(params.get("r_internal"), default=0.05),
+                        1e-6)
+            n_pos = self._node_index(circuit, pos, node_cache)
+            n_neg = self._node_index(circuit, neg, node_cache)
+            n_int = self._node_index(circuit, f"__{name}_emf", node_cache)
+            circuit.add_voltage_source(f"{name}_E", n_int, n_neg, v_oc)
+            circuit.add_resistor(f"{name}_Rint", n_int, n_pos, r_int)
+            return
+
         if comp_type == ComponentType.TRANSFORMER:
             # Multi-winding: N ideal 2-winding transformers sharing the same
             # primary — exactly equivalent to one ideal N-winding transformer
