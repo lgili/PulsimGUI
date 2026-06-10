@@ -589,6 +589,11 @@ class MainWindow(QMainWindow):
         self.action_open.setToolTip("Open Project (Ctrl+O)")
         self.action_open.triggered.connect(self._on_open_project)
 
+        self.action_browse_examples = QAction("Browse &Examples...", self)
+        self.action_browse_examples.setToolTip(
+            "Browse the bundled examples by category with documentation")
+        self.action_browse_examples.triggered.connect(self._on_browse_examples)
+
         self.action_save = QAction("&Save", self)
         self.action_save.setShortcut(QKeySequence.StandardKey.Save)
         self.action_save.setToolTip("Save Project (Ctrl+S)")
@@ -882,6 +887,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_new)
         file_menu.addAction(self.action_new_from_template)
         file_menu.addAction(self.action_open)
+        file_menu.addAction(self.action_browse_examples)
         self.recent_menu = file_menu.addMenu("Open &Recent")
         self._update_recent_menu()
         file_menu.addSeparator()
@@ -2792,6 +2798,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._open_project_file(path)
+
+    def _on_browse_examples(self) -> None:
+        """Open the example browser (category filter + documentation pane)
+        and load whatever the user picks."""
+        from pulsimgui.views.dialogs.example_browser_dialog import (
+            ExampleBrowserDialog,
+        )
+
+        dialog = ExampleBrowserDialog(self)
+        if dialog.exec() and dialog.selected_path:
+            self._open_project_file(dialog.selected_path)
 
     def _on_welcome_template(self) -> None:
         """Open the gallery picker so the user can pick a template."""
