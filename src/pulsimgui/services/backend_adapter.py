@@ -914,6 +914,8 @@ class PulsimBackend(SimulationBackend):
                 result.error_message = str(exc)
                 return result
 
+            self._apply_singular_mask_regulariser(circuit)
+
             attempt_settings = self._apply_transient_retry_profile(settings, profile)
             dt = base_dt * profile.dt_scale
 
@@ -2641,6 +2643,44 @@ class PulsimBackend(SimulationBackend):
                     fp.trace_retries = True
 
         return opts
+
+    def _apply_singular_mask_regulariser(self, circuit: Any) -> None:
+        """Drop a 1 GΩ shunt from every node to ground for converter families
+        whose PWL-cache mask PRE-ENUMERATION hits singular masks at build time.
+
+        pulsim's PWL cache factorises switch-mask state-spaces it enumerates
+        BEFORE any time-step — so it crashes on a singular mask the modulation
+        may never even use:
+
+        * a direct matrix converter (bidirectional switches) is singular for any
+          mask that opens an output column (and for the all-OFF mask), and
+        * a three-phase MMC of ideal controlled-source arms is rank-deficient by
+          one (the reactive leg loop floats).
+
+        The converter's connectivity-based ghost-resistor healing can't see
+        either (every node looks "grounded" through the sources). A 1 GΩ shunt
+        per node (≈µA at kV — invisible) makes every enumerated mask buildable
+        while leaving the valid masks the modulation actually uses untouched.
+
+        Run ONCE right after conversion in :meth:`run_transient` so every
+        simulate path (streaming / shared / chunked / via-simulator / v13)
+        shares it. Idempotent: the ``__gmin_*`` names are stable, so a second
+        call (e.g. a convergence-retry rebuild gives a fresh circuit) is safe.
+        """
+        try:
+            needs = bool(getattr(circuit, "_needs_gmin_regularise", False)) or any(
+                str(s.get("kind") or "") == "mmc_arm"
+                for s in (getattr(circuit, "nonlinear_observer_specs", []) or []))
+            if not needs:
+                return
+            builder = getattr(circuit, "_builder", None)
+            if builder is None:
+                return
+            for _nd in list(builder.graph.nodes):
+                builder.add_resistor(f"__gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
+        except Exception:  # noqa: BLE001 - the regulariser must never abort a run
+            log.debug("singular-mask gmin regulariser failed; continuing",
+                      exc_info=True)
 
     def _run_transient_via_simulator(
         self,
@@ -6264,32 +6304,9 @@ class PulsimBackend(SimulationBackend):
         configs = configs_from_pwm_records(circuit)
         switch_fn = assemble_switch_fn(circuit, configs, self._module)
 
-        # Singular-mask regulariser. Two converter families leave the PWL
-        # cache's conductance matrix singular for masks it PRE-ENUMERATES at
-        # build time (so the crash happens before any time-step, on a mask the
-        # modulation may never even use):
-        #   * MMC arms are ideal controlled voltage sources; a three-phase MMC's
-        #     reactive leg loop leaves the matrix rank-deficient by one.
-        #   * A matrix converter (bidirectional switches) is singular for any
-        #     mask that opens an output column.
-        # The converter's connectivity-based ghost-resistor healing can't see
-        # either (every node looks "grounded" through the sources), and the
-        # observer-path ``p.simulate`` bypasses the Simulator's transient-gmin
-        # fallback. Drop a 1 GΩ shunt from every node to ground (≈µA at kV —
-        # invisible) so every enumerated mask is non-singular. Done BEFORE the
-        # observers so any b_extra state size matches the final graph. Harmless
-        # for already-well-posed circuits.
-        _needs_gmin = getattr(circuit, "_needs_gmin_regularise", False) or any(
-            str(s.get("kind") or "") == "mmc_arm"
-            for s in (getattr(circuit, "nonlinear_observer_specs", []) or []))
-        if _needs_gmin:
-            try:
-                for _nd in list(builder.graph.nodes):
-                    builder.add_resistor(
-                        f"__gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
-            except Exception:  # noqa: BLE001 - regulariser must never abort a run
-                log.debug("gmin shunt injection failed; continuing",
-                          exc_info=True)
+        # (The singular-mask gmin regulariser runs once right after conversion
+        # in ``run_transient`` — ``_apply_singular_mask_regulariser`` — so EVERY
+        # simulate path shares it, not just this one.)
 
         # Nonlinear-device observers FIRST (before the VSI switch_fns):
         # the dynamic-PMSM observer build also stashes the live
