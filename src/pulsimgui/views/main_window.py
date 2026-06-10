@@ -3637,10 +3637,12 @@ class MainWindow(QMainWindow):
         if component is None:
             return
 
+        from pulsimgui.services.signal_channels import enumerate_channels
         dialog = ComponentPropertiesDialog(
             component=component,
             theme_service=self._theme_service,
             parent=self,
+            channel_provider=lambda: enumerate_channels(self._current_circuit()),
         )
         accepted = bool(dialog.exec())
         pair_request = dialog.pair_navigation_request

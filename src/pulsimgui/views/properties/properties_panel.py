@@ -543,6 +543,9 @@ class PropertiesPanel(QWidget):
         self._component: Component | None = None
         self._components: list[Component] = []
         self._widgets: dict[str, QWidget] = {}
+        # Optional callable returning the circuit's bindable channel names —
+        # set by the host so ``*_from_channel`` fields render as a picker.
+        self._channel_provider = None
         self._scope_channel_layout = None
         self._mux_channel_layout = None
         self._demux_channel_layout = None
@@ -764,6 +767,12 @@ class PropertiesPanel(QWidget):
         self._info_container.hide()
         self._params_container.hide()
         self._pos_container.hide()
+
+    def set_channel_provider(self, provider) -> None:
+        """Install a callable returning the circuit's bindable channel names
+        (see :mod:`pulsimgui.services.signal_channels`). When set, every
+        ``*_from_channel`` parameter renders as an editable picker."""
+        self._channel_provider = provider
 
     def set_component(self, component: Component | None) -> None:
         """Set the component to display/edit."""
@@ -996,6 +1005,29 @@ class PropertiesPanel(QWidget):
                 combo.setCurrentText(current)
                 combo.currentTextChanged.connect(
                     lambda text, n=name: self._on_param_changed(n, text)
+                )
+                return combo
+            # Channel-binding parameters (``*_from_channel``) get a picker
+            # listing the circuit's bindable channels instead of a bare
+            # free-text field — a typo here silently falls back to defaults.
+            # Editable: free text stays possible for forward-compat names.
+            from pulsimgui.services.signal_channels import is_channel_parameter
+            channels = (self._channel_provider() or []) if (
+                is_channel_parameter(name)
+                and callable(self._channel_provider)) else []
+            if channels:
+                combo = QComboBox()
+                combo.setEditable(True)
+                combo.addItem("")                  # explicit "unbound"
+                for ch in channels:
+                    combo.addItem(ch)
+                combo.setCurrentText(value)
+                combo.currentTextChanged.connect(
+                    lambda text, n=name: self._on_param_changed(n, text)
+                )
+                combo.lineEdit().editingFinished.connect(
+                    lambda c=combo, n=name: self._on_param_changed(
+                        n, c.currentText())
                 )
                 return combo
             edit = AutoSelectLineEdit(value)

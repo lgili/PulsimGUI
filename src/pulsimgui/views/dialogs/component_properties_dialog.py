@@ -21,6 +21,7 @@ class ComponentPropertiesDialog(QDialog):
         component: Component,
         theme_service: ThemeService | None = None,
         parent: QWidget | None = None,
+        channel_provider=None,
     ) -> None:
         super().__init__(parent)
         self._target_component = component
@@ -44,6 +45,9 @@ class ComponentPropertiesDialog(QDialog):
         self._panel = PropertiesPanel(theme_service=theme_service, parent=self)
         self._panel.set_show_position_controls(False)
         self._panel.set_compact_mode(True)
+        if channel_provider is not None:
+            # Must land BEFORE set_component — that call builds the editors.
+            self._panel.set_channel_provider(channel_provider)
         self._panel.net_label_pair_requested.connect(self._on_net_label_pair_requested)
         self._panel.set_component(self._editable_component)
         layout.addWidget(self._panel, 1)
