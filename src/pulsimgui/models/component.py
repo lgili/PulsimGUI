@@ -1535,7 +1535,13 @@ DEFAULT_PARAMETERS: dict[ComponentType, dict[str, Any]] = {
     },
 
     # Transformer
-    ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3},
+    # Multi-winding: n_secondaries (1–3) regenerates the pin layout; each
+    # extra secondary has its own turns ratio. Lowered to N ideal 2-winding
+    # transformers sharing the primary (exactly equivalent for ideal TX).
+    ComponentType.TRANSFORMER: {"turns_ratio": 1.0, "lm": 1e-3,
+                                "n_secondaries": 1,
+                                "turns_ratio_2": 1.0,
+                                "turns_ratio_3": 1.0},
 
     # Analog
     ComponentType.OP_AMP: {
@@ -2500,6 +2506,8 @@ def _synchronize_special_component(component: Component) -> None:
         _synchronize_demux(component)
     elif component.type == ComponentType.MMC_CELL:
         _synchronize_mmc_cell(component)
+    elif component.type == ComponentType.TRANSFORMER:
+        _synchronize_transformer(component)
     elif component.type in (ComponentType.SUM, ComponentType.SUBTRACTOR):
         _synchronize_sum_like_block(component)
     elif component.type == ComponentType.C_BLOCK:
@@ -2936,6 +2944,32 @@ _MMC_CELL_PIN_LAYOUTS: dict[str, list[Pin]] = {
         Pin(5, "S4_G",  30, 25),
     ],
 }
+
+
+def _synchronize_transformer(component: Component) -> None:
+    """Rewrite TRANSFORMER pins to match ``n_secondaries`` (1–3).
+
+    Pin indices stay stable for the shared prefix (P1/P2/S1/S2) so existing
+    wires survive; extra secondaries append as S2_1/S2_2, S3_1/S3_2.
+    """
+    params = component.parameters
+    try:
+        n_sec = int(params.get("n_secondaries", 1) or 1)
+    except (TypeError, ValueError):
+        n_sec = 1
+    n_sec = max(1, min(3, n_sec))
+    params["n_secondaries"] = n_sec
+
+    pins = [Pin(0, "P1", -40, -20), Pin(1, "P2", -40, 20)]
+    if n_sec == 1:
+        pins += [Pin(2, "S1", 40, -20), Pin(3, "S2", 40, 20)]
+    else:
+        # Stack the secondaries down the right edge, 40 px per winding.
+        for k in range(n_sec):
+            y0 = -20 + k * 45
+            pins.append(Pin(2 + 2 * k, f"S{k + 1}_1", 40, y0))
+            pins.append(Pin(3 + 2 * k, f"S{k + 1}_2", 40, y0 + 20))
+    component.pins = _snap_pin_layout(pins)
 
 
 def _synchronize_mmc_cell(component: Component) -> None:

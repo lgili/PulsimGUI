@@ -975,7 +975,8 @@ class CircuitConverter:
             return nodes[:3]
 
         if comp_type == ComponentType.TRANSFORMER:
-            return nodes[:4]
+            # 2 primary + 2 per secondary (multi-winding keeps all terminals).
+            return nodes[:8]
 
         if comp_type == ComponentType.SWITCH:
             return nodes[:3] if len(nodes) >= 3 else nodes[:2]
@@ -1567,15 +1568,33 @@ class CircuitConverter:
             return
 
         if comp_type == ComponentType.TRANSFORMER:
-            p1, p2, s1, s2 = self._require_nodes(name, nodes, 4)
-            circuit.add_transformer(
-                name,
-                self._node_index(circuit, p1, node_cache),
-                self._node_index(circuit, p2, node_cache),
-                self._node_index(circuit, s1, node_cache),
-                self._node_index(circuit, s2, node_cache),
-                self._as_float(params.get("turns_ratio"), default=1.0),
-            )
+            # Multi-winding: N ideal 2-winding transformers sharing the same
+            # primary — exactly equivalent to one ideal N-winding transformer
+            # (common flux; primary current superposes the N reflections).
+            try:
+                n_sec = max(1, min(3, int(params.get("n_secondaries", 1) or 1)))
+            except (TypeError, ValueError):
+                n_sec = 1
+            needed = 2 + 2 * n_sec
+            winding_nodes = self._require_nodes(name, nodes, needed)
+            p1, p2 = winding_nodes[0], winding_nodes[1]
+            for k in range(n_sec):
+                sk1 = winding_nodes[2 + 2 * k]
+                sk2 = winding_nodes[3 + 2 * k]
+                ratio_key = "turns_ratio" if k == 0 else f"turns_ratio_{k + 1}"
+                circuit.add_transformer(
+                    name if k == 0 else f"{name}_w{k + 1}",
+                    self._node_index(circuit, p1, node_cache),
+                    self._node_index(circuit, p2, node_cache),
+                    self._node_index(circuit, sk1, node_cache),
+                    self._node_index(circuit, sk2, node_cache),
+                    self._as_float(params.get(ratio_key), default=1.0),
+                    # magnetizing inductance: the kernel transformer is a
+                    # coupled-inductor pair; honour the component's ``lm`` so
+                    # the magnetizing branch doesn't load the source (the old
+                    # path silently used the shim's 1 mH default).
+                    self._as_float(params.get("lm"), default=1e-3),
+                )
             return
 
         if comp_type == ComponentType.SWITCH:
