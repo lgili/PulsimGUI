@@ -1535,6 +1535,13 @@ class CircuitConverter:
                 r_on,
                 r_off,
             )
+            # A matrix converter built from bidirectional switches has many
+            # switch masks (any open output column) for which the conductance
+            # matrix is singular. pulsim's PWL cache PRE-ENUMERATES masks at
+            # build time, so it chokes even on masks the modulation never uses.
+            # Flag the circuit so the backend drops a gmin shunt to ground that
+            # keeps every enumerated mask non-singular (see backend_adapter).
+            setattr(circuit, "_needs_gmin_regularise", True)
             return
 
         if comp_type == ComponentType.TRANSFORMER:

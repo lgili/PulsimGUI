@@ -1,26 +1,30 @@
-"""The MMC three-phase examples must run through the full GUI backend path.
+"""Switched-converter examples must run through the full GUI backend path.
 
-A three-phase MMC built from ideal controlled-source arms leaves the conductance
-matrix rank-deficient by one (the reactive leg loop floats). The converter's
-connectivity-based ghost-resistor healing can't see it (every node looks
-grounded through the sources), and the observer-path ``p.simulate`` bypasses the
-Simulator's transient-gmin fallback — so without the backend's MMC gmin
-regulariser these examples (L0/L1/L2/L3 AND the gate-driven arm) fail with
-``PwlStateSpaceCache: numerically singular``. This pins that the regulariser
-keeps them runnable end-to-end via ``run_transient`` (the exact GUI Run path).
+Two converter families leave pulsim's PWL cache singular for masks it
+PRE-ENUMERATES at build time — so they crash before any time-step, on a mask
+the modulation may never even use:
+
+* a three-phase MMC of ideal controlled-source arms (reactive leg loop floats,
+  rank-deficient by one), and
+* a direct matrix converter (CMC) of bidirectional switches (singular for any
+  mask that opens an output column).
+
+The converter's connectivity-based ghost-resistor healing can't see either
+(every node looks grounded through the sources), and the observer-path
+``p.simulate`` bypasses the Simulator's transient-gmin fallback — so without the
+backend's gmin regulariser these examples fail with ``PwlStateSpaceCache:
+numerically singular``. This pins that the regulariser keeps them runnable
+end-to-end via ``run_transient`` (the exact GUI Run path).
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import pulsim as p
 import pytest
 
 from pulsimgui.models.project import Project
-from pulsimgui.services.backend_adapter import (
-    BackendCallbacks, BackendInfo, PulsimBackend)
-from pulsimgui.services.pulsim_v0_compat import make_compat_module
+from pulsimgui.services.backend_adapter import BackendCallbacks, BackendLoader
 from pulsimgui.services.simulation_service import SimulationSettings
 from pulsimgui.utils.net_utils import build_node_alias_map, build_node_map
 
@@ -48,10 +52,9 @@ def _run(example: str, t_stop: float = 0.02):
         nmap[cid] = [alias.get(nmr.get((cid, i), f"p_{cid}_{i}"),
                                nmr.get((cid, i), f"p_{cid}_{i}"))
                      for i in range(len(c.pins))]
-    mod = make_compat_module(p)
-    backend = PulsimBackend(mod, BackendInfo("pulsim", "Pulsim", "1.x",
-                                             "available"))
-    settings = SimulationSettings(t_start=0.0, t_stop=t_stop, t_step=2.0e-5,
+    # Use the real detected backend (correct version → C-Block path enabled).
+    backend = BackendLoader().backend
+    settings = SimulationSettings(t_start=0.0, t_stop=t_stop, t_step=2.0e-6,
                                   output_points=1000)
     cb = BackendCallbacks(progress=lambda *a, **k: None,
                           data_point=lambda *a, **k: None,
@@ -63,11 +66,12 @@ def _run(example: str, t_stop: float = 0.02):
 
 
 @pytest.mark.parametrize("example", [
-    "25_mmc_three_phase_closed_loop.pulsim",      # L0 average
-    "26_mmc_three_phase_l3_closed_loop.pulsim",   # L3 detailed
-    "34_mmc_gate_driven.pulsim",                  # gate-driven (External Gates)
+    "25_mmc_three_phase_closed_loop.pulsim",      # MMC L0 average
+    "26_mmc_three_phase_l3_closed_loop.pulsim",   # MMC L3 detailed
+    "34_mmc_gate_driven.pulsim",                  # MMC gate-driven (External Gates)
+    "25_cmc_switched_svm_cblock.pulsim",          # CMC matrix conv. (bidir switches)
 ])
-def test_mmc_three_phase_runs_via_backend(example: str) -> None:
+def test_switched_converter_runs_via_backend(example: str) -> None:
     res = _run(example)
     # No singular-matrix (or any) error, and a populated time axis + signals.
     assert not res.error_message, res.error_message

@@ -6264,24 +6264,31 @@ class PulsimBackend(SimulationBackend):
         configs = configs_from_pwm_records(circuit)
         switch_fn = assemble_switch_fn(circuit, configs, self._module)
 
-        # MMC rank-deficiency regulariser. MMC arms are ideal controlled
-        # voltage sources; a three-phase MMC's reactive leg loop leaves the
-        # conductance matrix rank-deficient by one (the operating point floats)
-        # — which the converter's connectivity-based ghost-resistor healing
-        # cannot see (every node looks "grounded" through the sources), and the
-        # observer-path ``p.simulate`` (b_extra) bypasses the Simulator's
-        # transient-gmin fallback. Drop a 1 GΩ shunt from every node to ground
-        # (≈µA at kV — invisible) so the PWL cache build is non-singular. Done
-        # BEFORE the observers so their b_extra state size matches the final
-        # graph. Harmless for already-well-posed MMC/M3C circuits.
-        if any(str(s.get("kind") or "") == "mmc_arm"
-               for s in (getattr(circuit, "nonlinear_observer_specs", []) or [])):
+        # Singular-mask regulariser. Two converter families leave the PWL
+        # cache's conductance matrix singular for masks it PRE-ENUMERATES at
+        # build time (so the crash happens before any time-step, on a mask the
+        # modulation may never even use):
+        #   * MMC arms are ideal controlled voltage sources; a three-phase MMC's
+        #     reactive leg loop leaves the matrix rank-deficient by one.
+        #   * A matrix converter (bidirectional switches) is singular for any
+        #     mask that opens an output column.
+        # The converter's connectivity-based ghost-resistor healing can't see
+        # either (every node looks "grounded" through the sources), and the
+        # observer-path ``p.simulate`` bypasses the Simulator's transient-gmin
+        # fallback. Drop a 1 GΩ shunt from every node to ground (≈µA at kV —
+        # invisible) so every enumerated mask is non-singular. Done BEFORE the
+        # observers so any b_extra state size matches the final graph. Harmless
+        # for already-well-posed circuits.
+        _needs_gmin = getattr(circuit, "_needs_gmin_regularise", False) or any(
+            str(s.get("kind") or "") == "mmc_arm"
+            for s in (getattr(circuit, "nonlinear_observer_specs", []) or []))
+        if _needs_gmin:
             try:
                 for _nd in list(builder.graph.nodes):
                     builder.add_resistor(
-                        f"__mmc_gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
+                        f"__gmin_{_nd['id']}", _nd["name"], "0", 1.0e9)
             except Exception:  # noqa: BLE001 - regulariser must never abort a run
-                log.debug("MMC gmin shunt injection failed; continuing",
+                log.debug("gmin shunt injection failed; continuing",
                           exc_info=True)
 
         # Nonlinear-device observers FIRST (before the VSI switch_fns):
