@@ -1645,8 +1645,11 @@ class CircuitConverter:
                     raise CircuitConversionError(
                         f"Component '{name}' uses a controlled switch but backend lacks 'add_vcswitch'"
                     )
-                # Pin layout: 0="CTL" (control), 1="1" (terminal), 2="2" (terminal)
-                ctrl, t1, t2 = self._require_nodes(name, nodes, 3)
+                # GUI pin layout (DEFAULT_PINS): 0="1" (terminal), 1="2"
+                # (terminal), 2="CTL" (control). The old code read the
+                # control from nodes[0] — every schematic-wired 3-pin SWITCH
+                # had its gate on a power terminal.
+                t1, t2, ctrl = self._require_nodes(name, nodes, 3)
                 circuit.add_vcswitch(
                     name,
                     self._node_index(circuit, ctrl, node_cache),

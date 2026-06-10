@@ -1194,8 +1194,12 @@ def test_converter_uses_vcswitch_for_three_pin_switch() -> None:
                 "pin_nodes": ["1", "2", "3"],
             }
         ],
+        # GUI pin order (DEFAULT_PINS): 0="1" (terminal), 1="2" (terminal),
+        # 2="CTL". The converter must take the CONTROL from pin index 2 —
+        # the old code read nodes[0], putting every schematic-wired gate on
+        # a power terminal.
         "node_map": {"s1": ["1", "2", "3"]},
-        "node_aliases": {"1": "CTRL", "2": "VIN", "3": "SW"},
+        "node_aliases": {"1": "VIN", "2": "SW", "3": "CTRL"},
     }
 
     converted = converter.build(circuit_data)
@@ -1204,7 +1208,7 @@ def test_converter_uses_vcswitch_for_three_pin_switch() -> None:
     assert len(converted.vcswitches) == 1
     name, ctrl, t1, t2, v_threshold, g_on, g_off = converted.vcswitches[0]
     assert name == "S1"
-    assert (ctrl, t1, t2) == (1, 2, 3)
+    assert (ctrl, t1, t2) == (3, 1, 2)      # ctrl = pin "CTL" (index 2)
     assert v_threshold == pytest.approx(5.0)
     assert g_on == pytest.approx(500.0)
     assert g_off == pytest.approx(5e-9)
