@@ -1659,6 +1659,11 @@ class CircuitConverter:
                     g_on,
                     g_off,
                 )
+                # Chains of controlled switches (bridge legs) leave internal
+                # junctions floating in the PRE-ENUMERATED all-off mask —
+                # same singular-cache class as the matrix converter. Flag for
+                # the gmin regulariser (1 GΩ per node, invisible).
+                setattr(circuit, "_needs_gmin_regularise", True)
                 return
 
             if hasattr(circuit, "add_switch"):
