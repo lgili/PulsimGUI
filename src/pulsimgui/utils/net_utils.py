@@ -170,6 +170,12 @@ def build_node_alias_map(
             continue
 
         for node_id in connected_nodes:
+            if node_id == "0":
+                # NEVER alias the ground net: renaming it would stop the
+                # converter from recognising it as the reference node and the
+                # whole bus silently floats. A label on a grounded net stays
+                # visual-only (PSIM/SPICE semantics).
+                continue
             if alias and node_id not in alias_map:
                 alias_map[node_id] = alias
             elif fallback and node_id not in alias_map:
@@ -184,7 +190,7 @@ def build_node_alias_map(
         if not label:
             continue
         node_id = node_map.get((str(component.id), 0))
-        if node_id and node_id not in alias_map:
+        if node_id and node_id != "0" and node_id not in alias_map:
             alias_map[node_id] = label
 
     return alias_map
