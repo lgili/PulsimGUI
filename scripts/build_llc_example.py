@@ -139,13 +139,23 @@ def main() -> None:
     wire(cout, 1, g_out, 0)
     wire(rload, 1, g_out, 0)
 
-    # Probes + a stable name for the output net.
+    # Probes + a stable name for the output net + a pre-wired scope.
     vp = comp("VOLTAGE_PROBE_GND", "VP_out", 240, -200, {},
-              [pin(0, "IN", 0, 20)])
+              [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
     wire(vp, 0, br, 2)
     lbl = comp("GOTO_LABEL", "LBL_VOUT", 200, -40, {"net_label": "VOUT"},
                [pin(0, "NET", -40, 0)])
     wire(lbl, 0, br, 2)
+    wire(vp, 1, comp("GOTO_LABEL", "LBL_SIGV", 300, -260,
+                     {"net_label": "SIG_VOUT"},
+                     [pin(0, "NET", -40, 0)]), 0)   # GOTO pin x = 260
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 540, -260,
+                 {"channel_count": 1,
+                  "channels": [{"label": "V_out", "overlay": False}]},
+                 [pin(0, "CH1", -40, 0)])
+    f_sig = comp("FROM_LABEL", "F_SIGV", 420, -260,
+                 {"net_label": "SIG_VOUT"}, [pin(0, "NET", 40, 0)])
+    wire(f_sig, 0, scope, 0)
 
     now = datetime.now().isoformat(timespec="seconds")
     project = {

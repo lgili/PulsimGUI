@@ -167,11 +167,28 @@ def main() -> None:
               [pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     g_load = gnd("GND_LOAD", 420, -140)
     wire(from_("VOUT", "F_VOUT", 20, -200), 0, rl, 0)      # short, own row
-    wire(rl, 1, ll, 0)
+    # (the series load-current probe is wired in below, R → probe → L)
     wire(ll, 1, g_load, 0)
     vp = comp("VOLTAGE_PROBE_GND", "VP_out", 160, -320, {},
-              [pin(0, "IN", 0, 20)])
-    wire(vp, 0, from_("VOUT", "F_VOUT2", 120, -300), 0)    # pin x = 160
+              [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
+    wire(vp, 0, from_("VOUT", "F_VOUT2", 100, -320), 0)    # pin x = 140
+    wire(vp, 1, goto("SIG_VOUT", "LBL_SIGV", 220, -380), 0)  # pin x = 180
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 460, -380,
+                 {"channel_count": 2,
+                  "channels": [{"label": "V_out", "overlay": False},
+                               {"label": "I_load", "overlay": False}]},
+                 [pin(0, "CH1", -40, -20), pin(1, "CH2", -40, 0)])
+    f1 = from_("SIG_VOUT", "F_SIGV", 340, -400)            # pin x = 380
+    wire(f1, 0, scope, 0)
+    # load-current probe IN SERIES between R and L (own row, short wires)
+    ipl = comp("CURRENT_PROBE", "IP_load", 240, -200, {},
+               [pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0),
+                pin(2, "SIG", 0, -20)])
+    wire(rl, 1, ipl, 0)
+    wire(ipl, 1, ll, 0)
+    wire(ipl, 2, goto("SIG_IL", "LBL_SIGI", 280, -260), 0)  # pin x = 240
+    f2 = from_("SIG_IL", "F_SIGI", 340, -380)               # pin x = 380
+    wire(f2, 0, scope, 1)
 
     now = datetime.now().isoformat(timespec="seconds")
     project = {

@@ -153,7 +153,8 @@ def main() -> None:
                {"inductance": L_LK, "initial_current": 0.0},
                [pin(0, "1", -40, 0), pin(1, "2", 40, 0)])
     ip = comp("CURRENT_PROBE", "IP_lk", -220, -160, {},
-              [pin(0, "1", -30, 0), pin(1, "2", 30, 0)])
+              [pin(0, "IN", -20, 0), pin(1, "OUT", 20, 0),
+               pin(2, "SIG", 0, -20)])
     tx = comp("TRANSFORMER", "TX", -40, -80,
               {"turns_ratio": N_RATIO, "lm": 10e-3, "n_secondaries": 1},
               [pin(0, "P1", -40, -20), pin(1, "P2", -40, 20),
@@ -167,13 +168,29 @@ def main() -> None:
 
     # (Per-switch PWM gate drives are created inside bridge_leg.)
 
-    # Probes for the scope-less default signal set.
+    # Probes + a pre-wired scope (bridge midpoints and the link current).
+    # Signal fan-out uses GOTO/FROM labels with VERTICAL stubs only — angled
+    # wires would run along populated rows and merge nets.
     vp1 = comp("VOLTAGE_PROBE_GND", "VP_pa", -420, -260, {},
-               [pin(0, "IN", 0, 20)])
+               [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
     wire(vp1, 0, sa, 1)
+    wire(vp1, 1, goto("SIG_PA", -360, -320), 0)     # GOTO pin x = -400
     vp2 = comp("VOLTAGE_PROBE_GND", "VP_sa", 320, -260, {},
-               [pin(0, "IN", 0, 20)])
+               [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
     wire(vp2, 0, sc, 1)
+    wire(vp2, 1, goto("SIG_SA", 380, -320), 0)      # GOTO pin x = 340
+    wire(ip, 2, goto("SIG_ILK", -180, -240), 0)     # I-probe SIG, pin x = -220
+
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 700, -420,
+                 {"channel_count": 3,
+                  "channels": [{"label": "V_pa", "overlay": False},
+                               {"label": "V_sa", "overlay": False},
+                               {"label": "I_link", "overlay": False}]},
+                 [pin(0, "CH1", -40, -20), pin(1, "CH2", -40, 0),
+                  pin(2, "CH3", -40, 20)])
+    for k, net in enumerate(("SIG_PA", "SIG_SA", "SIG_ILK")):
+        lbl = from_(net, 580, -440 + 20 * k)        # FROM pin x = 620
+        wire(lbl, 0, scope, k)
 
     now = datetime.now().isoformat(timespec="seconds")
     project = {

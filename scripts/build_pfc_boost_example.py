@@ -132,13 +132,27 @@ def main() -> None:
     g_rl = gnd("GND_RL", 160, -20)
     wire(rl, 1, g_rl, 0)
 
-    # Feedback probes: bus voltage + rectified line voltage.
+    # Feedback probes: bus voltage + rectified line voltage (+ scope taps).
     vp_bus = comp("VOLTAGE_PROBE_GND", "VP_BUS", -60, -200, {},
-                  [pin(0, "IN", 0, 20)])
-    wire(vp_bus, 0, from_("VBUS", "F_VBUS3", -100, -180), 0)
-    vp_ac = comp("VOLTAGE_PROBE_GND", "VP_VAC", -740, -220, {},
-                 [pin(0, "IN", 0, 20)])
-    wire(vp_ac, 0, from_("VRECT", "F_VRECT2", -780, -200), 0)
+                  [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
+    wire(vp_bus, 0, from_("VBUS", "F_VBUS3", -120, -200), 0)
+    wire(vp_bus, 1, goto("SIG_VBUS", "LBL_SVB", 0, -260), 0)   # pin x = -40
+    vp_ac = comp("VOLTAGE_PROBE_GND", "VP_VAC", -740, -280, {},
+                 [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
+    wire(vp_ac, 0, from_("VRECT", "F_VRECT2", -800, -280), 0)
+    wire(vp_ac, 1, goto("SIG_VAC", "LBL_SVA", -680, -340), 0)  # pin x = -720
+    wire(ip, 2, goto("SIG_IL", "LBL_SIL", -480, -160), 0)      # pin x = -520
+
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 320, -320,
+                 {"channel_count": 3,
+                  "channels": [{"label": "V_bus", "overlay": False},
+                               {"label": "V_rect", "overlay": False},
+                               {"label": "I_L", "overlay": False}]},
+                 [pin(0, "CH1", -40, -20), pin(1, "CH2", -40, 0),
+                  pin(2, "CH3", -40, 20)])
+    for k, net in enumerate(("SIG_VBUS", "SIG_VAC", "SIG_IL")):
+        lbl = from_(net, f"F_{net}", 200, -340 + 20 * k)       # pin x = 240
+        wire(lbl, 0, scope, k)
 
     # The drop-in controller: VBUS/IL/VAC feedback in, PWM out → gate.
     pfc = comp("PFC_BOOST_CONTROLLER", "PFC1", -560, 200,
