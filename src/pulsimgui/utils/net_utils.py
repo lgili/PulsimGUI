@@ -196,6 +196,22 @@ def build_node_alias_map(
     return alias_map
 
 
+def wire_touches_ground(circuit: Circuit, wire: Wire) -> bool:
+    """Does this wire belong to the ground net (node "0")?
+
+    Used by the editor to warn that an alias typed on a grounded wire stays
+    visual-only (ground identity always wins — see build_node_alias_map).
+    """
+    node_map = build_node_map(circuit)
+    return "0" in _nodes_for_wire(circuit, wire, node_map)
+
+
+def component_pin_on_ground(circuit: Circuit, component, pin_index: int = 0) -> bool:
+    """Is this component pin resolved onto the ground net (node "0")?"""
+    node_map = build_node_map(circuit)
+    return node_map.get((str(component.id), pin_index)) == "0"
+
+
 def _nodes_for_wire(
     circuit: Circuit,
     wire: Wire,

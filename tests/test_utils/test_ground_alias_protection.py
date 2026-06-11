@@ -60,3 +60,28 @@ def test_label_on_normal_net_still_aliases() -> None:
     node = node_map[(str(lbl.id), 0)]
     assert node != "0"
     assert alias.get(node) == "VBUS"            # labels keep working off-ground
+
+
+def test_ground_detection_helpers() -> None:
+    """The editor's advisory check: wire/pin → grounded-net detection."""
+    from pulsimgui.utils.net_utils import (
+        component_pin_on_ground,
+        wire_touches_ground,
+    )
+
+    circuit = Circuit(name="t")
+    gnd = Component(type=ComponentType.GROUND, name="GND1", x=0, y=0)
+    lbl = Component(type=ComponentType.GOTO_LABEL, name="LBL", x=120, y=-20)
+    lbl.parameters["net_label"] = "MID"
+    res = Component(type=ComponentType.RESISTOR, name="R1", x=300, y=-20)
+    for c in (gnd, lbl, res):
+        circuit.add_component(c)
+    _wire(circuit, gnd, 0, lbl, 0)
+    grounded_wire = list(circuit.wires.values())[-1]
+    _wire(circuit, lbl, 0, res, 0)
+
+    assert wire_touches_ground(circuit, grounded_wire)
+    assert component_pin_on_ground(circuit, lbl, 0)
+    assert component_pin_on_ground(circuit, gnd, 0)
+    # the resistor's far pin is NOT grounded
+    assert not component_pin_on_ground(circuit, res, 1)

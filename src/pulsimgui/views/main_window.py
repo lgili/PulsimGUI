@@ -3577,6 +3577,18 @@ class MainWindow(QMainWindow):
         self._project.mark_dirty()
         self._update_modified_indicator()
         self._refresh_scope_window_bindings()
+        # Heads-up: an alias on a GROUNDED net stays visual-only (ground
+        # identity always wins, otherwise the bus would silently float).
+        try:
+            from pulsimgui.utils.net_utils import wire_touches_ground
+            alias = (getattr(wire, "alias", "") or "").strip()
+            circuit = self._current_circuit()
+            if alias and circuit is not None and wire_touches_ground(circuit, wire):
+                self.statusBar().showMessage(
+                    f"'{alias}' is on a GROUNDED net — the label is "
+                    "visual-only; the net stays ground (0).", 8000)
+        except Exception:  # noqa: BLE001 — advisory only, never block editing
+            pass
 
     def _on_rename_signal(self) -> None:
         """Rename selected wire alias."""
@@ -3718,6 +3730,23 @@ class MainWindow(QMainWindow):
             )
             self._refresh_scope_window_bindings()
             self.statusBar().showMessage("Component properties updated", 2000)
+            # Heads-up when a net label sits on a GROUNDED net: the label is
+            # visual-only there (ground identity always wins, otherwise the
+            # bus would silently float).
+            try:
+                if component.type in (ComponentType.GOTO_LABEL,
+                                      ComponentType.FROM_LABEL):
+                    from pulsimgui.utils.net_utils import component_pin_on_ground
+                    label = str((dialog.edited_component.parameters or {})
+                                .get("net_label") or "").strip()
+                    circuit = self._current_circuit()
+                    if label and circuit is not None and component_pin_on_ground(
+                            circuit, component):
+                        self.statusBar().showMessage(
+                            f"'{label}' is on a GROUNDED net — the label is "
+                            "visual-only; the net stays ground (0).", 8000)
+            except Exception:  # noqa: BLE001 — advisory only
+                pass
 
         if pair_request is not None:
             self._on_properties_net_label_pair_requested(*pair_request)
