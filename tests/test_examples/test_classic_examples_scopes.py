@@ -19,6 +19,7 @@ CASES = [
     ("36_llc_resonant.pulsim", 1),
     ("37_npc_three_level.pulsim", 2),
     ("38_pfc_boost_standalone.pulsim", 3),
+    ("39_solar_pv_battery_charger.pulsim", 4),
 ]
 
 
