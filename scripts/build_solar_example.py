@@ -161,16 +161,21 @@ def main() -> None:
     wire(ipb, 2, goto("SIG_IB", "LBL_SIB", 160, -200), 0)       # pin x = 120
     wire(ipl, 2, goto("SIG_IL", "LBL_SIL", -440, -200), 0)      # pin x = -480
 
-    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 560, -260,
+    # The scope REGENERATES its pin layout on load from channel_count: a
+    # 4-channel scope places pins at y-offsets −40/−20/+20/+40 (a centre
+    # gap), NOT evenly spaced. The FROM-label stubs must land on those exact
+    # rows or the router makes diagonal wires that merge adjacent channels.
+    scope_y = -260
+    ch_dy = (-40, -20, 20, 40)
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 560, scope_y,
                  {"channel_count": 4,
                   "channels": [{"label": "V_pv", "overlay": False},
                                {"label": "V_batt", "overlay": False},
                                {"label": "I_charge", "overlay": False},
                                {"label": "I_L", "overlay": False}]},
-                 [pin(0, "CH1", -40, -30), pin(1, "CH2", -40, -10),
-                  pin(2, "CH3", -40, 10), pin(3, "CH4", -40, 30)])
+                 [pin(k, f"CH{k + 1}", -40, dy) for k, dy in enumerate(ch_dy)])
     for k, net in enumerate(("SIG_VPV", "SIG_VB", "SIG_IB", "SIG_IL")):
-        lbl = from_(net, f"F_{net}", 440, -290 + 20 * k)       # pin x = 480
+        lbl = from_(net, f"F_{net}", 440, scope_y + ch_dy[k])  # pin x = 480
         wire(lbl, 0, scope, k)
 
     now = datetime.now().isoformat(timespec="seconds")

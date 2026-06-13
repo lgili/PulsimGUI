@@ -173,12 +173,15 @@ def main() -> None:
               [pin(0, "IN", -20, 0), pin(1, "SIG", 20, 0)])
     wire(vp, 0, from_("VOUT", "F_VOUT2", 100, -320), 0)    # pin x = 140
     wire(vp, 1, goto("SIG_VOUT", "LBL_SIGV", 220, -380), 0)  # pin x = 180
-    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 460, -380,
+    # A 2-channel scope regenerates its pins to y-offsets −20/+20 on load —
+    # match the FROM stubs to those exact rows (see build_solar_example.py).
+    scope_y, ch_dy = -380, (-20, 20)
+    scope = comp("ELECTRICAL_SCOPE", "SCOPE1", 460, scope_y,
                  {"channel_count": 2,
                   "channels": [{"label": "V_out", "overlay": False},
                                {"label": "I_load", "overlay": False}]},
-                 [pin(0, "CH1", -40, -20), pin(1, "CH2", -40, 0)])
-    f1 = from_("SIG_VOUT", "F_SIGV", 340, -400)            # pin x = 380
+                 [pin(k, f"CH{k + 1}", -40, dy) for k, dy in enumerate(ch_dy)])
+    f1 = from_("SIG_VOUT", "F_SIGV", 340, scope_y + ch_dy[0])  # pin x = 380
     wire(f1, 0, scope, 0)
     # load-current probe IN SERIES between R and L (own row, short wires)
     ipl = comp("CURRENT_PROBE", "IP_load", 240, -200, {},
@@ -187,7 +190,7 @@ def main() -> None:
     wire(rl, 1, ipl, 0)
     wire(ipl, 1, ll, 0)
     wire(ipl, 2, goto("SIG_IL", "LBL_SIGI", 280, -260), 0)  # pin x = 240
-    f2 = from_("SIG_IL", "F_SIGI", 340, -380)               # pin x = 380
+    f2 = from_("SIG_IL", "F_SIGI", 340, scope_y + ch_dy[1])  # pin x = 380
     wire(f2, 0, scope, 1)
 
     now = datetime.now().isoformat(timespec="seconds")
