@@ -88,3 +88,6 @@ Desktop.ini
 
 # Documentation build output
 site/
+
+# design-system gallery render artifacts
+design_gallery_*.png
