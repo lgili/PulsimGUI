@@ -61,15 +61,26 @@ def _iter_view_files(exclude_design: bool) -> list[Path]:
     return files
 
 
+# branding.py is the one sanctioned home for raw hex in the package: it
+# holds FIXED brand-identity colours (logo green, mark white) that do not
+# follow the UI theme — like a bundled app-icon. Everything else must use
+# ThemeColors tokens.
+_DESIGN_HEX_EXEMPT = {"branding.py"}
+
+
 def test_design_package_has_zero_raw_hex() -> None:
-    """The component layer is the clean reference — no hardcoded colours."""
+    """The component layer is the clean reference — no hardcoded colours,
+    except the one documented brand-identity file."""
     offenders = {
         str(p.relative_to(VIEWS.parent.parent.parent)): _count_hex(p)
         for p in DESIGN.rglob("*.py")
-        if "__pycache__" not in p.parts and _count_hex(p) > 0
+        if "__pycache__" not in p.parts
+        and p.name not in _DESIGN_HEX_EXEMPT
+        and _count_hex(p) > 0
     }
     assert not offenders, (
-        "views/design/ must use ThemeColors tokens, never raw hex. "
+        "views/design/ must use ThemeColors tokens, never raw hex "
+        "(the only exception is the documented branding.py). "
         f"Hardcoded colours found: {offenders}"
     )
 

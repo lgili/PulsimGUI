@@ -893,6 +893,14 @@ class MainWindow(QMainWindow):
         """Create the menu bar."""
         menubar = self.menuBar()
 
+        # Brand mark (logo chip + "Pulsim Studio" wordmark) in the menu
+        # bar's top-left corner — the handoff's app-identity element. It
+        # follows the active theme via the shared ThemeService.
+        from pulsimgui.views.design import BrandChip
+
+        self._brand_chip = BrandChip(self._theme_service)
+        menubar.setCornerWidget(self._brand_chip, Qt.Corner.TopLeftCorner)
+
         # File menu
         file_menu = menubar.addMenu("&File")
         self._file_menu = file_menu

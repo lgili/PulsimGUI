@@ -30,6 +30,7 @@ app's DESIGN_NOTES so the two apps feel like siblings.
 from __future__ import annotations
 
 from pulsimgui.views.design.components import (
+    BrandChip,
     Card,
     KpiTile,
     PageHeader,
@@ -57,6 +58,7 @@ __all__ = [
     "Motion",
     "Elevation",
     # components
+    "BrandChip",
     "Card",
     "KpiTile",
     "PageHeader",

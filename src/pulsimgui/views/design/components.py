@@ -15,7 +15,15 @@ styling everywhere else (see ``tests/test_design/test_styling_ratchet.py``).
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -27,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.services.theme_service import LIGHT_THEME, Theme
+from pulsimgui.views.design.branding import Brand
 from pulsimgui.views.design.tokens import (
     FontSize,
     FontWeight,
@@ -80,6 +89,92 @@ class _Themed:
 
     def _style_for(self, theme: Theme) -> str:  # pragma: no cover - overridden
         raise NotImplementedError
+
+
+# --------------------------------------------------------------------------
+# Branding
+# --------------------------------------------------------------------------
+
+class _LogoChip(QWidget):
+    """The 22×22 rounded green-gradient logo mark with a white pulse glyph.
+
+    Custom-painted so the gradient + the waveform mark are crisp at any DPI;
+    matches the handoff's menu-bar logo chip (radius 6, the
+    ``Brand.GREEN_TOP → Brand.GREEN_BOTTOM`` gradient)."""
+
+    def __init__(self, size: int = 22, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._size = size
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, event) -> None:  # noqa: ARG002
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(0.5, 0.5, self._size - 1, self._size - 1)
+        radius = self._size * 0.27
+
+        grad = QLinearGradient(r.topLeft(), r.bottomLeft())
+        grad.setColorAt(0.0, QColor(Brand.GREEN_TOP))
+        grad.setColorAt(1.0, QColor(Brand.GREEN_BOTTOM))
+        p.setBrush(QBrush(grad))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(r, radius, radius)
+
+        # A white switching-pulse glyph (the "Pulsim" mark): a small
+        # square wave — instantly readable as power electronics.
+        s = self._size
+        pen = QPen(QColor(Brand.MARK))
+        pen.setWidthF(max(1.4, s * 0.085))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        lo, hi = s * 0.66, s * 0.36
+        path = QPainterPath(QPointF(s * 0.22, lo))
+        path.lineTo(s * 0.40, lo)
+        path.lineTo(s * 0.40, hi)
+        path.lineTo(s * 0.60, hi)
+        path.lineTo(s * 0.60, lo)
+        path.lineTo(s * 0.78, lo)
+        p.drawPath(path)
+        p.end()
+
+
+class BrandChip(_Themed, QWidget):
+    """Logo chip + "Pulsim Studio" wordmark — the app's identity mark.
+
+    Designed to sit in the menu bar's top-left corner. The green chip is a
+    fixed brand colour; only the muted " Studio" suffix follows the theme.
+    """
+
+    def __init__(
+        self,
+        theme_service: object | None = None,
+        *,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DesignBrandChip")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(Space.MD, 0, Space.SM, 0)
+        row.setSpacing(Space.SM)
+        row.addWidget(_LogoChip(22))
+        self._wordmark = QLabel()
+        self._wordmark.setObjectName("DesignBrandWordmark")
+        self._wordmark.setTextFormat(Qt.TextFormat.RichText)
+        row.addWidget(self._wordmark)
+        self._init_theming(theme_service)
+
+    def _style_for(self, theme: Theme) -> str:
+        c = theme.colors
+        # Rich-text wordmark: bold "Pulsim" + muted-weight " Studio".
+        self._wordmark.setText(
+            f'<span style="color:{c.foreground}; font-weight:700;">Pulsim</span>'
+            f'<span style="color:{c.foreground_muted}; font-weight:500;"> Studio</span>'
+        )
+        return (
+            f"#DesignBrandChip {{ background: transparent; }}"
+            f"#DesignBrandWordmark {{ font-size: {FontSize.LABEL}px; }}"
+        )
 
 
 # --------------------------------------------------------------------------

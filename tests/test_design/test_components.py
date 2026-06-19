@@ -10,10 +10,11 @@ from __future__ import annotations
 import sys
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from pulsimgui.services.theme_service import ThemeService
 from pulsimgui.views.design import (
+    BrandChip,
     Card,
     KpiTile,
     PageHeader,
@@ -102,6 +103,18 @@ def test_segmented_control_emits_and_tracks_selection(theme_service, qtbot=None)
     seg._select("dsed")
     assert seg.current_key() == "dsed"
     assert received == ["dsed"]
+
+
+def test_brand_chip_builds_and_carries_wordmark(theme_service) -> None:
+    """The menu-bar brand mark builds, tags its objectName, and renders the
+    'Pulsim' + muted 'Studio' wordmark in the active theme's colours."""
+    chip = BrandChip(theme_service)
+    assert chip.objectName() == "DesignBrandChip"
+    # The wordmark is set from theme tokens (rich text).
+    wordmark = chip.findChild(QLabel, "DesignBrandWordmark")
+    assert wordmark is not None
+    assert "Pulsim" in wordmark.text() and "Studio" in wordmark.text()
+    assert theme_service.current_theme.colors.foreground in wordmark.text()
 
 
 def test_tint_produces_rgba_from_hex() -> None:
