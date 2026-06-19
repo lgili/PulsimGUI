@@ -785,6 +785,10 @@ class MainWindow(QMainWindow):
         self.action_theme_modern_dark.setCheckable(True)
         self.action_theme_modern_dark.setData("modern_dark")
 
+        self.action_theme_studio_dark = QAction("&Pulsim Studio", self)
+        self.action_theme_studio_dark.setCheckable(True)
+        self.action_theme_studio_dark.setData("studio_dark")
+
         # Simulation actions
         self.action_run = QAction("&Run Simulation", self)
         self.action_run.setShortcut(QKeySequence("F5"))
@@ -958,6 +962,7 @@ class MainWindow(QMainWindow):
         theme_menu.addAction(self.action_theme_light)
         theme_menu.addAction(self.action_theme_dark)
         theme_menu.addAction(self.action_theme_modern_dark)
+        theme_menu.addAction(self.action_theme_studio_dark)
 
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
@@ -1333,6 +1338,7 @@ class MainWindow(QMainWindow):
         self.action_theme_light.triggered.connect(lambda: self._set_theme("light"))
         self.action_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
         self.action_theme_modern_dark.triggered.connect(lambda: self._set_theme("modern_dark"))
+        self.action_theme_studio_dark.triggered.connect(lambda: self._set_theme("studio_dark"))
 
         # Theme service signal
         self._theme_service.theme_changed.connect(self._on_theme_changed)
@@ -1554,6 +1560,7 @@ class MainWindow(QMainWindow):
         self.action_theme_light.setChecked(theme_name == "light")
         self.action_theme_dark.setChecked(theme_name == "dark")
         self.action_theme_modern_dark.setChecked(theme_name == "modern_dark")
+        self.action_theme_studio_dark.setChecked(theme_name == "studio_dark")
 
     def _apply_current_theme(self) -> None:
         """Apply the current theme stylesheet and update components."""
