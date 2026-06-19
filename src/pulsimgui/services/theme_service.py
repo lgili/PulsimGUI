@@ -1219,13 +1219,15 @@ QGroupBox::title {{
     left: 12px;
 }}
 
-/* ===== Status Bar ===== */
+/* ===== Status Bar (EDA-grade mono telemetry readout) ===== */
 QStatusBar {{
     background-color: {c.statusbar_background};
     color: {c.statusbar_foreground};
     border-top: 1px solid {c.border};
-    min-height: 30px;
+    min-height: 28px;
     padding: 0 8px;
+    font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 11px;
 }}
 
 QStatusBar::item {{
@@ -1234,8 +1236,9 @@ QStatusBar::item {{
 
 QStatusBar QLabel {{
     color: {c.statusbar_foreground};
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 3px 10px;
+    font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 11px;
 }}
 
 QStatusBar QProgressBar {{
