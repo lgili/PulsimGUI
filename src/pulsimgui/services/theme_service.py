@@ -37,6 +37,13 @@ class ThemeColors:
     warning: str = "#ffc107"
     warning_background: str = "#fff3cd"
     info: str = "#17a2b8"
+    # Critical "thermal runaway" badge — a deep-red fill + pale-red text pair
+    # authored TOGETHER so the alarm stays legible on every theme. Unlike
+    # error_background (whose tone flips pale↔dark by theme), this pair is a
+    # fixed deep-red alert treatment, like a hazard light. Defaults preserve
+    # the thermal viewer's long-standing #7f1d1d / #fee2e2 look.
+    status_runaway_background: str = "#7f1d1d"
+    status_runaway_foreground: str = "#fee2e2"
     info_background: str = "#d1ecf1"
 
     # Borders and dividers

@@ -95,6 +95,14 @@ def test_kpi_accent_recolours_value(theme_service) -> None:
     assert theme_service.current_theme.colors.warning in warn
 
 
+def test_kpi_set_label_updates_uppercased(theme_service) -> None:
+    """set_label folds a subject into the tile (e.g. HOTTEST · Q_BOOST),
+    uppercased to match construction."""
+    tile = KpiTile("Hottest", "127", "°C", theme_service)
+    tile.set_label("Hottest · Q_boost")
+    assert tile._label.text() == "HOTTEST · Q_BOOST"
+
+
 def test_segmented_control_emits_and_tracks_selection(theme_service, qtbot=None) -> None:
     seg = SegmentedControl([("pwl", "PWL"), ("dsed", "DSED")], theme_service)
     assert seg.current_key() == "pwl"  # first is default-selected

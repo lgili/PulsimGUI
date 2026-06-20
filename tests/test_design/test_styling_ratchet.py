@@ -34,12 +34,14 @@ _HEX = re.compile(
     r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b"
 )
 
-# Ratchet ceiling. This is the count of raw hex literals in views/ (excluding
-# design/) at the start of the modernization. It must only EVER decrease:
-# every time a screen migrates to the design components, re-run
+# Ratchet ceiling — the count of raw hex literals in views/ (excluding
+# design/). It must only EVER decrease: every time a screen migrates to the
+# design components, re-run
 #   grep -rEn '#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}\b' src/pulsimgui/views --include='*.py' | grep -v /design/ | wc -l
 # and set this to the new (lower) number to lock the improvement in.
-HEX_CEILING = 383
+# History: 383 (start) → 365 (thermal_viewer.py migrated to KpiTile + theme
+# tokens, -18).
+HEX_CEILING = 365
 
 
 def _count_hex(path: Path) -> int:

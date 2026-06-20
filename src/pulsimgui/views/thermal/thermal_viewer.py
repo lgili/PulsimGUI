@@ -8,6 +8,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QSizePolicy,
@@ -20,8 +21,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pulsimgui.services.theme_service import Theme, ThemeService
+from pulsimgui.services.theme_service import LIGHT_THEME, Theme, ThemeColors, ThemeService
 from pulsimgui.services.thermal_service import ThermalResult
+from pulsimgui.views.design import KpiTile
 from pulsimgui.views.widgets.status_widgets import StatusBanner
 
 # Temperatures above this threshold are treated as a numeric runaway by
@@ -33,8 +35,13 @@ from pulsimgui.views.widgets.status_widgets import StatusBanner
 # is unambiguously a numeric artifact.
 _T_RUNAWAY_CAP_C = 300.0
 _RUNAWAY_TEXT = ">300 °C ⚠"
-_RUNAWAY_BG = QColor("#7f1d1d")    # deep red — distinct from amber over-limit
-_OVERLIMIT_FG = QColor("#ef4444")  # bright red — matches existing convention
+
+# Cell severity states returned by ``_temp_display``. The widget maps each
+# to theme-aware QColors (``_state_fg`` / ``_state_bg``) so the formatter
+# itself stays a pure, theme-agnostic text classifier.
+_STATE_NORMAL = ""
+_STATE_OVERLIMIT = "overlimit"
+_STATE_RUNAWAY = "runaway"
 
 
 def _temp_display(
@@ -42,23 +49,21 @@ def _temp_display(
     *,
     runaway: bool = False,
     over_limit: bool = False,
-) -> tuple[str, QColor | None, QColor | None]:
-    """Format a temperature for the thermal scope's tables.
+) -> tuple[str, str]:
+    """Format a temperature and classify its severity for the tables.
 
-    Returns ``(text, foreground_color, background_color)`` so each cell
-    can be styled consistently. ``None`` means "use the table's
-    default colour".
+    Returns ``(text, state)`` where ``state`` is one of ``_STATE_NORMAL``,
+    ``_STATE_OVERLIMIT`` or ``_STATE_RUNAWAY``. The caller turns the state
+    into theme colours (``_state_fg`` / ``_state_bg``) so this stays a pure
+    formatter that re-themes for free.
 
-      * ``runaway=True`` OR T > _T_RUNAWAY_CAP_C → "RUNAWAY" badge on
-        a dark-red row background. Clipping the displayed value (NOT
-        the underlying data) prevents an absurd 130,000 °C reading
-        from masquerading as a real measurement.
-      * ``over_limit=True`` and finite ≤ _T_RUNAWAY_CAP_C → plain
-        formatted number in bright red. Lets the table keep showing
-        the actual peak temperature when a device crossed its
-        ``thermal_t_max_C`` (already-existing behaviour, just split
-        out so the runaway path can stack on top of it).
-      * Otherwise → standard one-decimal °C.
+      * ``runaway=True`` OR T > _T_RUNAWAY_CAP_C → "RUNAWAY" badge state.
+        Clipping the displayed value (NOT the underlying data) prevents an
+        absurd 130,000 °C reading from masquerading as a real measurement.
+      * ``over_limit=True`` and finite ≤ _T_RUNAWAY_CAP_C → plain formatted
+        number flagged over-limit. Lets the table keep showing the actual
+        peak temperature when a device crossed its ``thermal_t_max_C``.
+      * Otherwise → standard one-decimal °C, normal state.
     """
     try:
         t = float(value) if value is not None else float("nan")
@@ -67,18 +72,18 @@ def _temp_display(
 
     # NaN / non-finite — show "—" so an empty row doesn't look healthy.
     if not math.isfinite(t):
-        return ("—", None, None)
+        return ("—", _STATE_NORMAL)
 
     # Runaway path: divergence reported explicitly OR temp is clearly
     # non-physical. Both lead to the same badge so the user doesn't
     # see different decorations for the same underlying condition.
     if runaway or t > _T_RUNAWAY_CAP_C:
-        return (_RUNAWAY_TEXT, QColor("#fee2e2"), _RUNAWAY_BG)
+        return (_RUNAWAY_TEXT, _STATE_RUNAWAY)
 
     if over_limit:
-        return (f"{t:.1f}", _OVERLIMIT_FG, None)
+        return (f"{t:.1f}", _STATE_OVERLIMIT)
 
-    return (f"{t:.1f}", None, None)
+    return (f"{t:.1f}", _STATE_NORMAL)
 
 
 class ThermalViewerWidget(QWidget):
@@ -92,14 +97,22 @@ class ThermalViewerWidget(QWidget):
         super().__init__(parent)
         self._result: ThermalResult | None = None
         self._theme_service = theme_service
+        # Trace palette. With a theme service ``apply_theme`` overwrites this
+        # from ``get_trace_palette``; the no-service fallback (tests/previews)
+        # seeds from the light theme's semantic tokens so no raw hex lives
+        # here. ``_color_palette`` cycles it with modulo, so 5 entries suffice.
+        _fallback = LIGHT_THEME.colors
         self._series_palette = [
-            "#4CAF50",
-            "#03A9F4",
-            "#FFC107",
-            "#E91E63",
-            "#9C27B0",
-            "#FF5722",
+            _fallback.primary,
+            _fallback.success,
+            _fallback.warning,
+            _fallback.error,
+            _fallback.info,
         ]
+        # Theme-aware status colours for the severity-coded cells. Set now so
+        # they exist before any ``set_result`` / ``_temp_display`` call, then
+        # refreshed by ``apply_theme`` on every theme change.
+        self._refresh_status_colors(self._active_colors())
 
         self._tabs = QTabWidget(self)
 
@@ -148,8 +161,33 @@ class ThermalViewerWidget(QWidget):
         self._loss_plot.setLabel("left", "Loss (W)")
         self._loss_plot.setLabel("bottom", "Device")
 
-        self._loss_caption = QLabel()
-        self._loss_caption.setAlignment(Qt.AlignmentFlag.AlignRight)
+        # KPI summary strip — replaces the old run-on caption with four
+        # scannable design-system tiles. ``primary`` for the headline total,
+        # neutral for ambient context, and success/warning/error accents that
+        # carry the same safety semantics as the loss table's Status column.
+        self._kpi_total = KpiTile(
+            "Total loss", "—", "W", self._theme_service, accent="primary",
+        )
+        self._kpi_ambient = KpiTile(
+            "Ambient", "—", "°C", self._theme_service,
+        )
+        self._kpi_overlimit = KpiTile(
+            "Over limit", "—", "", self._theme_service,
+        )
+        self._kpi_hottest = KpiTile(
+            "Hottest", "—", "", self._theme_service,
+        )
+        self._kpi_strip = QWidget()
+        kpi_row = QHBoxLayout(self._kpi_strip)
+        kpi_row.setContentsMargins(0, 0, 0, 8)
+        kpi_row.setSpacing(12)
+        for tile in (
+            self._kpi_total,
+            self._kpi_ambient,
+            self._kpi_overlimit,
+            self._kpi_hottest,
+        ):
+            kpi_row.addWidget(tile, stretch=1)
 
         # pulsim 1.7 — Coupled-Solve tab. Shows the SharedHeatsink +
         # electrothermal steady-state results from result.statistics so
@@ -173,7 +211,8 @@ class ThermalViewerWidget(QWidget):
         )
         self._coupled_caption = QLabel()
         self._coupled_caption.setWordWrap(True)
-        self._coupled_caption.setStyleSheet("color: #888; font-size: 11px;")
+        # Colour set in apply_theme (foreground_muted) so the caption
+        # re-themes instead of staying a fixed grey.
 
         self._tabs.addTab(self._network_tree, "Thermal Network")
         temp_tab = QWidget()
@@ -185,9 +224,9 @@ class ThermalViewerWidget(QWidget):
         loss_tab = QWidget()
         loss_layout = QVBoxLayout(loss_tab)
         loss_layout.setContentsMargins(0, 0, 0, 0)
+        loss_layout.addWidget(self._kpi_strip)
         loss_layout.addWidget(self._loss_table)
         loss_layout.addWidget(self._loss_plot, stretch=1)
-        loss_layout.addWidget(self._loss_caption)
         self._tabs.addTab(loss_tab, "Loss Breakdown")
 
         coupled_tab = QWidget()
@@ -232,6 +271,7 @@ class ThermalViewerWidget(QWidget):
     def apply_theme(self, theme: Theme) -> None:
         """Apply active theme to all thermal viewer surfaces."""
         c = theme.colors
+        self._refresh_status_colors(c)
         if self._theme_service is not None:
             self._series_palette = [QColor(*rgb).name() for rgb in self._theme_service.get_trace_palette(theme)]
 
@@ -281,12 +321,47 @@ class ThermalViewerWidget(QWidget):
                 font-weight: 600;
             }}
         """)
-        self._loss_caption.setStyleSheet(f"color: {c.foreground_muted};")
+        self._coupled_caption.setStyleSheet(
+            f"color: {c.foreground_muted}; font-size: 11px;"
+        )
         self._apply_plot_theme(self._temperature_plot, theme)
         self._apply_plot_theme(self._loss_plot, theme)
-        if self._result is not None:
+        # Repaint every theme-coloured surface so the severity-coded cells
+        # and KPI accents follow the new theme (not just the plots).
+        if self._result is not None and self._result.devices:
+            self._populate_network(self._result)
             self._plot_temperatures(self._result)
-            self._render_loss_chart(self._result)
+            self._update_loss_summary(self._result)
+            self._update_coupled_solve(self._result)
+
+    def _active_colors(self) -> ThemeColors:
+        """The active theme's colours, or the light defaults when no theme
+        service is attached (standalone previews / tests)."""
+        if self._theme_service is not None:
+            return self._theme_service.current_theme.colors
+        return LIGHT_THEME.colors
+
+    def _refresh_status_colors(self, c: ThemeColors) -> None:
+        """Rebuild the severity-coded cell QColors from theme tokens. Called
+        in ``__init__`` and on every theme change so the runaway / over-limit
+        / OK colours track the active theme instead of being fixed hex."""
+        self._runaway_bg = QColor(c.status_runaway_background)
+        self._runaway_fg = QColor(c.status_runaway_foreground)
+        self._overlimit_fg = QColor(c.error)
+        self._ok_fg = QColor(c.success)
+
+    def _state_fg(self, state: str) -> QColor | None:
+        """Foreground QColor for a ``_temp_display`` severity state, or
+        ``None`` to keep the table's default text colour."""
+        if state == _STATE_RUNAWAY:
+            return self._runaway_fg
+        if state == _STATE_OVERLIMIT:
+            return self._overlimit_fg
+        return None
+
+    def _state_bg(self, state: str) -> QColor | None:
+        """Background QColor for a severity state — only runaway gets a fill."""
+        return self._runaway_bg if state == _STATE_RUNAWAY else None
 
     def _apply_plot_theme(self, plot_widget: pg.PlotWidget, theme: Theme) -> None:
         """Apply theme to a pyqtgraph plot surface."""
@@ -454,12 +529,15 @@ class ThermalViewerWidget(QWidget):
             for device_name, T_j in devices.items():
                 row = self._coupled_table.rowCount()
                 self._coupled_table.insertRow(row)
-                t_sink_text, _, t_sink_bg = _temp_display(
+                t_sink_text, t_sink_state = _temp_display(
                     T_sink, runaway=sink_is_runaway,
                 )
-                t_j_text, t_j_fg, t_j_bg = _temp_display(
+                t_sink_bg = self._state_bg(t_sink_state)
+                t_j_text, t_j_state = _temp_display(
                     T_j, runaway=sink_is_runaway,
                 )
+                t_j_fg = self._state_fg(t_j_state)
+                t_j_bg = self._state_bg(t_j_state)
                 cells = [
                     sink_name if first_row_for_sink else "",
                     f"{T_amb:.1f}" if first_row_for_sink else "",
@@ -480,10 +558,10 @@ class ThermalViewerWidget(QWidget):
                     # T_j on every device row.
                     if col == 2 and first_row_for_sink and t_sink_bg is not None:
                         item.setBackground(QBrush(t_sink_bg))
-                        item.setForeground(QBrush(QColor("#fee2e2")))
+                        item.setForeground(QBrush(self._runaway_fg))
                     elif col == 4 and t_j_bg is not None:
                         item.setBackground(QBrush(t_j_bg))
-                        item.setForeground(QBrush(QColor("#fee2e2")))
+                        item.setForeground(QBrush(self._runaway_fg))
                     elif col == 4 and t_j_fg is not None:
                         item.setForeground(QBrush(t_j_fg))
                     self._coupled_table.setItem(row, col, item)
@@ -511,8 +589,10 @@ class ThermalViewerWidget(QWidget):
             for device_name, T_j in devices.items():
                 row = self._coupled_table.rowCount()
                 self._coupled_table.insertRow(row)
-                t_sink_text, _, _ = _temp_display(T_sink)
-                t_j_text, t_j_fg, t_j_bg = _temp_display(T_j)
+                t_sink_text, _ = _temp_display(T_sink)
+                t_j_text, t_j_state = _temp_display(T_j)
+                t_j_fg = self._state_fg(t_j_state)
+                t_j_bg = self._state_bg(t_j_state)
                 self._coupled_table.setItem(
                     row, 0, QTableWidgetItem(sink_name if first_row_for_sink else ""),
                 )
@@ -528,7 +608,7 @@ class ThermalViewerWidget(QWidget):
                 t_j_item = QTableWidgetItem(t_j_text)
                 if t_j_bg is not None:
                     t_j_item.setBackground(QBrush(t_j_bg))
-                    t_j_item.setForeground(QBrush(QColor("#fee2e2")))
+                    t_j_item.setForeground(QBrush(self._runaway_fg))
                 elif t_j_fg is not None:
                     t_j_item.setForeground(QBrush(t_j_fg))
                 self._coupled_table.setItem(row, 4, t_j_item)
@@ -566,11 +646,11 @@ class ThermalViewerWidget(QWidget):
     def _populate_network(self, result: ThermalResult) -> None:
         self._network_tree.clear()
         for device in result.devices:
-            peak_text, peak_fg, peak_bg = _temp_display(
+            peak_text, peak_state = _temp_display(
                 device.peak_temperature,
                 over_limit=device.exceeds_limit,
             )
-            is_runaway = peak_text == _RUNAWAY_TEXT
+            is_runaway = peak_state == _STATE_RUNAWAY
             if device.thermal_limit is not None and not is_runaway:
                 temp_text = f"{peak_text} / {float(device.thermal_limit):.1f}"
             else:
@@ -586,13 +666,13 @@ class ThermalViewerWidget(QWidget):
             self._network_tree.addTopLevelItem(top_item)
             if is_runaway:
                 for column in range(4):
-                    top_item.setForeground(column, QBrush(QColor("#fee2e2")))
-                top_item.setBackground(3, QBrush(_RUNAWAY_BG))
+                    top_item.setForeground(column, QBrush(self._runaway_fg))
+                top_item.setBackground(3, QBrush(self._runaway_bg))
             elif device.exceeds_limit:
                 for column in range(4):
-                    top_item.setForeground(column, QBrush(_OVERLIMIT_FG))
+                    top_item.setForeground(column, QBrush(self._overlimit_fg))
             for stage in device.stages:
-                stage_text, stage_fg, stage_bg = _temp_display(
+                stage_text, _stage_state = _temp_display(
                     stage.temperature,
                     over_limit=device.exceeds_limit and not is_runaway,
                 )
@@ -607,11 +687,11 @@ class ThermalViewerWidget(QWidget):
                 top_item.addChild(child)
                 if is_runaway:
                     for column in range(4):
-                        child.setForeground(column, QBrush(QColor("#fee2e2")))
-                    child.setBackground(3, QBrush(_RUNAWAY_BG))
+                        child.setForeground(column, QBrush(self._runaway_fg))
+                    child.setBackground(3, QBrush(self._runaway_bg))
                 elif device.exceeds_limit:
                     for column in range(4):
-                        child.setForeground(column, QBrush(_OVERLIMIT_FG))
+                        child.setForeground(column, QBrush(self._overlimit_fg))
             top_item.setExpanded(True)
 
         self._network_tree.resizeColumnToContents(0)
@@ -638,7 +718,8 @@ class ThermalViewerWidget(QWidget):
         self._loss_table.setRowCount(0)
         total_losses = result.total_losses() or 1.0
         over_limit_devices = 0
-        hottest_name = "-"
+        runaway_devices = 0
+        hottest_device = None
         hottest_temp = float("-inf")
 
         # pulsim 1.7 — flag rows whose displayed peak T is
@@ -652,15 +733,17 @@ class ThermalViewerWidget(QWidget):
             percent = (device.total_loss / total_losses) * 100.0
             if device.peak_temperature > hottest_temp:
                 hottest_temp = device.peak_temperature
-                hottest_name = device.component_name
+                hottest_device = device
             if device.exceeds_limit:
                 over_limit_devices += 1
 
-            peak_text, peak_fg, peak_bg = _temp_display(
+            peak_text, peak_state = _temp_display(
                 device.peak_temperature,
                 over_limit=device.exceeds_limit,
             )
-            runaway_row = peak_text == _RUNAWAY_TEXT
+            runaway_row = peak_state == _STATE_RUNAWAY
+            if runaway_row:
+                runaway_devices += 1
 
             if device.thermal_limit is None:
                 status_text = "No limit"
@@ -701,31 +784,72 @@ class ThermalViewerWidget(QWidget):
                     # OTHER cells get plain foreground so the row is
                     # still readable.
                     if column == 8:  # Peak T column
-                        item.setForeground(QBrush(QColor("#fee2e2")))
-                        item.setBackground(QBrush(_RUNAWAY_BG))
+                        item.setForeground(QBrush(self._runaway_fg))
+                        item.setBackground(QBrush(self._runaway_bg))
                     elif column == 10:  # Status column
-                        item.setForeground(QBrush(QColor("#fee2e2")))
-                        item.setBackground(QBrush(_RUNAWAY_BG))
+                        item.setForeground(QBrush(self._runaway_fg))
+                        item.setBackground(QBrush(self._runaway_bg))
                     else:
-                        item.setForeground(QBrush(_OVERLIMIT_FG))
+                        item.setForeground(QBrush(self._overlimit_fg))
                 elif device.exceeds_limit:
-                    item.setForeground(QBrush(_OVERLIMIT_FG))
+                    item.setForeground(QBrush(self._overlimit_fg))
                 elif column == 10 and status_text == "OK":
-                    item.setForeground(QBrush(QColor("#22c55e")))
+                    item.setForeground(QBrush(self._ok_fg))
                 self._loss_table.setItem(row, column, item)
 
         self._render_loss_chart(result)
-        # Same RUNAWAY treatment for the caption — "Hottest: Q_boost
-        # (130,000 °C)" reads like the user owns hardware that survived
-        # a star's surface. Cap the displayed value at the runaway
-        # threshold so the caption mirrors the table.
-        hottest_text, _, _ = _temp_display(hottest_temp)
-        self._loss_caption.setText(
-            "Total loss: "
-            f"{result.total_losses():.2f} W    Ambient: {result.ambient_temperature:.1f} °C"
-            f"    Over limit: {over_limit_devices}"
-            f"    Hottest: {hottest_name} ({hottest_text})"
+        self._update_kpis(
+            result,
+            over_limit=over_limit_devices,
+            runaway=runaway_devices,
+            hottest_device=hottest_device,
+            hottest_temp=hottest_temp,
         )
+
+    def _update_kpis(
+        self,
+        result: ThermalResult,
+        *,
+        over_limit: int,
+        runaway: int,
+        hottest_device,
+        hottest_temp: float,
+    ) -> None:
+        """Push the loss-summary facts into the four KPI tiles. The accents
+        carry the same green-all-clear / amber-over-limit / red-runaway
+        semantics as the loss table's Status column, so the strip and the
+        table can never disagree."""
+        device_count = len(result.devices)
+        self._kpi_total.set_value(f"{result.total_losses():.1f}", "W")
+        self._kpi_ambient.set_value(f"{result.ambient_temperature:.0f}", "°C")
+
+        self._kpi_overlimit.set_value(f"{over_limit} / {device_count}", "")
+        if runaway > 0:
+            self._kpi_overlimit.set_accent("error")
+        elif over_limit > 0:
+            self._kpi_overlimit.set_accent("warning")
+        else:
+            self._kpi_overlimit.set_accent("success")
+
+        # Hottest device — reuse _temp_display so the >300 °C runaway cap
+        # ('>300 °C ⚠') and NaN ('—') handling match the tables exactly.
+        if hottest_device is not None:
+            hot_text, hot_state = _temp_display(hottest_temp)
+            self._kpi_hottest.set_label(f"Hottest · {hottest_device.component_name}")
+            # The runaway badge text already carries '°C ⚠'; a plain '—'
+            # has no unit either — only attach the unit to a bare number.
+            unit = "" if hot_state == _STATE_RUNAWAY or hot_text == "—" else "°C"
+            self._kpi_hottest.set_value(hot_text, unit)
+            if hot_state == _STATE_RUNAWAY:
+                self._kpi_hottest.set_accent("error")
+            elif hottest_device.exceeds_limit:
+                self._kpi_hottest.set_accent("warning")
+            else:
+                self._kpi_hottest.set_accent("success")
+        else:
+            self._kpi_hottest.set_label("Hottest")
+            self._kpi_hottest.set_value("—", "")
+            self._kpi_hottest.set_accent("")
 
     def _render_loss_chart(self, result: ThermalResult) -> None:
         self._loss_plot.clear()
@@ -791,7 +915,14 @@ class ThermalViewerWidget(QWidget):
         self._temperature_plot.clear()
         self._loss_table.setRowCount(0)
         self._loss_plot.clear()
-        self._loss_caption.setText("No thermal data available.")
+        # Reset the KPI strip to a neutral "no data" state.
+        self._kpi_total.set_value("—", "")
+        self._kpi_ambient.set_value("—", "")
+        self._kpi_overlimit.set_value("—", "")
+        self._kpi_overlimit.set_accent("")
+        self._kpi_hottest.set_label("Hottest")
+        self._kpi_hottest.set_value("—", "")
+        self._kpi_hottest.set_accent("")
         # pulsim 1.7 — reset coupled-solve view + hide banners so a
         # cleared widget doesn't show stale runaway warnings.
         self._coupled_table.setRowCount(0)

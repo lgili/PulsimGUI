@@ -354,6 +354,11 @@ class KpiTile(_Themed, QFrame):
             self._unit.setText(unit)
             self._unit.setVisible(bool(unit))
 
+    def set_label(self, label: str) -> None:
+        """Update the small-caps label (e.g. to fold a subject into it,
+        like ``HOTTEST · Q_BOOST``). Uppercased to match construction."""
+        self._label.setText(label.upper())
+
     def set_accent(self, accent: str) -> None:
         self._accent = accent
         if self._theme_service is not None:
