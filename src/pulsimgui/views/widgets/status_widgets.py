@@ -1,10 +1,27 @@
-"""Status bar widgets with icons and visual feedback."""
+"""Status bar widgets with icons and visual feedback.
+
+Every colour in this module is a :class:`~pulsimgui.services.theme_service.ThemeColors`
+token — no raw hex. Widgets accept an optional ``theme_service`` (the design
+package `_Themed` convention): when given, they restyle themselves on
+``theme_changed``; when omitted they style once from ``LIGHT_THEME`` and the
+owner may drive re-theming through the long-standing ``apply_theme(theme)``
+hooks (as ``MainWindow`` does for its status-bar segments).
+"""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from pulsimgui.resources.icons import IconService
-from pulsimgui.services.theme_service import Theme
+from pulsimgui.services.theme_service import LIGHT_THEME, Theme
+from pulsimgui.views.design.components import _tint
+from pulsimgui.views.design.tokens import FontSize, FontWeight, Radius
+
+
+def _resolve_theme(theme_service: object | None) -> Theme:
+    """The service's current theme, or the light fallback when standalone."""
+    if theme_service is not None:
+        return getattr(theme_service, "current_theme", LIGHT_THEME)
+    return LIGHT_THEME
 
 
 class IconLabel(QWidget):
@@ -14,13 +31,15 @@ class IconLabel(QWidget):
         self,
         icon_name: str,
         text: str = "",
-        icon_color: str = "#666666",
+        icon_color: str | None = None,
         parent=None,
+        theme_service: object | None = None,
     ):
         super().__init__(parent)
+        theme = _resolve_theme(theme_service)
         self._icon_name = icon_name
-        self._icon_color = icon_color
-        self._dark_mode = False
+        self._icon_color = icon_color or theme.colors.foreground_muted
+        self._dark_mode = theme.is_dark
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 0, 6, 0)
@@ -41,6 +60,23 @@ class IconLabel(QWidget):
         # without truncating "0.9.0" mid-segment.
         self._text_label.setMaximumWidth(360)
         layout.addWidget(self._text_label)
+
+        self._subscribe_theme(theme_service)
+
+    def _subscribe_theme(self, theme_service: object | None) -> None:
+        """Adopt a ThemeService: style now and restyle on every theme change.
+
+        Subclasses call this at the END of their own ``__init__`` (and pass
+        ``theme_service=None`` to ``super().__init__``) so the overridden
+        ``apply_theme`` only ever runs once their colour attributes exist.
+        """
+        self._theme_service = theme_service
+        if theme_service is None:
+            return
+        changed = getattr(theme_service, "theme_changed", None)
+        if changed is not None:
+            changed.connect(self.apply_theme)
+        self.apply_theme(_resolve_theme(theme_service))
 
     def _update_icon(self) -> None:
         """Update the icon with current color."""
@@ -97,15 +133,24 @@ class CoordinateWidget(QWidget):
 
     coordinate_entered = Signal(float, float)  # Emitted when user enters coordinates
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, theme_service: object | None = None):
         super().__init__(parent)
         self._x = 0.0
         self._y = 0.0
         self._editing = False
-        self._icon_color = "#0078D4"
-        self._focus_border_color = "#93c5fd"
+        theme = _resolve_theme(theme_service)
+        self._icon_color = theme.colors.primary
+        self._focus_border_color = theme.colors.input_focus_border
 
         self._setup_ui()
+        # Initial styling runs through the SAME path as re-theming so the
+        # editor can never render with stale, init-only colours.
+        self.apply_theme(theme)
+        self._theme_service = theme_service
+        if theme_service is not None:
+            changed = getattr(theme_service, "theme_changed", None)
+            if changed is not None:
+                changed.connect(self.apply_theme)
 
     def _setup_ui(self) -> None:
         """Set up the widget UI."""
@@ -115,13 +160,10 @@ class CoordinateWidget(QWidget):
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
 
-        # Icon
+        # Icon (pixmap painted by apply_theme with the themed accent)
         self._icon_label = QLabel()
         self._icon_label.setFixedSize(18, 16)
         self._icon_label.setStyleSheet("padding: 0px; margin: 0px;")
-        icon = IconService.get_icon("crosshairs", self._icon_color)
-        if not icon.isNull():
-            self._icon_label.setPixmap(icon.pixmap(16, 16))
         layout.addWidget(self._icon_label)
 
         # Stacked widget for display/edit modes
@@ -156,16 +198,6 @@ class CoordinateWidget(QWidget):
         self._stack.addWidget(edit_widget)
 
         layout.addWidget(self._stack)
-
-        # Apply styling
-        self.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid {self._focus_border_color};
-                border-radius: 3px;
-                padding: 1px 4px;
-                font-size: 11px;
-            }}
-        """)
 
     def _start_editing(self, event) -> None:
         """Enter edit mode."""
@@ -215,7 +247,7 @@ class CoordinateWidget(QWidget):
                 border: 1px solid {self._focus_border_color};
                 border-radius: 3px;
                 padding: 1px 4px;
-                font-size: 11px;
+                font-size: {FontSize.CAPTION}px;
                 color: {theme.colors.foreground};
                 background-color: {theme.colors.input_background};
             }}
@@ -225,10 +257,12 @@ class CoordinateWidget(QWidget):
 class ZoomWidget(IconLabel):
     """Widget showing current zoom level."""
 
-    def __init__(self, parent=None):
-        super().__init__("zoom", "100%", "#0078D4", parent)
-        self._zoom_color = "#0078D4"
+    def __init__(self, parent=None, theme_service: object | None = None):
+        theme = _resolve_theme(theme_service)
+        super().__init__("zoom", "100%", theme.colors.primary, parent)
+        self._zoom_color = theme.colors.primary
         self.setToolTip("Current zoom level")
+        self._subscribe_theme(theme_service)
 
     def setZoom(self, percent: float) -> None:
         """Set zoom percentage."""
@@ -244,10 +278,12 @@ class ZoomWidget(IconLabel):
 class SelectionWidget(IconLabel):
     """Widget showing selection count."""
 
-    def __init__(self, parent=None):
-        super().__init__("cursor", "", "#666666", parent)
-        self._selection_color = "#0078D4"
+    def __init__(self, parent=None, theme_service: object | None = None):
+        theme = _resolve_theme(theme_service)
+        super().__init__("cursor", "", theme.colors.foreground_muted, parent)
+        self._selection_color = theme.colors.primary
         self.setToolTip("Number of selected items")
+        self._subscribe_theme(theme_service)
 
     def setCount(self, count: int) -> None:
         """Set selection count."""
@@ -268,12 +304,14 @@ class SelectionWidget(IconLabel):
 class ModifiedWidget(IconLabel):
     """Widget showing document modified state."""
 
-    def __init__(self, parent=None):
-        super().__init__("saved", "", "#22c55e", parent)
+    def __init__(self, parent=None, theme_service: object | None = None):
+        theme = _resolve_theme(theme_service)
+        super().__init__("saved", "", theme.colors.success, parent)
         self._is_modified = False
-        self._saved_color = "#22c55e"
-        self._modified_color = "#f59e0b"
+        self._saved_color = theme.colors.success
+        self._modified_color = theme.colors.warning
         self.setToolTip("Document status")
+        self._subscribe_theme(theme_service)
 
     def setModified(self, modified: bool) -> None:
         """Set modified state."""
@@ -316,15 +354,9 @@ class SolverPill(QWidget):
     STATE_RECOVERED = "recovered"
     STATE_FAILED = "failed"
 
-    _STATE_PALETTE: dict[str, tuple[str, str]] = {
-        # (background, text)
-        STATE_IDLE:     ("rgba(107, 114, 128, 0.14)", "#6b7280"),
-        STATE_SUCCESS:  ("rgba(34, 197, 94, 0.18)",   "#16a34a"),
-        STATE_RECOVERED:("rgba(245, 158, 11, 0.20)",  "#d97706"),
-        STATE_FAILED:   ("rgba(239, 68, 68, 0.22)",   "#dc2626"),
-    }
+    _STATES = (STATE_IDLE, STATE_SUCCESS, STATE_RECOVERED, STATE_FAILED)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, theme_service: object | None = None):
         super().__init__(parent)
         self.setObjectName("SolverPill")
         self._integrator = "—"
@@ -332,6 +364,7 @@ class SolverPill(QWidget):
         self._linear_solver = ""
         self._adaptive = False
         self._state = self.STATE_IDLE
+        self._theme = _resolve_theme(theme_service)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout = QHBoxLayout(self)
@@ -348,6 +381,12 @@ class SolverPill(QWidget):
         self._apply_state_style()
         self.setToolTip("Click to open Simulation Settings")
 
+        self._theme_service = theme_service
+        if theme_service is not None:
+            changed = getattr(theme_service, "theme_changed", None)
+            if changed is not None:
+                changed.connect(self.apply_theme)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -363,7 +402,7 @@ class SolverPill(QWidget):
 
     def set_state(self, state: str) -> None:
         """Set the visual health state of the pill."""
-        if state not in self._STATE_PALETTE:
+        if state not in self._STATES:
             state = self.STATE_IDLE
         if state != self._state:
             self._state = state
@@ -383,10 +422,26 @@ class SolverPill(QWidget):
             parts.append("adaptive")
         self._label.setText(" · ".join(parts))
 
+    def _state_palette(self) -> tuple[str, str]:
+        """``(background, text)`` for the current state, from theme tokens.
+
+        The background is the strong status colour at low alpha (the design
+        system's ``_tint`` convention) so the pill reads correctly on both
+        light and dark status bars.
+        """
+        c = self._theme.colors
+        if self._state == self.STATE_SUCCESS:
+            return _tint(c.success, 46), c.success
+        if self._state == self.STATE_RECOVERED:
+            return _tint(c.warning, 51), c.warning
+        if self._state == self.STATE_FAILED:
+            return _tint(c.error, 56), c.error
+        return _tint(c.foreground_muted, 36), c.foreground_muted
+
     def _apply_state_style(self) -> None:
-        bg, fg = self._STATE_PALETTE[self._state]
+        bg, fg = self._state_palette()
         self.setStyleSheet(
-            f"#SolverPill {{ background: {bg}; border-radius: 8px; }} "
+            f"#SolverPill {{ background: {bg}; border-radius: {Radius.MD}px; }} "
             f"#SolverPillLabel {{ color: {fg}; padding: 0 2px; }}"
         )
 
@@ -396,23 +451,23 @@ class SolverPill(QWidget):
         super().mousePressEvent(event)
 
     def apply_theme(self, theme: Theme) -> None:
-        """Refresh palette mapping for dark / light theme switching."""
-        # Theme-token integration is wave-2; for now keep the
-        # semantic-color palette stable across themes (the contrast
-        # holds up on both backgrounds we ship).
+        """Rebuild the state palette from the new theme's tokens."""
+        self._theme = theme
         self._apply_state_style()
 
 
 class SimulationStatusWidget(IconLabel):
     """Widget showing simulation status."""
 
-    def __init__(self, parent=None):
-        super().__init__("sim-ready", "Ready", "#666666", parent)
-        self._error_color = "#ef4444"
-        self._running_color = "#0078D4"
-        self._complete_color = "#22c55e"
-        self._idle_color = "#666666"
+    def __init__(self, parent=None, theme_service: object | None = None):
+        theme = _resolve_theme(theme_service)
+        super().__init__("sim-ready", "Ready", theme.colors.foreground_muted, parent)
+        self._error_color = theme.colors.error
+        self._running_color = theme.colors.primary
+        self._complete_color = theme.colors.success
+        self._idle_color = theme.colors.foreground_muted
         self.setToolTip("Simulation status")
+        self._subscribe_theme(theme_service)
 
     def setStatus(self, status: str, is_running: bool = False, is_error: bool = False) -> None:
         """Set simulation status."""
@@ -450,53 +505,29 @@ class SimulationStatusWidget(IconLabel):
 class StatusBanner(QWidget):
     """A styled banner for displaying status messages in dialogs."""
 
-    # Status types with their colors
+    # Status types (semantic palette resolved from the active theme)
     SUCCESS = "success"
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
-
-    _STYLES = {
-        "success": {
-            "bg": "#dcfce7",
-            "border": "#86efac",
-            "text": "#166534",
-            "icon": "check",
-            "icon_color": "#22c55e",
-        },
-        "error": {
-            "bg": "#fee2e2",
-            "border": "#fca5a5",
-            "text": "#991b1b",
-            "icon": "error",
-            "icon_color": "#ef4444",
-        },
-        "warning": {
-            "bg": "#fef3c7",
-            "border": "#fcd34d",
-            "text": "#92400e",
-            "icon": "warning",
-            "icon_color": "#f59e0b",
-        },
-        "info": {
-            "bg": "#dbeafe",
-            "border": "#93c5fd",
-            "text": "#1e40af",
-            "icon": "info",
-            "icon_color": "#3b82f6",
-        },
-    }
 
     def __init__(
         self,
         text: str,
         status_type: str = "info",
         parent=None,
+        theme_service: object | None = None,
     ):
         super().__init__(parent)
         self._status_type = status_type
         self._text = text
         self._theme: Theme | None = None
+        self._theme_service = theme_service
+        if theme_service is not None:
+            self._theme = _resolve_theme(theme_service)
+            changed = getattr(theme_service, "theme_changed", None)
+            if changed is not None:
+                changed.connect(self.apply_theme)
 
         self._setup_ui()
         self._apply_style()
@@ -518,63 +549,35 @@ class StatusBanner(QWidget):
         layout.addWidget(self._text_label, 1)
 
     def _apply_style(self) -> None:
-        """Apply the style based on status type."""
-        style = self._STYLES.get(self._status_type, self._STYLES["info"])
-        if self._theme is not None:
-            c = self._theme.colors
-            style = {
-                "success": {
-                    "bg": c.success_background,
-                    "border": c.success,
-                    "text": c.success,
-                    "icon": "check",
-                    "icon_color": c.success,
-                },
-                "error": {
-                    "bg": c.error_background,
-                    "border": c.error,
-                    "text": c.error,
-                    "icon": "error",
-                    "icon_color": c.error,
-                },
-                "warning": {
-                    "bg": c.warning_background,
-                    "border": c.warning,
-                    "text": c.warning,
-                    "icon": "warning",
-                    "icon_color": c.warning,
-                },
-                "info": {
-                    "bg": c.info_background,
-                    "border": c.info,
-                    "text": c.info,
-                    "icon": "info",
-                    "icon_color": c.info,
-                },
-            }.get(self._status_type, {
-                "bg": c.info_background,
-                "border": c.info,
-                "text": c.info,
-                "icon": "info",
-                "icon_color": c.info,
-            })
+        """Apply the style based on status type, from theme tokens."""
+        theme = self._theme if self._theme is not None else LIGHT_THEME
+        c = theme.colors
+        styles = {
+            "success": {"bg": c.success_background, "accent": c.success, "icon": "check"},
+            "error": {"bg": c.error_background, "accent": c.error, "icon": "error"},
+            "warning": {"bg": c.warning_background, "accent": c.warning, "icon": "warning"},
+            "info": {"bg": c.info_background, "accent": c.info, "icon": "info"},
+        }
+        style = styles.get(self._status_type, styles["info"])
 
         # Set icon
-        icon = IconService.get_icon(style["icon"], style["icon_color"])
+        icon = IconService.get_icon(style["icon"], style["accent"])
         if not icon.isNull():
             self._icon_label.setPixmap(icon.pixmap(20, 20))
 
         # Set text color
         self._text_label.setStyleSheet(
-            f"color: {style['text']}; font-weight: 500; font-size: 12px;"
+            f"color: {style['accent']};"
+            f" font-weight: {FontWeight.MEDIUM};"
+            f" font-size: {FontSize.SMALL}px;"
         )
 
         # Set banner style
         self.setStyleSheet(f"""
             StatusBanner {{
                 background-color: {style['bg']};
-                border: 1px solid {style['border']};
-                border-radius: 6px;
+                border: 1px solid {style['accent']};
+                border-radius: {Radius.SM}px;
             }}
         """)
 
@@ -594,21 +597,21 @@ class StatusBanner(QWidget):
         self._apply_style()
 
     @classmethod
-    def success(cls, text: str, parent=None) -> "StatusBanner":
+    def success(cls, text: str, parent=None, theme_service: object | None = None) -> "StatusBanner":
         """Create a success banner."""
-        return cls(text, cls.SUCCESS, parent)
+        return cls(text, cls.SUCCESS, parent, theme_service=theme_service)
 
     @classmethod
-    def error(cls, text: str, parent=None) -> "StatusBanner":
+    def error(cls, text: str, parent=None, theme_service: object | None = None) -> "StatusBanner":
         """Create an error banner."""
-        return cls(text, cls.ERROR, parent)
+        return cls(text, cls.ERROR, parent, theme_service=theme_service)
 
     @classmethod
-    def warning(cls, text: str, parent=None) -> "StatusBanner":
+    def warning(cls, text: str, parent=None, theme_service: object | None = None) -> "StatusBanner":
         """Create a warning banner."""
-        return cls(text, cls.WARNING, parent)
+        return cls(text, cls.WARNING, parent, theme_service=theme_service)
 
     @classmethod
-    def info(cls, text: str, parent=None) -> "StatusBanner":
+    def info(cls, text: str, parent=None, theme_service: object | None = None) -> "StatusBanner":
         """Create an info banner."""
-        return cls(text, cls.INFO, parent)
+        return cls(text, cls.INFO, parent, theme_service=theme_service)

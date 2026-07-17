@@ -40,8 +40,9 @@ _HEX = re.compile(
 #   grep -rEn '#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3}\b' src/pulsimgui/views --include='*.py' | grep -v /design/ | wc -l
 # and set this to the new (lower) number to lock the improvement in.
 # History: 383 (start) → 365 (thermal_viewer.py migrated to KpiTile + theme
-# tokens, -18).
-HEX_CEILING = 365
+# tokens, -18) → 285 (chrome sweep fase 1: scope_v2/shell.py -30,
+# widgets/status_widgets.py -35, properties/properties_panel.py -15).
+HEX_CEILING = 285
 
 
 def _count_hex(path: Path) -> int:

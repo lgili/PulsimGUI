@@ -245,6 +245,7 @@ class ThermalViewerWidget(QWidget):
         self._runaway_banner = StatusBanner.warning(
             "Thermal runaway predicted — review Coupled Solve tab.",
             parent=self,
+            theme_service=self._theme_service,
         )
         self._runaway_banner.hide()
 
@@ -255,6 +256,7 @@ class ThermalViewerWidget(QWidget):
         self._limit_banner = StatusBanner.warning(
             "Junction-temperature limit exceeded — review Loss Breakdown tab.",
             parent=self,
+            theme_service=self._theme_service,
         )
         self._limit_banner.hide()
 

@@ -1603,6 +1603,9 @@ class MainWindow(QMainWindow):
         self._selection_widget.apply_theme(theme)
         self._sim_status_widget.apply_theme(theme)
         self._modified_widget.apply_theme(theme)
+        # SolverPill's state palette is theme-token derived, so it must
+        # re-tint alongside its status-bar siblings.
+        self._solver_pill.apply_theme(theme)
 
         # Clear icon cache before assigning theme-specific icons
         IconService.clear_cache()

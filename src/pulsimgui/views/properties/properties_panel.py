@@ -78,7 +78,13 @@ _DEFAULT_FAST_BLOCK_TEMPLATE = (
 class SectionHeader(QWidget):
     """A styled section header with icon and title."""
 
-    def __init__(self, icon_name: str, title: str, icon_color: str = "#3b82f6", parent=None):
+    def __init__(
+        self,
+        icon_name: str,
+        title: str,
+        icon_color: str = LIGHT_THEME.colors.primary,
+        parent=None,
+    ):
         super().__init__(parent)
         self._icon_name = icon_name
         self._icon_color = icon_color
@@ -242,12 +248,17 @@ class SIValueWidget(QWidget):
     def _apply_validation_style(self) -> None:
         """Apply current input style, respecting theme and validation state."""
         if self._theme is None:
+            # Pre-theme fallback (e.g. WaveformEditorDialog, which inherits
+            # its host dialog's styling): seed from LIGHT_THEME tokens.
+            fallback = LIGHT_THEME.colors
             if self._invalid:
-                self._edit.setStyleSheet("border: 1px solid #ef4444;")
+                self._edit.setStyleSheet(f"border: 1px solid {fallback.error};")
             else:
                 self._edit.setStyleSheet("")
             if self._unit_label is not None:
-                self._unit_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+                self._unit_label.setStyleSheet(
+                    f"color: {fallback.foreground_muted}; font-size: 11px;"
+                )
             return
 
         c = self._theme.colors
@@ -440,7 +451,7 @@ class IconButton(QPushButton):
     def __init__(self, icon_name: str, tooltip: str = "", size: int = 28, parent=None):
         super().__init__(parent)
         self._icon_name = icon_name
-        self._icon_color = "#6b7280"
+        self._icon_color = LIGHT_THEME.colors.foreground_muted
         self._theme: Theme | None = None
         self._active = False
 
@@ -455,36 +466,9 @@ class IconButton(QPushButton):
         self.setIcon(icon)
 
     def _update_style(self):
-        if self._theme is None:
-            if self._active:
-                self.setStyleSheet("""
-                    QPushButton {
-                        background-color: #dbeafe;
-                        border: 1px solid #3b82f6;
-                        border-radius: 6px;
-                    }
-                    QPushButton:hover {
-                        background-color: #bfdbfe;
-                    }
-                """)
-            else:
-                self.setStyleSheet("""
-                    QPushButton {
-                        background-color: transparent;
-                        border: 1px solid #e5e7eb;
-                        border-radius: 6px;
-                    }
-                    QPushButton:hover {
-                        background-color: #f3f4f6;
-                        border-color: #d1d5db;
-                    }
-                    QPushButton:pressed {
-                        background-color: #e5e7eb;
-                    }
-                """)
-            return
-
-        c = self._theme.colors
+        # Pre-theme instances fall back to LIGHT_THEME tokens; the mapping
+        # below is identical either way, so both paths share one stylesheet.
+        c = (self._theme or LIGHT_THEME).colors
         if self._active:
             self.setStyleSheet(f"""
                 QPushButton {{
@@ -595,7 +579,11 @@ class PropertiesPanel(QWidget):
         info_layout.setContentsMargins(12, 10, 12, 12)
         info_layout.setSpacing(8)
 
-        self._info_header = SectionHeader("info", "Component", "#3b82f6")
+        # Accent seeds only — apply_theme() re-derives these from the live
+        # theme's tokens (primary / success / warning) on every theme change.
+        self._info_header = SectionHeader(
+            "info", "Component", LIGHT_THEME.colors.primary
+        )
         info_layout.addWidget(self._info_header)
 
         summary = QWidget()
@@ -681,7 +669,9 @@ class PropertiesPanel(QWidget):
         params_container_layout.setContentsMargins(12, 10, 12, 12)
         params_container_layout.setSpacing(8)
 
-        self._params_header = SectionHeader("sliders", "Parameters", "#10b981")
+        self._params_header = SectionHeader(
+            "sliders", "Parameters", LIGHT_THEME.colors.success
+        )
         params_container_layout.addWidget(self._params_header)
 
         params_meta = QWidget()
@@ -728,7 +718,9 @@ class PropertiesPanel(QWidget):
         pos_layout.setContentsMargins(12, 10, 12, 12)
         pos_layout.setSpacing(8)
 
-        self._pos_header = SectionHeader("move", "Position", "#f59e0b")
+        self._pos_header = SectionHeader(
+            "move", "Position", LIGHT_THEME.colors.warning
+        )
         pos_layout.addWidget(self._pos_header)
 
         pos_form = QWidget()
@@ -833,7 +825,7 @@ class PropertiesPanel(QWidget):
                 self._summary_subtitle.setText(type_name)
         if self._summary_icon is not None:
             dark_mode = bool(self._theme and self._theme.is_dark)
-            icon_color = self._theme.colors.foreground_muted if self._theme else "#6b7280"
+            icon_color = (self._theme or LIGHT_THEME).colors.foreground_muted
             self._summary_icon.setPixmap(
                 create_component_icon(
                     self._component.type,

@@ -47,9 +47,9 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services.theme_service import DARK_THEME
 
 from .plot_canvas import PlotCanvas
-
 
 # ── Palette tokens ──────────────────────────────────────────────────────────
 # The scope's palette is *derived* from the host's ``ThemeService.current_theme``
@@ -60,31 +60,10 @@ from .plot_canvas import PlotCanvas
 # the rest of the shell uses.
 #
 # When the host doesn't pass a theme_service (tests, headless renders,
-# legacy callers) we fall back to ``_DARK_FALLBACK`` below — same look as
-# pre-refactor, just no longer the only path.
-_DARK_FALLBACK = {
-    "bg":            "#0d1117",
-    "surface":       "#161b22",
-    "surface_alt":   "#1c2128",
-    "surface_hi":    "#22272e",
-    "border":        "#30363d",
-    "border_soft":   "#21262d",
-    "text":          "#e6edf3",
-    "text_dim":      "#adbac7",
-    "muted":         "#7d8590",
-    "accent":        "#58a6ff",
-    "accent_soft":   "rgba(88, 166, 255, 0.16)",
-    "accent_strong": "#79b8ff",
-    "success":       "#3fb950",
-    "success_soft":  "rgba(63, 185, 80, 0.16)",
-    "warning":       "#d29922",
-    "warning_soft":  "rgba(210, 153, 34, 0.16)",
-    "error":         "#f85149",
-    "error_soft":    "rgba(248, 81, 73, 0.16)",
-    "plot_bg":       "#0b0f14",
-    "plot_grid":     "#1d242d",
-    "plot_axis":     "#6e7681",
-}
+# legacy callers) we fall back to ``_DARK_FALLBACK`` — the same mapping
+# applied to the built-in dark theme's ``ThemeColors``, so the fallback
+# stays pixel-identical to the themed dark path instead of drifting on
+# its own hand-tuned hex. (Defined after ``_palette_from_theme`` below.)
 
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
@@ -239,6 +218,12 @@ def _palette_from_theme(theme) -> dict[str, str]:
     }
 
 
+# Token-derived fallback for theme-service-less construction (tests,
+# headless renders, ad-hoc embedding) — the built-in dark theme mapped
+# through the exact same ladder the themed path uses.
+_DARK_FALLBACK = _palette_from_theme(DARK_THEME)
+
+
 # ── Scope variant / capability protocols ────────────────────────────────────
 
 
@@ -383,12 +368,15 @@ class _ScopeToolbar(QFrame):
         "export": "download",
     }
 
-    def __init__(self, *, accent_color: str = "#5b8def", parent: QWidget | None = None) -> None:
+    def __init__(self, *, accent_color: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ScopeToolbar")
         self.setFixedHeight(44)
-        self._accent_color = accent_color
-        self._icon_color = "#cdd6e3"  # default icon tone on dark surface
+        self._accent_color = accent_color or _DARK_FALLBACK["accent"]
+        # Seed icon tone from the token-derived fallback; the shell
+        # re-tints via ``retint_icons`` with the live palette right
+        # after construction (and again on every theme change).
+        self._icon_color = _DARK_FALLBACK["text_dim"]
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -459,10 +447,11 @@ class _ScopeToolbar(QFrame):
         icon_name = self._ICON_MAP.get(icon_key)
         if icon_name is not None:
             # Accent-tone icons (success/error) get their tone; the rest
-            # use the neutral icon tone derived from the theme.
+            # use the neutral icon tone derived from the theme. These
+            # seeds are replaced by the live palette via ``retint_icons``.
             tone = {
-                "success": "#4ade80",
-                "error":   "#f87171",
+                "success": _DARK_FALLBACK["success"],
+                "error":   _DARK_FALLBACK["error"],
             }.get(accent, self._icon_color)
             b.setIcon(IconService.get_icon(icon_name, tone, 18))
             b.setIconSize(QSize(18, 18))
@@ -535,7 +524,9 @@ class _ScopeSidebar(QFrame):
         head.addStretch(1)
         self._collapse_btn = QToolButton()
         self._collapse_btn.setObjectName("ScopeSidebarCollapseBtn")
-        self._collapse_btn.setIcon(IconService.get_icon("chevron-left", "#8a92a3", 14))
+        self._collapse_btn.setIcon(
+            IconService.get_icon("chevron-left", _DARK_FALLBACK["muted"], 14),
+        )
         self._collapse_btn.setIconSize(QSize(14, 14))
         self._collapse_btn.setFixedSize(22, 22)
         self._collapse_btn.setToolTip("Collapse sidebar (Ctrl+B)")
@@ -647,7 +638,7 @@ class _ScopeSidebar(QFrame):
         palette = getattr(host, "_palette", None)
         if isinstance(palette, dict) and "muted" in palette:
             return palette["muted"]
-        return "#8a92a3"
+        return _DARK_FALLBACK["muted"]
 
     # ── Signal-row management ───────────────────────────────────────────
     def add_signal_row(self, name: str, color: str, *, unit: str = "") -> None:
@@ -810,7 +801,9 @@ class _ScopeInspector(QFrame):
         head.setSpacing(8)
         self._collapse_btn = QToolButton()
         self._collapse_btn.setObjectName("ScopeInspectorCollapseBtn")
-        self._collapse_btn.setIcon(IconService.get_icon("chevron-right", "#8a92a3", 14))
+        self._collapse_btn.setIcon(
+            IconService.get_icon("chevron-right", _DARK_FALLBACK["muted"], 14),
+        )
         self._collapse_btn.setIconSize(QSize(14, 14))
         self._collapse_btn.setFixedSize(22, 22)
         self._collapse_btn.setToolTip("Collapse inspector (Ctrl+I)")
@@ -892,7 +885,7 @@ class _ScopeInspector(QFrame):
         palette = getattr(host, "_palette", None)
         if isinstance(palette, dict) and "muted" in palette:
             return palette["muted"]
-        return "#8a92a3"
+        return _DARK_FALLBACK["muted"]
 
 
 # ── Plot canvas (skeleton — capabilities/variants populate panes) ──────────
@@ -935,13 +928,28 @@ class _PlotPaneStack(QFrame):
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._empty_hint)
 
+    def _grid_tone(self) -> str:
+        """Current ``plot_grid`` colour from the host shell's live palette.
+
+        Falls back to the token-derived dark palette when the parent
+        isn't a ``BaseScopeWindow`` (tests, ad-hoc embedding) — same
+        pattern as the sidebar/inspector chevron tone lookup. Without
+        this, the empty-state grid hint would stay locked to the dark
+        fallback after a live theme switch.
+        """
+        host = self.window()
+        palette = getattr(host, "_palette", None)
+        if isinstance(palette, dict) and "plot_grid" in palette:
+            return palette["plot_grid"]
+        return _DARK_FALLBACK["plot_grid"]
+
     def paintEvent(self, event):  # noqa: D401 - Qt override
         super().paintEvent(event)
         # Subtle grid hint behind the empty-state label so the surface
         # reads as a plot area, not just a blank rectangle.
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        pen = QPen(QColor(_DARK_FALLBACK["plot_grid"]))
+        pen = QPen(QColor(self._grid_tone()))
         pen.setWidth(1)
         painter.setPen(pen)
         step = 32
@@ -1044,7 +1052,9 @@ class _ScopeTimelineBar(QFrame):
 
         self.btn_pan_left = QToolButton()
         self.btn_pan_left.setObjectName("ScopeTimelineStepBtn")
-        self.btn_pan_left.setIcon(IconService.get_icon("chevron-left", "#8a92a3", 14))
+        self.btn_pan_left.setIcon(
+            IconService.get_icon("chevron-left", _DARK_FALLBACK["muted"], 14),
+        )
         self.btn_pan_left.setIconSize(QSize(14, 14))
         self.btn_pan_left.setFixedSize(26, 24)
         self.btn_pan_left.setToolTip("Pan left")
@@ -1058,7 +1068,9 @@ class _ScopeTimelineBar(QFrame):
 
         self.btn_pan_right = QToolButton()
         self.btn_pan_right.setObjectName("ScopeTimelineStepBtn")
-        self.btn_pan_right.setIcon(IconService.get_icon("chevron-right", "#8a92a3", 14))
+        self.btn_pan_right.setIcon(
+            IconService.get_icon("chevron-right", _DARK_FALLBACK["muted"], 14),
+        )
         self.btn_pan_right.setIconSize(QSize(14, 14))
         self.btn_pan_right.setFixedSize(26, 24)
         self.btn_pan_right.setToolTip("Pan right")
@@ -1292,8 +1304,8 @@ class BaseScopeWindow(QWidget):
         # timeline pan arrows) with the current palette so they read
         # correctly on BOTH light and dark themes. The IconService
         # bakes colour into the QIcon at creation time, so the icons
-        # would otherwise stay forever-grey from their original
-        # ``#cdd6e3``/``#8a92a3`` literals — invisible on light bg.
+        # would otherwise stay forever-grey from their dark-fallback
+        # construction seeds — invisible on light bg.
         self._retint_chrome_icons()
 
     # ── Capability lifecycle ────────────────────────────────────────────
@@ -1782,9 +1794,8 @@ class BaseScopeWindow(QWidget):
     def _retint_chrome_icons(self) -> None:
         """Refresh every icon on the scope chrome with current palette colours.
 
-        Icons were baked with hardcoded colours that worked for the
-        dark theme (``#cdd6e3`` light grey on dark) but disappeared on
-        white-on-white in light mode. Now they pick up
+        Icons are baked at construction with the dark-fallback tones
+        (fine on dark, white-on-white in light mode). Here they pick up
         ``palette["text_dim"]`` / ``muted`` / accent so contrast is
         correct on both themes.
         """
