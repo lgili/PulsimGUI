@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from functools import partial
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,12 +24,11 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
-    QTabWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from pulsimgui.resources.icons import IconService
 from pulsimgui.services.backend_adapter import BackendInfo
 from pulsimgui.services.simulation_service import (
     SimulationSettings,
@@ -40,6 +40,7 @@ from pulsimgui.services.simulation_service import (
     normalize_thermal_policy,
 )
 from pulsimgui.services.theme_service import Theme
+from pulsimgui.utils.si_prefix import format_si_value
 from pulsimgui.views.properties import SILineEdit
 
 
@@ -47,6 +48,11 @@ class SimulationSettingsDialog(QDialog):
     """Dialog for configuring simulation settings."""
 
     settings_applied = Signal()
+    #: Emitted when the user chooses "Save & Run" — the host window
+    #: applies the settings (normal accept path) and then triggers the
+    #: run action. ``run_after_accept`` carries the same fact for
+    #: callers using the modal ``exec()`` result.
+    run_requested = Signal()
 
     # Pulsim 1.5+ uses a discrete-time PWL state-space simulator; the
     # only integration scheme implemented is trapezoidal. The retired
@@ -88,6 +94,7 @@ class SimulationSettingsDialog(QDialog):
         backend_info: BackendInfo | None = None,
         backend_warning: str | None = None,
         theme: Theme | None = None,
+        switching_frequencies: list[float] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -97,6 +104,15 @@ class SimulationSettingsDialog(QDialog):
         self._theme = theme
         self._preset_cards: dict[str, QPushButton] = {}
         self._selected_preset = "accurate"
+        # Switching frequencies harvested from the circuit (PWM
+        # generators, pulse sources). Drives the dt-aliasing check on
+        # the Solver page; empty list disables it.
+        self._switching_frequencies = [
+            float(f) for f in (switching_frequencies or []) if f and f > 0
+        ]
+        self._alias_suggested_dt = 0.0
+        #: True after "Save & Run" — hosts check it after ``exec()``.
+        self.run_after_accept = False
 
         self.setObjectName("simulationSettingsDialog")
         self.setWindowTitle("Simulation Settings")
@@ -123,7 +139,7 @@ class SimulationSettingsDialog(QDialog):
         # Left navigation sidebar
         self._nav_panel = QFrame()
         self._nav_panel.setObjectName("simSettingsNav")
-        self._nav_panel.setFixedWidth(154)
+        self._nav_panel.setFixedWidth(178)
         nav_layout = QVBoxLayout(self._nav_panel)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(0)
@@ -135,14 +151,41 @@ class SimulationSettingsDialog(QDialog):
         nav_layout.addWidget(nav_title)
 
         self._nav_buttons: list[QPushButton] = []
-        for i, label in enumerate(("General", "Solver", "Output", "Events", "Advanced")):
-            btn = QPushButton(label)
+
+        def _nav_btn(label: str, icon_name: str) -> QPushButton:
+            # "&" in QPushButton text declares a mnemonic and renders
+            # as an underline — double it so "Thermal & Losses" shows
+            # its ampersand. ``navLabel`` keeps the logical name for
+            # tests and tooling.
+            btn = QPushButton(label.replace("&", "&&"))
             btn.setObjectName("simNavBtn")
+            btn.setProperty("navLabel", label)
             btn.setCheckable(True)
             btn.setFlat(True)
-            btn.clicked.connect(partial(self._on_nav_clicked, i))
+            btn.setProperty("iconName", icon_name)
+            btn.setIconSize(QSize(14, 14))
+            index = len(self._nav_buttons)
+            btn.clicked.connect(partial(self._on_nav_clicked, index))
             nav_layout.addWidget(btn)
             self._nav_buttons.append(btn)
+            return btn
+
+        # Order must match the ``_content_stack`` page order below.
+        _nav_btn("General", "sliders-horizontal")
+        _nav_btn("Solver", "engine")
+        _nav_btn("Output", "waveform")
+        _nav_btn("Events", "zap")
+
+        adv_header = QLabel("ADVANCED")
+        adv_header.setObjectName("simNavSection")
+        adv_header.setContentsMargins(14, 14, 10, 4)
+        nav_layout.addWidget(adv_header)
+
+        _nav_btn("Transient", "activity")
+        _nav_btn("DC Setup", "crosshair-simple")
+        _nav_btn("Thermal & Losses", "thermometer")
+        _nav_btn("Frequency Analysis", "wave")
+        _nav_btn("Solver Stack", "layers")
 
         nav_layout.addStretch()
         main_layout.addWidget(self._nav_panel)
@@ -160,7 +203,19 @@ class SimulationSettingsDialog(QDialog):
         self._content_stack.addWidget(self._wrap_page(self._build_solver_page()))
         self._content_stack.addWidget(self._wrap_page(self._build_output_page()))
         self._content_stack.addWidget(self._wrap_page(self._build_events_page()))
-        self._content_stack.addWidget(self._build_advanced_page())
+        # Advanced sections — previously a nested QTabWidget on an
+        # "Advanced" page; now first-class nav entries so no settings
+        # hide two levels deep. The card builders are unchanged.
+        for title, card in (
+            ("Transient", self._create_newton_card()),
+            ("DC Setup", self._create_dc_card()),
+            ("Thermal & Losses", self._create_thermal_card()),
+            ("Frequency Analysis", self._create_frequency_card()),
+            ("Solver Stack", self._create_solver_stack_card()),
+        ):
+            self._content_stack.addWidget(
+                self._wrap_page(self._build_advanced_subpage(title, card))
+            )
         main_layout.addWidget(self._content_stack, 1)
 
         # ── Footer ────────────────────────────────────────────────────────
@@ -191,10 +246,31 @@ class SimulationSettingsDialog(QDialog):
             btn.blockSignals(True)
             btn.setChecked(i == index)
             btn.blockSignals(False)
+        self._refresh_nav_icons()
+
+    def _refresh_nav_icons(self) -> None:
+        """Tint nav icons — active entry gets the accent color.
+
+        Icon names ride on each button's ``iconName`` property (set at
+        construction); colors come from ``_apply_dialog_style``. Safe
+        to call before styling: falls back to neutral grays.
+        """
+        muted, active = getattr(
+            self, "_nav_icon_colors", ("#96abca", "#33b1ff")
+        )
+        for btn in self._nav_buttons:
+            name = btn.property("iconName")
+            if not name:
+                continue
+            color = active if btn.isChecked() else muted
+            btn.setIcon(IconService.get_icon(str(name), color))
 
     def _connect_cross_page_signals(self) -> None:
         self._t_stop_edit.value_changed.connect(lambda _: self._update_effective_step())
         self._t_start_edit.value_changed.connect(lambda _: self._update_effective_step())
+        self._t_stop_edit.value_changed.connect(lambda _: self._update_run_estimate())
+        self._t_start_edit.value_changed.connect(lambda _: self._update_run_estimate())
+        self._t_step_edit.value_changed.connect(lambda _: self._update_run_estimate())
 
     def _build_general_page(self) -> QWidget:
         page = QWidget()
@@ -244,7 +320,16 @@ class SimulationSettingsDialog(QDialog):
         self._engine_combo.addItem("DSED — variable-step + event prediction (v1.6+)", "dsed")
         self._engine_combo.currentIndexChanged.connect(self._update_solver_description)
         self._engine_combo.currentIndexChanged.connect(self._apply_engine_visibility)
-        form.addRow("Engine:", self._engine_combo)
+        self._engine_combo.currentIndexChanged.connect(self._sync_engine_segment)
+        self._engine_combo.currentIndexChanged.connect(
+            lambda _i: self._update_run_estimate()
+        )
+        # The combo stays as the value store (tests and persistence
+        # drive it via findData/currentData); the visible control is
+        # the segmented row below.
+        self._engine_combo.setParent(page)
+        self._engine_combo.hide()
+        form.addRow("Engine:", self._create_engine_segment())
 
         # Integration method — for the PWL engine. Hidden when DSED
         # is selected (DSED has its own integrator selector below).
@@ -285,6 +370,29 @@ class SimulationSettingsDialog(QDialog):
 
         self._t_stop_edit = SILineEdit("s")
         form.addRow("Stop time:", self._t_stop_edit)
+
+        self._run_estimate_label = QLabel("\u2014")
+        self._run_estimate_label.setObjectName("simRunEstimate")
+        form.addRow("Run size:", self._run_estimate_label)
+
+        # Aliasing banner — hidden until dt undersamples the fastest
+        # harvested switching frequency (see _update_run_estimate).
+        self._alias_banner = QFrame()
+        self._alias_banner.setObjectName("simAliasWarning")
+        alias_row = QHBoxLayout(self._alias_banner)
+        alias_row.setContentsMargins(10, 8, 10, 8)
+        alias_row.setSpacing(10)
+        self._alias_text = QLabel("")
+        self._alias_text.setObjectName("simAliasText")
+        self._alias_text.setWordWrap(True)
+        alias_row.addWidget(self._alias_text, 1)
+        self._alias_apply_btn = QPushButton("Apply")
+        self._alias_apply_btn.setObjectName("aliasApplyBtn")
+        self._alias_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._alias_apply_btn.clicked.connect(self._on_alias_apply)
+        alias_row.addWidget(self._alias_apply_btn, 0)
+        form.addRow(self._alias_banner)
+        self._alias_banner.hide()
 
         # ``max_step`` only existed for the legacy variable-step path.
         # Keep the LineEdit hidden so legacy projects load without
@@ -424,6 +532,96 @@ class SimulationSettingsDialog(QDialog):
         layout.addStretch()
         return page
 
+    def _create_engine_segment(self) -> QWidget:
+        """Segmented PWL / DSED selector backed by ``_engine_combo``."""
+        wrap = QWidget()
+        wrap.setObjectName("simEngineSegment")
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
+        self._engine_group = QButtonGroup(wrap)
+        self._engine_group.setExclusive(True)
+        self._engine_buttons: dict[str, QPushButton] = {}
+        for key, label in (
+            ("pwl", "PWL \u00b7 fixed-step"),
+            ("dsed", "DSED \u00b7 variable-step"),
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName("simEngineSegmentItem")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(partial(self._on_engine_segment_clicked, key))
+            self._engine_group.addButton(btn)
+            self._engine_buttons[key] = btn
+            row.addWidget(btn)
+        row.addStretch()
+        return wrap
+
+    def _on_engine_segment_clicked(self, key: str) -> None:
+        index = self._engine_combo.findData(key)
+        if index >= 0:
+            self._engine_combo.setCurrentIndex(index)
+
+    def _sync_engine_segment(self) -> None:
+        key = str(self._engine_combo.currentData() or "pwl")
+        buttons = getattr(self, "_engine_buttons", None)
+        if buttons and key in buttons:
+            buttons[key].setChecked(True)
+
+    def _update_run_estimate(self) -> None:
+        """Refresh the run-size chip and the dt-aliasing banner.
+
+        PWL is fixed-step: steps = window / dt, and the wall-clock
+        estimate uses a deliberately rough 200k steps/s throughput —
+        an order-of-magnitude hint, not a promise. DSED is adaptive,
+        so the chip says so instead of inventing a number. The
+        aliasing check compares dt against the fastest switching
+        frequency harvested from the circuit: under 10 samples per
+        switching cycle, edges start landing between steps and the
+        waveform aliases; the suggestion targets 20 samples/cycle.
+        """
+        engine = str(self._engine_combo.currentData() or "pwl")
+        if engine == "dsed":
+            self._run_estimate_label.setText(
+                "adaptive \u2014 step count set by rtol / atol"
+            )
+            self._alias_banner.hide()
+            return
+        window = self._t_stop_edit.value - self._t_start_edit.value
+        dt = self._t_step_edit.value
+        if window <= 0 or dt <= 0:
+            self._run_estimate_label.setText("\u2014")
+            self._alias_banner.hide()
+            return
+        steps = int(round(window / dt))
+        est_seconds = steps / 2.0e5
+        steps_txt = f"{steps:,}".replace(",", "\u2009")
+        self._run_estimate_label.setText(
+            f"\u2248 {steps_txt} steps \u00b7 est. "
+            f"{format_si_value(est_seconds, 's')}"
+        )
+        f_max = max(self._switching_frequencies, default=0.0)
+        if f_max > 0:
+            samples_per_cycle = 1.0 / (f_max * dt)
+            if samples_per_cycle < 10.0:
+                self._alias_suggested_dt = 1.0 / (f_max * 20.0)
+                self._alias_text.setText(
+                    f"dt gives {samples_per_cycle:.1f} samples per "
+                    f"switching cycle at {format_si_value(f_max, 'Hz')} "
+                    f"\u2014 switching events may alias."
+                )
+                self._alias_apply_btn.setText(
+                    f"Set dt = {format_si_value(self._alias_suggested_dt, 's')}"
+                )
+                self._alias_banner.show()
+                return
+        self._alias_banner.hide()
+
+    def _on_alias_apply(self) -> None:
+        if self._alias_suggested_dt > 0:
+            self._t_step_edit.value = self._alias_suggested_dt
+            self._update_run_estimate()
+
     def _build_output_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -492,57 +690,18 @@ class SimulationSettingsDialog(QDialog):
         layout.addStretch()
         return page
 
-    def _build_advanced_page(self) -> QWidget:
+    def _build_advanced_subpage(self, title: str, card: QWidget) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 10)
+        layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
 
-        title = QLabel("Advanced")
-        title.setObjectName("simPageTitle")
-        layout.addWidget(title)
+        page_title = QLabel(title)
+        page_title.setObjectName("simPageTitle")
+        layout.addWidget(page_title)
 
-        self._advanced_tabs = QTabWidget()
-        self._advanced_tabs.setObjectName("advancedTabs")
-        self._advanced_tabs.setDocumentMode(True)
-        self._advanced_tabs.setUsesScrollButtons(True)
-        self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
-
-        # Five sub-tabs of the Advanced page. The underlying widgets
-        # (rel/abs tol, DC strategy, thermal, AC sweep, linear solver
-        # stack) ALL still live in SimulationSettings and round-trip
-        # through .pulsim files — pulsim 1.5 simply ignores the ones
-        # it doesn't honor, so surfacing them is forward-compatible
-        # and keeps the dialog truthful about what the user can
-        # configure.
-        #
-        # Labels match what test_solver_options /
-        # test_simulation_settings_advanced expect — don't rename
-        # without updating those tests.
-        def _scroll(card: QWidget) -> QScrollArea:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            scroll.setWidget(card)
-            return scroll
-
-        self._advanced_tabs.addTab(
-            _scroll(self._create_newton_card()), "Transient"
-        )
-        self._advanced_tabs.addTab(
-            _scroll(self._create_dc_card()), "DC Setup"
-        )
-        self._advanced_tabs.addTab(
-            _scroll(self._create_thermal_card()), "Thermal & Losses"
-        )
-        self._advanced_tabs.addTab(
-            _scroll(self._create_frequency_card()), "Frequency Analysis"
-        )
-        self._advanced_tabs.addTab(
-            _scroll(self._create_solver_stack_card()), "Solver Stack"
-        )
-
-        layout.addWidget(self._advanced_tabs, 1)
+        layout.addWidget(card)
+        layout.addStretch()
         return page
 
     def _create_section_label(self, text: str) -> QLabel:
@@ -657,148 +816,6 @@ class SimulationSettingsDialog(QDialog):
 
         self._update_solver_description()
         self._update_effective_step()
-
-    def _create_solver_time_card(self) -> QWidget:
-        card, layout = self._create_card("Solver & Time", "Core transient integration parameters.")
-
-        form = self._create_form_layout()
-
-        self._solver_combo = QComboBox()
-        for label, value in self._INTEGRATION_OPTIONS:
-            self._solver_combo.addItem(label, value)
-        self._solver_combo.currentIndexChanged.connect(self._update_solver_description)
-        form.addRow("Integration method:", self._solver_combo)
-
-        self._step_mode_combo = QComboBox()
-        self._step_mode_combo.addItem("Fixed step", "fixed")
-        self._step_mode_combo.addItem("Variable step", "variable")
-        form.addRow("Step mode:", self._step_mode_combo)
-
-        self._solver_desc = QLabel("")
-        self._solver_desc.setObjectName("fieldHint")
-        self._solver_desc.setWordWrap(True)
-        form.addRow("", self._solver_desc)
-
-        self._t_start_edit = SILineEdit("s")
-        form.addRow("Start time:", self._t_start_edit)
-
-        self._t_step_edit = SILineEdit("s")
-        form.addRow("Step size:", self._t_step_edit)
-
-        self._t_stop_edit = SILineEdit("s")
-        form.addRow("Stop time:", self._t_stop_edit)
-
-        self._max_step_edit = SILineEdit("s")
-        form.addRow("Max step:", self._max_step_edit)
-
-        self._rel_tol_spin = QDoubleSpinBox()
-        self._rel_tol_spin.setDecimals(8)
-        self._rel_tol_spin.setRange(1e-10, 1e-1)
-        self._rel_tol_spin.setValue(1e-4)
-        self._rel_tol_spin.setSingleStep(1e-5)
-        self._rel_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Relative tolerance:", self._rel_tol_spin)
-
-        self._abs_tol_spin = QDoubleSpinBox()
-        self._abs_tol_spin.setDecimals(10)
-        self._abs_tol_spin.setRange(1e-12, 1e-3)
-        self._abs_tol_spin.setValue(1e-6)
-        self._abs_tol_spin.setSingleStep(1e-7)
-        self._abs_tol_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        form.addRow("Absolute tolerance:", self._abs_tol_spin)
-
-        layout.addLayout(form)
-        return card
-
-    def _create_events_output_card(self) -> QWidget:
-        card, layout = self._create_card("Events & Output", "Event handling and waveform density.")
-
-        form = self._create_form_layout()
-
-        self._enable_events_check = QCheckBox("Enable simulation event detection")
-        self._enable_events_check.setChecked(True)
-        form.addRow(self._enable_events_check)
-
-        self._max_step_retries_spin = QSpinBox()
-        self._max_step_retries_spin.setRange(0, 100)
-        self._max_step_retries_spin.setValue(8)
-        form.addRow("Max step retries:", self._max_step_retries_spin)
-
-        self._output_points_spin = QSpinBox()
-        self._output_points_spin.setRange(100, 1_000_000)
-        self._output_points_spin.setSingleStep(1000)
-        self._output_points_spin.setValue(10_000)
-        self._output_points_spin.valueChanged.connect(self._update_effective_step)
-        form.addRow("Output points:", self._output_points_spin)
-
-        self._effective_step_label = QLabel("-")
-        self._effective_step_label.setObjectName("effectiveStepValue")
-        form.addRow("Effective step:", self._effective_step_label)
-        layout.addLayout(form)
-
-        presets_label = QLabel("Duration presets")
-        presets_label.setObjectName("cardSubtitle")
-        layout.addWidget(presets_label)
-
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
-        for name, duration in self._DURATION_PRESETS:
-            chip = QPushButton(name)
-            chip.setObjectName("presetChip")
-            chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            chip.clicked.connect(partial(self._set_duration_preset, duration))
-            chips.addWidget(chip)
-        chips.addStretch()
-        layout.addLayout(chips)
-
-        self._t_stop_edit.value_changed.connect(lambda _: self._update_effective_step())
-        self._t_start_edit.value_changed.connect(lambda _: self._update_effective_step())
-
-        return card
-
-    def _create_advanced_section(self) -> QWidget:
-        container = QFrame()
-        container.setObjectName("advancedSection")
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        self._advanced_toggle = QToolButton()
-        self._advanced_toggle.setObjectName("advancedToggle")
-        self._advanced_toggle.setText("Advanced Section")
-        self._advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self._advanced_toggle.setCheckable(True)
-        self._advanced_toggle.setChecked(False)
-        self._advanced_toggle.toggled.connect(self._on_advanced_toggled)
-        layout.addWidget(self._advanced_toggle)
-
-        self._advanced_body = QFrame()
-        self._advanced_body.setObjectName("advancedBody")
-        body_layout = QVBoxLayout(self._advanced_body)
-        body_layout.setContentsMargins(10, 10, 10, 10)
-        body_layout.setSpacing(10)
-        self._advanced_tabs = QTabWidget(self._advanced_body)
-        self._advanced_tabs.setObjectName("advancedTabs")
-        self._advanced_tabs.setDocumentMode(True)
-        self._advanced_tabs.setUsesScrollButtons(False)
-        self._advanced_tabs.setElideMode(Qt.TextElideMode.ElideNone)
-        self._advanced_tabs.setTabPosition(QTabWidget.TabPosition.North)
-        self._advanced_tabs.tabBar().setExpanding(True)
-        self._advanced_tabs.addTab(self._create_newton_card(), "Transient")
-        self._advanced_tabs.addTab(self._create_dc_card(), "DC Setup")
-        self._advanced_tabs.addTab(self._create_thermal_card(), "Thermal & Losses")
-        self._advanced_tabs.addTab(self._create_frequency_card(), "Frequency Analysis")
-        body_layout.addWidget(self._advanced_tabs)
-        self._advanced_body.setVisible(False)
-        layout.addWidget(self._advanced_body)
-
-        return container
-
-    def _on_advanced_toggled(self, checked: bool) -> None:
-        self._advanced_body.setVisible(checked)
-        arrow = Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
-        self._advanced_toggle.setArrowType(arrow)
 
     def _create_newton_card(self) -> QWidget:
         card, layout = self._create_card(
@@ -1283,12 +1300,24 @@ class SimulationSettingsDialog(QDialog):
         apply_btn.clicked.connect(self._on_apply)
         layout.addWidget(apply_btn)
 
-        ok_btn = QPushButton("OK")
-        ok_btn.setObjectName("runButton")
-        ok_btn.clicked.connect(self._on_accept)
-        layout.addWidget(ok_btn)
+        save_btn = QPushButton("Save")
+        save_btn.setObjectName("saveButton")
+        save_btn.clicked.connect(self._on_accept)
+        layout.addWidget(save_btn)
+
+        run_btn = QPushButton("Save && Run")
+        run_btn.setObjectName("runButton")
+        run_btn.setIcon(IconService.get_icon("play", "#0b1117"))
+        run_btn.setIconSize(QSize(11, 11))
+        run_btn.clicked.connect(self._on_save_and_run)
+        layout.addWidget(run_btn)
 
         return layout
+
+    def _on_save_and_run(self) -> None:
+        self.run_after_accept = True
+        self.run_requested.emit()
+        self._on_accept()
 
     def _create_backend_banner(self) -> QWidget:
         banner = QFrame()
@@ -1428,6 +1457,8 @@ class SimulationSettingsDialog(QDialog):
 
     def _load_settings(self) -> None:
         self._populate_from(self._settings)
+        self._sync_engine_segment()
+        self._update_run_estimate()
 
     def _populate_from(self, source: SimulationSettings) -> None:
         self._t_start_edit.value = source.t_start
@@ -1925,6 +1956,7 @@ class SimulationSettingsDialog(QDialog):
             primary_hover = c.primary_hover
             primary_fg = c.primary_foreground
             warning = c.warning
+            success = c.success
             is_dark_theme = self._theme.is_dark
         else:
             bg = "#0d1624"
@@ -1940,6 +1972,7 @@ class SimulationSettingsDialog(QDialog):
             primary_hover = "#57c0ff"
             primary_fg = "#04111c"
             warning = "#f7c948"
+            success = "#3fb950"
             is_dark_theme = True
 
         card_bg = self._mix(panel, 0.06)
@@ -1962,6 +1995,7 @@ class SimulationSettingsDialog(QDialog):
             f"rgba({primary_q.red()}, {primary_q.green()}, {primary_q.blue()}, 32)"
         )
 
+        self._nav_icon_colors = (muted, primary)
         self.setStyleSheet(
             f"""
 QDialog#simulationSettingsDialog {{
@@ -2297,5 +2331,99 @@ QDialog#simulationSettingsDialog QCheckBox::indicator:checked {{
     background-color: {primary};
     border-color: {primary};
 }}
+
+/* ── Nav section header (ADVANCED) ── */
+QLabel#simNavSection {{
+    color: {muted};
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}}
+
+/* ── Engine segmented control ── */
+QWidget#simEngineSegment {{
+    background: {input_bg};
+    border: 1px solid {input_border};
+    border-radius: 8px;
+}}
+
+QPushButton#simEngineSegmentItem {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: {muted};
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 14px;
+}}
+
+QPushButton#simEngineSegmentItem:hover {{ color: {text}; }}
+
+QPushButton#simEngineSegmentItem:checked {{
+    background: {checked_bg};
+    border-color: {focus};
+    color: {text};
+    font-weight: 600;
+}}
+
+/* ── Run-size estimate chip ── */
+QLabel#simRunEstimate {{
+    color: {muted};
+    font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+    font-size: 11px;
+}}
+
+/* ── dt-aliasing warning banner ── */
+QFrame#simAliasWarning {{
+    background: rgba(224, 162, 58, 0.10);
+    border: 1px solid rgba(224, 162, 58, 0.45);
+    border-radius: 8px;
+}}
+
+QLabel#simAliasText {{
+    color: {warning};
+    font-size: 11px;
+}}
+
+QPushButton#aliasApplyBtn {{
+    background: rgba(224, 162, 58, 0.14);
+    border: 1px solid rgba(224, 162, 58, 0.5);
+    border-radius: 6px;
+    color: {warning};
+    font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 4px 10px;
+}}
+
+QPushButton#aliasApplyBtn:hover {{
+    background: rgba(224, 162, 58, 0.24);
+}}
+
+/* ── Footer: Save (secondary) / Save & Run (success primary) ── */
+QPushButton#saveButton {{
+    background-color: {chip_bg};
+    border: 1px solid {border};
+    border-radius: 8px;
+    color: {text};
+    font-weight: 600;
+    padding: 6px 16px;
+}}
+
+QPushButton#saveButton:hover {{ border-color: {focus}; }}
+
+QPushButton#runButton {{
+    background-color: {success};
+    border: none;
+    border-radius: 8px;
+    color: #0b1117;
+    font-weight: 700;
+    padding: 6px 18px;
+}}
+
+QPushButton#runButton:hover {{
+    background-color: {primary_hover};
+}}
 """
         )
+        self._refresh_nav_icons()
