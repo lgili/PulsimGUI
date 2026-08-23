@@ -560,20 +560,30 @@ class TestEffectiveStepCalculation:
 class TestAdvancedAnalysisSettings:
     """Tests for averaged and frequency-analysis controls."""
 
-    def test_advanced_section_uses_tabs_to_avoid_horizontal_overflow(self, qapp) -> None:
+    def test_advanced_sections_are_nav_entries(self, qapp) -> None:
         settings = SimulationSettings()
         dialog = SimulationSettingsDialog(settings)
 
-        # Advanced tabs are always visible (no toggle needed after dialog refactor).
-        # Wave-4 sub-A 1.6 added a fifth tab ("Solver Stack") for the new
-        # advanced solver-stack knobs.
-        assert hasattr(dialog, "_advanced_tabs")
-        assert dialog._advanced_tabs.count() == 5
-        assert dialog._advanced_tabs.tabText(0) == "Transient"
-        assert dialog._advanced_tabs.tabText(1) == "DC Setup"
-        assert dialog._advanced_tabs.tabText(2) == "Thermal & Losses"
-        assert dialog._advanced_tabs.tabText(3) == "Frequency Analysis"
-        assert dialog._advanced_tabs.tabText(4) == "Solver Stack"
+        # The nested advanced QTabWidget was flattened into the
+        # dialog's left navigation (redesign slice 3): every advanced
+        # section is a first-class nav entry with its own stacked
+        # page, in a stable order after the 4 core pages.
+        labels = [
+        str(btn.property("navLabel") or btn.text())
+        for btn in dialog._nav_buttons
+    ]
+        assert labels == [
+            "General",
+            "Solver",
+            "Output",
+            "Events",
+            "Transient",
+            "DC Setup",
+            "Thermal & Losses",
+            "Frequency Analysis",
+            "Solver Stack",
+        ]
+        assert dialog._content_stack.count() == len(labels)
 
     def test_dialog_saves_averaged_and_frequency_settings(self, qapp) -> None:
         settings = SimulationSettings()
