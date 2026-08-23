@@ -42,6 +42,7 @@ from pulsimgui.views.design.components import (
 )
 from pulsimgui.views.design.tokens import (
     Elevation,
+    FontFamily,
     FontSize,
     FontWeight,
     Motion,
@@ -53,6 +54,7 @@ __all__ = [
     # tokens
     "Space",
     "Radius",
+    "FontFamily",
     "FontSize",
     "FontWeight",
     "Motion",

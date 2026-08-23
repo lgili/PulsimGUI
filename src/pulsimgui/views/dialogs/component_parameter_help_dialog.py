@@ -21,14 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.models.component import (
-    Component,
-    ComponentType,
     DEFAULT_PARAMETERS,
     HIDDEN_PARAMS,
     MOTOR_SIGNAL_BUS_CHANNELS,
     MOTOR_SIGNAL_BUS_PIN_NAME,
+    Component,
+    ComponentType,
     supports_motor_signal_bus,
 )
+from pulsimgui.services import font_service
 
 
 @dataclass(frozen=True)
@@ -970,7 +971,7 @@ def _help_html_styles(is_dark: bool) -> str:
       body {{
         margin: 0;
         padding: 0;
-        font-family: "Segoe UI", "SF Pro Text", "Noto Sans", sans-serif;
+        font-family: {font_service.UI_STACK};
         color: {c["text"]};
         background: {c["surface"]};
       }}
@@ -1013,7 +1014,7 @@ def _help_html_styles(is_dark: bool) -> str:
         background: {c["surface_alt"]};
       }}
       code {{
-        font-family: "SF Mono", "Consolas", "Menlo", monospace;
+        font-family: {font_service.MONO_STACK};
         font-size: 12px;
         color: {c["text"]};
         background: {c["accent_soft"]};

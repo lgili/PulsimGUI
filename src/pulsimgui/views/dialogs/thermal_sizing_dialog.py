@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pulsimgui.services import font_service
 
 # Callback signature for the "Apply to selected HEATSINK" buttons.
 # The widget passes its current R_th [K/W] to the callback. The
@@ -208,7 +209,7 @@ class TIMSizerWidget(QWidget):
         self._result_label.setObjectName("thermalSizingResult")
         self._result_label.setStyleSheet(
             "QLabel#thermalSizingResult { font-weight: bold; "
-            "font-family: monospace; padding: 4px 0; }"
+            f"font-family: {font_service.MONO_STACK}; padding: 4px 0; }}"
         )
         self._result_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred,
@@ -380,7 +381,7 @@ class ConvectionSizerWidget(QWidget):
         self._result_label.setObjectName("thermalSizingResult")
         self._result_label.setStyleSheet(
             "QLabel#thermalSizingResult { font-weight: bold; "
-            "font-family: monospace; padding: 4px 0; }"
+            f"font-family: {font_service.MONO_STACK}; padding: 4px 0; }}"
         )
         self._result_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred,

@@ -21,6 +21,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
+from pulsimgui.services import font_service
+
 if TYPE_CHECKING:
     from pulsimgui.views.scope_v2.shell import BaseScopeWindow
 
@@ -126,7 +128,7 @@ class CursorsCapability:
         v = QLabel(value)
         vf = QFont()
         vf.setPointSize(10)
-        vf.setFamily("Menlo, Consolas, monospace")
+        vf.setFamilies(font_service.MONO_FAMILIES)
         v.setFont(vf)
         v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row_layout.addWidget(k, 0, 0)
@@ -251,7 +253,7 @@ class CursorsCapability:
             val_lbl = QLabel("ΔY: —")
             vf = QFont()
             vf.setPointSize(9)
-            vf.setFamily("Menlo, Consolas, monospace")
+            vf.setFamilies(font_service.MONO_FAMILIES)
             val_lbl.setFont(vf)
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self._per_signal_grid.addWidget(name_lbl, row, 0)
