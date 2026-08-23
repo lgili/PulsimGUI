@@ -255,9 +255,12 @@ class SimulationSettingsDialog(QDialog):
         construction); colors come from ``_apply_dialog_style``. Safe
         to call before styling: falls back to neutral grays.
         """
-        muted, active = getattr(
-            self, "_nav_icon_colors", ("#96abca", "#33b1ff")
-        )
+        colors = getattr(self, "_nav_icon_colors", None)
+        if colors is None:
+            # First _apply_dialog_style call hasn't run yet; it ends
+            # with a _refresh_nav_icons() so icons appear then.
+            return
+        muted, active = colors
         for btn in self._nav_buttons:
             name = btn.property("iconName")
             if not name:
@@ -1307,9 +1310,9 @@ class SimulationSettingsDialog(QDialog):
 
         run_btn = QPushButton("Save && Run")
         run_btn.setObjectName("runButton")
-        run_btn.setIcon(IconService.get_icon("play", "#0b1117"))
         run_btn.setIconSize(QSize(11, 11))
         run_btn.clicked.connect(self._on_save_and_run)
+        self._run_btn = run_btn
         layout.addWidget(run_btn)
 
         return layout
@@ -1972,7 +1975,7 @@ class SimulationSettingsDialog(QDialog):
             primary_hover = "#57c0ff"
             primary_fg = "#04111c"
             warning = "#f7c948"
-            success = "#3fb950"
+            success = "mediumseagreen"
             is_dark_theme = True
 
         card_bg = self._mix(panel, 0.06)
@@ -2416,7 +2419,7 @@ QPushButton#runButton {{
     background-color: {success};
     border: none;
     border-radius: 8px;
-    color: #0b1117;
+    color: {primary_fg};
     font-weight: 700;
     padding: 6px 18px;
 }}
@@ -2426,4 +2429,7 @@ QPushButton#runButton:hover {{
 }}
 """
         )
+        run_btn = getattr(self, "_run_btn", None)
+        if run_btn is not None:
+            run_btn.setIcon(IconService.get_icon("play", primary_fg))
         self._refresh_nav_icons()
