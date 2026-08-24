@@ -49,6 +49,21 @@ class _FakeCircuit:
         self.nodes[name] = idx
         return idx
 
+
+    @property
+    def user_resistor_calls(self) -> list[dict[str, Any]]:
+        """Resistors the flattener emitted for USER components.
+
+        The converter also injects ``__gmin_*`` regularizer resistors
+        (singular-mask gmin, commit 5979b28) — infrastructure, not part
+        of the flattening contract under test, so assertions filter
+        them out.
+        """
+        return [
+            call for call in self.resistor_calls
+            if not str(call.get("name", "")).startswith("__gmin_")
+        ]
+
     def add_resistor(self, name: str, n1: int, n2: int, resistance: float) -> None:
         self.resistor_calls.append(
             {"name": name, "n1": n1, "n2": n2, "resistance": resistance}
@@ -186,8 +201,8 @@ def test_marker_definition_flattens_to_resistor_on_external_nets() -> None:
 
     # Exactly one resistor — the SUBCIRCUIT_PORT markers must NOT
     # have leaked into the flat netlist as devices.
-    assert len(fake.resistor_calls) == 1
-    call = fake.resistor_calls[0]
+    assert len(fake.user_resistor_calls) == 1
+    call = fake.user_resistor_calls[0]
     assert call["resistance"] == pytest.approx(470.0)
 
     # Stamped on the right external nets.
@@ -271,8 +286,8 @@ def test_safety_net_resync_at_flatten_time() -> None:
     converter = CircuitConverter(_FakeBackend)
     fake = converter.build(circuit_data)
 
-    assert len(fake.resistor_calls) == 1
-    call = fake.resistor_calls[0]
+    assert len(fake.user_resistor_calls) == 1
+    call = fake.user_resistor_calls[0]
     assert call["resistance"] == pytest.approx(33.0)
     # The resistor must be stamped on the two external nets we
     # supplied — not on synthesized "port open" nets (which would

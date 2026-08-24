@@ -9598,7 +9598,13 @@ class PulsimBackend(SimulationBackend):
         # the DC Newton between strategy fallbacks (Auto path). Older
         # pulsim builds don't accept the kwarg — try/TypeError-fallback
         # for graceful degradation.
-        cancel_fn = getattr(callbacks, "check_cancelled", None)
+        # NOTE: the DC/AC surfaces don't thread BackendCallbacks yet
+        # (run_dc/run_ac receive only circuit_data + settings), so this
+        # resolves defensively through a stored attribute — F821 fix:
+        # the bare ``callbacks`` name never existed in this scope and
+        # raised NameError the moment these paths ran. Wire callbacks
+        # through the run_dc/run_ac signatures to activate cancel here.
+        cancel_fn = getattr(getattr(self, "_callbacks", None), "check_cancelled", None)
         sc_kw: dict = {}
         if cancel_fn is not None:
             sc_kw["should_continue"] = lambda: not cancel_fn()
@@ -9772,7 +9778,7 @@ class PulsimBackend(SimulationBackend):
                 # v1.5: forward Cancel button into the AC sweep so it
                 # preempts between frequency points (50-point sweep
                 # would otherwise block the GUI for several seconds).
-                cancel_fn = getattr(callbacks, "check_cancelled", None)
+                cancel_fn = getattr(getattr(self, "_callbacks", None), "check_cancelled", None)
                 if cancel_fn is not None:
                     sweep_kwargs["should_continue"] = lambda: not cancel_fn()
                 try:

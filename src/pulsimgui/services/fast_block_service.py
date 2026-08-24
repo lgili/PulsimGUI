@@ -301,7 +301,14 @@ class FastBlockService:
             return func, False
         try:
             from pulsim import fast_block
-            compiled = fast_block(func, n_states=n_states)
+            # ``cache=False`` is required, not an optimization opt-out:
+            # these callables are exec'd from user-authored source
+            # (co_filename == "<string>"), and numba's disk cache has
+            # no locator for exec'd code — with the default cache=True
+            # it raises ``RuntimeError: cannot cache function ... no
+            # locator available for file '<string>'`` and the except
+            # below silently degraded EVERY block to pure Python.
+            compiled = fast_block(func, n_states=n_states, cache=False)
             # pulsim's FastBlock is callable; unwrap to a plain callable
             # so our uniform __call__ doesn't double-wrap.
             return compiled, True

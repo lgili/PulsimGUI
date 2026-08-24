@@ -776,7 +776,7 @@
             "current_kp": 45.0,
             "current_ki": 24000.0,
             "id_ref": 0.0,
-            "iq_limit": 3.0,
+            "iq_limit": 7.4,
             "v_limit_frac": 0.92,
             "speed_ref_rpm": 1800.0,
             "speed_ramp_s": 0.1,
