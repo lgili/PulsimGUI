@@ -4095,6 +4095,39 @@ class MainWindow(QMainWindow):
             ac_settings=ac_settings,
         )
 
+    def _project_switching_frequencies(self) -> list[float]:
+        """Harvest switching frequencies from the active circuit.
+
+        Feeds the settings dialog's dt-aliasing check. Sources:
+        PWM-generator components (their ``frequency`` parameter) and
+        any source whose waveform dict is pulse/square with a
+        ``frequency`` key. Defensive by design — a malformed component
+        never blocks opening the settings dialog.
+        """
+        freqs: list[float] = []
+        circuit = getattr(self._project, "circuit", None)
+        components = getattr(circuit, "components", None) or {}
+        for comp in components.values():
+            try:
+                params = getattr(comp, "parameters", None) or {}
+                type_name = getattr(
+                    getattr(comp, "component_type", None), "name", ""
+                )
+                if "PWM" in type_name:
+                    f = float(params.get("frequency", 0) or 0)
+                    if f > 0:
+                        freqs.append(f)
+                waveform = params.get("waveform")
+                if isinstance(waveform, dict) and str(
+                    waveform.get("type", "")
+                ).lower() in ("pulse", "square"):
+                    f = float(waveform.get("frequency", 0) or 0)
+                    if f > 0:
+                        freqs.append(f)
+            except Exception:  # noqa: BLE001 — defensive per component
+                continue
+        return freqs
+
     def _on_simulation_settings(self) -> None:
         """Show simulation settings dialog."""
         self._apply_project_simulation_settings_to_service()
@@ -4103,6 +4136,7 @@ class MainWindow(QMainWindow):
             backend_info=self._simulation_service.backend_info,
             backend_warning=self._simulation_service.backend_issue_message,
             theme=self._theme_service.current_theme,
+            switching_frequencies=self._project_switching_frequencies(),
             parent=self,
         )
 
@@ -4119,6 +4153,11 @@ class MainWindow(QMainWindow):
 
         if dialog.exec():
             apply_dialog_settings()
+            # "Save & Run" — settings are already applied above;
+            # kick the normal run action so behaviour (busy state,
+            # progress, scope follow) matches pressing F5.
+            if dialog.run_after_accept:
+                self._on_run_simulation()
 
     # ------------------------------------------------------------------
     # P1.3 — Solver pill helpers

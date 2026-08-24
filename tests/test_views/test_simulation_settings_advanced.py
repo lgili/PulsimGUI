@@ -18,13 +18,23 @@ def dialog(qapp):
     dlg.deleteLater()
 
 
-def test_solver_stack_tab_present(dialog):
-    """Solver Stack tab is added to the advanced tab widget."""
+def test_solver_stack_page_present(dialog):
+    """Solver Stack is a first-class nav entry (the advanced sections
+    were flattened out of the nested QTabWidget into the dialog's
+    left navigation)."""
     labels = [
-        dialog._advanced_tabs.tabText(i)
-        for i in range(dialog._advanced_tabs.count())
+        str(btn.property("navLabel") or btn.text())
+        for btn in dialog._nav_buttons
     ]
     assert "Solver Stack" in labels
+    # The full advanced set rides in the nav, one entry each.
+    for expected in (
+        "Transient",
+        "DC Setup",
+        "Thermal & Losses",
+        "Frequency Analysis",
+    ):
+        assert expected in labels
 
 
 def test_solver_stack_tab_has_four_advanced_knobs(dialog):
