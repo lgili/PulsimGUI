@@ -4105,14 +4105,28 @@ class MainWindow(QMainWindow):
         never blocks opening the settings dialog.
         """
         freqs: list[float] = []
-        circuit = getattr(self._project, "circuit", None)
+        # Project stores circuits in a dict keyed by name — the active
+        # one comes from get_active_circuit() (there is no `.circuit`
+        # attribute; the original getattr silently harvested nothing,
+        # so the dt-aliasing banner never fired on real projects).
+        circuit = None
+        getter = getattr(self._project, "get_active_circuit", None)
+        if callable(getter):
+            try:
+                circuit = getter()
+            except Exception:  # noqa: BLE001 — defensive
+                circuit = None
         components = getattr(circuit, "components", None) or {}
         for comp in components.values():
             try:
                 params = getattr(comp, "parameters", None) or {}
-                type_name = getattr(
-                    getattr(comp, "component_type", None), "name", ""
+                # Model components expose ``type`` (ComponentType);
+                # ``component_type`` was the dict-schema name and never
+                # existed on the model — harvesting matched nothing.
+                ctype = getattr(comp, "type", None) or getattr(
+                    comp, "component_type", None
                 )
+                type_name = getattr(ctype, "name", "")
                 if "PWM" in type_name:
                     f = float(params.get("frequency", 0) or 0)
                     if f > 0:
