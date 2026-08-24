@@ -53,8 +53,10 @@ class WireItem(QGraphicsPathItem):
         CONNECTION_DOMAIN_SIGNAL: QColor(171, 212, 255),
         CONNECTION_DOMAIN_THERMAL: QColor(255, 205, 156),
     }
-    SELECTED_COLOR = QColor(59, 130, 246)  # Blue to match component selection
-    SELECTED_GLOW = QColor(59, 130, 246, 60)  # Semi-transparent for glow
+    # Theme-writable (see SchematicScene.set_selection_color) — kept in
+    # lock-step with ComponentItem so wires and bodies highlight alike.
+    SELECTED_COLOR = QColor(59, 130, 246)
+    SELECTED_GLOW = QColor(59, 130, 246, 60)
     JUNCTION_RADIUS = 4.2
     JUNCTION_RADIUS_HOVER = 5.2
     CONNECTION_RADIUS = 3.8  # Connection indicator circles

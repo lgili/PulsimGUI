@@ -1590,6 +1590,9 @@ class MainWindow(QMainWindow):
         grid_color = QColor(theme.colors.schematic_grid)
         self._schematic_scene.set_background_color(bg_color)
         self._schematic_scene.set_grid_color(grid_color)
+        self._schematic_scene.set_selection_color(
+            QColor(theme.colors.schematic_selection)
+        )
 
         # Update component and overlay colors
         self._schematic_scene.set_dark_mode(theme.is_dark)

@@ -48,6 +48,7 @@ PIN_RING_STROKE = 1.5
 # ── Selection / hover ──────────────────────────────────────────────────────
 SELECTION_RADIUS = 4.0       # corner radius of the selection halo
 SELECTION_STROKE = 1.8
+SELECTION_HANDLE = 7.0       # side of the 4 corner-handle squares
 HOVER_RADIUS = 3.0
 HOVER_STROKE = 1.0
 
