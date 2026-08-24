@@ -96,6 +96,12 @@ class PlotCanvas(QFrame):
         self.setObjectName("ScopePlotCanvas")
         self.setMinimumHeight(280)
         self._accent = accent_color
+        # Live palette — starts at the dark defaults, replaced by the
+        # host theme's ``plot_*`` tokens via :meth:`apply_theme`.
+        self._plot_bg = _PLOT_BG
+        self._plot_grid = _PLOT_GRID
+        self._plot_axis = _PLOT_AXIS
+        self._plot_text = _PLOT_TEXT
 
         # pyqtgraph global setup. Falls back to raster if OpenGL is not
         # available (headless CI / WSL).
@@ -162,11 +168,50 @@ class PlotCanvas(QFrame):
         ov.addWidget(self._empty_hint)
         self._empty_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._empty_overlay.raise_()
+        self._restyle_empty_overlay()
+
+    # ── Theming ─────────────────────────────────────────────────────────
+
+    def _restyle_empty_overlay(self) -> None:
         self._empty_overlay.setStyleSheet(
             f"#ScopePlotEmptyOverlay {{ background: transparent; }}"
-            f"QLabel#ScopeEmptyTitle {{ color: {_PLOT_TEXT}; }}"
-            f"QLabel#ScopeEmptyHint  {{ color: {_PLOT_AXIS}; }}"
+            f"QLabel#ScopeEmptyTitle {{ color: {self._plot_text}; }}"
+            f"QLabel#ScopeEmptyHint  {{ color: {self._plot_axis}; }}"
         )
+
+    def apply_theme(self, theme) -> None:
+        """Adopt the host theme's ``plot_*`` tokens.
+
+        The canvas previously froze the module's dark palette at
+        construction, so the theme's plot tokens (which exist for
+        light AND dark) never reached pyqtgraph — a light-themed app
+        kept a dark plot, and the studio theme's plot surface color
+        was ignored. Called by ``BaseScopeWindow`` at construction and
+        on every ``ThemeService.theme_changed``.
+        """
+        colors = getattr(theme, "colors", None)
+        if colors is None:
+            return
+        self._plot_bg = getattr(colors, "plot_background", self._plot_bg)
+        self._plot_grid = getattr(colors, "plot_grid", self._plot_grid)
+        self._plot_axis = getattr(colors, "plot_axis", self._plot_axis)
+        self._plot_text = getattr(colors, "plot_text", self._plot_text)
+
+        self._graphics.setBackground(self._plot_bg)
+        self._fft_graphics.setBackground(self._plot_bg)
+
+        axis_pen = pg.mkPen(self._plot_axis)
+        text_pen = pg.mkPen(self._plot_text)
+        plots = list(self._panels.values())
+        if self._fft_plot is not None:
+            plots.append(self._fft_plot)
+        for plot in plots:
+            for axis_name in ("left", "bottom"):
+                axis = plot.getAxis(axis_name)
+                axis.setPen(axis_pen)
+                axis.setTextPen(text_pen)
+
+        self._restyle_empty_overlay()
 
     # ── Panel + signal API ──────────────────────────────────────────────
 
@@ -182,8 +227,8 @@ class PlotCanvas(QFrame):
         # Style axes to match the shell tokens.
         for axis_name in ("left", "bottom"):
             axis = plot.getAxis(axis_name)
-            axis.setPen(pg.mkPen(_PLOT_AXIS))
-            axis.setTextPen(pg.mkPen(_PLOT_TEXT))
+            axis.setPen(pg.mkPen(self._plot_axis))
+            axis.setTextPen(pg.mkPen(self._plot_text))
         plot.setLabel("left", name, units=unit) if unit else plot.setLabel("left", name)
         # Only the bottom-most panel shows the time axis label/ticks.
         plot.getAxis("bottom").setStyle(showValues=True)
