@@ -117,6 +117,27 @@ class SchematicScene(QGraphicsScene):
         self._grid_color = color
         self.update()
 
+    def set_selection_color(self, color: QColor) -> None:
+        """Restyle the selection accent from the theme.
+
+        Writes the CLASS attributes on both item families so every
+        existing and future item picks the color up — the derived
+        fill/glow alphas keep the established translucency.
+        """
+        from pulsimgui.views.schematic.items import ComponentItem, WireItem
+
+        accent = QColor(color)
+        fill = QColor(accent)
+        fill.setAlpha(30)
+        glow = QColor(accent)
+        glow.setAlpha(60)
+
+        ComponentItem.SELECTED_COLOR = QColor(accent)
+        ComponentItem.SELECTED_FILL = fill
+        WireItem.SELECTED_COLOR = QColor(accent)
+        WireItem.SELECTED_GLOW = glow
+        self.update()
+
     @property
     def background_color(self) -> QColor:
         """Get the current background color."""

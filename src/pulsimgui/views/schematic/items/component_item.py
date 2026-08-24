@@ -194,8 +194,14 @@ class ComponentItem(QGraphicsItem):
     LINE_WIDTH = style.STROKE_BODY
     LINE_COLOR = QColor(33, 42, 56)
     LINE_COLOR_DARK = QColor(225, 232, 242)
-    SELECTED_COLOR = QColor(59, 130, 246)  # Bright blue for selection
-    SELECTED_FILL = QColor(59, 130, 246, 30)  # Semi-transparent blue fill
+    # Selection colors are CLASS attributes so the theme can restyle
+    # every item at once: ``SchematicScene.set_selection_color`` writes
+    # them from ``ThemeColors.schematic_selection`` (they previously
+    # hardcoded a blue that ignored the token, so the studio theme's
+    # accent never reached the canvas). Defaults keep the legacy look
+    # for headless/tests before any theme is applied.
+    SELECTED_COLOR = QColor(59, 130, 246)
+    SELECTED_FILL = QColor(59, 130, 246, 30)
     HOVER_COLOR = QColor(147, 197, 253)  # Light blue on hover
     HOVER_FILL = QColor(147, 197, 253, 20)  # Very subtle hover fill
     PIN_RADIUS = style.PIN_RADIUS
@@ -519,7 +525,8 @@ class ComponentItem(QGraphicsItem):
             painter.drawEllipse(center, ring_r, ring_r)
 
     def _draw_selection(self, painter: QPainter) -> None:
-        """Draw selection highlight."""
+        """Draw selection highlight: soft fill, accent outline, and the
+        four corner handles of the Pulsim Studio visual language."""
         rect = self.boundingRect()
 
         painter.setPen(Qt.PenStyle.NoPen)
@@ -529,6 +536,25 @@ class ComponentItem(QGraphicsItem):
         painter.setPen(QPen(self.SELECTED_COLOR, style.SELECTION_STROKE, Qt.PenStyle.SolidLine))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, style.SELECTION_RADIUS, style.SELECTION_RADIUS)
+
+        # Corner handles — filled with the canvas color so they read as
+        # cut-outs on the outline, stroked with the selection accent.
+        handle = style.SELECTION_HANDLE
+        half = handle / 2.0
+        scene = self.scene()
+        canvas = getattr(scene, "background_color", None)
+        fill = QColor(canvas) if canvas is not None else QColor(0, 0, 0, 0)
+        painter.setPen(QPen(self.SELECTED_COLOR, 1.4))
+        painter.setBrush(QBrush(fill))
+        for corner in (
+            rect.topLeft(),
+            rect.topRight(),
+            rect.bottomLeft(),
+            rect.bottomRight(),
+        ):
+            painter.drawRect(
+                QRectF(corner.x() - half, corner.y() - half, handle, handle)
+            )
 
     def _draw_hover(self, painter: QPainter) -> None:
         """Draw hover highlight (subtle)."""
