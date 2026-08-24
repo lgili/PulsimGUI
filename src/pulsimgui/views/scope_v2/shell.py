@@ -1205,6 +1205,10 @@ class BaseScopeWindow(QWidget):
         body.addWidget(self.sidebar)
 
         self.plot_canvas = PlotCanvas(accent_color=variant.accent_color, parent=self)
+        # Adopt the host theme's plot_* tokens immediately (the canvas
+        # boots on its dark fallback palette otherwise).
+        if theme_service is not None and hasattr(theme_service, "current_theme"):
+            self.plot_canvas.apply_theme(theme_service.current_theme)
         body.addWidget(self.plot_canvas)
 
         self.inspector = _ScopeInspector(self)
@@ -1791,6 +1795,7 @@ class BaseScopeWindow(QWidget):
         self._apply_stylesheet()
         self._normalize_form_widgets()
         self._retint_chrome_icons()
+        self.plot_canvas.apply_theme(theme)
 
     def _retint_chrome_icons(self) -> None:
         """Refresh every icon on the scope chrome with current palette colours.
@@ -2072,21 +2077,21 @@ class BaseScopeWindow(QWidget):
                they read as primary actions even when not hovered. */
             QToolButton#ScopeToolbarBtn[accent="success"] {{
                 color: {p["success"]};
+                background-color: transparent;
+                border-color: transparent;
+            }}
+            QToolButton#ScopeToolbarBtn[accent="success"]:hover {{
                 background-color: {p["success_soft"]};
                 border-color: {p["success"]};
             }}
-            QToolButton#ScopeToolbarBtn[accent="success"]:hover {{
-                background-color: {p["success"]};
-                color: {p["bg"]};
-            }}
             QToolButton#ScopeToolbarBtn[accent="error"] {{
                 color: {p["error"]};
-                background-color: {p["error_soft"]};
-                border-color: {p["error"]};
+                background-color: transparent;
+                border-color: transparent;
             }}
             QToolButton#ScopeToolbarBtn[accent="error"]:hover {{
-                background-color: {p["error"]};
-                color: {p["bg"]};
+                background-color: {p["error_soft"]};
+                border-color: {p["error"]};
             }}
             QFrame#ScopeToolbarSep {{
                 background-color: {p["border"]};
