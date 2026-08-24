@@ -1,6 +1,59 @@
-"""Icon management for PulsimGui using QtAwesome."""
+"""Icon management for PulsimGUI — bundled SVG set first.
 
-from PySide6.QtGui import QIcon
+Redesign slice 2. Icons previously rendered exclusively through
+QtAwesome and mixed two icon FONTS — Phosphor (``ph.*``) and Material
+Design (``mdi6.*``) — with visibly different stroke weights and
+metaphors in the same toolbar. Without qtawesome installed the entire
+app silently rendered empty icons, and any unknown name silently
+became a filled circle.
+
+Resolution order now:
+
+1. **The bundled SVG set** (:mod:`pulsimgui.resources.icons.icons`) —
+   one Lucide-convention family (24 grid, stroke 2, round caps),
+   including the EDA-domain glyphs (probes, wire, net label, FFT,
+   engine, auto-layout) that no icon font ships. Self-contained: no
+   runtime dependency, identical rendering on every platform,
+   HiDPI-crisp through QSvgRenderer.
+2. **QtAwesome passthrough** for names that carry an explicit font
+   prefix (``ph.house``, ``mdi6.chart-line``) — migration escape
+   hatch for call sites not yet on the canonical set.
+3. **Legacy alias map** (``ICON_MAP``) through QtAwesome, for any
+   unprefixed name the SVG set doesn't cover yet.
+4. ``help-circle`` from the SVG set, with a debug log — a visible,
+   consistent "missing icon" instead of a silently wrong one.
+
+Public API is unchanged: ``IconService.get_icon / get_themed_icon /
+clear_cache / list_icons``, module-level ``icon()``, plus the legacy
+``get_icon_svg`` / ``get_available_icons`` / ``ICONS`` exports.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+
+from pulsimgui.resources.icons.icons import (
+    ICONS as SVG_ICONS,
+)
+from pulsimgui.resources.icons.icons import (
+    get_available_icons as _svg_available,
+)
+from pulsimgui.resources.icons.icons import (
+    get_icon_svg as _svg_document,
+)
+from pulsimgui.resources.icons.icons import (
+    svg_for as _svg_for,
+)
+
+try:
+    from PySide6.QtSvg import QSvgRenderer
+    HAS_QTSVG = True
+except Exception:  # pragma: no cover - QtSvg ships with PySide6
+    QSvgRenderer = None  # type: ignore[assignment]
+    HAS_QTSVG = False
 
 try:
     import qtawesome as qta
@@ -8,17 +61,17 @@ try:
 except ImportError:
     HAS_QTAWESOME = False
 
-# Map our icon names to QtAwesome Phosphor icons (ph prefix)
-# Using regular weight for a clean look similar to Feather/Lucide
+logger = logging.getLogger(__name__)
+
+# Legacy alias map (unprefixed name -> qtawesome name). Only consulted
+# for names the bundled SVG set does not carry; kept so nothing breaks
+# mid-migration. Do NOT add new entries — add the glyph to the SVG set.
 ICON_MAP = {
-    # File operations
     "file-plus": "ph.file-plus",
     "folder-open": "ph.folder-open",
     "save": "ph.floppy-disk",
     "file": "ph.file",
     "folder": "ph.folder",
-
-    # Edit operations
     "undo": "ph.arrow-u-up-left",
     "redo": "ph.arrow-u-up-right",
     "cut": "ph.scissors",
@@ -28,28 +81,20 @@ ICON_MAP = {
     "delete": "ph.x",
     "edit": "ph.pencil-simple",
     "rename": "ph.text-t",
-
-    # View/Zoom
     "zoom-in": "ph.magnifying-glass-plus",
     "zoom-out": "ph.magnifying-glass-minus",
     "maximize": "ph.arrows-out",
     "minimize": "ph.arrows-in",
-
-    # Playback/Simulation
     "play": "ph.play",
     "stop": "ph.stop",
     "pause": "ph.pause",
     "square": "ph.stop",
     "step-forward": "ph.skip-forward",
     "step-forward-filled": "ph.skip-forward-fill",
-
-    # Navigation
     "chevron-right": "ph.caret-right",
     "chevron-down": "ph.caret-down",
     "chevron-up": "ph.caret-up",
     "chevron-left": "ph.caret-left",
-
-    # UI elements
     "search": "ph.magnifying-glass",
     "settings": "ph.gear",
     "menu": "ph.list",
@@ -64,30 +109,20 @@ ICON_MAP = {
     "info": "ph.info",
     "warning": "ph.warning",
     "error": "ph.x-circle",
-
-    # Component library categories
-    "zap": "ph.lightning",  # Sources
-    "cpu": "ph.cpu",  # Semiconductors
-    "box": "ph.cube",  # Passive
-    "activity": "ph.activity",  # Measurements
-    "tool": "ph.wrench",  # Misc
-    "grid": "ph.grid-four",  # Grid
-    "grid-filled": "ph.grid-four-fill",  # Dense grid icon for compact toolbars
-    "wire": "ph.path",  # Schematic wire tool
-    "hand": "ph.hand",  # Selection/hand tool
-    # P0.3 — rotate-cw/ccw used to share Phosphor's `arrow-clockwise`
-    # glyph, which is visually indistinguishable from the redo/undo
-    # icons. Switching to the `arrows-clockwise` set (round-trip object-
-    # rotation glyphs) avoids the "duplicate undo/redo" misread in the
-    # toolbar. Falls back to the original glyph names on older
-    # qtawesome versions.
+    "zap": "ph.lightning",
+    "cpu": "ph.cpu",
+    "box": "ph.cube",
+    "activity": "ph.activity",
+    "tool": "ph.wrench",
+    "grid": "ph.grid-four",
+    "grid-filled": "ph.grid-four-fill",
+    "wire": "ph.path",
+    "hand": "ph.hand",
     "rotate-cw": "ph.arrows-clockwise",
     "rotate-ccw": "ph.arrows-counter-clockwise",
-    "star": "ph.star",  # Favorites
-    "heart": "ph.heart",  # Favorites alt
-    "clock": "ph.clock",  # Recently Used
-
-    # Status bar icons
+    "star": "ph.star",
+    "heart": "ph.heart",
+    "clock": "ph.clock",
     "crosshairs": "ph.crosshair",
     "crosshair-simple": "ph.crosshair-simple",
     "zoom": "ph.magnifying-glass",
@@ -99,12 +134,8 @@ ICON_MAP = {
     "sim-running": "ph.spinner",
     "sim-done": "ph.check",
     "sim-error": "ph.warning",
-
-    # Properties panel icons
     "sliders": "ph.sliders",
     "move": "ph.arrows-out-cardinal",
-
-    # Additional icons
     "layers": "ph.stack",
     "table": "ph.table",
     "wave": "ph.wave-sine",
@@ -135,55 +166,97 @@ ICON_MAP = {
     "about": "ph.info",
 }
 
+# Sizes baked into each QIcon (logical px). Every size is rendered at
+# 2x and tagged with a device-pixel-ratio of 2 so retina displays get
+# genuinely sharp strokes instead of upscaled 1x rasters.
+_RENDER_SIZES = (16, 20, 24, 32, 48)
+_DPR = 2.0
+
 
 class IconService:
-    """Service for creating and managing application icons using QtAwesome."""
+    """Application icon factory — bundled SVG set with legacy fallbacks."""
 
     _cache: dict[tuple[str, str], QIcon] = {}
 
+    # ------------------------------------------------------------------
+    # SVG rendering
+    # ------------------------------------------------------------------
     @staticmethod
-    def _resolve_qta_name(name: str) -> str:
-        """Resolve logical icon aliases or accept explicit QtAwesome names.
+    def _render_svg_icon(name: str, color: str) -> QIcon | None:
+        """Rasterize a bundled glyph into a multi-size, HiDPI QIcon."""
+        if not HAS_QTSVG:
+            return None
+        svg = _svg_for(name, color=color, size=24)
+        if svg is None:
+            return None
 
-        When callers pass names with a font prefix (e.g. ``mdi6.chart-line``),
-        we use them directly. Otherwise we map aliases from ``ICON_MAP`` and
-        fallback to Phosphor for backward compatibility.
-        """
-        if "." in name:
-            return name
-        return ICON_MAP.get(name, f"ph.{name}")
+        renderer = QSvgRenderer(svg.encode("utf-8"))
+        if not renderer.isValid():  # pragma: no cover - authoring error
+            logger.warning("icon %r: invalid SVG body", name)
+            return None
 
+        out = QIcon()
+        for logical in _RENDER_SIZES:
+            physical = int(logical * _DPR)
+            image = QImage(physical, physical, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            renderer.render(painter, QRectF(0, 0, physical, physical))
+            painter.end()
+            pixmap = QPixmap.fromImage(image)
+            pixmap.setDevicePixelRatio(_DPR)
+            out.addPixmap(pixmap)
+        return out
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     @classmethod
     def get_icon(cls, name: str, color: str = "#666666", size: int = 16) -> QIcon:
-        """Get a QIcon for the given icon name.
+        """Get a QIcon for ``name``.
 
-        Args:
-            name: Icon name (e.g., "save", "undo")
-            color: Hex color for the icon
-            size: Icon size in pixels (used for scaling)
-
-        Returns:
-            QIcon instance
+        ``size`` is kept for API compatibility; the returned icon
+        carries multiple pre-rendered sizes and scales to whatever the
+        widget requests.
         """
+        cache_key = (name, color)
+        cached = cls._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        icon_obj: QIcon | None = None
+
+        # 1. Explicit font-prefixed names go straight to qtawesome.
+        if "." in name:
+            icon_obj = cls._qtawesome_icon(name, color)
+        else:
+            # 2. Bundled SVG set — the canonical path.
+            icon_obj = cls._render_svg_icon(name, color)
+            # 3. Legacy alias map through qtawesome.
+            if icon_obj is None:
+                qta_name = ICON_MAP.get(name)
+                if qta_name is not None:
+                    icon_obj = cls._qtawesome_icon(qta_name, color)
+            # 4. Visible, consistent "missing icon".
+            if icon_obj is None:
+                logger.debug("icon %r not in the bundled set; using fallback", name)
+                icon_obj = cls._render_svg_icon("help-circle", color)
+
+        if icon_obj is None:  # pragma: no cover - QtSvg and qtawesome both absent
+            icon_obj = QIcon()
+
+        cls._cache[cache_key] = icon_obj
+        return icon_obj
+
+    @staticmethod
+    def _qtawesome_icon(qta_name: str, color: str) -> QIcon | None:
         if not HAS_QTAWESOME:
-            return QIcon()
-
-        qta_name = cls._resolve_qta_name(name)
-        cache_key = (qta_name, color)
-        if cache_key in cls._cache:
-            return cls._cache[cache_key]
-
+            return None
         try:
-            icon = qta.icon(qta_name, color=color)
+            return qta.icon(qta_name, color=color)
         except Exception:
-            # Fallback to a default icon if not found
-            try:
-                icon = qta.icon("ph.circle", color=color)
-            except Exception:
-                return QIcon()
-
-        cls._cache[cache_key] = icon
-        return icon
+            return None
 
     @classmethod
     def get_themed_icon(
@@ -194,18 +267,7 @@ class IconService:
         is_dark: bool = False,
         size: int = 16,
     ) -> QIcon:
-        """Get an icon with appropriate color for the current theme.
-
-        Args:
-            name: Icon name
-            light_color: Color to use in light theme
-            dark_color: Color to use in dark theme
-            is_dark: Whether dark theme is active
-            size: Icon size
-
-        Returns:
-            QIcon with theme-appropriate color
-        """
+        """Get an icon colored for the current theme."""
         color = dark_color if is_dark else light_color
         return cls.get_icon(name, color, size)
 
@@ -216,37 +278,36 @@ class IconService:
 
     @classmethod
     def list_icons(cls) -> list[str]:
-        """Get list of available icon names."""
-        return list(ICON_MAP.keys())
+        """All canonical icon names (bundled SVG set)."""
+        return _svg_available()
 
 
 # Convenience function
 def icon(name: str, color: str = "#666666", size: int = 16) -> QIcon:
-    """Quick access to get an icon.
-
-    Args:
-        name: Icon name
-        color: Icon color
-        size: Size in pixels
-
-    Returns:
-        QIcon instance
-    """
+    """Quick access to get an icon."""
     return IconService.get_icon(name, color, size)
 
 
-# Keep backward compatibility
 def get_icon_svg(name: str, color: str = "#000000", size: int = 24) -> str:
-    """Legacy function - returns empty string as we now use QtAwesome."""
-    return ""
+    """Return the recolored SVG document for ``name`` (bundled set)."""
+    return _svg_document(name, color, size)
 
 
 def get_available_icons() -> list[str]:
-    """Get list of available icon names."""
-    return list(ICON_MAP.keys())
+    """All canonical icon names."""
+    return _svg_available()
 
 
-# Legacy exports for compatibility
-ICONS = ICON_MAP
+# Canonical set export (legacy alias kept pointing at the SVG bodies).
+ICONS = SVG_ICONS
 
-__all__ = ["IconService", "icon", "ICONS", "get_icon_svg", "get_available_icons", "ICON_MAP"]
+__all__ = [
+    "IconService",
+    "icon",
+    "ICONS",
+    "ICON_MAP",
+    "get_icon_svg",
+    "get_available_icons",
+    "HAS_QTAWESOME",
+    "HAS_QTSVG",
+]
