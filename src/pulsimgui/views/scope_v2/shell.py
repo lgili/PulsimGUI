@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services import font_service
 from pulsimgui.services.theme_service import DARK_THEME
 
 from .plot_canvas import PlotCanvas
@@ -304,7 +305,7 @@ class _ScopeHeader(QFrame):
         self._version.setObjectName("ScopeHeaderVersion")
         vf = QFont()
         vf.setPointSize(9)
-        vf.setFamily("Menlo, Consolas, monospace")
+        vf.setFamilies(font_service.MONO_FAMILIES)
         self._version.setFont(vf)
         layout.addWidget(self._version)
 
@@ -687,7 +688,7 @@ class _ScopeSidebar(QFrame):
             uf = QFont()
             uf.setPointSize(8)
             uf.setWeight(QFont.Weight.DemiBold)
-            uf.setFamily("Menlo, Consolas, monospace")
+            uf.setFamilies(font_service.MONO_FAMILIES)
             unit_lbl.setFont(uf)
             unit_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             unit_lbl.setMinimumWidth(22)
@@ -2098,7 +2099,7 @@ class BaseScopeWindow(QWidget):
                 border: 1px solid {accent};
                 border-radius: 11px;
                 padding: 3px 14px;
-                font-family: "Menlo, Consolas, monospace";
+                font-family: {font_service.MONO_STACK};
                 font-size: 11px;
                 font-weight: 600;
             }}
@@ -2238,7 +2239,7 @@ class BaseScopeWindow(QWidget):
             QLabel#ScopeDrawerSummary {{ color: {p["text_dim"]}; }}
             QLabel#ScopeTimelineRange {{
                 color: {p["text_dim"]};
-                font-family: "Menlo, Consolas, monospace";
+                font-family: {font_service.MONO_STACK};
             }}
             QLabel#ScopeDrawerStatusDot[state="idle"]     {{ color: {p["muted"]};   }}
             QLabel#ScopeDrawerStatusDot[state="running"]  {{ color: {p["accent"]};  }}

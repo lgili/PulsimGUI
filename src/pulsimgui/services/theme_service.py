@@ -7,6 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
 
+from pulsimgui.services.font_service import MONO_STACK, UI_STACK
+
 
 @dataclass
 class ThemeColors:
@@ -733,7 +735,7 @@ QMainWindow, QDialog {{
 QWidget {{
     color: {c.foreground};
     font-size: 13px;
-    font-family: "SF Pro Text", "Segoe UI", "Noto Sans";
+    font-family: {UI_STACK};
 }}
 
 /* ===== Menu Bar ===== */
@@ -1233,7 +1235,7 @@ QStatusBar {{
     border-top: 1px solid {c.border};
     min-height: 28px;
     padding: 0 8px;
-    font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+    font-family: {MONO_STACK};
     font-size: 11px;
 }}
 
@@ -1244,7 +1246,7 @@ QStatusBar::item {{
 QStatusBar QLabel {{
     color: {c.statusbar_foreground};
     padding: 3px 10px;
-    font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+    font-family: {MONO_STACK};
     font-size: 11px;
 }}
 

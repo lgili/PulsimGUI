@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from pulsimgui.resources.icons import IconService
+from pulsimgui.services import font_service
 from pulsimgui.services.backend_types import PostProcessingResult
 from pulsimgui.services.simulation_service import SimulationResult
 from pulsimgui.services.theme_service import LIGHT_THEME, Theme, ThemeService
@@ -109,7 +110,10 @@ class MeasurementsPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("MeasurementsPanelRoot")
         self.setFrameStyle(QFrame.Shape.NoFrame)
-        self._value_style_base = "font-weight: 600; font-size: 11px; font-family: monospace;"
+        self._value_style_base = (
+            f"font-weight: 600; font-size: 11px; "
+            f"font-family: {font_service.MONO_STACK};"
+        )
         self._theme: Theme | None = None
         self._muted_labels: list[QLabel] = []
         self._accent_labels: dict[QLabel, str] = {}
@@ -357,7 +361,7 @@ class MeasurementsPanel(QFrame):
         self._refresh_measurements_table()
 
     def _make_color_icon(self, color: tuple[int, int, int]):
-        from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor, QIcon
+        from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
         r, g, b = color
         px = QPixmap(10, 10)
         px.fill(Qt.GlobalColor.transparent)

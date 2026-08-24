@@ -15,7 +15,6 @@ from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import (  # noqa: E402
     QColor,
     QFont,
-    QFontDatabase,
     QIcon,
     QLinearGradient,
     QPainter,
@@ -31,47 +30,17 @@ try:  # noqa: E402
 except Exception:  # pragma: no cover - optional fallback
     QSvgRenderer = None
 
+from pulsimgui.services.font_service import preferred_ui_font  # noqa: E402
 from pulsimgui.views.main_window import MainWindow  # noqa: E402
 
 
-def _ui_font_path() -> Path:
-    """Return bundled UI font path used for cross-platform visual consistency."""
-    return Path(__file__).resolve().parent / "resources" / "fonts" / "DejaVuSans.ttf"
-
-
-def _load_embedded_ui_font_family() -> str | None:
-    """Load bundled UI font and return the resolved family name."""
-    font_path = _ui_font_path()
-    if not font_path.exists():
-        return None
-
-    font_id = QFontDatabase.addApplicationFont(str(font_path))
-    if font_id < 0:
-        return None
-
-    families = QFontDatabase.applicationFontFamilies(font_id)
-    return families[0] if families else None
-
-
 def _preferred_ui_font(base_font: QFont) -> QFont:
-    """Return a stable UI font profile across platforms."""
-    font = QFont(base_font)
-    embedded_family = _load_embedded_ui_font_family()
-    if embedded_family:
-        font.setFamily(embedded_family)
-    else:
-        # Keep deterministic fallback order if the bundled font fails to load.
-        db = QFontDatabase()
-        families = set(db.families())
-        for family in ("DejaVu Sans", "Noto Sans", "Segoe UI", "Helvetica Neue", "Arial"):
-            if family in families:
-                font.setFamily(family)
-                break
-
-    if font.pointSizeF() <= 0:
-        font.setPointSize(10)
-
-    return font
+    """Application default font — bundled IBM Plex Sans with DejaVu
+    fallback. Registration + family policy live in
+    :mod:`pulsimgui.services.font_service` (the single source of truth
+    for typography); this wrapper only keeps the historical call-site
+    name."""
+    return preferred_ui_font(base_font)
 
 
 def _resolve_app_version() -> str:

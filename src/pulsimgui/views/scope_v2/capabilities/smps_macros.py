@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pulsimgui.services import font_service
+
 if TYPE_CHECKING:
     from pulsimgui.views.scope_v2.shell import BaseScopeWindow
 
@@ -176,7 +178,7 @@ class SMPSMacrosCapability:
         self._readout.setWordWrap(True)
         rf = QFont()
         rf.setPointSize(9)
-        rf.setFamily("Menlo, Consolas, monospace")
+        rf.setFamilies(font_service.MONO_FAMILIES)
         self._readout.setFont(rf)
         self._readout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._readout.setMinimumHeight(48)

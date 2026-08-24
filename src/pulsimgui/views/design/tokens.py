@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from pulsimgui.services import font_service
+
 
 class Space:
     """Spacing scale on an 8 px grid (with a 4 px half-step).
@@ -81,6 +83,24 @@ class FontSize:
     TITLE: Final = 18     # section / panel titles
     HEADING: Final = 22   # page titles
     DISPLAY: Final = 28   # KPI numbers, hero figures
+
+
+class FontFamily:
+    """Type families. Thin re-export of the canonical stacks in
+    :mod:`pulsimgui.services.font_service` (the single source of truth,
+    where registration also lives) so design-system consumers never
+    hand-roll a ``font-family`` again.
+
+    ``UI`` / ``MONO`` are single family names for ``QFont.setFamilies``
+    chains; ``UI_STACK`` / ``MONO_STACK`` are ready-to-interpolate QSS
+    values."""
+
+    UI: Final = font_service.UI_FAMILY
+    MONO: Final = font_service.MONO_FAMILY
+    UI_FAMILIES: Final = tuple(font_service.UI_FAMILIES)
+    MONO_FAMILIES: Final = tuple(font_service.MONO_FAMILIES)
+    UI_STACK: Final = font_service.UI_STACK
+    MONO_STACK: Final = font_service.MONO_STACK
 
 
 class FontWeight:

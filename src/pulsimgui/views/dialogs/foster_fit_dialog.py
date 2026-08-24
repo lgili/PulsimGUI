@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pulsimgui.services import font_service
 
 # ---------------------------------------------------------------------------
 # Pure-Python helpers (no Qt dependencies; trivially unit-testable).
@@ -298,7 +299,7 @@ class FosterFitDialog(QDialog):
         )
         self._text_edit.setMinimumHeight(140)
         font = self._text_edit.font()
-        font.setFamily("Menlo")
+        font.setFamilies(font_service.MONO_FAMILIES)
         font.setPointSize(11)
         self._text_edit.setFont(font)
         input_layout.addWidget(self._text_edit)
