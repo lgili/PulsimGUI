@@ -53,10 +53,25 @@ def test_without_node_id_alias_only_lookup_misses() -> None:
     assert series is None
 
 
-def test_component_name_still_wins_when_registered() -> None:
-    # If the kernel registered the probe under its own name, that takes
-    # priority over the node-voltage fallback.
+def test_wrapped_kernel_key_wins_over_bare_component_name() -> None:
+    # Deliberate priority reorder (see the _probe_backend_series
+    # docstring): kernel-emitted, type-prefix-wrapped keys such as
+    # ``V(N1)`` are unambiguous and outrank a bare component-name
+    # registration when both exist — the wrapped form is the canonical
+    # kernel emission; the bare key may be a probe-name collision.
     res = _result()
+    res.signals["V_bus"] = [42.0] * len(res.time)
+    series = MainWindow._probe_backend_series(
+        res, "V_bus", "id-B", node_label="BUSP", node_id="1",
+    )
+    assert series == [180.0] * len(res.time)
+
+
+def test_bare_component_name_used_when_no_wrapped_candidate() -> None:
+    # With no matching wrapped key, the kernel-registered bare
+    # component name is still honoured (priority 2).
+    res = _result()
+    del res.signals["V(N1)"]
     res.signals["V_bus"] = [42.0] * len(res.time)
     series = MainWindow._probe_backend_series(
         res, "V_bus", "id-B", node_label="BUSP", node_id="1",

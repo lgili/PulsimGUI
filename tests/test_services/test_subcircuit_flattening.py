@@ -53,6 +53,21 @@ class _FakeCircuit:
         self.nodes[name] = idx
         return idx
 
+
+    @property
+    def user_resistor_calls(self) -> list[dict[str, Any]]:
+        """Resistors the flattener emitted for USER components.
+
+        The converter also injects ``__gmin_*`` regularizer resistors
+        (singular-mask gmin, commit 5979b28) — infrastructure, not part
+        of the flattening contract under test, so assertions filter
+        them out.
+        """
+        return [
+            call for call in self.resistor_calls
+            if not str(call.get("name", "")).startswith("__gmin_")
+        ]
+
     def add_resistor(self, name: str, n1: int, n2: int, resistance: float) -> None:
         self.resistor_calls.append(
             {"name": name, "n1": n1, "n2": n2, "resistance": resistance}
@@ -386,8 +401,8 @@ def test_single_instance_expands_to_internal_resistor() -> None:
     assert instance_id not in circuit_data["node_map"]
 
     # Exactly one resistor stamped on the right external nets
-    assert len(fake_circuit.resistor_calls) == 1
-    call = fake_circuit.resistor_calls[0]
+    assert len(fake_circuit.user_resistor_calls) == 1
+    call = fake_circuit.user_resistor_calls[0]
     assert call["resistance"] == pytest.approx(250.0)
     # Both pin nets must resolve to the external nodes the instance was
     # wired to (converter normalizes with an "N" prefix).
@@ -426,9 +441,9 @@ def test_two_instances_same_definition_keep_internal_nets_distinct() -> None:
     converter = CircuitConverter(_FakeBackend)
     fake_circuit = converter.build(circuit_data)
 
-    assert len(fake_circuit.resistor_calls) == 2
+    assert len(fake_circuit.user_resistor_calls) == 2
     pairs = {
-        frozenset({call["n1"], call["n2"]}) for call in fake_circuit.resistor_calls
+        frozenset({call["n1"], call["n2"]}) for call in fake_circuit.user_resistor_calls
     }
     expected_a = frozenset(
         {fake_circuit.nodes["NA1"], fake_circuit.nodes["NA2"]}
@@ -440,7 +455,7 @@ def test_two_instances_same_definition_keep_internal_nets_distinct() -> None:
 
     # Component names carry the instance prefix so the netlist is
     # debuggable. Both instances must produce distinct names.
-    names = {call["name"] for call in fake_circuit.resistor_calls}
+    names = {call["name"] for call in fake_circuit.user_resistor_calls}
     assert len(names) == 2
     assert any(name.startswith("UA__") for name in names)
     assert any(name.startswith("UB__") for name in names)
@@ -473,7 +488,7 @@ def test_multi_port_subcircuit_routes_each_port_to_correct_external_net() -> Non
     converter = CircuitConverter(_FakeBackend)
     fake_circuit = converter.build(circuit_data)
 
-    assert len(fake_circuit.resistor_calls) == 2
+    assert len(fake_circuit.user_resistor_calls) == 2
 
     a = fake_circuit.nodes["NNET_A"]
     b = fake_circuit.nodes["NNET_B"]
@@ -482,7 +497,7 @@ def test_multi_port_subcircuit_routes_each_port_to_correct_external_net() -> Non
     # Both resistors must share node C (the common-net port). R1 connects
     # A↔C, R2 connects C↔B.
     pairs = {
-        frozenset({call["n1"], call["n2"]}) for call in fake_circuit.resistor_calls
+        frozenset({call["n1"], call["n2"]}) for call in fake_circuit.user_resistor_calls
     }
     assert pairs == {frozenset({a, c}), frozenset({c, b})}
 
@@ -515,7 +530,7 @@ def test_internal_non_port_net_is_unique_per_instance() -> None:
     fake_circuit = converter.build(circuit_data)
 
     # 2 resistors + 2 inductors total
-    assert len(fake_circuit.resistor_calls) == 2
+    assert len(fake_circuit.user_resistor_calls) == 2
     assert len(fake_circuit.inductor_calls) == 2
 
     # For each instance, the resistor and inductor share exactly one
@@ -530,7 +545,7 @@ def test_internal_non_port_net_is_unique_per_instance() -> None:
 
     # Pair up R and L from the same instance via the namespaced name prefix.
     by_instance: dict[str, dict[str, dict]] = {}
-    for call in fake_circuit.resistor_calls:
+    for call in fake_circuit.user_resistor_calls:
         prefix = call["name"].split("__", 1)[0]
         by_instance.setdefault(prefix, {})["R"] = call
     for call in fake_circuit.inductor_calls:
@@ -650,8 +665,8 @@ def test_nested_subcircuits_expand_recursively() -> None:
 
     # The flattened netlist must have exactly one inner resistor stamped
     # between TOP_IN and TOP_OUT — proving both levels of expansion ran.
-    assert len(fake_circuit.resistor_calls) == 1
-    call = fake_circuit.resistor_calls[0]
+    assert len(fake_circuit.user_resistor_calls) == 1
+    call = fake_circuit.user_resistor_calls[0]
     assert call["resistance"] == pytest.approx(33.0)
     assert {call["n1"], call["n2"]} == {
         fake_circuit.nodes["NTOP_IN"],

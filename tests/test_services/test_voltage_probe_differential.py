@@ -63,6 +63,33 @@ def test_differential_voltage_probe_on_ex20_ac_source_reports_full_swing(
     """
     proj = Project.load(_EXAMPLES / "20_pfc_drive_compressor.pulsim")
     gc = proj.get_active_circuit()
+
+    # ex 20's stock input metering was rewired (47de566) and no longer
+    # ships a differential probe across the AC source. Inject one so
+    # the regression stays pinned regardless of example churn — the
+    # contract under test is the ENRICHMENT (V+ − V−), not the
+    # example's probe inventory.
+    from pulsimgui.models.component import Component, ComponentType
+    from pulsimgui.models.wire import Wire, WireConnection
+
+    vac = next(c for c in gc.components.values() if c.name == "Vac")
+    probe = Component(type=ComponentType.VOLTAGE_PROBE, name="Vin")
+    gc.add_component(probe)
+    for i, (probe_pin, vac_pin) in enumerate(((0, 0), (1, 1))):
+        wire = Wire(
+            start_connection=WireConnection(probe.id, probe_pin),
+            end_connection=WireConnection(vac.id, vac_pin),
+        )
+        # ``build_node_map`` derives the wire's endpoint refs from its
+        # SEGMENTS and then unions the explicit connections onto them —
+        # a segment-less wire contributes nothing. Coordinates are
+        # deliberately far from every real pin so no accidental
+        # geometric union occurs (the explicit-connection path is
+        # authoritative regardless of coordinates).
+        wire.add_segment(90000.0 + 10.0 * i, 90000.0,
+                         90001.0 + 10.0 * i, 90000.0)
+        gc.add_wire(wire)
+
     nm = build_node_map(gc)
 
     # 150 ms = 9 cycles at 60 Hz. Earlier (40 ms = 2.4 cycles) didn't

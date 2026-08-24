@@ -280,7 +280,12 @@ def test_converter_normalizes_cblock_virtual_component_metadata() -> None:
     assert numeric_params["n_inputs"] == 2.0
     assert numeric_params["n_outputs"] == 1.0
     assert "compiler" not in metadata
-    assert "source_code" not in metadata
+    # pulsim 1.8 c-block: ``source_code`` (inline C body) is now
+    # snapshotted and consumed by the backend's Path-B post-pass — no
+    # longer stripped (see the converter's normalization comment).
+    # ``implementation`` is still popped.
+    assert metadata["source_code"] == "int main(void){return 0;}"
+    assert "implementation" not in metadata
     assert metadata["source"] == "C:/workspace/blocks/ctrl.c"
     assert metadata["extra_cflags"] == "[\"-O3\", \"-DGAIN=2\"]"
 
